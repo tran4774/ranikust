@@ -51,8 +51,8 @@ from that.
 - A bug fix comes with a test that fails without it.
 - The sealed copy's T0 tests (`rnk-sandbox`'s `seal` module and the binary's
   `a_build_runs_from_a_sealed_copy_made_once`) expect a memfd copy, as a
-  user without `CAP_SYS_ADMIN`: `vm.memfd_noexec` below 2 and a `TMPDIR`
-  that allows `O_TMPFILE`
+  user other than root without `CAP_SYS_ADMIN`: `vm.memfd_noexec` below 2
+  and a `TMPDIR` that allows `O_TMPFILE`
   ([ADR-0101](adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
 
 ## Which test for what

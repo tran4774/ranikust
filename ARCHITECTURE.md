@@ -32,8 +32,8 @@ root it makes, in one state directory (`--state-dir`, default
 `/var/lib/ranikust`); there is no work-directory flag
 ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It never writes outside the state directory, the requested outputs and, in
-kaniko mode in a container, `/`, but for the sealed copy of its binary in
-`TMPDIR` ([host safety](#host-safety)).
+kaniko mode in a container, `/`, but for what making the sealed copy of
+its binary puts in `TMPDIR` ([host safety](#host-safety)).
 
 ## Code map
 

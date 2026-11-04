@@ -1,5 +1,6 @@
 """Checks, as root on the VM host, that ranikust runs from a sealed copy of
-its binary (ADR-0101), made the way named, and that no one can write it.
+its binary (ADR-0101), made the way named, and that root cannot write it
+through /proc/<pid>/exe.
 
 Usage: sealed-exe.py WAY INSTALLED PID...
 

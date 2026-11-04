@@ -291,8 +291,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   from a sealed memfd (ADR-0101), as must a build on `/` with
   `--cap-add SYS_ADMIN` (`rt_sysadmin_slash_runs_from_a_memfd`);
   `adr0054_refusals` (kaniko mode on `/` refused with `--privileged` and
-  with `systempaths=unconfined`, before anything is pulled); `rt_auto_privileged_container` (`--mode=auto` in a
-  `--privileged` container is refused, with or without `/.dockerenv`). A
+  with `systempaths=unconfined`, before anything is pulled);
+  `rt_auto_privileged_container` (`--mode=auto` in a `--privileged`
+  container is refused, with or without `/.dockerenv`). A
   `--state-dir` at `/`, below `/home/<user>` or in a directory others may
   write ([testing](../../testing.md#planned-test-suites)).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`

@@ -41,8 +41,8 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
      the build's own check (step 1, run in a child that then exits): kaniko
      mode on `/`, where a `RUN` reaches the installed file, runs only where
      it fails, and never takes the overlay, even where `fsmount` alone
-     works (`Sandbox::start_direct` refuses an overlay copy, should the
-     checks disagree);
+     works (`Sandbox::start_direct` refuses a run whose marker names the
+     overlay, should the checks disagree);
    - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
      copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
      refuses it. It costs the binary's size in memory;

@@ -23,7 +23,7 @@ from, on the mount it was executed from; a later bind over the path or a new
 mount namespace does not change it, and a fork inherits it. Only an `execve`
 of another file does. runc does not bind either: since 1.2 it executes
 `runc init` from a sealed copy. How does ranikust give every process it
-forks a binary no one can write?
+forks a binary no `RUN` can write?
 
 ## Considered Options
 
@@ -75,7 +75,7 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   warned), even where `fsmount` works but `mount(2)` does not (Docker
   `--cap-add SYS_ADMIN` under AppArmor's `docker-default`); should the two
   checks ever disagree, `Direct` on `/` refuses to start from an overlay
-  copy.
+  copy, as the copy's marker names it.
 - **Writes outside the state directory.** The overlay's empty layer, a
   directory `.ranikust-seal-<pid>-<n>`, and the `O_TMPFILE` copy go to
   `TMPDIR`: the state directory is not checked yet. The directory lives
@@ -160,6 +160,7 @@ binary with today's barriers and a warning (the maintainer, 2026-11-04:
   `a_failed_recovery_stops_the_search`,
   `the_copy_gets_the_environment_with_one_marker` (one marker, whatever was
   inherited: no loop), `the_overlay_is_made_only_where_root_may_mount`,
+  `a_marker_naming_the_overlay_refuses_direct`,
   `a_memfd_copy_is_the_binary_sealed_against_writes` (writes and resizes
   `EPERM` through any descriptor), `a_tmpfile_copy_is_the_binary_with_no_name_open_read_only`;
   the binary's `a_build_runs_from_a_sealed_copy_made_once` (a memfd as a

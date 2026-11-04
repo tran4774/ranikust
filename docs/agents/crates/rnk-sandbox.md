@@ -63,7 +63,7 @@ pub enum RootEntry { PivotRoot, MoveMount }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060)
-    pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper
+    pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper; Error::OverlayCopyOnSlash where the seal marker names the overlay (ADR-0101)
     #[cfg(test)] pub(crate) fn start_with_root(..) -> Result<Self>; // the Direct chroot off /, test-only (ADR-0060)
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);  // every later RUN starts with it (ranikust's limit before its raise)
@@ -189,11 +189,12 @@ What a change here must keep, with where it lives:
   the `O_TMPFILE` copy is `O_EXCL` and run read-only, and only `ETXTBSY`
   guards it. The copy gets back the core-file limit ranikust started with.
   When no way works the build goes on, warned.
-- **`Direct`:** `start_direct` refuses to start from an overlay copy of
-  the binary (ADR-0101; the copy's gate keeps it unreachable). No
-  namespace, mount or capability change on `/`; the command
-  gets its own session, whose process group is killed with `SIGKILL` once it
-  exits (waited with `WNOWAIT`). Details in the design doc's variants table.
+- **`Direct`:** `start_direct` refuses (`Error::OverlayCopyOnSlash`) a
+  run whose `RANIKUST_SEALED_COPY` names the overlay, or no way (ADR-0101;
+  the copy's gate keeps it unreachable). No namespace, mount or
+  capability change on `/`; the command gets its own session, whose
+  process group is killed with `SIGKILL` once it exits (waited with
+  `WNOWAIT`). Details in the design doc's variants table.
 - **Relay** (`relay.rs`): no `RUN` holds ranikust's stdout or stderr; each
   becomes a pipe, `fchown`ed to the `RUN`'s ids when not root, copied by one
   thread per `RUN`. Its read ends are non-blocking and it blocks only in
@@ -245,7 +246,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   when the core-file limit cannot go back, one marker in the copy's
   environment, no overlay where a child's namespace steps fail, a memfd
   sealed against writes, an `O_TMPFILE` copy with no name, open
-  read-only), the stub journal (placement through symlinks, removal,
+  read-only, `Direct` refused for a marker naming the overlay), the stub
+  journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before
   executing, mount sources and remount flags, `Direct` refusals, the sealed
