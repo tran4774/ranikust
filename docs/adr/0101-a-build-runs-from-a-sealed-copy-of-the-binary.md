@@ -314,13 +314,13 @@ The decision:
   skipped. Any other error (named with the step that failed), `/proc` or
   ranikust's own namespace that cannot be read, or more than 32768
   threads (a process with none left counting as one) refuse the build
-  (fail closed), each with its own message and guidance. A `--pid=host` container is refused
-  by the same rule when ranikust reaches a process of the host or of
-  another container. ranikust's own mount namespaces are the one it
-  started in, read before the set-up, and the one it is in when it looks:
-  a set-up that failed after its `unshare` left it in a copy no other
-  process is in. The scan counts only the processes ranikust can open as
-  it starts, an accepted residual risk with the same guidance.
+  (fail closed), each with its own message and guidance. A `--pid=host`
+  container is refused by the same rule when ranikust reaches a process of
+  the host or of another container. ranikust's own mount namespaces are
+  the one it started in, read before the set-up, and the one it is in when
+  it looks: a set-up that failed after its `unshare` left it in a copy no
+  other process is in. The scan counts only the processes ranikust can
+  open as it starts, an accepted residual risk with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of

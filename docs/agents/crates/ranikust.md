@@ -151,9 +151,9 @@ Each step before the next; design in
    changed during the walk, a writable directory whose name was removed, a
    writable mount that is covered or cannot be reached at its mount point,
    a binary not weighed because no container was found at the start
-   (`NotWeighed`), or a failed call, each with its own
-   guidance; a link of it bound read-write, even a removed one, is a
-   reach), and with a process of its PID namespace that has a thread in
+   (`NotWeighed`), or a failed call, each with its own guidance; a link of
+   it bound read-write, even a removed one, is a reach), and with a
+   process of its PID namespace that has a thread in
    another mount namespace whose root it opens (`refuse_reachable_peers`
    on `exposure::scan_peers`, ADR-0101: once as it starts, each thread of
    `/proc/<pid>/task` through one descriptor of `/proc/<pid>`, the process
@@ -169,8 +169,8 @@ Each step before the next; design in
    bounds the uploads, and `rnk_sandbox::block_stop_signals`. Then
    `set_up_kaniko`: off `/`, a host where root may not mount is refused
    (`host_without_mounts`). On `/`, `trim_to_run_capabilities` first,
-   while single-threaded, and it stays
-   before `Store::open_anonymous`, which deletes names a `RUN` can reach
+   while single-threaded, and it stays before `Store::open_anonymous`,
+   which deletes names a `RUN` can reach
    (ADR-0078); then the `flock` on `/` itself (one build per container), the
    state directory checks, `Store::open_anonymous` (a state directory holding
    a persistent store or held by another build is refused with the store's
