@@ -154,17 +154,17 @@ the scheduler runs one stage at a time) or a private directory per stage
     (`/proc/<pid>/task/<tid>/ns/mnt` by device and inode) whose root it
     opens, every thread probed through one descriptor of `/proc/<pid>`
     (the process as one where its threads may not be listed), refuses the
-    build; a process or thread it may not look into or open (`EACCES`,
-    `EPERM`) is not counted, one gone is skipped, and any other error or
-    more than 32768 threads refuse too, each with its own guidance. Its
-    own mount namespace is the one it started in, read before the set-up,
-    and the one it is in when it looks (a set-up that failed after its
-    `unshare` left it in a copy of its own). A `--pid=host` container is
-    refused by the same rule when a process of the host or of another
-    container is in reach. It counts only the processes it can
-    open as it starts: one it cannot open then, and one that appears
-    later, are not counted, residual risks accepted in ADR-0101, whose
-    guidance is a PID namespace of the build container's own.
+    build. A thread counts only when ranikust opens it and its root
+    (`EACCES` and `EPERM` mean not opened); one gone is skipped, and any
+    other error or more than 32768 threads refuse too, each with its own
+    guidance. Its own mount namespaces are the one it started in, read
+    before the set-up, and the one it is in when it looks (a set-up that
+    failed after its `unshare` left it in a copy of its own). A
+    `--pid=host` container is refused by the same rule when a process of
+    the host or of another container is in reach. It counts only the
+    processes it can open as it starts, a residual risk accepted in
+    ADR-0101, whose mitigation is a PID namespace of the build container's
+    own.
   - **No process outlives its `RUN`.** ranikust is a child subreaper. After
     each `RUN` it kills everything that became its child during the `RUN`, and
     their descendants, through a pidfd after checking the parent and start time

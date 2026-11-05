@@ -159,10 +159,10 @@ Each step before the next; design in
    `/proc/<pid>/task` through one descriptor of `/proc/<pid>`, the process
    as one where its threads may not be listed; ranikust's own namespaces
    are the one `build` read before `setup::enter_namespace` and the one it
-   is in; it counts only what it can open then, `EACCES`/`EPERM` not
-   counted (a residual risk), gone skipped (an `ns/mnt` denied once its
-   `ns` is gone too), any other error (with its
-   step) or more than `PEER_SCAN_LIMIT` threads refused, each with its own
+   is in; it counts only what it opens then (`EACCES`/`EPERM`: not
+   opened), gone skipped (an `ns/mnt` denied once its `ns` is gone too),
+   any other error (with its step) or more than `PEER_SCAN_LIMIT` threads
+   refused, each with its own
    guidance); then the warnings for secret-looking build arguments and file
    secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
@@ -326,7 +326,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and stacked binds, a mount added during the walk, a container told only
   once ranikust started); `pid-peers` the test of `refuse_reachable_peers`
   (`--pid container:<peer>`: a root peer refused before any `RUN`, a peer
-  of another user and no peer build).
+  of another user and no peer build; `half_entered`: a set-up that failed
+  after its `unshare` builds).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

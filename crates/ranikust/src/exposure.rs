@@ -124,7 +124,7 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Warns about each other process listed in `/proc` whose
-/// `/proc/<pid>/environ` ranikust reads and sets one of `variables`
+/// `/proc/<pid>/environ` ranikust can read and which sets one of `variables`
 /// ([`secret_variables`]) to a non-empty value ([`credential_warning`]). A
 /// process whose environment ranikust cannot read is skipped, and nothing
 /// is said when `/proc` cannot be listed. The caller runs it after
@@ -470,8 +470,10 @@ fn task(own: Own, dir: &OwnedFd, [root, ns]: Steps) -> Thread {
 
 /// What a failure `e` to read a thread's `ns/mnt` means, `step` naming
 /// it: a thread gone (`ENOENT`, `ESRCH`), or one freed since its root was
-/// opened, which answers `EACCES` there and whose `ns` no longer opens
-/// (`ns`, tried only then); anything else cannot be told.
+/// opened, which answers `EACCES` or `EPERM` there and whose `ns` is gone
+/// too (`ENOENT`, `ESRCH` from `ns`, tried only then); anything else
+/// cannot be told, and is named by `e`: the `ns` open only tells whether
+/// the thread is gone.
 fn ns_failure(step: &'static str, e: Errno, ns: impl FnOnce() -> rustix::io::Result<()>) -> Thread {
     match e {
         Errno::NOENT | Errno::SRCH => Thread::Gone,
@@ -869,9 +871,9 @@ mod tests {
         let looped = Thread::Unknown("reading /proc/<pid>/task/<tid>/ns/mnt", Errno::LOOP);
         assert_eq!(thread_at(own, &dir, Some("1")), looped);
         // Where a mode stops this process, as the kernel tells (a root with
-        // CAP_DAC_READ_SEARCH reads through it): a thread it may not look
-        // into is out of reach, and an `ns/mnt` it may not read, its `ns`
-        // still there, cannot be told.
+        // CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH reads through it): a
+        // thread it may not look into is out of reach, and an `ns/mnt` it
+        // may not read, its `ns` still there, cannot be told.
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &str, mode| {
             fs::set_permissions(at(p), fs::Permissions::from_mode(mode)).unwrap();

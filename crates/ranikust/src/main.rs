@@ -1578,7 +1578,9 @@ mod tests {
                      ranikust reaches through /proc: opening /proc/<pid>/task/<tid>/root failed \
                      ({errno})"
                 ),
-                "with success, EACCES or EPERM and nothing else, allow reading",
+                "/proc/<pid>/root, /proc/<pid>/task, /proc/<pid>/task/<tid> and \
+                 /proc/<pid>/task/<tid>/root with success, EACCES or EPERM and nothing else, \
+                 allow reading",
             ),
             (
                 PeerScan::Unlisted(errno),

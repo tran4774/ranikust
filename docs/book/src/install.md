@@ -82,8 +82,9 @@ mount may reach it. Give the container a PID namespace of its own: no
 `--pid container:<name>` or `--pid=host`. ranikust refuses to build where, as
 it starts, it can open a process of another container or of the host through
 `/proc`, since a `RUN` could reach that process's files. It counts only the
-processes it can open then, so give the container one even where ranikust
-builds. Put the build context under `/ranikust` too, read-only:
+processes it can open then, so give the container a PID namespace of its own
+even where ranikust builds. Put the build context under `/ranikust` too,
+read-only:
 
 ```sh
 docker run --rm \

@@ -309,20 +309,19 @@ The decision:
   first one may have exited, all through one descriptor of `/proc/<pid>`,
   so that a pid reused meanwhile is not taken for the process; a process
   whose threads it may not list is probed as one, through `/proc/<pid>`.
-  A process or thread it may not look into or whose root it may not open
-  (`EACCES`, `EPERM`) is not counted, such as Kubernetes' pause container
-  at uid 65535; one gone meanwhile (`ENOENT`, `ESRCH`) is skipped. Any
+  A thread counts only when ranikust opens it and its root (`EACCES` and
+  `EPERM` mean not opened); one gone meanwhile (`ENOENT`, `ESRCH`) is
+  skipped. Any
   other error (named with the step that failed), `/proc` or ranikust's own
   namespace that cannot be read, or more than 32768 threads (a process
   with none left counting as one) refuse the build (fail closed), each
   with its own message and guidance. A `--pid=host` container is refused
   by the same rule when ranikust reaches a process of the host or of
-  another container. ranikust's own mount namespace is the one it started
-  in, read before the set-up, and the one it is in when it looks: a
-  set-up that failed after its `unshare` left it in a copy no other
+  another container. ranikust's own mount namespaces are the one it
+  started in, read before the set-up, and the one it is in when it looks:
+  a set-up that failed after its `unshare` left it in a copy no other
   process is in. The scan counts only the processes ranikust can open as
-  it starts: one it cannot open then, and one that appears after that
-  look, are not counted, accepted residual risks with the same guidance.
+  it starts, an accepted residual risk with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -376,8 +375,7 @@ The decision:
   processes in reach), which built before: the operator gives the build a
   PID namespace of its own.
 - Bad, because that refusal counts only the processes ranikust can open
-  as it starts: one it cannot open then, or one that appears later, is
-  not counted, a residual risk the maintainer accepted. The operator
+  as it starts, a residual risk the maintainer accepted. The operator
   gives the build a PID namespace of its own.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
@@ -590,7 +588,11 @@ The decision:
   uid 1000, which ranikust's probe meets with `EACCES`, and no peer build
   [measured]. The same case under rootful Docker (T2, the VM's quick
   suite, Linux 6.8, Docker 29.1.3, AppArmor enabled) gives the same
-  outcome [measured].
+  outcome [measured]. Its step `half_entered` (T1): a container given
+  `CAP_SYS_ADMIN` whose seccomp profile refuses `mount`, where the set-up
+  fails after its `unshare`, builds; with the scan reading only the
+  namespace ranikust is in, it was refused for the container's `sh`
+  [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its
