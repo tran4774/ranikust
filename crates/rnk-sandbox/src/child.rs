@@ -541,9 +541,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
     );
     new_session(err);
-    // The command's, before a profile could fake it: files a `RUN`
-    // creates, and so its layer, must not follow ranikust's umask. The
-    // command sets it again for `Direct`.
+    // Before the profile could fake it: the layer must not follow ranikust's umask.
     rustix::process::umask(Mode::from_raw_mode(0o022));
     // After the namespace is joined and every mount made, which the filters
     // would refuse. ADR-0033's first: the profile on top cannot fake its
@@ -581,10 +579,10 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// whose disposition is the default), its copy of ranikust's argument and
 /// environment strings zeroed; [`run`] made it not dumpable and gave it a
 /// session of its own, so that no terminal signal reaches it, before the
-/// `RUN`'s profile. The command waits on the go pipe until
-/// the init has given all that up, so a failure of the init's own steps
-/// (`Step::Init`) comes before the command ran, unless the profile fakes
-/// the command's `read` of that pipe (threat model, section 6). The init reaps every
+/// `RUN`'s profile. The command waits on the go pipe until the init has
+/// given all that up, so a failure of the init's own steps (`Step::Init`)
+/// comes before the command ran, unless the profile fakes the command's
+/// `read` of that pipe (threat model, section 6). The init reaps every
 /// process that reparents to it; when the command exits, it writes the
 /// command's wait status on the status pipe and exits, and the kernel kills
 /// the rest, as when the command was PID 1 itself.
@@ -2008,7 +2006,7 @@ fn on_procfs(dir: BorrowedFd<'_>) -> bool {
 /// set beforehand: after the `RUN`'s profile, a faked `prlimit64` writes
 /// nothing, which `rustix` would read uninitialised.
 fn nofile_bound(hard: bool, cap: u32) -> RawFd {
-    let cap = u64::from(cap);
+    let cap = libc::rlim_t::from(cap);
     let mut lim = libc::rlimit {
         rlim_cur: cap,
         rlim_max: cap,
@@ -2603,9 +2601,19 @@ mod tests {
             assert_eq!(failure_under("", |w| drop(init_pipe(w))), None);
         }
 
+        /// Fills the stack below its caller with procfs's magic, so that a
+        /// buffer read before anything wrote it there looks like procfs,
+        /// or like a descriptor limit below every cap.
+        #[inline(never)]
+        fn proc_magic_below() {
+            // A local, not a promoted constant: it must be on the stack.
+            let mut words = [PROC_SUPER_MAGIC; 4096];
+            std::hint::black_box(&mut words);
+        }
+
         /// The descriptor lists come after the profile: an `fstatfs` faked
         /// with errno 0 makes `/proc/self/fd` read as not procfs, so the
-        /// list is not trusted.
+        /// list is not trusted, whatever the stack held before.
         #[test]
         fn a_faked_fstatfs_is_not_procfs() {
             let dir = rustix::fs::open(
@@ -2618,12 +2626,34 @@ mod tests {
             let rule = r#"{"names": ["fstatfs"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
             assert_eq!(
                 failure_under(rule, |w| {
+                    proc_magic_below();
                     if on_procfs(dir.as_fd()) {
                         fail(w, Step::Init, Errno::PROTO);
                     }
                 }),
                 None
             );
+        }
+
+        /// The descriptor-closing fallbacks come after the profile: a
+        /// `prlimit64` refused, or faked with errno 0 whatever the stack
+        /// held before, leaves the bound at its cap.
+        #[test]
+        fn a_faked_or_refused_getrlimit_leaves_the_cap() {
+            for errno in [0, libc::EPERM] {
+                let rule = format!(
+                    r#"{{"names": ["prlimit64", "getrlimit"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                );
+                let got = failure_under(&rule, |w| {
+                    proc_magic_below();
+                    if nofile_bound(true, 1 << 20) != 1 << 20
+                        || nofile_bound(false, 1 << 16) != 1 << 16
+                    {
+                        fail(w, Step::Init, Errno::PROTO);
+                    }
+                });
+                assert_eq!(got, None, "errno {errno}");
+            }
         }
 
         /// The command's `setsid` comes after its profile, which may fake

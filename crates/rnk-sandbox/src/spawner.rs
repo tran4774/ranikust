@@ -3433,11 +3433,11 @@ mod tests {
     /// the two clears apart), its session belongs to its PID namespace, so
     /// no terminal of the operator's is its controlling one, its init is
     /// not dumpable (its `/proc/1/environ` stays closed to the command),
-    /// and ADR-0033's filter is still installed under a held network
-    /// namespace: `unshare -U` is refused, which a control without that
-    /// filter shows it would not be. A faked fork of the init fails the
-    /// `RUN` before the command runs, never leaving it as PID 1 without
-    /// an init.
+    /// its umask is 022 whatever ranikust's is, and ADR-0033's filter is
+    /// still installed under a held network namespace: `unshare -U` is
+    /// refused, which a control without that filter shows it would not be.
+    /// A faked fork of the init fails the `RUN` before the command runs,
+    /// never leaving it as PID 1 without an init.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_profile_cannot_fake_the_steps_before_it() {
@@ -3460,7 +3460,8 @@ mod tests {
                  python3 -c 'import os; print(\"sid=%d\" % os.getsid(0))'; \
                  if unshare -U true; then echo userns=ok; else echo userns=refused; fi; \
                  if cat /proc/1/environ >/dev/null 2>&1; then echo environ=read; \
-                 else echo environ=refused; fi";
+                 else echo environ=refused; fi; \
+                 echo umask=$(umask)";
             let defaults = format!("{:016x}", caps::docker_default_mask());
             let cases = [
                 (
@@ -3483,6 +3484,7 @@ mod tests {
                     errno_rule("prctl", 0, Some(SET_DUMPABLE)),
                     Network::Host,
                 ),
+                ("umask, faked", errno_rule("umask", 0, None), Network::Host),
                 (
                     "seccomp, faked, held network",
                     errno_rule("seccomp", 0, None),
@@ -3542,7 +3544,14 @@ mod tests {
                     RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
                 spec.network = network;
                 output_to(&out, &mut spec);
+                // The tests run one at a time (`--test-threads=1`).
+                let ours = name
+                    .starts_with("umask")
+                    .then(|| rustix::process::umask(Mode::from_raw_mode(0o077)));
                 let st = runner.run(spec, None, |job| clone_child(job, parent));
+                if let Some(mask) = ours {
+                    rustix::process::umask(mask);
+                }
                 let text = fs::read_to_string(&out).unwrap_or_default();
                 println!("{name}: {st:?}\n{text}");
                 got.push((name, st.map(|s| s.success()).ok(), text));
@@ -3558,8 +3567,11 @@ mod tests {
                 wrong.push(format!("fork, faked: {forked:?}, output {forked_text:?}"));
             }
             for (name, ok, text) in &got {
-                let mut want: Vec<(&str, String)> =
-                    vec![("CapBnd", defaults.clone()), ("environ", "refused".into())];
+                let mut want: Vec<(&str, String)> = vec![
+                    ("CapBnd", defaults.clone()),
+                    ("environ", "refused".into()),
+                    ("umask", "0022".into()),
+                ];
                 match *name {
                     "seccomp, faked, held network" => {
                         want.push(("Seccomp_filters", (own + 2).to_string()));
@@ -3581,7 +3593,7 @@ mod tests {
                 }
                 for (key, value) in want {
                     let seen = match key {
-                        "userns" | "environ" => text
+                        "userns" | "environ" | "umask" => text
                             .lines()
                             .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
                             .map(str::trim),
