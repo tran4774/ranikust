@@ -160,8 +160,10 @@ the scheduler runs one stage at a time) or a private directory per stage
     looks with its start-up privileges, before it trims them, so it may
     refuse a process no `RUN` would reach (fails closed); a `--pid=host`
     container is refused by the same rule when a process of the host or
-    of another container is in reach. A process that appears later is not
-    seen (ADR-0101).
+    of another container is in reach. It counts only the processes it can
+    open as it starts: one it cannot open then, and one that appears
+    later, are not counted, residual risks accepted in ADR-0101, whose
+    guidance is a PID namespace of the build container's own.
   - **No process outlives its `RUN`.** ranikust is a child subreaper. After
     each `RUN` it kills everything that became its child during the `RUN`, and
     their descendants, through a pidfd after checking the parent and start time

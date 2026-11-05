@@ -158,9 +158,10 @@ Each step before the next; design in
    on `exposure::scan_peers`, ADR-0101: once, with the start-up
    privileges, each thread of `/proc/<pid>/task` through one descriptor
    of `/proc/<pid>`, the process as one where its threads may not be
-   listed; `EACCES`/`EPERM` not counted, gone skipped, any other error
-   (with its step) or more than `PEER_SCAN_LIMIT` threads refused, each
-   with its own guidance); then the warnings for
+   listed; it counts only what it can open then, `EACCES`/`EPERM` not
+   counted (a residual risk), gone skipped, any other error (with its
+   step) or more than `PEER_SCAN_LIMIT` threads refused, each with its own
+   guidance); then the warnings for
    secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only

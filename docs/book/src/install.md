@@ -79,10 +79,11 @@ fuse-overlayfs, as rootless podman's can), such as
 it too must have one link (leave it no hard-link alias) and no other writable
 mount may reach it. Give the container a PID namespace of its own: no
 `shareProcessNamespace: true` or `hostPID: true` on its Kubernetes pod, no
-`--pid container:<name>` or `--pid=host`. ranikust refuses to build where it
-reaches, as it starts, a process of another container or of the host through
-`/proc`, since a `RUN` could reach that process's files. Put the build context
-there too, read-only:
+`--pid container:<name>` or `--pid=host`. ranikust refuses to build where, as
+it starts, it can open a process of another container or of the host through
+`/proc`, since a `RUN` could reach that process's files. It counts only the
+processes it can open then: a build it lets through needs a PID namespace of
+its own all the same. Put the build context there too, read-only:
 
 ```sh
 docker run --rm \

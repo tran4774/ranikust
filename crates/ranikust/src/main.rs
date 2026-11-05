@@ -879,11 +879,11 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
 }
 
 /// Kaniko mode on `/` refuses a PID namespace shared with a process of
-/// another mount namespace that ranikust reaches through `/proc` when it
-/// starts (ADR-0101): a `RUN` shares that PID namespace and could reach that
-/// process's files, which the container's own mount table does not show.
-/// A scan that cannot tell, or one of too many threads, is refused too,
-/// each with its own guidance.
+/// another mount namespace that ranikust can open through `/proc` when it
+/// starts, the only processes the scan counts (ADR-0101): a `RUN` shares
+/// that PID namespace and could reach that process's files, which the
+/// container's own mount table does not show. A scan that cannot tell, or
+/// one of too many threads, is refused too, each with its own guidance.
 fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Failure> {
     use exposure::PeerScan;
     match scan {

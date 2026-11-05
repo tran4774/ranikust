@@ -222,9 +222,11 @@ These follow from decisions and are documented to users rather than fixed:
   `--pid=host` container is refused by the same rule when ranikust reaches
   a process of the host or of another container. ranikust looks with its
   start-up privileges, before it trims them to a `RUN`'s, so it may refuse
-  a process no `RUN` would reach (fails closed). A thread whose root
-  ranikust may not open then is not counted, and a process that appears
-  after that look is not seen (ADR-0101). Nothing of ranikust's
+  a process no `RUN` would reach (fails closed). The scan counts only the
+  processes ranikust can open as it starts: one it cannot open then, and
+  one that appears after that look, are not counted, residual risks
+  accepted in ADR-0101. Give the build container a PID namespace of its
+  own. Nothing of ranikust's
   state outlives a kaniko-mode build on `/`: its state directory is never a
   persistent store, is shared with no other build, and is emptied of what a
   `RUN` wrote there at the end ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).

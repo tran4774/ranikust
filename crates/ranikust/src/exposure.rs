@@ -12,8 +12,8 @@
 //!
 //! It also checks what it refuses to build under: a writable `/proc/sys`
 //! ([`proc_sys_read_only`]), and a process of another mount namespace in
-//! its PID namespace that it reaches through `/proc` ([`scan_peers`],
-//! ADR-0101).
+//! its PID namespace that it can open through `/proc` as it starts
+//! ([`scan_peers`], ADR-0101).
 
 use std::ffi::OsString;
 use std::fs;
@@ -267,8 +267,11 @@ pub(crate) enum PeerScan {
 /// `RUN` on `/` shares the PID namespace and could reach that process's
 /// files, which the container's own mount table does not show (ADR-0101).
 /// Called before ranikust trims its capabilities, so it may reach a process
-/// a `RUN` would not: refused all the same (fails closed). A process that
-/// appears after the scan is not seen.
+/// a `RUN` would not: refused all the same (fails closed). It counts only
+/// the processes ranikust can open as it starts: one it cannot open then,
+/// or one that appears after the scan, is not counted, an accepted
+/// residual risk whose guidance is a PID namespace of the build
+/// container's own.
 pub(crate) fn scan_peers() -> PeerScan {
     let own = match namespace(rustix::fs::CWD, "/proc/self/ns/mnt") {
         Ok(own) => own,

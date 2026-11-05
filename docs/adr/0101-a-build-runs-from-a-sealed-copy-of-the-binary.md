@@ -204,7 +204,7 @@ The decision:
   [in a sixth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6639451756),
   the next
   [in a seventh](https://github.com/tran4774/ranikust/issues/32#issuecomment-6650030126),
-  and the last after the red team's review of the pull request):
+  and the last two after the red team's review of the pull request):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -283,7 +283,13 @@ The decision:
     a `RUN` could too, with the guidance not to share the PID namespace;
     an unreachable process is not counted, the check runs once at
     start-up, and a process that appears later stays a residual risk:
-    "Từ chối trong #32 (khuyến nghị)" (refuse in #32, as recommended).
+    "Từ chối trong #32 (khuyến nghị)" (refuse in #32, as recommended);
+  - on 2026-11-05, asked whether that refusal should also count the
+    processes ranikust cannot open as it starts, to keep counting only
+    those it can open then and to record the others as a residual risk,
+    the guidance unchanged (give the build container a PID namespace of
+    its own): "Ghi là rủi ro còn lại (khuyến nghị)" (record it as a
+    remaining risk, as recommended).
 - **A process of another mount namespace, in kaniko mode on `/`.** A `RUN`
   there shares the container's PID namespace. Where another container
   shares it too (Kubernetes `shareProcessNamespace: true` or
@@ -294,10 +300,12 @@ The decision:
   and before anything is written, when it finds, once as it starts, a
   process of its PID namespace with a thread in another mount namespace
   (the device and inode of the thread's `ns/mnt`, opened `O_PATH`, against
-  its own) whose root it opens (`O_PATH`). The guidance is not to share
-  the build container's PID namespace with another container.
+  its own) whose root it opens (`O_PATH`). The guidance is to give the
+  build container a PID namespace of its own, shared with no other
+  container.
 
-  Each thread of each process is probed (`/proc/<pid>/task/<tid>`), since
+  The scan counts only the processes ranikust can open as it starts. Each
+  thread of each process is probed (`/proc/<pid>/task/<tid>`), since
   a thread may have a mount namespace and credentials of its own and the
   first one may have exited, all through one descriptor of `/proc/<pid>`,
   so that a pid reused meanwhile is not taken for the process; a process
@@ -315,8 +323,8 @@ The decision:
   (ADR-0078), so where it reaches a process a `RUN` would not (a
   container given `CAP_SYS_PTRACE`, a Dockerfile whose `RUN`s are not
   root), the refusal is wider than needed: accepted as failing closed. A
-  process that appears after that look is not seen: an accepted residual
-  risk.
+  process it cannot open at that look, and one that appears after it, are
+  not counted: accepted residual risks, with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -370,6 +378,10 @@ The decision:
   processes in reach), which built before: the operator gives the build a
   PID namespace of its own. It may refuse one that no `RUN` would reach,
   since ranikust looks before it trims its privileges.
+- Bad, because that refusal counts only the processes ranikust can open
+  as it starts: one it cannot open then, or one that appears later, is
+  not counted, a residual risk the maintainer accepted. The operator
+  gives the build a PID namespace of its own.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
 - Neutral, because under an emulator (qemu-user, Rosetta) the process that
