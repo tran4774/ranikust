@@ -6,6 +6,7 @@ fn cx(kernel: (u64, u64)) -> Context {
     Context {
         arch: native_arch().unwrap(),
         kernel,
+        faked_success: false,
     }
 }
 
@@ -174,7 +175,7 @@ const ACTIONS: &str = r#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[
     {"names":["getppid"],"action":"SCMP_ACT_TRAP","args":[{"index":0,"value":5,"op":"SCMP_CMP_EQ"}]},
     {"names":["getppid"],"action":"SCMP_ACT_KILL","args":[{"index":0,"value":6,"op":"SCMP_CMP_EQ"}]},
     {"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":14,"args":[{"index":0,"value":1,"op":"SCMP_CMP_EQ"}]},
-    {"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":0,"args":[{"index":0,"value":8,"op":"SCMP_CMP_EQ"}]},
+    {"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":4095,"args":[{"index":0,"value":8,"op":"SCMP_CMP_EQ"}]},
     {"name":"getppid","action":"SCMP_ACT_KILL_THREAD","args":[{"index":0,"value":9,"op":"SCMP_CMP_EQ"}]}
 ]}"#;
 
@@ -193,7 +194,7 @@ fn each_rule_has_its_action() {
         (4, libc::SECCOMP_RET_KILL_PROCESS),
         (5, libc::SECCOMP_RET_TRAP),
         (6, libc::SECCOMP_RET_KILL_THREAD),
-        (8, errno(0)),
+        (8, errno(4095)),
         (9, libc::SECCOMP_RET_KILL_THREAD),
     ] {
         assert_eq!(verdict(&p, g, a0(arg)), want, "{arg}");
@@ -505,16 +506,6 @@ fn keyrings_are_refused_only_when_no_call_can_reach_one() {
         (profile("SCMP_ACT_KILL_PROCESS", &[]), true),
         (profile(allow, &[rule(all, errno, "")]), true),
         (profile(allow, &[rule(all, "SCMP_ACT_TRAP", "")]), true),
-        // Errno 0 fakes success: the call still does not run.
-        (
-            profile(
-                allow,
-                &[format!(
-                    r#"{{"names":[{all}],"action":"SCMP_ACT_ERRNO","errnoRet":0}}"#
-                )],
-            ),
-            true,
-        ),
         (profile(allow, &[rule(two, errno, "")]), false),
         (
             profile(
@@ -591,6 +582,27 @@ fn malformed_or_unsupported_profiles_are_refused() {
         (rule(r#"{"action":"SCMP_ACT_ALLOW"}"#), "names no system call"),
         (rule(r#"{"names":["getppid"],"action":"SCMP_ACT_NOTIFY"}"#), "not supported"),
         (rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ALLOW","errnoRet":1}"#), "errno"),
+        // Errno 0 would fake a success; above 4095 the low bits could be 0.
+        (
+            rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":0}"#),
+            "syscalls[0]: errnoRet 0 would fake",
+        ),
+        (
+            rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":65536}"#),
+            "syscalls[0]: errno 65536 is above 4095",
+        ),
+        (
+            rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":-1}"#),
+            "expected u64",
+        ),
+        (
+            r#"{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":0}"#.to_owned(),
+            "defaultErrnoRet: 0 would fake",
+        ),
+        (
+            r#"{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":65536}"#.to_owned(),
+            "defaultAction: errno 65536 is above 4095",
+        ),
         (rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ALLOW","extra":1}"#), "unknown field"),
         (
             rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ERRNO","args":[{"index":6,"value":0,"op":"SCMP_CMP_EQ"}]}"#),
@@ -1152,7 +1164,7 @@ mod kernel {
                 refused(getppid(a0(2)), 12),
                 refused(getppid(a0(7)), 13),
                 getppid(a0(3)) > 0,
-                getppid(a0(8)) == 0,
+                refused(getppid(a0(8)), 4095),
             ];
             checks
                 .iter()

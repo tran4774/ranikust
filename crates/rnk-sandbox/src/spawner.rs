@@ -28,7 +28,7 @@ use tracing::field::Empty;
 use crate::caps;
 use crate::child::{
     self, ChildArgs, ChildFds, ChildMount, ChildSecret, ChildSecrets, ChildStdio, ExecPtrs,
-    MadeMounts, RootEntry,
+    KeyringJoin, MadeMounts, RootEntry,
 };
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
@@ -1124,12 +1124,17 @@ impl Runner {
         } else {
             None
         };
-        // An LSM's `EACCES` on the keyring join fails a full-sandbox `RUN`
-        // whose profile lets it reach a keyring (ADR-0109), but not the
-        // probe's; `Direct` is under the container's profile.
-        let keyring_eacces_ok = match spec.isolation {
-            Isolation::Full => self.probe || profile.is_some_and(SeccompProfile::refuses_keyrings),
-            Isolation::Direct => true,
+        // A refused keyring join fails a full-sandbox `RUN` that could still
+        // reach a keyring (ADR-0109), but not the probe's; `Direct` is under
+        // the container's profile.
+        let keyring = match spec.isolation {
+            Isolation::Full
+                if self.probe || profile.is_some_and(SeccompProfile::refuses_keyrings) =>
+            {
+                KeyringJoin::Optional
+            }
+            Isolation::Full => KeyringJoin::Required,
+            Isolation::Direct => KeyringJoin::Direct,
         };
         let mount_api =
             spec.isolation == Isolation::Full && self.mount_api.unwrap_or_else(mount_api_supported);
@@ -1161,7 +1166,7 @@ impl Runner {
             // Only with a `NetNs`; `probe_network` checked it exists.
             network_filter,
             profile: profile.map(|p| p.program.clone()),
-            keyring_eacces_ok,
+            keyring,
             drops: self.drops,
             keep: caps::docker_default_mask(),
             uid: Uid::from_raw(user.uid),
@@ -3399,9 +3404,11 @@ mod tests {
         });
     }
 
-    /// A profile file of rules on a default that allows.
+    /// A profile of rules on a default that allows; errno 0 compiles, as a
+    /// filter around ranikust may answer with it, though `--seccomp` refuses
+    /// it (ADR-0109).
     fn allow_but(rules: &str) -> SeccompProfile {
-        SeccompProfile::from_json(
+        SeccompProfile::faking(
             format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rules}]}}"#).as_bytes(),
         )
         .unwrap()
@@ -3614,15 +3621,18 @@ mod tests {
         });
     }
 
-    /// T2 (ADR-0109): an `EACCES` on the session keyring's join, which an
-    /// LSM gives (a filter around ranikust stands in for it here), fails a
-    /// `RUN` whose profile lets it reach a keyring: unconfined, or a file
-    /// that allows `keyctl`. Under a profile that refuses every keyring
-    /// call, Docker's default or one faking them, the `RUN` runs: it
-    /// reaches no keyring of ranikust's either.
+    /// T2 (ADR-0109): a refused join of the session keyring, by an LSM or
+    /// a filter around ranikust (filters on this thread stand in for both),
+    /// fails a `RUN` whose profile lets it reach a keyring (unconfined, or a
+    /// file that allows `keyctl`) while ranikust's session keyring can still
+    /// be looked up, whatever the errno. Under a profile that refuses every
+    /// keyring call, Docker's default or a file refusing them, the `RUN`
+    /// runs: it reaches no keyring of ranikust's either. Under a filter that
+    /// refuses `keyctl` whole, as Docker's default around ranikust does, no
+    /// keyring is reachable and every `RUN` runs, as before.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
-    fn an_lsm_refusing_the_keyring_join_fails_a_run_that_could_reach_keyrings() {
+    fn a_refused_keyring_join_fails_a_run_that_could_reach_a_keyring() {
         in_private_mount_namespace(|| {
             let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
             let top = mounts.path().canonicalize().unwrap();
@@ -3630,57 +3640,93 @@ mod tests {
             root_with_usr(&mut mounts, &root);
             let parent = ParentPid::new().unwrap();
             let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
-            // `KEYCTL_JOIN_SESSION_KEYRING` is 1. On this thread only, which
-            // ends with the test; as root, so without `no_new_privs`.
-            let lsm = allow_but(&errno_rule("keyctl", libc::EACCES, Some(1))).program;
-            let fprog = libc::sock_fprog {
-                len: u16::try_from(lsm.insns.len()).unwrap(),
-                filter: lsm.insns.as_ptr().cast_mut(),
+            // On this thread only, which ends with the test; as root, so
+            // without `no_new_privs`. Each stacks on the last; the newest's
+            // errno wins.
+            let around = |rules: &str| {
+                let prog = allow_but(rules).program;
+                let fprog = libc::sock_fprog {
+                    len: u16::try_from(prog.insns.len()).unwrap(),
+                    filter: prog.insns.as_ptr().cast_mut(),
+                };
+                // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the
+                // program, which lives across the call.
+                let r = unsafe {
+                    libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        0u32,
+                        &raw const fprog,
+                    )
+                };
+                assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
             };
-            // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program,
-            // which lives across the call.
-            let r = unsafe {
-                libc::syscall(
-                    libc::SYS_seccomp,
-                    libc::SECCOMP_SET_MODE_FILTER,
-                    0u32,
-                    &raw const fprog,
-                )
-            };
-            assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
             let keyrings = ["keyctl", "add_key", "request_key"]
-                .map(|n| errno_rule(n, 0, None))
+                .map(|n| errno_rule(n, libc::EPERM, None))
                 .join(",");
-            let mut got = Vec::new();
-            for (name, profile, runs) in [
+            let default = || Some(SeccompProfile::docker_default().unwrap());
+            // `KEYCTL_JOIN_SESSION_KEYRING` is 1.
+            let join = |errno| errno_rule("keyctl", errno, Some(1));
+            let phases = [
                 (
-                    "default",
-                    Some(SeccompProfile::docker_default().unwrap()),
-                    true,
+                    join(libc::EPERM),
+                    vec![
+                        ("join EPERM, default", default(), None),
+                        ("join EPERM, unconfined", None, Some(libc::EPERM)),
+                    ],
                 ),
-                ("keyring calls faked", Some(allow_but(&keyrings)), true),
-                ("unconfined", None, false),
-                ("a file allowing keyctl", Some(allow_but("")), false),
-            ] {
-                runner.seccomp = profile;
-                let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
-                let r = runner.run(spec, None, |job| clone_child(job, parent));
-                println!("{name}: {r:?}");
-                got.push((name, runs, r));
+                (
+                    join(libc::EACCES),
+                    vec![
+                        ("join EACCES, default", default(), None),
+                        (
+                            "join EACCES, keyring calls refused",
+                            Some(allow_but(&keyrings)),
+                            None,
+                        ),
+                        ("join EACCES, unconfined", None, Some(libc::EACCES)),
+                        (
+                            "join EACCES, a file allowing keyctl",
+                            Some(allow_but("")),
+                            Some(libc::EACCES),
+                        ),
+                    ],
+                ),
+                (
+                    errno_rule("keyctl", libc::EPERM, None),
+                    vec![
+                        ("keyctl EPERM, unconfined", None, None),
+                        (
+                            "keyctl EPERM, a file allowing keyctl",
+                            Some(allow_but("")),
+                            None,
+                        ),
+                    ],
+                ),
+            ];
+            let mut got = Vec::new();
+            for (outer, cases) in phases {
+                around(&outer);
+                for (name, profile, fails) in cases {
+                    runner.seccomp = profile;
+                    let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
+                    let r = runner.run(spec, None, |job| clone_child(job, parent));
+                    println!("{name}: {r:?}");
+                    got.push((name, fails, r));
+                }
             }
             drop(mounts);
-            for (name, runs, r) in got {
-                if runs {
-                    assert!(matches!(&r, Ok(st) if st.success()), "{name}: {r:?}");
-                } else {
-                    assert!(
+            for (name, fails, r) in got {
+                match fails {
+                    None => assert!(matches!(&r, Ok(st) if st.success()), "{name}: {r:?}"),
+                    Some(errno) => assert!(
                         matches!(
                             &r,
                             Err(Error::Setup { step: Step::KeyringRefused, source })
-                                if source.raw_os_error() == Some(libc::EACCES)
+                                if source.raw_os_error() == Some(errno)
                         ),
                         "{name}: {r:?}"
-                    );
+                    ),
                 }
             }
         });

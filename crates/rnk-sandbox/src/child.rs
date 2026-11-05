@@ -163,11 +163,8 @@ pub(crate) struct ChildArgs {
     /// The `RUN`'s profile ([`crate::SeccompProfile`]) unless unconfined:
     /// installed on top, last of the steps that need `CAP_SYS_ADMIN`.
     pub(crate) profile: Option<Program>,
-    /// An `EACCES` on the session keyring's join, an LSM's refusal, lets
-    /// the `RUN` start: its profile refuses every keyring call
-    /// ([`crate::SeccompProfile`]), it is `Direct`, under the container's
-    /// profile, or it is the privilege probe's.
-    pub(crate) keyring_eacces_ok: bool,
+    /// What a refused join of the `RUN`'s session keyring does.
+    pub(crate) keyring: KeyringJoin,
     /// Capabilities to drop from the bounding set.
     pub(crate) drops: BoundingDrops,
     /// The capabilities kept (Docker's defaults), as a mask.
@@ -528,7 +525,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // order); the command, PID 2, inherits it. Still as root: it counts
     // against root's key quota, and the command keeps possessing it after
     // the switch.
-    join_session_keyring(err, args.keyring_eacces_ok);
+    join_session_keyring(err, args.keyring);
     check(err, Step::BoundingSet, args.drops.drop_all());
     clear_ambient(err);
     clear_inheritable(err);
@@ -876,10 +873,11 @@ fn reap_until(command: libc::pid_t) -> i32 {
         let mut status: libc::c_int = 0;
         // SAFETY: `waitpid` writes the status, which lives across the call.
         let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::__WALL) };
-        if pid < 0 {
-            if last_errno() == Errno::INTR {
-                continue;
-            }
+        if pid < 0 && last_errno() == Errno::INTR {
+            continue;
+        }
+        // Without `WNOHANG` a real `waitpid` never returns 0.
+        if pid <= 0 {
             // SAFETY: `_exit` ends the process at once.
             unsafe { libc::_exit(125) }
         }
@@ -2212,28 +2210,69 @@ fn set_capability_sets(err: RawFd, args: &ChildArgs) {
     );
 }
 
+/// What a refused join of the `RUN`'s session keyring does (ADR-0109).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyringJoin {
+    /// The full sandbox under a profile that lets `keyctl`, `add_key` or
+    /// `request_key` run: the `RUN` fails, as `Step::KeyringRefused`, while
+    /// the session keyring can still be looked up, whatever refused the
+    /// join and with which errno.
+    Required,
+    /// The full sandbox under a profile that refuses all three, or the
+    /// privilege probe's: the `RUN` goes on, since it can reach no keyring.
+    Optional,
+    /// `Direct`, under the container's profile: `ENOSYS`, `EPERM` and
+    /// `EACCES` go on, any other errno fails as `Step::SessionKeyring`.
+    Direct,
+}
+
 /// A new, empty session keyring, so that a `RUN` cannot use the keys of
 /// ranikust's session keyring (threat T11), as runc does, before the
-/// `RUN`'s profile. Where `keyctl` is missing or refused by a filter
-/// around ranikust (`ENOSYS`, `EPERM`: an outer profile, such as Docker's),
-/// the `RUN` cannot reach any keyring either. `EACCES`, an LSM's refusal of
-/// the join alone, fails the `RUN` as `Step::KeyringRefused` unless
-/// `eacces_ok` (ADR-0109): its profile refuses every keyring call, it is
-/// `Direct`, or it is the privilege probe's.
-pub(crate) fn join_session_keyring(err: RawFd, eacces_ok: bool) {
+/// `RUN`'s profile; a refused join does what `how` says.
+pub(crate) fn join_session_keyring(err: RawFd, how: KeyringJoin) {
     // `KEYCTL_JOIN_SESSION_KEYRING` from `linux/keyctl.h`, a stable ABI.
     const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
     let anonymous: libc::c_long = 0;
     // SAFETY: a plain syscall; a null name asks for an anonymous keyring.
     let r = unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_JOIN_SESSION_KEYRING, anonymous) };
-    if r < 0 {
-        match last_errno() {
-            Errno::NOSYS | Errno::PERM => {}
-            Errno::ACCESS if eacces_ok => {}
-            Errno::ACCESS => fail(err, Step::KeyringRefused, Errno::ACCESS),
-            e => fail(err, Step::SessionKeyring, e),
-        }
+    if r >= 0 {
+        return;
     }
+    let e = last_errno();
+    match how {
+        KeyringJoin::Optional => {}
+        KeyringJoin::Required => {
+            if session_keyring_reachable() {
+                fail(err, Step::KeyringRefused, e);
+            }
+        }
+        KeyringJoin::Direct => match e {
+            Errno::NOSYS | Errno::PERM | Errno::ACCESS => {}
+            e => fail(err, Step::SessionKeyring, e),
+        },
+    }
+}
+
+/// Whether the session keyring, ranikust's once the join was refused, can
+/// still be looked up: a filter that refuses `keyctl` whole, as Docker's
+/// default does around ranikust, leaves none to reach. A success answered
+/// by a filter around ranikust counts as reachable.
+fn session_keyring_reachable() -> bool {
+    // `KEYCTL_GET_KEYRING_ID` and `KEY_SPEC_SESSION_KEYRING` from
+    // `linux/keyctl.h`; 0 asks not to create one.
+    const KEYCTL_GET_KEYRING_ID: libc::c_long = 0;
+    const KEY_SPEC_SESSION_KEYRING: libc::c_long = -3;
+    let create: libc::c_long = 0;
+    // SAFETY: a plain syscall with integer arguments.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            KEYCTL_GET_KEYRING_ID,
+            KEY_SPEC_SESSION_KEYRING,
+            create,
+        )
+    };
+    r >= 0
 }
 
 /// Right after [`close_inherited`], before anything a `RUN` can steer is
@@ -2419,7 +2458,12 @@ fn exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs<'_>) -> ! {
         // SAFETY: `candidate` is NUL-terminated; `argv` and `envp` are
         // NULL-terminated arrays of pointers into `args`, which outlives the
         // call. `execve` returns only on failure.
-        unsafe { libc::execve(candidate.as_ptr(), ptrs.argv.as_ptr(), ptrs.envp.as_ptr()) };
+        let r = unsafe { libc::execve(candidate.as_ptr(), ptrs.argv.as_ptr(), ptrs.envp.as_ptr()) };
+        // Back with no error is no `execve` of the kernel's: no next
+        // candidate either.
+        if r >= 0 {
+            fail(err, Step::Exec, Errno::PROTO);
+        }
         let e = last_errno();
         match e.raw_os_error() {
             libc::ENOENT | libc::ENOTDIR => {}
@@ -2483,12 +2527,11 @@ fn exec_script(err: RawFd, fd: RawFd, ptrs: &ExecPtrs<'_>) -> ! {
 }
 
 fn last_errno() -> Errno {
-    // Reads `errno`; builds no heap value.
-    Errno::from_raw_os_error(
-        std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(libc::EIO),
-    )
+    // Reads `errno`; builds no heap value. `rustix` takes 1 to 4095 only.
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(e @ 1..=4095) => Errno::from_raw_os_error(e),
+        _ => Errno::PROTO,
+    }
 }
 
 pub(crate) fn check<T>(err: RawFd, step: Step, r: rustix::io::Result<T>) -> T {
@@ -2538,7 +2581,7 @@ mod tests {
         /// as `fail` does.
         fn failure_under(rule: &str, step: impl Fn(RawFd)) -> Option<(Step, i32)> {
             let json = format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
-            let prog = crate::SeccompProfile::from_json(json.as_bytes())
+            let prog = crate::SeccompProfile::faking(json.as_bytes())
                 .unwrap()
                 .program;
             let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
@@ -2559,33 +2602,86 @@ mod tests {
             Some(decode_failure(record).expect("a failure record"))
         }
 
-        /// The keyring join refused with `errno`, as an LSM (`EACCES`) or
-        /// a filter around ranikust (`EPERM`, `ENOSYS`) does: `EACCES` fails
-        /// the `RUN` unless its profile refuses every keyring call
-        /// (ADR-0109); the others never do; any other errno always does.
+        /// A refused keyring join (ADR-0109), by an LSM or a filter around
+        /// ranikust: in the full sandbox it fails the `RUN` while the
+        /// session keyring can still be looked up, whatever the errno,
+        /// unless the profile refuses every keyring call. A filter that
+        /// refuses `keyctl` whole, as Docker's default does around
+        /// ranikust, leaves none to reach: the `RUN` goes on, as before.
+        /// `Direct` decides by the errno.
         #[test]
-        fn an_eacces_on_the_keyring_join_fails_unless_the_profile_refuses_keyrings() {
-            for (errno, eacces_ok, fails) in [
-                (libc::EACCES, false, true),
-                (libc::EACCES, true, false),
-                (libc::EPERM, false, false),
-                (libc::ENOSYS, false, false),
-                (libc::EINVAL, true, true),
-            ] {
-                // `KEYCTL_JOIN_SESSION_KEYRING` is 1.
-                let rule = format!(
+        fn a_refused_keyring_join_fails_while_a_keyring_stays_reachable() {
+            use KeyringJoin::{Direct, Optional, Required};
+            use libc::{EACCES, EINVAL, ENOSYS, EPERM};
+            // `KEYCTL_GET_KEYRING_ID` is 0, `KEYCTL_JOIN_SESSION_KEYRING` 1.
+            let on = |arg0: u32, errno: i32| {
+                format!(
                     r#"{{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno},
-                        "args": [{{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}}]}}"#
-                );
-                let got = failure_under(&rule, |w| join_session_keyring(w, eacces_ok));
-                let step = if errno == libc::EACCES {
-                    Step::KeyringRefused
-                } else {
-                    Step::SessionKeyring
-                };
-                let want = fails.then_some((step, errno));
-                assert_eq!(got, want, "errno {errno}, eacces_ok {eacces_ok}");
+                        "args": [{{"index": 0, "value": {arg0}, "op": "SCMP_CMP_EQ"}}]}}"#
+                )
+            };
+            let whole = |errno: i32| {
+                format!(
+                    r#"{{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                )
+            };
+            // The lookup answered as found, whatever keyrings this test has.
+            let reachable = |errno: i32| format!("{},{}", on(1, errno), on(0, 0));
+            let refused = Step::KeyringRefused;
+            for (rule, how, want) in [
+                (reachable(EACCES), Required, Some((refused, EACCES))),
+                (reachable(EPERM), Required, Some((refused, EPERM))),
+                (reachable(ENOSYS), Required, Some((refused, ENOSYS))),
+                (reachable(EACCES), Optional, None),
+                (whole(EPERM), Required, None),
+                (whole(EACCES), Required, None),
+                (
+                    format!("{},{}", on(1, EACCES), on(0, EACCES)),
+                    Required,
+                    None,
+                ),
+                (reachable(EACCES), Direct, None),
+                (whole(EPERM), Direct, None),
+                (whole(ENOSYS), Direct, None),
+                (whole(EINVAL), Direct, Some((Step::SessionKeyring, EINVAL))),
+            ] {
+                let got = failure_under(&rule, |w| join_session_keyring(w, how));
+                assert_eq!(got, want, "{rule}, {how:?}");
             }
+        }
+
+        /// `execve` answered with no error never runs the next candidate:
+        /// the `RUN` fails (`EPROTO`) at the first.
+        #[test]
+        fn an_execve_back_without_an_error_fails_the_run() {
+            let mut args = test_args();
+            args.candidates = vec![c"/bin/true".into(), c"/bin/false".into()];
+            let ptrs = ExecPtrs::new(&args);
+            let rule = r#"{"names": ["execve"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| exec(w, &args, &ptrs)),
+                Some((Step::Exec, libc::EPROTO))
+            );
+        }
+
+        /// A `waitpid` of the init's answered with 0 ends the init (125)
+        /// instead of waiting on in a loop; the alarm stops that loop.
+        #[test]
+        fn a_waitpid_answered_with_0_ends_the_init() {
+            let rule = r#"{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                {"names": ["wait4", "waitid"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}]}"#;
+            let prog = crate::SeccompProfile::faking(rule.as_bytes())
+                .unwrap()
+                .program;
+            let status = crate::seccomp::under_filter(&prog, || {
+                // SAFETY: `alarm` only arms a timer.
+                unsafe { libc::alarm(5) };
+                reap_until(1)
+            });
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 125,
+                "status {status:#x}"
+            );
         }
 
         /// The init's go pipe comes after the profile: a `pipe2` faked with
@@ -2614,8 +2710,9 @@ mod tests {
         }
 
         /// The descriptor lists come after the profile: an `fstatfs` faked
-        /// with errno 0 makes `/proc/self/fd` read as not procfs, so the
-        /// list is not trusted, whatever the stack held before.
+        /// with errno 0 makes `/proc/self/fd` read as not procfs, so
+        /// neither pass over the list trusts it, whatever the stack held
+        /// before.
         #[test]
         fn a_faked_fstatfs_is_not_procfs() {
             let dir = rustix::fs::open(
@@ -2630,6 +2727,14 @@ mod tests {
                 failure_under(rule, |w| {
                     proc_magic_below();
                     if on_procfs(dir.as_fd()) {
+                        fail(w, Step::Init, Errno::PROTO);
+                    }
+                    proc_magic_below();
+                    if close_listed(&[w]) {
+                        fail(w, Step::Init, Errno::PROTO);
+                    }
+                    proc_magic_below();
+                    if cloexec_listed() {
                         fail(w, Step::Init, Errno::PROTO);
                     }
                 }),
@@ -2792,9 +2897,9 @@ mod tests {
         assert_eq!(decode_failure([0xff; 8]), None);
     }
 
-    #[test]
-    fn exec_pointer_arrays_are_null_terminated() {
-        let args = ChildArgs {
+    /// A `ChildArgs` for tests that only read it.
+    fn test_args() -> ChildArgs {
+        ChildArgs {
             root_dir: c"/r".into(),
             root_remount: MountFlags::BIND,
             root_nodev_rec: false,
@@ -2810,7 +2915,7 @@ mod tests {
             netns: None,
             network_filter: None,
             profile: None,
-            keyring_eacces_ok: false,
+            keyring: KeyringJoin::Required,
             drops: BoundingDrops::NONE,
             keep: 0,
             uid: Uid::ROOT,
@@ -2827,7 +2932,20 @@ mod tests {
             envp: vec![c"A=1".into()],
             candidates: Vec::new(),
             script: None,
-        };
+        }
+    }
+
+    /// `errno` 0, which no failed call leaves, is no errno `rustix` takes.
+    #[test]
+    fn errno_0_reads_as_eproto() {
+        // SAFETY: this thread's own `errno`.
+        unsafe { *libc::__errno_location() = 0 };
+        assert_eq!(last_errno(), Errno::PROTO);
+    }
+
+    #[test]
+    fn exec_pointer_arrays_are_null_terminated() {
+        let args = test_args();
         let ptrs = ExecPtrs::new(&args);
         assert_eq!(ptrs.argv.len(), 3);
         assert!(ptrs.argv[2].is_null());

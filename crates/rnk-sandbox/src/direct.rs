@@ -88,7 +88,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     }
     // Still as root: the keyring counts against root's key quota, and the
     // command keeps possessing it after the switch.
-    join_session_keyring(fds.err_w, args.keyring_eacces_ok);
+    join_session_keyring(fds.err_w, args.keyring);
     // `setsid` there also makes the process group the parent kills once the
     // command exits, as kaniko does.
     switch_user_and_exec(fds.err_w, Some(parent), args, ptrs)

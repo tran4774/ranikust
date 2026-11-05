@@ -107,6 +107,20 @@ impl SeccompProfile {
         compile(json, &Context::live()?)
     }
 
+    /// As [`Self::from_json`], but errno 0, a faked success, compiles: the
+    /// tests stand for a filter around ranikust with it, which ranikust
+    /// does not control.
+    #[cfg(test)]
+    pub(crate) fn faking(json: &[u8]) -> Result<Self> {
+        compile(
+            json,
+            &Context {
+                faked_success: true,
+                ..Context::live()?
+            },
+        )
+    }
+
     /// Whether the profile refuses `keyctl`, `add_key` and `request_key`
     /// whatever their arguments, with any errno or a kill: then a `RUN`
     /// under it reaches no keyring, ranikust's included (ADR-0109).
@@ -182,6 +196,8 @@ struct Context {
     arch: &'static str,
     /// The kernel's version and major revision, read as moby reads them.
     kernel: (u64, u64),
+    /// Whether an errno of 0 compiles: the tests' filters only.
+    faked_success: bool,
 }
 
 impl Context {
@@ -193,6 +209,7 @@ impl Context {
         Ok(Self {
             arch: native_arch()?,
             kernel,
+            faked_success: false,
         })
     }
 
@@ -473,6 +490,14 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
         p.default_errno_ret,
         "defaultAction",
     )?;
+    // Errno 0 is a success the call never had: the set-up after the
+    // profile would trust it (ADR-0109).
+    if default == Action::Errno(0) && !cx.faked_success {
+        return Err(bad(
+            "defaultErrnoRet: 0 would fake the success of every call the default refuses; \
+             give an errno from 1 to 4095",
+        ));
+    }
     if p.architectures.as_ref().is_some_and(|a| !a.is_empty())
         && p.arch_map.as_ref().is_some_and(|m| !m.is_empty())
     {
@@ -503,6 +528,11 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     for (i, r) in p.syscalls.iter().flatten().enumerate() {
         let what = format!("syscalls[{i}]");
         let (rule, names) = rule(r, &what)?;
+        if rule.action == Action::Errno(0) && !cx.faked_success {
+            return Err(bad(format!(
+                "{what}: errnoRet 0 would fake the call's success; give an errno from 1 to 4095"
+            )));
+        }
         if !cx.keeps(r)? {
             continue;
         }
