@@ -125,9 +125,8 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 
 /// Warns about each other process listed in `/proc` whose
 /// `/proc/<pid>/environ` ranikust can read and which sets one of `variables`
-/// ([`secret_variables`]) to a non-empty value ([`credential_warning`]). A
-/// process whose environment ranikust cannot read is skipped, and nothing
-/// is said when `/proc` cannot be listed. The caller runs it after
+/// ([`secret_variables`]) to a non-empty value ([`credential_warning`]);
+/// nothing is said when `/proc` cannot be listed. The caller runs it after
 /// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust reads with
 /// the capabilities a root `RUN` keeps (ADR-0078).
 pub(crate) fn warn_credential_holders(variables: &[String]) {

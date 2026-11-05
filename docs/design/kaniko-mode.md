@@ -163,7 +163,7 @@ the scheduler runs one stage at a time) or a private directory per stage
     `--pid=host` container is refused by the same rule when a process of
     the host or of another container is in reach. It counts only the
     processes it can open as it starts, a residual risk accepted in
-    ADR-0101, whose mitigation is a PID namespace of the build container's
+    ADR-0101; its mitigation is a PID namespace of the build container's
     own.
   - **No process outlives its `RUN`.** ranikust is a child subreaper. After
     each `RUN` it kills everything that became its child during the `RUN`, and

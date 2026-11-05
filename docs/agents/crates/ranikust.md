@@ -162,9 +162,8 @@ Each step before the next; design in
    is in; it counts only what it opens then (`EACCES`/`EPERM`: not
    opened), gone skipped (an `ns/mnt` denied once its `ns` is gone too),
    any other error (with its step) or more than `PEER_SCAN_LIMIT` threads
-   refused, each with its own
-   guidance); then the warnings for secret-looking build arguments and file
-   secrets.
+   refused, each with its own guidance); then the warnings for
+   secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
    bounds the uploads, and `rnk_sandbox::block_stop_signals`. Then

@@ -311,11 +311,10 @@ The decision:
   whose threads it may not list is probed as one, through `/proc/<pid>`.
   A thread counts only when ranikust opens it and its root (`EACCES` and
   `EPERM` mean not opened); one gone meanwhile (`ENOENT`, `ESRCH`) is
-  skipped. Any
-  other error (named with the step that failed), `/proc` or ranikust's own
-  namespace that cannot be read, or more than 32768 threads (a process
-  with none left counting as one) refuse the build (fail closed), each
-  with its own message and guidance. A `--pid=host` container is refused
+  skipped. Any other error (named with the step that failed), `/proc` or
+  ranikust's own namespace that cannot be read, or more than 32768
+  threads (a process with none left counting as one) refuse the build
+  (fail closed), each with its own message and guidance. A `--pid=host` container is refused
   by the same rule when ranikust reaches a process of the host or of
   another container. ranikust's own mount namespaces are the one it
   started in, read before the set-up, and the one it is in when it looks:
