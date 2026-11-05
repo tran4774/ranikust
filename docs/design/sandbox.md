@@ -104,22 +104,20 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   arm on aarch64) gets `EPERM`.
 - Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
   `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
-  `SPEC_ALLOW`, two conditions on one argument in a rule, a rule without
-  names (the message names the rule, `syscalls[N]`; ADR-0109), a filter
-  longer than the kernel's 4096 instructions, and anything malformed; a file
-  that is not a regular file or is over 1 MiB.
-- The profile is the operator's and may answer any call with any errno, 0 (a
-  faked success) included, so every step it could fake that need not follow
-  it comes before it (step 4): the session keyring, which `default` refuses
-  (runc's order; ADR-0109 refines ADR-0080 there), the bounding-set drop,
-  the ambient and inheritable clears, the init's non-dumpable flag and its
-  session, the umask, and ADR-0033's filter. After it come the `capset` to
-  the default sets, since the install needs `CAP_SYS_ADMIN` without
-  `no_new_privs`, so that a setuid binary of the `RUN` keeps working, and
-  the init's and the command's own steps (step 5 on): the command checks
-  that the init really forked it, and what the child reads back from a
-  call goes into values set beforehand. What a faked success there still
-  changes is in the
+  `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success) or
+  above 4095, two conditions on one argument in a rule, a rule without
+  names (the message names the rule, `syscalls[N]`, or `defaultErrnoRet`;
+  ADR-0109), a filter longer than the kernel's 4096 instructions, and
+  anything malformed; a file that is not a regular file or is over 1 MiB.
+- The profile is the operator's and may refuse any call with any errno, so
+  every step that need not follow it comes before it, in the order of
+  step 4. After it come the `capset` to the default sets, since the install
+  needs `CAP_SYS_ADMIN` without `no_new_privs`, so that a setuid binary of
+  the `RUN` keeps working, and the init's and the command's own steps
+  (step 5 on). A filter around ranikust may still fake a success; the
+  child checks what it can (the init's fork, an `execve` or a blocking
+  `waitpid` back without an error fail the `RUN`, and a read goes into a
+  value set beforehand), and the rest is in the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.
@@ -270,18 +268,19 @@ The steps, in order:
      copy of the argument and environment strings ranikust started with
      (`/proc/self/stat` fields 48 to 51, refused as `Step::Init` if zero;
      `/proc/1/cmdline` has no ptrace check) and forks. The new process, PID 2,
-     checks that its parent is PID 1 (a fork the profile faked fails as
-     `Step::Init` with `EPROTO`), waits on a close-on-exec go pipe, then
+     checks that its parent is PID 1 (a fork a filter around ranikust faked
+     fails as `Step::Init` with `EPROTO`), waits on a close-on-exec go pipe, then
      runs steps 6 to 8 and becomes the command.
    - The init keeps the death signal of step 1, drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
      and the go pipe's, the latter last: that lets the command go on (a failure
      before kills the command unrun and is reported as `Step::Init`, unless
-     the profile fakes the command's read of that pipe).
+     a filter around ranikust fakes the command's read of that pipe).
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
-     the command's wait status on the status pipe, and exits.
+     the command's wait status on the status pipe, and exits; a `waitpid`
+     back with neither a process nor an error ends it with 125.
    - Every child of ranikust resets every signal disposition to the default
      first, so the init has no handler and the kernel drops every signal a
      process of the namespace sends it. A `RUN` cannot signal, stop, trace or
@@ -295,13 +294,18 @@ The steps, in order:
    `/dev/null` unless the caller says otherwise, as under Docker. The command
    runs in a new anonymous session keyring, so ranikust's keys stay out of
    reach: in the full sandbox the child joins it before the profile (step 4),
-   which refuses `keyctl`, and the command inherits it; in `Direct` the child
-   joins it before `setsid`. Root's user keyring stays reachable under
+   which refuses `keyctl` (runc's order; ADR-0109 refines ADR-0080 there),
+   and the command inherits it; in `Direct` the child joins it before
+   `setsid`. Root's user keyring stays reachable under
    `--seccomp=unconfined` and in `Direct`; the default profile refuses
-   `keyctl`, `add_key` and `request_key`. A join refused by a filter
-   (`EPERM`, `ENOSYS`) is ignored; one an LSM refuses (`EACCES`) fails a
-   full-sandbox `RUN` whose profile lets one of those three calls run, as
-   `Step::KeyringRefused` (ADR-0109).
+   `keyctl`, `add_key` and `request_key`. After a refused join, whatever the
+   errno, the full sandbox's child looks ranikust's session keyring up,
+   still before the profile (`KEYCTL_GET_KEYRING_ID`): found, it fails a
+   `RUN` whose profile lets one of those three calls run, as
+   `Step::KeyringRefused`; refused too, as under Docker's default profile
+   around ranikust, which refuses `keyctl` whole, no keyring is reachable
+   and the `RUN` goes on. In `Direct` a join refused with `EPERM`, `ENOSYS`
+   or `EACCES` is ignored (ADR-0109).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A

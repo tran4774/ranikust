@@ -94,15 +94,15 @@ for what the implementation raised:
 Answered by the maintainer on 2026-11-05 as well, on
 [#82](https://github.com/tran4774/ranikust/issues/82#issuecomment-6649627040),
 for what the host-safety review raised: a profile is the operator's and may
-answer any call with any errno, 0 (a faked success) included, so it must
-not be able to change what the set-up does.
+answer any call with any errno (0, a faked success, too, until the answer
+below), so it must not be able to change what the set-up does.
 
 - **Every set-up step that need not come after the profile comes before
   it** ("Đưa các bước bảo mật lên trước (khuyến nghị)", move the security
   steps first, as recommended). The child joins the `RUN`'s session keyring,
   drops the bounding set, clears the ambient and inheritable sets, makes the
-  init not dumpable and starts its session, then installs ADR-0033's filter
-  and the profile on top of it. After the profile come only the `capset`
+  init not dumpable, starts its session and sets the umask, then installs
+  ADR-0033's filter and the profile on top of it. After the profile come only the `capset`
   to the default sets, since the install needs `CAP_SYS_ADMIN`, and the
   init's and the command's own steps (the init's fork, which the command
   checks, its capability drop, the command's session and `USER` switch).
@@ -114,9 +114,36 @@ not be able to change what the set-up does.
   `keyctl`, `add_key` or `request_key` run** ("Lỗi khi hồ sơ cho phép keyctl
   (khuyến nghị)", fail when the profile allows `keyctl`, as recommended);
   under a profile that refuses all three, as `default` does, it is ignored
-  as before.
+  as before. The keyring probe below replaces the test on `EACCES`.
 - A failed install names the filter: the profile's failure points to
   `--seccomp=unconfined`, ADR-0033's to `--allow network.none-userns`.
+
+Answered by the maintainer on 2026-11-05 as well, on
+[#82](https://github.com/tran4774/ranikust/issues/82), after the
+host-safety review of that order:
+
+- **A profile cannot fake a success** ("Từ chối errnoRet 0 (khuyến
+  nghị)", refuse `errnoRet` 0, as recommended). An `SCMP_ACT_ERRNO` whose
+  errno in the filter would be 0, a rule's `errnoRet` or the
+  `defaultErrnoRet`, refuses the profile (exit 2), naming `syscalls[N]` or
+  `defaultErrnoRet`. An errno above 4095 is refused too (the filter keeps
+  only its low 16 bits), and a negative one is not a number the format
+  takes. A profile can then let a call run, refuse it with an errno from 1
+  to 4095, or kill the `RUN`: the steps after it see a refusal, never a
+  success that did not happen. A filter around ranikust, which the
+  operator's runtime installs, may still fake one; ranikust does not
+  control it.
+- **After a refused keyring join, the child looks for ranikust's session
+  keyring before the profile** ("Thăm dò keyring (khuyến nghị)", probe the
+  keyring, as recommended), with
+  `keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING, 0)`, instead of
+  deciding by the join's errno. If the lookup succeeds, the `RUN` fails as
+  `Step::KeyringRefused` unless its profile refuses `keyctl`, `add_key` and
+  `request_key`; if it is refused too, no keyring is reachable and the
+  `RUN` goes on. This holds under `unconfined` as well. Docker's default
+  profile around ranikust refuses `keyctl` whole, so a build in Docker runs
+  as before. `Direct` keeps its errno rule (`EPERM`, `ENOSYS` and `EACCES`
+  go on).
 
 ### Consequences
 
@@ -125,10 +152,13 @@ not be able to change what the set-up does.
   is linked.
 - Good, because a profile, whatever it answers, cannot undo the bounding
   set, the session, the keyring or ADR-0033's filter.
-- Bad, because the steps after the profile trust its answers: a faked
-  `capset`, `setsid` or `USER` switch leaves the init with its
-  capabilities, the command in the init's session or the command as root
-  (threat model, section 6).
+- Good, because a profile can refuse a call but never fake its success:
+  the steps after it see a refusal as one.
+- Bad, because a Docker profile file that answers a call with errno 0 is
+  refused, though runc, through libseccomp, would install it [inferred].
+- Bad, because the steps after the profile still trust the answers of a
+  filter around ranikust, which ranikust does not control (threat model,
+  section 6).
 - Good, because `default` is what `docker build` and BuildKit apply, and a
   user's Docker profile file works unchanged within the limits above.
 - Bad, because the compiler is security-critical code of ranikust's own (64-bit
