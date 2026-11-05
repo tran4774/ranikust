@@ -867,17 +867,16 @@ pub(crate) fn default_signals() {
 /// its wait status. A tracee stop (the command may make the init its
 /// tracer with `PTRACE_TRACEME`) is never taken for an end: the init
 /// detaches, handing the stop signal on. Ends the init (status 125, nothing
-/// reported) if it has no child left without having reaped the command,
-/// which cannot happen.
+/// reported) if `waitpid` gives no child: none is left before the command
+/// was reaped, which cannot happen, or a filter answered it.
 fn reap_until(command: libc::pid_t) -> i32 {
     loop {
         let mut status: libc::c_int = 0;
         // SAFETY: `waitpid` writes the status, which lives across the call.
         let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::__WALL) };
-        if pid < 0 && last_errno() == Errno::INTR {
-            continue;
-        }
-        // Without `WNOHANG` a real `waitpid` never returns 0.
+        // Without `WNOHANG` a real `waitpid` never returns 0, and with no
+        // handler the kernel restarts one a signal interrupts: 0 or `EINTR`
+        // comes from a filter, which could answer so forever.
         if pid <= 0 {
             // SAFETY: `_exit` ends the process at once.
             unsafe { libc::_exit(125) }
@@ -2465,7 +2464,7 @@ fn exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs<'_>) -> ! {
         }
         // SAFETY: `candidate` is NUL-terminated; `argv` and `envp` are
         // NULL-terminated arrays of pointers into `args`, which outlives the
-        // call. `execve` returns only on failure.
+        // call.
         let r = unsafe { libc::execve(candidate.as_ptr(), ptrs.argv.as_ptr(), ptrs.envp.as_ptr()) };
         // Back with no error is no `execve` of the kernel's: no next
         // candidate either.
@@ -2519,9 +2518,8 @@ fn exec_script(err: RawFd, fd: RawFd, ptrs: &ExecPtrs<'_>) -> ! {
         fail(err, Step::Exec, last_errno());
     }
     // SAFETY: the path is an empty NUL-terminated string, `argv` and `envp`
-    // are NULL-terminated arrays of pointers into a live `ChildArgs`;
-    // `execveat` returns only on failure.
-    unsafe {
+    // are NULL-terminated arrays of pointers into a live `ChildArgs`.
+    let r = unsafe {
         libc::syscall(
             libc::SYS_execveat,
             fd,
@@ -2529,7 +2527,11 @@ fn exec_script(err: RawFd, fd: RawFd, ptrs: &ExecPtrs<'_>) -> ! {
             ptrs.argv.as_ptr(),
             ptrs.envp.as_ptr(),
             libc::AT_EMPTY_PATH,
-        );
+        )
+    };
+    // Back with no error is no `execveat` of the kernel's.
+    if r >= 0 {
+        fail(err, Step::Exec, Errno::PROTO);
     }
     fail(err, Step::Exec, last_errno())
 }
@@ -2658,6 +2660,26 @@ mod tests {
             }
         }
 
+        /// A `#!` heredoc's `execveat` answered with no error fails the
+        /// `RUN` with `EPROTO`, whatever `errno` held before.
+        #[test]
+        fn an_execveat_back_without_an_error_fails_the_run() {
+            let script =
+                rustix::fs::memfd_create(c"script", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+            let mut args = test_args();
+            args.script = Some(script.as_raw_fd());
+            let ptrs = ExecPtrs::new(&args);
+            let rule = r#"{"names": ["execveat"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| {
+                    // SAFETY: `errno` is this thread's own.
+                    unsafe { *libc::__errno_location() = libc::EBADF };
+                    exec(w, &args, &ptrs)
+                }),
+                Some((Step::Exec, libc::EPROTO))
+            );
+        }
+
         /// `execve` answered with no error never runs the next candidate:
         /// the `RUN` fails (`EPROTO`) at the first.
         #[test]
@@ -2672,24 +2694,29 @@ mod tests {
             );
         }
 
-        /// A `waitpid` of the init's answered with 0 ends the init (125)
-        /// instead of waiting on in a loop; the alarm stops that loop.
+        /// A `waitpid` of the init's answered with 0 or `EINTR` ends the
+        /// init (125) instead of waiting on in a loop; the alarm stops that
+        /// loop.
         #[test]
-        fn a_waitpid_answered_with_0_ends_the_init() {
-            let rule = r#"{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
-                {"names": ["wait4", "waitid"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}]}"#;
-            let prog = crate::SeccompProfile::faking(rule.as_bytes())
-                .unwrap()
-                .program;
-            let status = crate::seccomp::under_filter(&prog, || {
-                // SAFETY: `alarm` only arms a timer.
-                unsafe { libc::alarm(5) };
-                reap_until(1)
-            });
-            assert!(
-                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 125,
-                "status {status:#x}"
-            );
+        fn a_waitpid_answered_with_0_or_eintr_ends_the_init() {
+            for errno in [0, libc::EINTR] {
+                let rule = format!(
+                    r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{{"names": ["wait4", "waitid"],
+                        "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}]}}"#
+                );
+                let prog = crate::SeccompProfile::faking(rule.as_bytes())
+                    .unwrap()
+                    .program;
+                let status = crate::seccomp::under_filter(&prog, || {
+                    // SAFETY: `alarm` only arms a timer.
+                    unsafe { libc::alarm(5) };
+                    reap_until(1)
+                });
+                assert!(
+                    libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 125,
+                    "errno {errno}: status {status:#x}"
+                );
+            }
         }
 
         /// A `pipe2` of the init's faked with errno 0, as a filter around

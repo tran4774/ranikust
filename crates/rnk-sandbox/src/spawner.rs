@@ -768,8 +768,8 @@ impl Runner {
     }
 
     /// The probe's runner: its command does not exist, so nothing it starts
-    /// reaches a keyring, and an LSM's `EACCES` on the keyring join is left
-    /// to the `RUN`s that follow, under their own profile (ADR-0109).
+    /// reaches a keyring, and a refused keyring join is left to the `RUN`s
+    /// that follow, under their own profile (ADR-0109).
     pub(crate) fn for_probe(mut self) -> Self {
         self.probe = true;
         self

@@ -102,9 +102,9 @@ below), so it must not be able to change what the set-up does.
   steps first, as recommended). The child joins the `RUN`'s session keyring,
   drops the bounding set, clears the ambient and inheritable sets, makes the
   init not dumpable, starts its session and sets the umask, then installs
-  ADR-0033's filter and the profile on top of it. After the profile come only the `capset`
-  to the default sets, since the install needs `CAP_SYS_ADMIN`, and the
-  init's and the command's own steps (the init's fork, which the command
+  ADR-0033's filter and the profile on top of it. After the profile come
+  only the `capset` to the default sets, since the install needs
+  `CAP_SYS_ADMIN`, and the init's and the command's own steps (the init's fork, which the command
   checks, its capability drop, the command's session and `USER` switch).
   A call both filters refuse now gets the profile's errno; what is refused
   stays the same. An `EINVAL` from a bounding-set drop ends the list only
@@ -119,8 +119,8 @@ below), so it must not be able to change what the set-up does.
   `--seccomp=unconfined`, ADR-0033's to `--allow network.none-userns`.
 
 Answered by the maintainer on 2026-11-05 as well, on
-[#82](https://github.com/tran4774/ranikust/issues/82), after the
-host-safety review of that order:
+[#82](https://github.com/tran4774/ranikust/issues/82#issuecomment-6651694125),
+after the host-safety review of that order:
 
 - **A profile cannot fake a success** ("Từ chối errnoRet 0 (khuyến
   nghị)", refuse `errnoRet` 0, as recommended). An `SCMP_ACT_ERRNO` whose

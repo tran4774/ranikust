@@ -24,7 +24,8 @@
 //! Refused before any `RUN` (ADR-0109): `SCMP_ACT_NOTIFY`, `SCMP_ACT_TRACE`,
 //! a listener, a flag other than `TSYNC`, `LOG` and `SPEC_ALLOW`, a name
 //! unknown here under an action other than `SCMP_ACT_ALLOW`, two conditions
-//! on one argument in a rule, and anything malformed.
+//! on one argument in a rule, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked
+//! success) or above 4095, and anything malformed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -197,6 +198,7 @@ struct Context {
     /// The kernel's version and major revision, read as moby reads them.
     kernel: (u64, u64),
     /// Whether an errno of 0 compiles: the tests' filters only.
+    #[cfg(test)]
     faked_success: bool,
 }
 
@@ -209,8 +211,21 @@ impl Context {
         Ok(Self {
             arch: native_arch()?,
             kernel,
+            #[cfg(test)]
             faked_success: false,
         })
+    }
+
+    /// Whether errno 0, a faked success, compiles: in the tests only, so no
+    /// build of ranikust holds the switch.
+    #[cfg(test)]
+    fn fakes(&self) -> bool {
+        self.faked_success
+    }
+
+    #[cfg(not(test))]
+    fn fakes(&self) -> bool {
+        false
     }
 
     /// Whether moby keeps `rule` here: no `excludes` applies and every
@@ -492,7 +507,7 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     )?;
     // Errno 0 is a success the call never had: the set-up after the
     // profile would trust it (ADR-0109).
-    if default == Action::Errno(0) && !cx.faked_success {
+    if default == Action::Errno(0) && !cx.fakes() {
         return Err(bad(
             "defaultErrnoRet: 0 would fake the success of every call the default refuses; \
              give an errno from 1 to 4095",
@@ -528,7 +543,7 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     for (i, r) in p.syscalls.iter().flatten().enumerate() {
         let what = format!("syscalls[{i}]");
         let (rule, names) = rule(r, &what)?;
-        if rule.action == Action::Errno(0) && !cx.faked_success {
+        if rule.action == Action::Errno(0) && !cx.fakes() {
             return Err(bad(format!(
                 "{what}: errnoRet 0 would fake the call's success; give an errno from 1 to 4095"
             )));

@@ -169,9 +169,9 @@ What a change here must keep, with where it lives:
   an unknown flag, field or name under a refusing action, two conditions on
   one argument, a rule without names, over 4096 instructions) is
   `Error::SeccompProfile`, never weakened, as is an `SCMP_ACT_ERRNO` whose
-  errno is 0 (a faked success; `SeccompProfile::faking` compiles one for
-  tests) or above 4095. Syscall numbers come from `libc`
-  only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
+  errno is 0 (a faked success; `SeccompProfile::faking` compiles one in the
+  tests only) or above 4095. Syscall numbers come from `libc` only
+  (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
   ADR-0009); a call the profile allows that `libc` does not name gets
   `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
   lists them per target. A profile can only let a call run, refuse it or
@@ -182,9 +182,9 @@ What a change here must keep, with where it lives:
   on top, both without `no_new_privs`, and only then sets the effective and
   permitted sets. Against a filter around ranikust, which can fake a
   success, the command checks that its parent is the init (`Step::Init`),
-  an `execve` back without an error fails as `Step::Exec` (`EPROTO`) and
-  tries no next candidate, a blocking `waitpid` back with 0 ends the init
-  (125), `last_errno` reads errno 0 as `EPROTO`, and the pipe, capability,
+  an `execve` or `execveat` back without an error fails as `Step::Exec`
+  (`EPROTO`) and tries no next candidate, a blocking `waitpid` back with 0
+  or an error, `EINTR` included, ends the init (125), `last_errno` reads errno 0 as `EPROTO`, and the pipe, capability,
   death-signal, `fstatfs` and `RLIMIT_NOFILE` reads go through `libc` into
   values set beforehand. A failed install is `Step::Seccomp`, whose message
   points to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
@@ -284,8 +284,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   The `tests::kernel` modules, skipped under qemu-user, install filters in
   forked children: `seccomp::profile`'s (compiled profiles), `caps`'s (an
   `EINVAL` from a bounding drop) and `child`'s (a refused keyring join with
-  the session keyring found or not, each `KeyringJoin`; an `execve` or a
-  `waitpid` back without an error; a refused `umask` after the profile; a
+  the session keyring found or not, each `KeyringJoin`; an `execve` or
+  `execveat` back without an error; a `waitpid` back with 0 or `EINTR`; a
+  refused `umask` after the profile; a
   faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
   last two on a stack filled beforehand, which shows an unwritten buffer in
   a debug build only; these test the helpers, not their call sites, whose
@@ -318,10 +319,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the capability sets as they are and the umask at 022 whatever
   ranikust's, and a faked fork of the init fails the `RUN`;
   `a_refused_keyring_join_fails_a_run_that_could_reach_a_keyring`: under
-  filters on the test thread, a join refused with `EPERM` or `EACCES` fails
-  `unconfined` and a file allowing `keyctl` while the keyring can be looked
-  up, never `default` or a profile refusing the keyring calls, and with
-  `keyctl` refused whole every `RUN` runs, as under Docker),
+  filters on the test thread, while the keyring can be looked up, a join
+  refused with `EPERM` fails `unconfined`, not `default`, and one refused
+  with `EACCES` fails `unconfined` and a file allowing `keyctl`, not
+  `default` or a profile refusing the keyring calls; with `keyctl` refused
+  whole, `unconfined` and that file run, as under Docker),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):

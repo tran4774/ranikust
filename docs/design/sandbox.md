@@ -104,20 +104,22 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   arm on aarch64) gets `EPERM`.
 - Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
   `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
-  `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success) or
-  above 4095, two conditions on one argument in a rule, a rule without
-  names (the message names the rule, `syscalls[N]`, or `defaultErrnoRet`;
-  ADR-0109), a filter longer than the kernel's 4096 instructions, and
-  anything malformed; a file that is not a regular file or is over 1 MiB.
+  `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success; the
+  message names `syscalls[N]` or `defaultErrnoRet`) or above 4095, two
+  conditions on one argument in a rule, a rule without names (the message
+  names the rule, `syscalls[N]`; ADR-0109), a filter longer than the
+  kernel's 4096 instructions, and anything malformed; a file that is not a
+  regular file or is over 1 MiB.
 - The profile is the operator's and may refuse any call with any errno, so
   every step that need not follow it comes before it, in the order of
   step 4. After it come the `capset` to the default sets, since the install
   needs `CAP_SYS_ADMIN` without `no_new_privs`, so that a setuid binary of
   the `RUN` keeps working, and the init's and the command's own steps
   (step 5 on). A filter around ranikust may still fake a success; the
-  child checks what it can (the init's fork, an `execve` or a blocking
-  `waitpid` back without an error fail the `RUN`, and a read goes into a
-  value set beforehand), and the rest is in the
+  child checks what it can (the init's fork, an `execve` or `execveat` back
+  without an error and a blocking `waitpid` back with no child fail the
+  `RUN`, and a read goes into a value set beforehand), and the rest is in
+  the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.
@@ -269,8 +271,8 @@ The steps, in order:
      (`/proc/self/stat` fields 48 to 51, refused as `Step::Init` if zero;
      `/proc/1/cmdline` has no ptrace check) and forks. The new process, PID 2,
      checks that its parent is PID 1 (a fork a filter around ranikust faked
-     fails as `Step::Init` with `EPROTO`), waits on a close-on-exec go pipe, then
-     runs steps 6 to 8 and becomes the command.
+     fails as `Step::Init` with `EPROTO`), waits on a close-on-exec go pipe,
+     then runs steps 6 to 8 and becomes the command.
    - The init keeps the death signal of step 1, drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
@@ -280,7 +282,8 @@ The steps, in order:
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits; a `waitpid`
-     back with neither a process nor an error ends it with 125.
+     back with no child (0, or an error, `EINTR` included: with no handler,
+     the kernel restarts one a signal interrupts) ends it with 125.
    - Every child of ranikust resets every signal disposition to the default
      first, so the init has no handler and the kernel drops every signal a
      process of the namespace sends it. A `RUN` cannot signal, stop, trace or

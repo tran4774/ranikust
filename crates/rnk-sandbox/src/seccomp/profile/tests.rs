@@ -475,8 +475,8 @@ fn defaults_unknown_calls_and_flags() {
 
 /// A profile refuses the keyring calls only when none of `keyctl`,
 /// `add_key` and `request_key` can run, whatever its arguments (ADR-0109):
-/// a `RUN` under it then reaches no keyring, and an `EACCES` on its join
-/// does not fail it.
+/// a `RUN` under it then reaches no keyring, and a refused join does not
+/// fail it.
 #[test]
 fn keyrings_are_refused_only_when_no_call_can_reach_one() {
     let refuses = |json: &str| {
