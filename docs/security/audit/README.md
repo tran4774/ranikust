@@ -5,12 +5,14 @@ Each milestone security audit (the vendored `security-audit` skill, see
 here, one directory per audit, named after the phases or the scope it covers.
 The run itself writes outside the repository (agent prompts, per-agent
 results, the coordinator's tools). Once its validators pass, only the
-deliverables below move here, on a `docs/` branch.
+deliverables below move here, on a `docs/` branch. Every file carries a lead
+only once it is fixed, rejected or accepted; until then the lead is a draft
+security advisory ([Security findings](../../agents/workflow.md#security-findings)).
 
 | File | Contents |
 |---|---|
 | `REPORT.md` | Scope, execution policy, posture, the prioritised leads, rejected candidates, coverage, maintainer decisions, hardening notes |
-| `NEEDS-VALIDATION.md` | Every unresolved lead with its trace, evidence, blockers and the exact VM (T2) or T2c plan |
+| `NEEDS-VALIDATION.md` | Each lead the run left unresolved, with its trace, evidence, blockers and the exact VM (T2) or T2c plan |
 | `FINDINGS-DETAIL.md` | Reproduction detail for confirmed medium and higher findings |
 | `findings.json` | Every final record (confirmed, needs_validation, rejected), valid against the skill's `report-schema.json` |
 | `coverage-ledger.json` | Every coverage unit with its owner, reviewed paths, checks and hardening notes |
@@ -27,11 +29,10 @@ prior-run input, as the skill describes.
 | [`phase-1-2/`](phase-1-2/REPORT.md) | `ed718fb` (end of Phase 2) | deep, whole workspace and `.claude/`, source-only | 0 confirmed, 28 needs_validation, 11 rejected; lead 1 is a possible Full-sandbox escape through inherited descriptors (runc CVE-2024-21626 pattern) |
 
 Leads are unconfirmed until their VM or T2c plan has run. While a lead is
-open, treat its details as an unfixed weakness: they stay out of every
-public issue, pull request, comment and commit, and a Low or Medium one is
-a draft security advisory
-([workflow](../../agents/workflow.md#security-findings),
-[ADR-0111](../../adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).
+open it is a draft security advisory with an estimated severity, and its
+details stay out of this directory
+([Security findings](../../agents/workflow.md#security-findings)). The
+phase-1-2 audit, public before that rule, stays as it is.
 
 ## Status of the phase-1-2 leads after the hardening pass (2026-11-03)
 
