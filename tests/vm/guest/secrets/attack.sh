@@ -234,7 +234,8 @@ V13)
       (exec 3<>"$e") 2>/dev/null && hit="$hit rw:$e"
       "$e" version >/dev/null 2>&1 && hit="$hit run:$e"
     done
-    # EFAULT from an unmapped address means the access check passed.
+    # EFAULT from an unmapped address means the access check passed;
+    # ESRCH only that the process exited after it was listed.
     # shellcheck disable=SC2086
     r=$(perl -e '
       my ($ptrace, $pvw, $pid) = map { 0 + $_ } @ARGV;
@@ -243,7 +244,8 @@ V13)
       my $local = pack("QQ", unpack("Q", pack("p", $buf)), 1);
       my $remote = pack("QQ", 0x1000, 1);
       my $r = syscall($pvw, $pid, $local, 1, $remote, 1, 0);
-      print "process_vm_writev:", $r >= 0 ? "wrote" : 0 + $!, " " if $r >= 0 || !$!{EPERM};
+      print "process_vm_writev:", $r >= 0 ? "wrote" : 0 + $!, " "
+        if $r >= 0 || !($!{EPERM} || $!{ESRCH});
     ' $nr "$p" 2>&1)
     [ -z "$r" ] || hit="$hit $p:$r"
   done
