@@ -123,12 +123,15 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-/// Warns for every other process of the PID namespace whose environment
-/// holds one of `variables` ([`secret_variables`]): a `RUN` reads it
-/// through that process's `/proc/<pid>/environ`. Called after
-/// [`rnk_sandbox::trim_to_run_capabilities`], so ranikust reads exactly the
-/// environments a root `RUN` reads: one it cannot read (not dumpable,
-/// another user) a `RUN` cannot read either, and is skipped.
+/// Warns for each process listed in `/proc`, ranikust excepted, whose
+/// `/proc/<pid>/environ` ranikust reads and which sets one of `variables`
+/// ([`secret_variables`]) to a non-empty value, naming it by its pid and
+/// its escaped name: a `RUN` reads that environment too. A process whose
+/// environment cannot be read is skipped, and nothing is said when `/proc`
+/// cannot be listed. The caller runs it after
+/// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust warns only
+/// about environments a root `RUN` reads, not about one only its start-up
+/// privileges reach.
 pub(crate) fn warn_credential_holders(variables: &[String]) {
     let names: Vec<&str> = variables.iter().map(String::as_str).collect();
     let Ok(dir) = fs::read_dir("/proc") else {

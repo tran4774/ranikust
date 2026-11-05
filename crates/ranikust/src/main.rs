@@ -689,9 +689,8 @@ fn kaniko(
         .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile))
         .map_err(Failure::refused)?;
     if on_slash {
-        // After the set-up gave ranikust only what a `RUN` keeps: the
-        // environments it reads now are exactly those a `RUN` reads
-        // (ADR-0078).
+        // Once the set-up left ranikust only what a `RUN` keeps (ADR-0078):
+        // no environment that only its start-up privileges reach is named.
         exposure::warn_credential_holders(&exposure::secret_variables(config));
     }
     let setup::KanikoSetup {
