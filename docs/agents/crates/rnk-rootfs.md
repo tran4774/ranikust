@@ -59,7 +59,7 @@ impl RootPath {
     pub fn statx(&self, p) -> Result<Stat>;              // no-follow; carries mnt_id, mount_root
     pub fn statx_physical(&self, p) -> Result<Stat>;     // statx with no symlink in a parent (RESOLVE_NO_SYMLINKS; the last name not followed), across mounts unless stay_on_mount: a path the kernel printed (rnk-sandbox's mount walk, ADR-0101)
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // a directory's names, mount points included
-    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (the kaniko exporter)
+    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, root's mount only (the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device

@@ -190,9 +190,9 @@ it was removed at its source, or a writable mount beside it is hidden by
 another mount, run it from a file that stays in place, or build it into an
 image run on an overlayfs root, where the binary's check reads no mount table;
 for a table that changed, start the build again once no mount changes while it
-starts.
-ranikust looks for those mounts only when it finds itself in a container; if
-it did not when it started but does later, it refuses: start the build again.
+starts. ranikust looks for those mounts only when it finds itself in a
+container; if it did not when it started but does later, it refuses: start the
+build again.
 When the measurement fails, mount `/proc` so that `/proc/self/exe` and
 `/proc/self/mountinfo` can be read, and let the seccomp profile allow
 `fstatfs`, `openat2` and `statx` (ranikust looks up the binary's name and the

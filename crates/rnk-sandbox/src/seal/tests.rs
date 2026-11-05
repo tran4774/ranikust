@@ -1057,8 +1057,8 @@ fn a_table_that_changed_during_the_walk_places_nothing() {
         Ok(None)
     );
     assert_eq!(on_a_stable_table(reads(vec![]), never), Err(Errno::IO));
-    // A failed second read wins even over a reach the walk found.
-    for found in [Ok(Some(true)), Ok(Some(false))] {
+    // A failed second read wins, over a reach the walk found too.
+    for found in [Ok(Some(true)), Ok(Some(false)), Ok(None), Err(Errno::NOSYS)] {
         assert_eq!(
             on_a_stable_table(reads(vec![table.clone()]), walk(found)),
             Err(Errno::IO)

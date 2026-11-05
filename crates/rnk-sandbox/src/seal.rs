@@ -108,7 +108,8 @@ pub enum BinaryMount {
     /// Cannot be told: `/proc/self/mountinfo` does not place the file (a
     /// line it cannot parse, no line for its mount, a mount root that is
     /// not a path, a path outside that mount, a root of its own whose name
-    /// was removed) or does not type a FUSE root; a writable mount of its
+    /// was removed, its own mount covered by another) or does not type a
+    /// FUSE root; a writable mount of its
     /// file system is a directory whose name was removed, is covered by
     /// another mount, or cannot be reached at its mount point; the table
     /// changed while the walk ran; or the file has no name left.

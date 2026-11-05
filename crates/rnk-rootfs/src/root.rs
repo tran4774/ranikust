@@ -417,7 +417,7 @@ impl RootPath {
     }
 
     /// Pins the entry `p` with an `O_PATH | O_NOFOLLOW` descriptor, reached
-    /// with no symlink in any component and without leaving the root's own
+    /// with no symlink in a parent and without leaving the root's own
     /// mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`), and `statx`s it on
     /// that descriptor. For a physical path, such as one the kaniko-mode
     /// walk saw: every later read goes through the pinned inode, so a
@@ -492,7 +492,7 @@ impl RootPath {
 
     /// [`RootPath::statx`] of a physical path, as the kernel prints one (a
     /// mount point in `/proc/self/mountinfo`, a `readlink` of
-    /// `/proc/self/fd/<n>`): reached with no symlink in any component
+    /// `/proc/self/fd/<n>`): reached with no symlink in a parent
     /// (`RESOLVE_NO_SYMLINKS`), across mounts unless the root stays on its
     /// own, the last name not followed.
     ///
