@@ -81,8 +81,10 @@ Modules of `crates/ranikust/src/` (all crate-private):
   `--jobs`, `--network`, `--secret`, `--allow`, `--seccomp`, `--limit`,
   `--metrics-file`, `--snapshot-workers`.
 - `--seccomp=default|unconfined|<file>` (ADR-0103, ADR-0109): read by
-  `config::read_seccomp` right after `from_args`, before any set-up: the file
-  is opened non-blocking, must be regular and at most 1 MiB, and is compiled
+  `config::read_seccomp` right after `from_args`, before any set-up: the path
+  is pinned with `O_PATH` and must be a regular file (`fstat`) before it is
+  reopened for reading through `/proc/thread-self/fd`, so a FIFO or device
+  is never opened; at most 1 MiB, it is compiled
   by `rnk_sandbox::SeccompProfile::from_json`; any failure is exit 2.
   `set_up` and `set_up_kaniko` hand it to the sandbox (`Seccomp::apply`); no
   flag keeps the sandbox's own default, Docker's profile. Kaniko mode on `/`
@@ -248,7 +250,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   checks, contexts, build arguments, absolute paths, state-dir defaults,
   `meta_options` leaking no destination, path or argument, the overlay-mode
   refusals and warnings, whole-root `--ignore-path` refused, `--seccomp`
-  values and files refused for each reason), `setup` (the
+  values and files refused for each reason, a FIFO given as the file never
+  opened, under an inotify watch), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to
   kaniko mode, a probe failure other than a refused mount never routes, no
   guidance sends a user back to the mode they used), `statedir` (each
