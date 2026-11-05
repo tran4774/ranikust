@@ -469,6 +469,9 @@ fn build(
     // Before any extraction; the registry limits go to the client.
     config.limits.set_process_wide();
     tracing::debug!(limits = %config.limits.text(), "limits in force");
+    // Before a set-up may enter a mount namespace of its own: kaniko mode on
+    // `/` counts this one as ranikust's too (`exposure::scan_peers`).
+    let started_in = exposure::mount_namespace();
     match config.mode {
         config::Mode::Kaniko => {
             // Whether root may mount picks how `RUN` is isolated on a root
@@ -491,6 +494,7 @@ fn build(
                 runtime,
                 metrics_file,
                 binary,
+                started_in,
             )
         }
         config::Mode::Overlay => {
@@ -548,7 +552,15 @@ fn build(
                                 "kaniko mode with a directory per stage, because overlay mode \
                                  cannot run here: {why}"
                             );
-                            kaniko(&config, "--mode=auto", true, runtime, metrics_file, binary)
+                            kaniko(
+                                &config,
+                                "--mode=auto",
+                                true,
+                                runtime,
+                                metrics_file,
+                                binary,
+                                started_in,
+                            )
                         }
                     }
                 }
@@ -556,7 +568,15 @@ fn build(
                     let why = refusal.reason;
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
                     let runtime = container::detect(&container::Real);
-                    kaniko(&config, "--mode=auto", false, runtime, metrics_file, binary)
+                    kaniko(
+                        &config,
+                        "--mode=auto",
+                        false,
+                        runtime,
+                        metrics_file,
+                        binary,
+                        started_in,
+                    )
                 }
                 Err(refusal) => Err(Failure::refused(refusal)),
             }
@@ -627,7 +647,8 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 /// directory and store set up, and the ignore list built. `can_mount` is
 /// whether the build's mount namespace could be entered; `runtime` is
 /// what [`container::detect`] found, read once by the caller; `binary`
-/// where the binary ranikust started from lies.
+/// where the binary ranikust started from lies; `started_in` the mount
+/// namespace ranikust started in ([`exposure::mount_namespace`]).
 fn kaniko(
     config: &BuildConfig,
     how: &str,
@@ -635,6 +656,7 @@ fn kaniko(
     runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
     binary: Option<BinaryMount>,
+    started_in: rustix::io::Result<(u64, u64)>,
 ) -> Result<(), Failure> {
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
@@ -658,7 +680,7 @@ fn kaniko(
         }
     };
     if on_slash {
-        refuse_unsafe_slash(config, how, can_mount, binary)?;
+        refuse_unsafe_slash(config, how, can_mount, binary, started_in)?;
     }
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
@@ -689,8 +711,8 @@ fn kaniko(
         .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile))
         .map_err(Failure::refused)?;
     if on_slash {
-        // Once the set-up left ranikust only what a `RUN` keeps (ADR-0078):
-        // no environment that only its start-up privileges reach is named.
+        // Once the set-up left ranikust only what a `RUN` keeps (ADR-0078),
+        // so that it reads environments as a root `RUN` would.
         exposure::warn_credential_holders(&exposure::secret_variables(config));
     }
     let setup::KanikoSetup {
@@ -738,6 +760,7 @@ fn refuse_unsafe_slash(
     how: &str,
     can_mount: bool,
     binary: Option<BinaryMount>,
+    started_in: rustix::io::Result<(u64, u64)>,
 ) -> Result<(), Failure> {
     if can_mount {
         // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
@@ -777,7 +800,7 @@ fn refuse_unsafe_slash(
         }
     }
     refuse_writable_binary(how, binary)?;
-    refuse_reachable_peers(how, exposure::scan_peers())?;
+    refuse_reachable_peers(how, exposure::scan_peers(started_in))?;
     // What ranikust cannot close itself (ADR-0051, B4 and B5; ADR-0078).
     // The processes holding credentials are looked for after the set-up,
     // with the capabilities a `RUN` keeps (`kaniko`).
@@ -917,10 +940,10 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
         ))
         .with_guidance(
             "let the container's seccomp and LSM profiles answer opening /proc/<pid>, \
-             /proc/<pid>/task, /proc/<pid>/task/<tid> and their root with success, EACCES or \
-             EPERM and nothing else, allow reading the /proc/<pid>/task they open, opening \
-             ns/mnt with O_PATH and fstat on it, and share no PID namespace with another \
-             container (ADR-0101)",
+             /proc/<pid>/root, /proc/<pid>/task, /proc/<pid>/task/<tid> and \
+             /proc/<pid>/task/<tid>/root with success, EACCES or EPERM and nothing else, allow \
+             reading the /proc/<pid>/task they open, opening ns/mnt with O_PATH and fstat on \
+             it, and share no PID namespace with another container (ADR-0101)",
         )),
         PeerScan::Unlisted(e) => Err(Failure::error(format!(
             "{how}: cannot list the processes of its PID namespace in /proc ({e}); kaniko mode \
@@ -1333,7 +1356,8 @@ mod tests {
     #[test]
     fn the_refusals_on_slash_come_in_their_order() {
         let config = config_of(&["--no-push", "--network=none"]);
-        let may_mount = refuse_unsafe_slash(&config, "--mode=kaniko", true, None).unwrap_err();
+        let may_mount =
+            refuse_unsafe_slash(&config, "--mode=kaniko", true, None, Ok((0, 0))).unwrap_err();
         assert!(
             may_mount
                 .message
@@ -1341,7 +1365,8 @@ mod tests {
             "{}",
             may_mount.message
         );
-        let no_mount = refuse_unsafe_slash(&config, "--mode=kaniko", false, None).unwrap_err();
+        let no_mount =
+            refuse_unsafe_slash(&config, "--mode=kaniko", false, None, Ok((0, 0))).unwrap_err();
         assert!(
             no_mount
                 .message

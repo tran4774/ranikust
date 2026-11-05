@@ -123,15 +123,13 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-/// Warns for each process listed in `/proc`, ranikust excepted, whose
-/// `/proc/<pid>/environ` ranikust reads and which sets one of `variables`
-/// ([`secret_variables`]) to a non-empty value, naming it as [`Process`]
-/// does: a `RUN` reads that environment too. A process whose environment
-/// cannot be read is skipped, and nothing more is said once `/proc` cannot
-/// be listed. The caller runs it after
-/// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust warns only
-/// about environments a root `RUN` reads, not about one only its start-up
-/// privileges reach.
+/// Warns about each other process listed in `/proc` whose
+/// `/proc/<pid>/environ` ranikust reads and sets one of `variables`
+/// ([`secret_variables`]) to a non-empty value ([`credential_warning`]). A
+/// process whose environment ranikust cannot read is skipped, and nothing
+/// is said when `/proc` cannot be listed. The caller runs it after
+/// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust reads with
+/// the capabilities a root `RUN` keeps (ADR-0078).
 pub(crate) fn warn_credential_holders(variables: &[String]) {
     let names: Vec<&str> = variables.iter().map(String::as_str).collect();
     let Ok(dir) = fs::read_dir("/proc") else {
@@ -150,14 +148,20 @@ pub(crate) fn warn_credential_holders(variables: &[String]) {
             comm: comm(&pid),
             pid,
         };
-        tracing::warn!(
-            "process {process} holds {} in its environment, which every RUN can read through \
-             /proc/{}/environ in kaniko mode on /; start ranikust as the container's PID 1 \
-             (exec it) so that no other process holds the credentials",
-            found.join(", "),
-            process.pid
-        );
+        tracing::warn!("{}", credential_warning(&process, &found));
     }
+}
+
+/// The warning about `process`, whose environment sets the variables
+/// `found`: every `RUN` reads it too, through `/proc/<pid>/environ`.
+fn credential_warning(process: &Process, found: &[&str]) -> String {
+    format!(
+        "process {process} holds {} in its environment, which every RUN can read through \
+         /proc/{}/environ in kaniko mode on /; start ranikust as the container's PID 1 (exec \
+         it) so that no other process holds the credentials",
+        found.join(", "),
+        process.pid
+    )
 }
 
 /// The pid an entry of `/proc` names, when it names a process (digits
@@ -190,8 +194,9 @@ fn escaped(comm: &[u8]) -> String {
 /// at length.
 pub(crate) const PEER_SCAN_LIMIT: usize = 32_768;
 
-/// A process [`scan_peers`] names: its pid and its escaped name, empty when
-/// it could not be read.
+/// A process as a refusal of [`scan_peers`] or a warning of
+/// [`warn_credential_holders`] names it: its pid and its escaped name,
+/// empty when it could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Process {
     pub(crate) pid: String,
@@ -272,11 +277,15 @@ pub(crate) enum PeerScan {
 /// or `/proc/<pid>/root` where its threads may not be listed): a `RUN` on
 /// `/` shares the PID namespace and could reach that process's files, which
 /// the container's own mount table does not show (ADR-0101). It counts only
-/// the processes ranikust can open as it starts. Called before ranikust
-/// trims its capabilities, so it may reach a process a `RUN` would not:
-/// refused all the same (fails closed).
-pub(crate) fn scan_peers() -> PeerScan {
-    let own = match namespace(rustix::fs::CWD, "/proc/self/ns/mnt") {
+/// the processes ranikust can open as it starts.
+///
+/// `started_in` is ranikust's mount namespace as it started
+/// ([`mount_namespace`], read before the set-up may enter one of its own).
+/// It and the one ranikust is in now both count as its own: a set-up that
+/// failed after its `unshare` left ranikust in a copy no other process is
+/// in.
+pub(crate) fn scan_peers(started_in: rustix::io::Result<(u64, u64)>) -> PeerScan {
+    let own = match own(started_in, mount_namespace()) {
         Ok(own) => own,
         Err(e) => return PeerScan::OwnNamespace(e),
     };
@@ -329,7 +338,7 @@ fn scan(
 /// at most `left`, since a thread may have a mount namespace and
 /// credentials of its own and the first one may have exited. Returns the
 /// threads it looked at too.
-fn probe(own: (u64, u64), pid: &str, left: usize) -> (Peer, usize) {
+fn probe(own: Own, pid: &str, left: usize) -> (Peer, usize) {
     let dir = match rustix::fs::open(
         format!("/proc/{pid}"),
         OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -359,7 +368,7 @@ fn probe(own: (u64, u64), pid: &str, left: usize) -> (Peer, usize) {
 
 /// The probe of thread `tid` of the process at `dir`, its `/proc/<pid>`,
 /// or of the process as one (`None`) where its threads may not be listed.
-fn thread_at(own: (u64, u64), dir: &OwnedFd, tid: Option<&str>) -> Thread {
+fn thread_at(own: Own, dir: &OwnedFd, tid: Option<&str>) -> Thread {
     let Some(tid) = tid else {
         return task(own, dir, PROCESS_STEPS);
     };
@@ -435,8 +444,8 @@ fn walk<T: AsRef<[u8]>>(
 
 /// The probe of one thread, or of a process as one, at its `/proc`
 /// directory `dir`: whether ranikust opens its `root`, then whether its
-/// mount namespace is `own`; a failure names the step of `steps`.
-fn task(own: (u64, u64), dir: &OwnedFd, [root, ns]: Steps) -> Thread {
+/// mount namespace is one of `own`; a failure names the step of `steps`.
+fn task(own: Own, dir: &OwnedFd, [root, ns]: Steps) -> Thread {
     // Following the link takes the kernel's access check for it.
     match rustix::fs::openat(dir, "root", OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
         Ok(_) => {}
@@ -445,10 +454,32 @@ fn task(own: (u64, u64), dir: &OwnedFd, [root, ns]: Steps) -> Thread {
         Err(e) => return Thread::Unknown(root, e),
     }
     match namespace(dir, "ns/mnt") {
-        Ok(found) if found == own => Thread::Same,
+        Ok(found) if own.contains(&found) => Thread::Same,
         Ok(_) => Thread::Other,
-        Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
-        Err(e) => Thread::Unknown(ns, e),
+        Err(e) => ns_failure(ns, e, || {
+            rustix::fs::openat(
+                dir,
+                "ns",
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map(drop)
+        }),
+    }
+}
+
+/// What a failure `e` to read a thread's `ns/mnt` means, `step` naming
+/// it: a thread gone (`ENOENT`, `ESRCH`), or one freed since its root was
+/// opened, which answers `EACCES` there and whose `ns` no longer opens
+/// (`ns`, tried only then); anything else cannot be told.
+fn ns_failure(step: &'static str, e: Errno, ns: impl FnOnce() -> rustix::io::Result<()>) -> Thread {
+    match e {
+        Errno::NOENT | Errno::SRCH => Thread::Gone,
+        Errno::ACCESS | Errno::PERM => match ns() {
+            Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
+            _ => Thread::Unknown(step, e),
+        },
+        e => Thread::Unknown(step, e),
     }
 }
 
@@ -465,6 +496,24 @@ fn comm_at(dir: &OwnedFd) -> String {
         Ok(n) => escaped(&buf[..n]),
         Err(_) => String::new(),
     }
+}
+
+/// ranikust's own mount namespaces: the one it started in and the one it
+/// is in now, the same unless its set-up entered another.
+type Own = [(u64, u64); 2];
+
+/// [`Own`] from the namespace ranikust `started_in` and the one it is in
+/// `now`, or the error of the first that could not be read.
+fn own(
+    started_in: rustix::io::Result<(u64, u64)>,
+    now: rustix::io::Result<(u64, u64)>,
+) -> rustix::io::Result<Own> {
+    Ok([started_in?, now?])
+}
+
+/// ranikust's mount namespace now ([`namespace`] of `/proc/self/ns/mnt`).
+pub(crate) fn mount_namespace() -> rustix::io::Result<(u64, u64)> {
+    namespace(rustix::fs::CWD, "/proc/self/ns/mnt")
 }
 
 /// A mount namespace's identity: the device and inode of `path` (an
@@ -719,7 +768,8 @@ mod tests {
 
     #[test]
     fn every_thread_of_a_process_is_probed_within_the_bound() {
-        let own = namespace(rustix::fs::CWD, "/proc/self/ns/mnt").unwrap();
+        let now = mount_namespace().unwrap();
+        let own = [now, now];
         let me = std::process::id().to_string();
         // A second thread at least, whichever thread runs the test.
         let (stop, parked) = std::sync::mpsc::channel::<()>();
@@ -728,7 +778,8 @@ mod tests {
         assert_eq!(probe(own, &me, 1), (Peer::TooMany, 2));
         // Another namespace's identity: reached at the first thread, named
         // as the process's `comm` names it.
-        let reached = probe((own.0, own.1 ^ 1), &me, PEER_SCAN_LIMIT);
+        let other = (now.0, now.1 ^ 1);
+        let reached = probe([other, other], &me, PEER_SCAN_LIMIT);
         drop(stop);
         second.join().unwrap().unwrap_err();
         assert!(peer == Peer::Passed && seen >= 2, "{peer:?} {seen}");
@@ -739,8 +790,21 @@ mod tests {
     }
 
     #[test]
-    fn a_process_probed_as_one_is_told_through_its_own_entries() {
-        let own = namespace(rustix::fs::CWD, "/proc/self/ns/mnt").unwrap();
+    fn ranikusts_own_namespaces_are_the_one_it_started_in_and_the_one_it_is_in() {
+        let (start, now) = ((1, 2), (1, 3));
+        assert_eq!(own(Ok(start), Ok(now)), Ok([start, now]));
+        assert_eq!(own(Err(Errno::LOOP), Ok(now)), Err(Errno::LOOP));
+        assert_eq!(own(Ok(start), Err(Errno::IO)), Err(Errno::IO));
+        assert_eq!(
+            scan_peers(Err(Errno::LOOP)),
+            PeerScan::OwnNamespace(Errno::LOOP)
+        );
+    }
+
+    #[test]
+    fn a_thread_or_a_process_as_one_is_told_through_its_own_entries() {
+        let now = mount_namespace().unwrap();
+        let other = (now.0, now.1 ^ 1);
         let open = |path: &Path| {
             rustix::fs::open(
                 path,
@@ -751,19 +815,28 @@ mod tests {
         };
         let me = open(Path::new("/proc/self"));
         let pid = std::process::id().to_string();
-        // The process as one, and its first thread, whose tid is its pid.
+        // The process as one, and its first thread, whose tid is its pid:
+        // the namespace ranikust started in and the one it is in now are
+        // both its own.
         for tid in [None, Some(pid.as_str())] {
-            assert_eq!(thread_at(own, &me, tid), Thread::Same, "{tid:?}");
-            let other = (own.0, own.1 ^ 1);
-            assert_eq!(thread_at(other, &me, tid), Thread::Other, "{tid:?}");
+            for own in [[now, now], [now, other], [other, now]] {
+                assert_eq!(thread_at(own, &me, tid), Thread::Same, "{tid:?} {own:?}");
+            }
+            assert_eq!(
+                thread_at([other, other], &me, tid),
+                Thread::Other,
+                "{tid:?}"
+            );
         }
+        let own = [now, now];
         // A failure names the step of its path: the process's own `root`, a
-        // thread's `root`, then a thread's `ns/mnt`, each a loop.
+        // thread's `root`, then a thread that is not a directory.
         let fake = tempfile::tempdir().unwrap();
         let at = |p: &str| fake.path().join(p);
         std::os::unix::fs::symlink("root", at("root")).unwrap();
         fs::create_dir_all(at("task/1/ns")).unwrap();
         std::os::unix::fs::symlink("root", at("task/1/root")).unwrap();
+        fs::write(at("task/3"), "").unwrap();
         let dir = open(fake.path());
         assert_eq!(
             thread_at(own, &dir, None),
@@ -774,23 +847,104 @@ mod tests {
             Thread::Unknown("opening /proc/<pid>/task/<tid>/root", Errno::LOOP)
         );
         assert_eq!(thread_at(own, &dir, Some("2")), Thread::Gone);
-        fs::remove_file(at("task/1/root")).unwrap();
-        fs::create_dir(at("task/1/root")).unwrap();
+        assert_eq!(
+            thread_at(own, &dir, Some("3")),
+            Thread::Unknown("opening /proc/<pid>/task/<tid>", Errno::NOTDIR)
+        );
+        // Past the root, a missing `ns/mnt` is a thread gone, and a looped
+        // one names its step.
+        for root in ["root", "task/1/root"] {
+            fs::remove_file(at(root)).unwrap();
+            fs::create_dir(at(root)).unwrap();
+        }
+        assert_eq!(thread_at(own, &dir, None), Thread::Gone);
         assert_eq!(thread_at(own, &dir, Some("1")), Thread::Gone);
+        fs::create_dir(at("ns")).unwrap();
+        std::os::unix::fs::symlink("mnt", at("ns/mnt")).unwrap();
         std::os::unix::fs::symlink("mnt", at("task/1/ns/mnt")).unwrap();
+        assert_eq!(
+            thread_at(own, &dir, None),
+            Thread::Unknown("reading /proc/<pid>/ns/mnt", Errno::LOOP)
+        );
         let looped = Thread::Unknown("reading /proc/<pid>/task/<tid>/ns/mnt", Errno::LOOP);
         assert_eq!(thread_at(own, &dir, Some("1")), looped);
-        // A thread it may not look into is out of reach; root reads through
-        // the mode.
+        // Where a mode stops this process, as the kernel tells (a root with
+        // CAP_DAC_READ_SEARCH reads through it): a thread it may not look
+        // into is out of reach, and an `ns/mnt` it may not read, its `ns`
+        // still there, cannot be told.
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(at("task"), fs::Permissions::from_mode(0o000)).unwrap();
-        let denied = thread_at(own, &dir, Some("1"));
-        fs::set_permissions(at("task"), fs::Permissions::from_mode(0o755)).unwrap();
-        if rustix::process::geteuid().is_root() {
-            assert_eq!(denied, looped);
-        } else {
-            assert_eq!(denied, Thread::Unreachable);
+        let mode = |p: &str, mode| {
+            fs::set_permissions(at(p), fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let stopped = |p: &str| {
+            fs::symlink_metadata(at(p))
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+        };
+        mode("task/1/ns", 0o000);
+        let ns = (thread_at(own, &dir, Some("1")), stopped("task/1/ns/mnt"));
+        mode("task/1/ns", 0o755);
+        mode("task", 0o000);
+        let task = (thread_at(own, &dir, Some("1")), stopped("task/1"));
+        mode("task", 0o755);
+        let denied = Thread::Unknown("reading /proc/<pid>/task/<tid>/ns/mnt", Errno::ACCESS);
+        assert_eq!(
+            ns,
+            if ns.1 {
+                (denied, true)
+            } else {
+                (looped, false)
+            }
+        );
+        let unreachable = Thread::Unreachable;
+        assert_eq!(
+            task,
+            if task.1 {
+                (unreachable, true)
+            } else {
+                (looped, false)
+            }
+        );
+    }
+
+    #[test]
+    fn a_denied_ns_mnt_is_a_thread_gone_only_once_its_ns_is_gone() {
+        let step = "reading /proc/<pid>/task/<tid>/ns/mnt";
+        let untried = || -> rustix::io::Result<()> { unreachable!("tried only after a denial") };
+        assert_eq!(ns_failure(step, Errno::NOENT, untried), Thread::Gone);
+        assert_eq!(ns_failure(step, Errno::SRCH, untried), Thread::Gone);
+        assert_eq!(
+            ns_failure(step, Errno::LOOP, untried),
+            Thread::Unknown(step, Errno::LOOP)
+        );
+        for denied in [Errno::ACCESS, Errno::PERM] {
+            // A thread freed since its root was opened: `ns` went with it.
+            for gone in [Errno::NOENT, Errno::SRCH] {
+                assert_eq!(ns_failure(step, denied, || Err(gone)), Thread::Gone);
+            }
+            for there in [Ok(()), Err(Errno::ACCESS), Err(Errno::LOOP)] {
+                assert_eq!(
+                    ns_failure(step, denied, || there),
+                    Thread::Unknown(step, denied),
+                    "{there:?}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_credential_warning_names_the_process_its_variables_and_its_environ() {
+        let found = ["DOCKER_AUTH_CONFIG", "NPM_TOKEN"];
+        assert_eq!(
+            credential_warning(&process("7", "sh"), &found),
+            "process 7 (sh) holds DOCKER_AUTH_CONFIG, NPM_TOKEN in its environment, which \
+             every RUN can read through /proc/7/environ in kaniko mode on /; start ranikust \
+             as the container's PID 1 (exec it) so that no other process holds the credentials"
+        );
+        let unnamed = credential_warning(&process("7", ""), &["NPM_TOKEN"]);
+        assert!(
+            unnamed.starts_with("process 7 holds NPM_TOKEN in"),
+            "{unnamed}"
+        );
     }
 
     #[test]
