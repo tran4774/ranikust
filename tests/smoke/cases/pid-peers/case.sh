@@ -5,31 +5,34 @@
 # (the red team's configuration, with a RUN that only looks); a peer of
 # another user, which ranikust does not reach, and no peer build.
 case_run() {
-  local d name="rnk-peer-$$"
+  local d
   d="$(out peers)"
   rm -rf "$d" && mkdir -p "$d/ctx" "$d/look" "$d/t"
   printf 'FROM scratch\nCOPY Dockerfile /d\n' >"$d/ctx/Dockerfile"
   printf '%s\n' "FROM $BASE" \
-    'RUN for p in /proc/[0-9]*; do [ -e "$p/root/w/ranikust" ] && echo "RUN reached $p"; done; true' \
+    'RUN for p in /proc/[0-9]*; do [ -d "$p/root/w" ] && echo "RUN reached $p"; done; true' \
     >"$d/look/Dockerfile"
   install -m 0755 "$RNK" "$d/t/ranikust"
-  peer refused "a root peer holding the binary's tree read-write" "$d/look" "$name" \
-    -v "$d/t:/w"
-  peer built "a peer of another user" "$d/ctx" "$name" --user 1000:1000 -v "$d/t:/w"
+  peer refused "a root peer with a writable bind of its own" "$d/look" 1 -v "$d/t:/w"
+  peer built "a peer of another user" "$d/ctx" 2 --user 1000:1000 -v "$d/t:/w"
   peer built "no peer" "$d/ctx" ""
 }
 
-# peer WANT WHAT CTX NAME ARG...: a peer container NAME, started with ARG
-# (none when NAME is empty), runs while ranikust, bound read-only, builds
-# CTX on `/` in a default container sharing its PID namespace: it builds
-# (WANT `built`) or is refused for the peer before its state directory
-# exists and before any RUN.
+# peer WANT WHAT CTX N ARG...: a peer container, the N-th, started with ARG
+# (none when N is empty), runs `sleep` while ranikust, bound read-only,
+# builds CTX on `/` in a default container sharing its PID namespace: it
+# builds (WANT `built`) or is refused for the peer's `sleep` before its
+# state directory exists and before any RUN.
 peer() {
-  local want="$1" what="$2" ctx="$3" name="$4" pid=() got rc=0
-  shift 4
-  if [ -n "$name" ]; then
-    $ENGINE rm -f -t 0 "$name" >/dev/null 2>&1 || true
-    $ENGINE run -d --name "$name" "$@" "$BASE" sleep 300 >/dev/null ||
+  local want="$1" what="$2" ctx="$3" name="" pid=() got rc=0
+  shift 3
+  if [ -n "$1" ]; then
+    name="rnk-peer-$$-$1"
+    shift
+    # Both engines take kill and `rm -f` alike; podman's `rm` alone takes -t.
+    $ENGINE kill "$name" >/dev/null 2>&1 || true
+    $ENGINE rm -f "$name" >/dev/null 2>&1 || true
+    $ENGINE run -d --rm --name "$name" "$@" "$BASE" sleep 300 >/dev/null ||
       fail "$what: the peer did not start" || return 1
     pid=(--pid "container:$name")
   fi
@@ -38,11 +41,14 @@ peer() {
     /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx --no-push \
       --state-dir /var/lib/rnk-peers
     rc=$?; test -e /var/lib/rnk-peers && echo STATE-MADE; exit $rc' 2>&1)" || rc=$?
-  [ -z "$name" ] || $ENGINE rm -f -t 0 "$name" >/dev/null 2>&1 || true
+  if [ -n "$name" ]; then
+    $ENGINE kill "$name" >/dev/null 2>&1 || true
+    $ENGINE rm -f "$name" >/dev/null 2>&1 || true
+  fi
   if [ "$want" = built ]; then
     [ "$rc" = 0 ] && grep -q '^sha256:' <<<"$got"
   else
-    [ "$rc" = 1 ] && grep -qF 'sharing its PID namespace with process' <<<"$got" &&
+    [ "$rc" = 1 ] && grep -qE 'sharing its PID namespace with process [0-9]+ \(sleep\)' <<<"$got" &&
       grep -qF 'shareProcessNamespace' <<<"$got" &&
       ! grep -q -e STATE-MADE -e 'RUN reached' <<<"$got"
   fi || {
