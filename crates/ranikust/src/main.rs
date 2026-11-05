@@ -174,7 +174,10 @@ fn main() -> ExitCode {
     // Still single-threaded, no credential or state read: the copy starts
     // over from the top.
     let sealing = if matches!(command, Command::Build(_)) {
-        match rnk_sandbox::run_from_sealed_copy(seal_ways(fault.as_deref())) {
+        // Only kaniko mode on a container's `/` reads the writable mounts that
+        // reach the binary (2026-11-05): a host build looks none up.
+        let walk = container::detect(&container::Real).is_some();
+        match rnk_sandbox::run_from_sealed_copy(seal_ways(fault.as_deref()), walk) {
             Ok(sealing) => Some(sealing),
             Err(e) => {
                 report(&format!("setrlimit(RLIMIT_CORE, 0): {e}"), "");
@@ -815,8 +818,8 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         )),
         Some(BinaryMount::Unplaced) => Err(Failure::error(format!(
             "{how}: cannot tell whether a writable mount reaches ranikust's binary \
-             (/proc/self/mountinfo cannot be parsed, does not place it or does not type a FUSE \
-             root; a writable directory of its file system had its name removed, or a writable \
+             (/proc/self/mountinfo cannot be parsed, changed while it was read, does not place it \
+             or does not type a FUSE root; a writable directory of its file system had its name removed, or a writable \
              mount of that file system cannot be reached at its mount point; or the binary's own \
              name was removed); kaniko mode on / refuses to build without knowing"
         ))
@@ -825,6 +828,16 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              whose source was removed and no writable mount another mount hides, or build it \
              into an image run on an overlayfs root, as Docker's and containerd's default \
              storage gives, where the binary's check reads no mount table (ADR-0101)",
+        )),
+        Some(BinaryMount::NotWeighed) => Err(Failure::error(format!(
+            "{how}: ranikust did not find itself in a container when it started, so it did not \
+             look for writable mounts that reach its binary; kaniko mode on / refuses to build \
+             without knowing"
+        ))
+        .with_guidance(
+            "start the build again once the files that tell a container (/.dockerenv, \
+             /run/.containerenv, /proc/self/cgroup) no longer change while it starts (ADR-0048, \
+             ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
@@ -1318,6 +1331,7 @@ mod tests {
         for unknown in [
             Some(BinaryMount::NoMountId),
             Some(BinaryMount::Unplaced),
+            Some(BinaryMount::NotWeighed),
             Some(BinaryMount::Unknown(errno)),
             None,
         ] {
@@ -1343,6 +1357,7 @@ mod tests {
         let unplaced = refuse_writable_binary(how, Some(BinaryMount::Unplaced)).unwrap_err();
         assert!(
             unplaced.message.contains("/proc/self/mountinfo")
+                && unplaced.message.contains("changed while it was read")
                 && unplaced.message.contains("does not type a FUSE root")
                 && unplaced
                     .message
@@ -1353,6 +1368,17 @@ mod tests {
             "{}: {}",
             unplaced.message,
             unplaced.guidance
+        );
+        let unweighed = refuse_writable_binary(how, Some(BinaryMount::NotWeighed)).unwrap_err();
+        assert!(
+            unweighed
+                .message
+                .contains("did not find itself in a container")
+                && unweighed.guidance.contains("start the build again")
+                && unweighed.guidance.contains("/.dockerenv"),
+            "{}: {}",
+            unweighed.message,
+            unweighed.guidance
         );
         let no_id = refuse_writable_binary(how, Some(BinaryMount::NoMountId)).unwrap_err();
         assert!(

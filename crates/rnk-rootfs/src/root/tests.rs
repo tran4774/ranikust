@@ -302,6 +302,31 @@ fn statx_does_not_follow_and_carries_mount_id() {
     assert_eq!(errno(&e), Some(Errno::NOENT));
 }
 
+/// A physical path is reached with no symlink on the way: one in a parent
+/// is `ELOOP` where `statx` follows it, a last one is the link itself, and
+/// mounts are crossed.
+#[test]
+fn statx_physical_refuses_a_symlink_in_a_parent() {
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    fs::write(f.host("d/t"), b"abc").unwrap();
+    symlink("d", f.host("l")).unwrap();
+    assert_eq!(f.root.statx("/l/t").unwrap().size, 3);
+    let e = f.root.statx_physical("/l/t").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::LOOP), "{e}");
+    let st = f.root.statx_physical("/d/t").unwrap();
+    assert_eq!((st.size, st.mnt_id), (3, f.root.mnt_id()));
+    let st = f.root.statx_physical("/l").unwrap();
+    assert_eq!(st.file_type(), FileType::Symlink);
+    let host = RootPath::open("/").unwrap();
+    let proc = host.statx_physical("/proc").unwrap();
+    assert!(proc.mount_root && proc.mnt_id != host.mnt_id());
+    let version = host.statx_physical("/proc/version").unwrap();
+    assert!(!version.mount_root && version.mnt_id == proc.mnt_id);
+    let e = f.root.statx_physical("missing").unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::NOENT));
+}
+
 /// Read-only on the host's `/`: `/proc` is another mount below it, which a
 /// root that stays on its mount does not enter.
 #[test]

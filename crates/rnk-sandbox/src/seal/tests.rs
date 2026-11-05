@@ -229,6 +229,7 @@ fn the_marker_carries_the_binarys_mount() {
         BinaryMount::Linked,
         BinaryMount::NoMountId,
         BinaryMount::Unplaced,
+        BinaryMount::NotWeighed,
         BinaryMount::Unknown(Errno::NOSYS),
     ] {
         for failed in [vec![], vec![(SealedCopy::Memfd, io::Error::other("x; y"))]] {
@@ -389,50 +390,78 @@ fn a_binary_in_a_root_that_is_not_an_overlay_is_weighed() {
     let reach = |reached: Option<bool>| move || -> Result<Option<bool>, Errno> { Ok(reached) };
     let root = BinaryMount::Root;
     // An overlay root: an image's links build, and nothing more is read.
-    assert_eq!(verdict(root, copies(true), 2, never), Ok(root));
-    assert_eq!(verdict(root, copies(true), 1, never), Ok(root));
+    assert_eq!(verdict(root, copies(true), 2, Some(never)), Ok(root));
+    assert_eq!(verdict(root, copies(true), 1, Some(never)), Ok(root));
     // A directory root: other links, a writable mount reaching it, or a
     // mount table that does not place it are refused; nothing reaching it
     // builds.
     assert_eq!(
-        verdict(root, copies(false), 2, never),
+        verdict(root, copies(false), 2, Some(never)),
         Ok(BinaryMount::Linked)
     );
     assert_eq!(
-        verdict(root, copies(false), 0, never),
+        verdict(root, copies(false), 0, Some(never)),
         Ok(BinaryMount::Unplaced)
     );
     assert_eq!(
-        verdict(root, copies(false), 1, reach(Some(true))),
+        verdict(root, copies(false), 1, Some(reach(Some(true)))),
         Ok(BinaryMount::Exposed)
     );
     assert_eq!(
-        verdict(root, copies(false), 1, reach(Some(false))),
+        verdict(root, copies(false), 1, Some(reach(Some(false)))),
         Ok(root)
     );
     assert_eq!(
-        verdict(root, copies(false), 1, reach(None)),
+        verdict(root, copies(false), 1, Some(reach(None))),
         Ok(BinaryMount::Unplaced)
     );
     // A FUSE root the mount table does not type, whatever its links.
     let untyped = || -> Result<Option<bool>, Errno> { Ok(None) };
-    assert_eq!(verdict(root, untyped, 2, never), Ok(BinaryMount::Unplaced));
+    assert_eq!(
+        verdict(root, untyped, 2, Some(never)),
+        Ok(BinaryMount::Unplaced)
+    );
     // A file system that cannot be told is a failed measurement.
     let failed = || -> Result<Option<bool>, Errno> { Err(Errno::NOSYS) };
-    assert_eq!(verdict(root, failed, 1, never), Err(Errno::NOSYS));
+    assert_eq!(verdict(root, failed, 1, Some(never)), Err(Errno::NOSYS));
     // Another read-only mount is weighed whatever its file system; others
     // are as `of` told them.
     let ro = BinaryMount::ReadOnly;
     let no_fs = || -> Result<Option<bool>, Errno> { panic!("no file system type is needed") };
-    assert_eq!(verdict(ro, no_fs, 2, never), Ok(BinaryMount::Linked));
+    assert_eq!(verdict(ro, no_fs, 2, Some(never)), Ok(BinaryMount::Linked));
     assert_eq!(
-        verdict(ro, copies(true), 1, reach(Some(true))),
+        verdict(ro, copies(true), 1, Some(reach(Some(true)))),
         Ok(BinaryMount::Exposed)
     );
-    assert_eq!(verdict(ro, no_fs, 1, reach(Some(false))), Ok(ro));
+    assert_eq!(verdict(ro, no_fs, 1, Some(reach(Some(false)))), Ok(ro));
     for told in [BinaryMount::Writable, BinaryMount::NoMountId] {
-        assert_eq!(verdict(told, no_fs, 2, never), Ok(told));
+        assert_eq!(verdict(told, no_fs, 2, Some(never)), Ok(told));
     }
+}
+
+/// ADR-0101 (2026-11-05): a build that cannot be kaniko mode on a
+/// container's `/` walks no mount: a binary the walk would weigh is not
+/// weighed, one told without it is told as before.
+#[test]
+fn a_build_that_cannot_be_kaniko_on_slash_walks_no_mount() {
+    type Reach = fn() -> Result<Option<bool>, Errno>;
+    let unwalked: Option<Reach> = None;
+    let copies = |up: bool| move || -> Result<Option<bool>, Errno> { Ok(Some(up)) };
+    let (root, ro) = (BinaryMount::Root, BinaryMount::ReadOnly);
+    let not_weighed = Ok(BinaryMount::NotWeighed);
+    assert_eq!(verdict(root, copies(false), 1, unwalked), not_weighed);
+    assert_eq!(verdict(ro, copies(false), 1, unwalked), not_weighed);
+    assert_eq!(verdict(root, copies(true), 1, unwalked), Ok(root));
+    assert_eq!(
+        verdict(ro, copies(false), 2, unwalked),
+        Ok(BinaryMount::Linked)
+    );
+    assert_eq!(
+        verdict(root, copies(false), 0, unwalked),
+        Ok(BinaryMount::Unplaced)
+    );
+    let writable = BinaryMount::Writable;
+    assert_eq!(verdict(writable, copies(false), 1, unwalked), Ok(writable));
 }
 
 /// ADR-0101: a fuse-overlayfs root (rootless podman's) copies up as
@@ -526,7 +555,10 @@ fn the_binarys_mount_is_measured_on_the_file() {
         .expect("memfd_create");
     assert_ne!(mount(memfd), Ok(BinaryMount::Root));
     // `/proc` is not weighed further: writable is refused as it is.
-    assert_eq!(mount_of(open_dir("/proc").as_fd()), BinaryMount::Writable);
+    assert_eq!(
+        mount_of(open_dir("/proc").as_fd(), true),
+        BinaryMount::Writable
+    );
 }
 
 /// ADR-0101: a file in the root is weighed by the root's own file system,
@@ -566,26 +598,32 @@ fn a_file_in_the_root_is_weighed_by_the_roots_file_system() {
         }
         (Some(false), _) => BinaryMount::Linked,
     };
-    assert_eq!(mount_of(root.as_fd()), expected);
+    assert_eq!(mount_of(root.as_fd(), true), expected);
+    // With no walk, what the walk would weigh is not weighed.
+    let unwalked = match (copies, st.stx_nlink) {
+        (Some(false), 1) => BinaryMount::NotWeighed,
+        _ => expected,
+    };
+    assert_eq!(mount_of(root.as_fd(), false), unwalked);
 }
 
 /// ADR-0101: a marker whose copy does not check is not believed: the
 /// binary's mount is measured on the file this process runs from.
 #[test]
 fn an_unchecked_marker_is_not_believed_about_the_binary() {
-    let actual = mount_of(exe().as_fd());
+    let actual = mount_of(exe().as_fd(), true);
     let lie = if actual == BinaryMount::Writable {
         BinaryMount::ReadOnly
     } else {
         BinaryMount::Writable
     };
     let value = OsString::from(format!("memfd {}", lie.token()));
-    let Sealing::Unsealed { why, binary } = copy_run(&value) else {
+    let Sealing::Unsealed { why, binary } = copy_run(&value, true) else {
         panic!("the test binary passes for a memfd copy");
     };
     assert!(why.contains("is no such copy"), "{why}");
     assert_eq!(binary, actual);
-    let Sealing::Unsealed { why, binary } = copy_run(OsStr::new("memfd")) else {
+    let Sealing::Unsealed { why, binary } = copy_run(OsStr::new("memfd"), true) else {
         panic!("a marker with no mount passes");
     };
     assert!(why.contains("names no way"), "{why}");
@@ -816,7 +854,7 @@ fn red_team_a_writable_bind_of_a_removed_link_reaches_the_binary() {
     let bin = Path::new("/ranikust/bin/ranikust");
     let never = || -> Result<Option<bool>, Errno> { panic!("not read") };
     let weigh =
-        |reached: Option<bool>| verdict(BinaryMount::ReadOnly, never, 1, move || Ok(reached));
+        |reached: Option<bool>| verdict(BinaryMount::ReadOnly, never, 1, Some(move || Ok(reached)));
     let removed = table("/d/bin/a", "/d/bin/b//deleted");
     assert!(removed[2].root_deleted && removed[2].fs_root == Path::new("/d/bin/b"));
     let reached = reached_writable(&removed, 10, Some(bin), BIN, roots(&[(11, BIN.ino)]));
@@ -864,7 +902,7 @@ fn a_replaced_file_bind_of_another_file_does_not_reach_the_binary() {
     let bin = Path::new("/ranikust/bin/ranikust");
     let reached = reached_writable(&mounts, 10, Some(bin), BIN, roots(&[(2, 5), (3, 6)]));
     let never = || -> Result<Option<bool>, Errno> { panic!("not read") };
-    let got = verdict(BinaryMount::ReadOnly, never, 1, move || Ok(reached));
+    let got = verdict(BinaryMount::ReadOnly, never, 1, Some(move || Ok(reached)));
     assert_eq!(got, Ok(BinaryMount::ReadOnly), "{reached:?}");
 }
 
@@ -915,13 +953,125 @@ fn a_mount_that_cannot_be_told_places_nothing() {
     );
 }
 
+/// ADR-0101: a mount another one covers (at its mount point or above it,
+/// and not one it lies on, so mounted over it later) is told hidden from
+/// the table alone: its mount point is not looked up and places nothing,
+/// nor does the binary's name on its own mount when that one is covered. A
+/// mount on it, or one it lies on, does not cover it.
+#[test]
+fn a_covered_mount_is_not_looked_up() {
+    let file = "8:1 /home/u/tree/ranikust /ranikust/bin/ranikust ro";
+    let bin = Path::new("/ranikust/bin/ranikust");
+    let work = "11 1 8:1 /home/u/other /work rw";
+    let cases: [(&[&str], Option<bool>, &[u64]); 5] = [
+        (&[work], Some(false), &[2, 11]),
+        // Mounted over it later, at its mount point or above it.
+        (&[work, "12 1 0:60 / /work rw"], None, &[2]),
+        (
+            &["11 1 8:1 /home/u/other /work/a rw", "12 1 0:60 / /work rw"],
+            None,
+            &[2],
+        ),
+        // A mount on it, or the one it lies on at the same mount point.
+        (&[work, "12 11 0:60 / /work/sub rw"], Some(false), &[2, 11]),
+        (
+            &["11 1 0:60 / /work rw", "12 11 8:1 /home/u/other /work rw"],
+            Some(false),
+            &[2, 12],
+        ),
+    ];
+    for (extra, want, want_looked) in cases {
+        let mut looked = Vec::new();
+        let mut files = roots(&[HOSTS]);
+        let got = reached_writable(&mounts(file, extra), 10, Some(bin), BIN, |m| {
+            looked.push(m.mount_id);
+            files(m)
+        });
+        assert_eq!((got, looked.as_slice()), (want, want_looked), "{extra:?}");
+    }
+    let seen = |p: &Path| -> Result<Option<Seen>, Errno> {
+        let (mount, found) = if p == bin {
+            (10, MountRoot::File(BIN))
+        } else {
+            (
+                2,
+                MountRoot::File(FileId {
+                    ino: HOSTS.1,
+                    ..BIN
+                }),
+            )
+        };
+        Ok(Some(Seen {
+            mount,
+            mount_root: true,
+            found,
+        }))
+    };
+    let looked_up = |extra: &[&str]| {
+        let mut names = Vec::new();
+        let got = reached_by(&mounts(file, extra), 10, bin, BIN, |p| {
+            names.push(p.to_owned());
+            seen(p)
+        });
+        (got, names)
+    };
+    let hosts = PathBuf::from("/etc/hosts");
+    assert_eq!(
+        looked_up(&[]),
+        (Ok(Some(false)), vec![bin.to_owned(), hosts.clone()])
+    );
+    assert_eq!(
+        looked_up(&["11 1 0:60 / /ranikust rw"]),
+        (Ok(None), vec![hosts])
+    );
+}
+
+/// ADR-0101: mount ids are reused, so a walk holds only on a table that
+/// reads the same once it is done: one that changed meanwhile places
+/// nothing, whatever the walk found, and nor does one that does not parse;
+/// a failed read keeps its errno.
+#[test]
+fn a_table_that_changed_during_the_walk_places_nothing() {
+    let table = b"1 0 0:50 / / rw - overlay overlay rw\n".to_vec();
+    let mut moved = table.clone();
+    moved.extend_from_slice(b"2 1 0:51 / /mnt rw - tmpfs tmpfs rw\n");
+    let reads = |texts: Vec<Vec<u8>>| {
+        let mut texts = texts.into_iter();
+        move || texts.next().ok_or(Errno::IO)
+    };
+    let walk = |found: Result<Option<bool>, Errno>| {
+        move |m: &[MountInfo]| {
+            assert_eq!(m.len(), 1, "the table first read");
+            found
+        }
+    };
+    let stable = || reads(vec![table.clone(), table.clone()]);
+    let changed = || reads(vec![table.clone(), moved.clone()]);
+    for found in [Ok(Some(true)), Ok(Some(false)), Ok(None), Err(Errno::NOSYS)] {
+        assert_eq!(on_a_stable_table(stable(), walk(found)), found);
+        assert_eq!(on_a_stable_table(changed(), walk(found)), Ok(None));
+    }
+    let never = |_: &[MountInfo]| -> Result<Option<bool>, Errno> { panic!("no walk") };
+    assert_eq!(
+        on_a_stable_table(reads(vec![b"1 0 0:50 / /\n".to_vec()]), never),
+        Ok(None)
+    );
+    assert_eq!(on_a_stable_table(reads(vec![]), never), Err(Errno::IO));
+    assert_eq!(
+        on_a_stable_table(reads(vec![table.clone()]), walk(Ok(Some(false)))),
+        Err(Errno::IO)
+    );
+}
+
 /// ADR-0101: a mount's root is reached at its mount point through
-/// `RootPath` from `/`, and must be that mount: `/proc` is a directory, a
-/// file is that file; a line naming another mount there, or a mount point
-/// that is missing, is not reached. A file's name, as `readlink` of its
-/// descriptor gives it, leads to the file until the name is removed.
-/// Skipped under qemu-user, whose statx leaves the mount id at 0 (`just
-/// test-aarch64`).
+/// `RootPath` from `/`, and must be that mount's root: `/proc` is a
+/// directory; a file inside a mount (`/proc/version`, a file of the
+/// temporary directory's mount) is not its root, a line naming another
+/// mount there, or a mount point that is missing, is not reached. A file
+/// bind's root (T1 `binary-mounts`) has no sample on a host. A file's
+/// name, as `readlink` of its descriptor gives it, leads to the file until
+/// the name is removed. Skipped under qemu-user, whose statx leaves the
+/// mount id at 0 (`just test-aarch64`).
 #[test]
 fn a_mount_root_is_reached_at_its_mount_point() {
     let text = std::fs::read("/proc/self/mountinfo").expect("mountinfo");
@@ -946,10 +1096,10 @@ fn a_mount_root_is_reached_at_its_mount_point() {
     let mut at_file = proc.clone();
     at_file.mount_point.clone_from(&file);
     at_file.mount_id = st.stx_mnt_id;
-    assert_eq!(
-        root_at(&root, &at_file),
-        Ok(Some(MountRoot::File(FileId::of(&st).expect("an inode"))))
-    );
+    assert_eq!(root_at(&root, &at_file), Ok(None));
+    let mut version = proc.clone();
+    version.mount_point = PathBuf::from("/proc/version");
+    assert_eq!(root_at(&root, &version), Ok(None));
     let mut another = proc.clone();
     another.mount_id = u64::MAX;
     assert_eq!(root_at(&root, &another), Ok(None));
@@ -965,17 +1115,49 @@ fn a_mount_root_is_reached_at_its_mount_point() {
                 .into_bytes(),
         ))
     };
-    let own = (
-        st.stx_mnt_id,
-        MountRoot::File(FileId::of(&st).expect("an inode")),
-    );
+    let own = Seen {
+        mount: st.stx_mnt_id,
+        mount_root: false,
+        found: MountRoot::File(FileId::of(&st).expect("an inode")),
+    };
     assert_eq!(seen_at(&root, &name()), Ok(Some(own)));
     std::fs::remove_file(&file).expect("remove");
     assert_eq!(seen_at(&root, &name()), Ok(None), "{}", name().display());
 }
 
+/// ADR-0101: a path the kernel printed has no symlink in it, so one on the
+/// way means the tree changed since: `/proc` reached through a symlink to
+/// `/`, or a file through a symlinked directory, is not followed.
+#[test]
+fn a_symlink_on_the_way_places_nothing() {
+    let root = RootPath::open("/").expect("/");
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::os::unix::fs::symlink("/", dir.path().join("r")).expect("symlink");
+    let proc_id = statx_of(rustix::fs::CWD, c"/proc", AtFlags::empty())
+        .expect("statx")
+        .stx_mnt_id;
+    let mut proc = line_at(proc_id, Path::new("/proc"), false);
+    assert_eq!(root_at(&root, &proc), Ok(Some(MountRoot::Directory)));
+    proc.mount_point = dir.path().join("r/proc");
+    assert_eq!(root_at(&root, &proc), Ok(None));
+    std::fs::create_dir(dir.path().join("d")).expect("mkdir");
+    std::fs::write(dir.path().join("d/f"), b"x").expect("write");
+    std::os::unix::fs::symlink("d", dir.path().join("l")).expect("symlink");
+    assert!(matches!(
+        seen_at(&root, &dir.path().join("d/f")),
+        Ok(Some(_))
+    ));
+    assert_eq!(seen_at(&root, &dir.path().join("l/f")), Ok(None));
+}
+
 /// A sample line of mount `id` at `point` on the binary's sample device,
 /// its root `/elsewhere`.
+/// The root of the mount `m`, reached at its mount point from `root`, as
+/// [`reached_from_slash`] reaches it.
+fn root_at(root: &RootPath, m: &MountInfo) -> Result<Option<MountRoot>, Errno> {
+    Ok(seen_at(root, &m.mount_point)?.and_then(|s| s.root_of(m)))
+}
+
 fn line_at(id: u64, point: &Path, read_only: bool) -> MountInfo {
     let mut m = mounts("8:1 /elsewhere /x rw", &[])
         .into_iter()
@@ -1022,7 +1204,9 @@ fn a_removed_name_of_the_binary_places_nothing() {
 /// name, keeps its errno (`Unknown`), and a path `RootPath` refuses with
 /// no errno is `EIO`, unless a writable bind of the binary is found: a
 /// reach wins. Only a name that leads to the binary on its own mount
-/// places it in a tree.
+/// places it in a tree. A host has no file bind, so the bind's root is
+/// given (T1 `binary-mounts` reaches real ones); every other path is
+/// looked up.
 #[test]
 fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1038,13 +1222,25 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     // only the writable mounts below count.
     let own = line_at(u64::MAX, dir.path(), true);
     let mut failing = line_at(u64::MAX - 1, &long, false);
-    let mut bind = line_at(st.stx_mnt_id, &file, false);
+    let mut bind = line_at(u64::MAX - 4, &dir.path().join("bind"), false);
     // Roots apart from the own mount's: no tree holds the binary's path.
     failing.fs_root = PathBuf::from("/failing");
     bind.fs_root = PathBuf::from("/bind");
+    // Mounted on the own mount, which they would otherwise cover.
+    failing.parent_id = own.mount_id;
+    bind.parent_id = own.mount_id;
     let check = |lines: &[&MountInfo], name: &Path| {
         let lines: Vec<MountInfo> = lines.iter().map(|m| (*m).clone()).collect();
-        reached_from_slash(&lines, u64::MAX, name, binary)
+        reached_by(&lines, u64::MAX, name, binary, |p| {
+            if p == bind.mount_point {
+                return Ok(Some(Seen {
+                    mount: bind.mount_id,
+                    mount_root: true,
+                    found: MountRoot::File(binary),
+                }));
+            }
+            seen_at(&root, p)
+        })
     };
     assert_eq!(check(&[&own, &failing], &file), Err(Errno::NAMETOOLONG));
     assert_eq!(check(&[&own, &failing, &bind], &file), Ok(Some(true)));
@@ -1054,11 +1250,13 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     assert_eq!(seen_at(&root, &up), Err(Errno::IO));
     let mut refused = line_at(u64::MAX - 2, &up, false);
     refused.fs_root = PathBuf::from("/refused");
+    refused.parent_id = own.mount_id;
     assert_eq!(check(&[&own, &refused], &file), Err(Errno::IO));
     assert_eq!(check(&[&own, &refused, &bind], &file), Ok(Some(true)));
     assert_eq!(check(&[&own], &up), Err(Errno::IO));
     assert_eq!(check(&[&own, &bind], &up), Ok(Some(true)));
     // Its root holds the path the own mount would give the binary.
-    let tree = line_at(u64::MAX - 3, &dir.path().join("missing"), false);
+    let mut tree = line_at(u64::MAX - 3, &dir.path().join("missing"), false);
+    tree.parent_id = own.mount_id;
     assert_eq!(check(&[&own, &tree], &file), Ok(None));
 }

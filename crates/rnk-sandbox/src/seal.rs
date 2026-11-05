@@ -112,6 +112,10 @@ pub enum BinaryMount {
     /// file system is a directory whose name was removed, or cannot be
     /// reached at its mount point; or the file has no name left.
     Unplaced,
+    /// Not weighed: the caller asked for no walk of the writable mounts
+    /// that may reach the file, since the build cannot be kaniko mode on a
+    /// container's `/`, the only one that reads the answer.
+    NotWeighed,
     /// Cannot be told: the error of the call that failed.
     Unknown(Errno),
 }
@@ -142,6 +146,7 @@ impl BinaryMount {
             Self::Linked => "linked".to_owned(),
             Self::NoMountId => "noid".to_owned(),
             Self::Unplaced => "unplaced".to_owned(),
+            Self::NotWeighed => "unweighed".to_owned(),
             Self::Unknown(e) => format!("unknown:{}", e.raw_os_error()),
         }
     }
@@ -155,6 +160,7 @@ impl BinaryMount {
             "linked" => Some(Self::Linked),
             "noid" => Some(Self::NoMountId),
             "unplaced" => Some(Self::Unplaced),
+            "unweighed" => Some(Self::NotWeighed),
             _ => {
                 // A malformed marker is not believed: the run ends unsealed, with why.
                 let raw: i32 = token.strip_prefix("unknown:")?.parse().ok()?;
@@ -213,15 +219,18 @@ impl Sealing {
 /// is given back for the copy, which records it again. Before any copy,
 /// [`BinaryMount`] is measured on the binary as installed and passed to
 /// the copy in the variable; a run that ends unsealed measures the file it
-/// runs from.
+/// runs from. `walk` is whether the build may be kaniko mode on a
+/// container's `/`, the only one that reads whether a writable mount
+/// reaches the binary: otherwise the mount points are not looked up, and a
+/// binary that needs them is [`BinaryMount::NotWeighed`].
 ///
 /// # Errors
 ///
 /// Only when a copy did not run and the core-file limit could not be set
 /// back to 0: the process must stop, as when `forbid_core_dumps` fails.
-pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing> {
+pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Result<Sealing> {
     if let Some(value) = std::env::var_os(MARKER) {
-        return Ok(copy_run(&value));
+        return Ok(copy_run(&value, walk));
     }
     let exe = match File::open("/proc/self/exe") {
         Ok(exe) => exe,
@@ -232,7 +241,7 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing> 
             });
         }
     };
-    let binary = mount_of(exe.as_fd());
+    let binary = mount_of(exe.as_fd(), walk);
     let run = |way, copy: OwnedFd, failed: &[(SealedCopy, io::Error)]| {
         execute(&copy, &marker(way, binary, failed))
     };
@@ -283,8 +292,9 @@ fn placed(fd: BorrowedFd<'_>) -> Result<(BinaryMount, rustix::fs::Statx), Errno>
 
 /// Which mount the file `exe` is on, against the mount of `/`, and, on
 /// another read-only mount or a root that is not an overlay, whether
-/// another writable mount reaches the file ([`verdict`]).
-fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
+/// another writable mount reaches the file ([`verdict`]); that walk only
+/// when `walk`.
+fn mount_of(exe: BorrowedFd<'_>, walk: bool) -> BinaryMount {
     let found = (|| {
         let (mount, st) = placed(exe)?;
         let copies = || {
@@ -300,17 +310,15 @@ fn mount_of(exe: BorrowedFd<'_>) -> BinaryMount {
             let path = PathBuf::from(OsString::from_vec(
                 rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
             ));
-            let text = std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e))?;
-            // The marker has room for a token only; the refusal lists the possible causes.
-            let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
-                return Ok(None);
-            };
             let Some(binary) = FileId::of(&st) else {
                 return Ok(None);
             };
-            reached_from_slash(&mounts, st.stx_mnt_id, &path, binary)
+            on_a_stable_table(
+                || std::fs::read("/proc/self/mountinfo").map_err(|e| errno_of(&e)),
+                |mounts| reached_from_slash(mounts, st.stx_mnt_id, &path, binary),
+            )
         };
-        verdict(mount, copies, st.stx_nlink, reach)
+        verdict(mount, copies, st.stx_nlink, walk.then_some(reach))
     })();
     found.unwrap_or_else(BinaryMount::Unknown)
 }
@@ -351,12 +359,13 @@ fn root_type(text: &[u8], own: u64) -> Option<String> {
 /// one another writable mount reaches [`BinaryMount::Exposed`]. A file on
 /// a root the table does not type (`copies` gives `None`) is `Unplaced`,
 /// before its links are weighed. `copies` and `reach` are called only when
-/// needed; their error is returned, for [`BinaryMount::Unknown`].
+/// needed; their error is returned, for [`BinaryMount::Unknown`]. With no
+/// `reach`, a file that needs it is [`BinaryMount::NotWeighed`].
 fn verdict(
     mount: BinaryMount,
     copies: impl FnOnce() -> Result<Option<bool>, Errno>,
     nlink: u32,
-    reach: impl FnOnce() -> Result<Option<bool>, Errno>,
+    reach: Option<impl FnOnce() -> Result<Option<bool>, Errno>>,
 ) -> Result<BinaryMount, Errno> {
     let weighed = match mount {
         BinaryMount::ReadOnly => true,
@@ -371,6 +380,7 @@ fn verdict(
         | BinaryMount::Linked
         | BinaryMount::NoMountId
         | BinaryMount::Unplaced
+        | BinaryMount::NotWeighed
         | BinaryMount::Unknown(_) => false,
     };
     if !weighed {
@@ -382,6 +392,9 @@ fn verdict(
         1 => {}
         _ => return Ok(BinaryMount::Linked),
     }
+    let Some(reach) = reach else {
+        return Ok(BinaryMount::NotWeighed);
+    };
     Ok(match reach()? {
         None => BinaryMount::Unplaced,
         Some(true) => BinaryMount::Exposed,
@@ -419,12 +432,22 @@ enum MountRoot {
     File(FileId),
 }
 
-/// The mount `path` leads to from `root` through `RootPath` (`statx`, no
-/// open; the paths lead through the container's own files), and what it
-/// finds there. `None` when the path leads nowhere; `Err` when the call
-/// fails otherwise (`EIO` for an error with no errno).
-fn seen_at(root: &RootPath, path: &Path) -> Result<Option<(u64, MountRoot)>, Errno> {
-    let st = match root.statx(path) {
+/// What a physical path leads to: the mount, whether the path is that
+/// mount's root, and the entry found there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seen {
+    mount: u64,
+    mount_root: bool,
+    found: MountRoot,
+}
+
+/// What `path` leads to from `root` through `RootPath` (`statx`, no open;
+/// the paths lead through the container's own files). The path is one the
+/// kernel printed, with no symlink in it: one on the way means the tree
+/// changed since, and places nothing. `None` when the path leads nowhere;
+/// `Err` when the call fails otherwise (`EIO` for an error with no errno).
+fn seen_at(root: &RootPath, path: &Path) -> Result<Option<Seen>, Errno> {
+    let st = match root.statx_physical(path) {
         Ok(st) => st,
         Err(e) => {
             return match e.io_error().map(errno_of) {
@@ -450,15 +473,40 @@ fn seen_at(root: &RootPath, path: &Path) -> Result<Option<(u64, MountRoot)>, Err
             ino: st.ino,
         }),
     };
-    Ok(Some((st.mnt_id, found)))
+    Ok(Some(Seen {
+        mount: st.mnt_id,
+        mount_root: st.mount_root,
+        found,
+    }))
 }
 
-/// The root of the mount `m`, reached at its mount point from `root`.
-/// `None` when the path leads nowhere or to another mount, one mounted
-/// over it.
-fn root_at(root: &RootPath, m: &MountInfo) -> Result<Option<MountRoot>, Errno> {
-    Ok(seen_at(root, &m.mount_point)?
-        .and_then(|(mount, found)| (mount == m.mount_id).then_some(found)))
+impl Seen {
+    /// What was found at `m`'s mount point, if it is the root of `m`: not
+    /// another mount (one mounted over it), nor an entry inside `m`.
+    fn root_of(self, m: &MountInfo) -> Option<MountRoot> {
+        (self.mount == m.mount_id && self.mount_root).then_some(self.found)
+    }
+}
+
+/// Whether another mount of `mounts` hides `m`: one at its mount point or
+/// above it that is not one of the mounts `m` lies on (its parents), so
+/// mounted over it later. Told from the table alone, before any lookup.
+fn covered(mounts: &[MountInfo], m: &MountInfo) -> bool {
+    let mut below = Vec::new();
+    let mut parent = m.parent_id;
+    // A cycle cannot be longer than the table.
+    for _ in 0..mounts.len() {
+        let Some(p) = mounts.iter().find(|p| p.mount_id == parent) else {
+            break;
+        };
+        below.push(p.mount_id);
+        parent = p.parent_id;
+    }
+    mounts.iter().any(|o| {
+        o.mount_id != m.mount_id
+            && !below.contains(&o.mount_id)
+            && m.mount_point.starts_with(&o.mount_point)
+    })
 }
 
 /// [`reached_writable`] with the binary's name and each mount's root
@@ -471,26 +519,65 @@ fn reached_from_slash(
     binary: FileId,
 ) -> Result<Option<bool>, Errno> {
     let root = RootPath::open("/").map_err(|e| e.io_error().map_or(Errno::IO, errno_of))?;
+    reached_by(mounts, own, path, binary, |p| seen_at(&root, p))
+}
+
+/// [`reached_from_slash`] with each path looked up by `look` ([`seen_at`]).
+fn reached_by(
+    mounts: &[MountInfo],
+    own: u64,
+    path: &Path,
+    binary: FileId,
+    mut look: impl FnMut(&Path) -> Result<Option<Seen>, Errno>,
+) -> Result<Option<bool>, Errno> {
     // `readlink` names a removed file `<path> (deleted)`: only a name that
     // still leads to the binary, on its own mount, places it.
     let mut failed = None;
-    let named = match seen_at(&root, path) {
-        Ok(found) => found == Some((own, MountRoot::File(binary))),
-        Err(errno) => {
-            failed = Some(errno);
-            false
-        }
-    };
+    // A name on a hidden mount leads elsewhere: it is not looked up.
+    let hidden = mounts
+        .iter()
+        .find(|m| m.mount_id == own)
+        .is_none_or(|m| covered(mounts, m));
+    let named = !hidden
+        && match look(path) {
+            Ok(seen) => seen.is_some_and(|s| s.mount == own && s.found == MountRoot::File(binary)),
+            Err(errno) => {
+                failed = Some(errno);
+                false
+            }
+        };
     let reach = reached_writable(mounts, own, named.then_some(path), binary, |m| {
-        root_at(&root, m).unwrap_or_else(|errno| {
-            failed.get_or_insert(errno);
-            None
-        })
+        match look(&m.mount_point) {
+            Ok(seen) => seen.and_then(|s| s.root_of(m)),
+            Err(errno) => {
+                failed.get_or_insert(errno);
+                None
+            }
+        }
     });
     match (reach, failed) {
         (Some(true), _) | (_, None) => Ok(reach),
         (_, Some(errno)) => Err(errno),
     }
+}
+
+/// `walk` on the mount table `read` gives, read again once it is done:
+/// mount ids are reused, so a table that changed meanwhile places nothing
+/// (`None`), and nor does one that does not parse.
+fn on_a_stable_table(
+    mut read: impl FnMut() -> Result<Vec<u8>, Errno>,
+    walk: impl FnOnce(&[MountInfo]) -> Result<Option<bool>, Errno>,
+) -> Result<Option<bool>, Errno> {
+    let text = read()?;
+    // The marker has room for a token only; the refusal lists the possible causes.
+    let Ok(mounts) = rnk_rootfs::parse_mountinfo(&text) else {
+        return Ok(None);
+    };
+    let reach = walk(&mounts);
+    if read()? != text {
+        return Ok(None);
+    }
+    reach
 }
 
 /// Whether another writable mount of the file system of the mount `own`
@@ -536,7 +623,9 @@ fn reached_writable(
     }
     let mut placed = in_fs.is_some();
     for m in writable() {
-        match root_of(m) {
+        // A hidden mount is not looked up: its mount point leads elsewhere.
+        let root = if covered(mounts, m) { None } else { root_of(m) };
+        match root {
             // A file bind writes that one inode only: RUN cannot mount (ADR-0078).
             Some(MountRoot::File(id)) => {
                 if id == binary {
@@ -590,7 +679,7 @@ fn parse_marker(value: &str) -> Option<(SealedCopy, BinaryMount, &str)> {
 }
 
 /// The copy's run: checks the copy, never makes another.
-fn copy_run(value: &OsStr) -> Sealing {
+fn copy_run(value: &OsStr, walk: bool) -> Sealing {
     // The kernel named the process after the descriptor, not `argv[0]`;
     // `ps`, `pgrep` and `pkill -x` look for ranikust's own name.
     name_after_argv0();
@@ -607,7 +696,7 @@ fn copy_run(value: &OsStr) -> Sealing {
     // is the one this process runs from.
     let unsealed = |why| Sealing::Unsealed {
         why,
-        binary: mount_of(exe.as_fd()),
+        binary: mount_of(exe.as_fd(), walk),
     };
     let Some((way, binary, passed_over)) = value.to_str().and_then(parse_marker) else {
         return unsealed(format!(

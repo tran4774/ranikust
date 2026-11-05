@@ -490,6 +490,44 @@ impl RootPath {
         }
     }
 
+    /// [`RootPath::statx`] of a physical path, as the kernel prints one (a
+    /// mount point in `/proc/self/mountinfo`, a `readlink` of
+    /// `/proc/self/fd/<n>`): reached with no symlink in any component
+    /// (`RESOLVE_NO_SYMLINKS`), across mounts unless the root stays on its
+    /// own, the last name not followed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `ENOENT` when
+    /// `p` or a parent is missing.
+    pub fn statx_physical(&self, p: impl AsRef<Path>) -> Result<Stat> {
+        let p = p.as_ref();
+        match path::target(p)? {
+            Target::Root => meta::statx_at(self.fd(), OsStr::new(""), p),
+            Target::Entry { parent, name } => {
+                let mut resolve = IN_ROOT.union(ResolveFlags::NO_SYMLINKS);
+                if self.stay {
+                    resolve |= ResolveFlags::NO_XDEV;
+                }
+                let pfd = openat2_retry(
+                    self.fd(),
+                    path::relative(&parent).as_os_str(),
+                    OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                    Mode::empty(),
+                    resolve,
+                )
+                .map_err(|e| match e {
+                    Errno::NOSYS => Error::Unsupported {
+                        feature: "openat2",
+                        source: e.into(),
+                    },
+                    e => io_err("open", &parent, e),
+                })?;
+                meta::statx_at(pfd.as_fd(), name, p)
+            }
+        }
+    }
+
     /// The names in the directory `p`, without `.` and `..`, in the order
     /// the filesystem returns them. A mount point below `p` is listed like
     /// any other entry.
