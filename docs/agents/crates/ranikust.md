@@ -301,7 +301,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
   the kaniko leg (a default container), `--mode=auto` picking kaniko mode;
   `binary-mounts` is the red team of `refuse_writable_binary` (ADR-0101),
-  a directory root and names removed on the host after the binds included.
+  a directory root and names removed on the host after the binds included;
+  `binary-mounts-made` its mount tables made inside the container (covered
+  and stacked binds, a mount added during the walk, a container told only
+  once ranikust started).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
