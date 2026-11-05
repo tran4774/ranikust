@@ -23,10 +23,11 @@
 //!   `TakeSnapshotFS` writes for a `RUN` that changes nothing.
 //!
 //! The root is live, so every entry is pinned once with `RootPath::pin`:
-//! its physical path resolved with no symlink in any component and without
-//! leaving the root's mount, the `O_PATH` descriptor's `statx` compared
-//! with the walk's record (type, device, inode; a file's size and a file's
-//! or link's `mtime` and `ctime`). The link target, the xattrs and a file's
+//! its physical path resolved with no symlink in a parent (a last one is
+//! pinned as the link itself), no `..` and without leaving the root's
+//! mount, the `O_PATH` descriptor's `statx` compared with the walk's
+//! record (type, device, inode; a file's size and a file's or link's
+//! `mtime` and `ctime`). The link target, the xattrs and a file's
 //! content are read from that pin, the content through a reopen of exactly
 //! that inode. In `full` mode the target and the content written are
 //! hashed again and must match the walk's hashes: an inode number can come

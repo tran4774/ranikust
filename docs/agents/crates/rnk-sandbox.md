@@ -272,7 +272,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_escaped_names_in_the_mount_table_are_compared_unescaped`; a
   file bind told by its inode, renamed or replaced, a mount root reached at
   its mount point (a file inside the mount is not its root), a symlink on
-  the way placing nothing, a covered mount not looked up, a table that
+  the way placing nothing, a covered mount not looked up (a chain of
+  parents ending at its first repeat), a table that
   changed during the walk placing nothing, no walk when not asked
   (`NotWeighed`), what cannot be told placing nothing (the binary's own
   name removed while it runs among them), a failed lookup keeping its

@@ -324,6 +324,15 @@ fn statx_physical_refuses_a_symlink_in_a_parent() {
     assert!(proc.mount_root);
     let version = host.statx_physical("/proc/version").unwrap();
     assert!(!version.mount_root && version.mnt_id == proc.mnt_id);
+    // A magic link in a parent is not followed either.
+    let magic = format!("/proc/{}/root/proc", std::process::id());
+    let e = host.statx_physical(&magic).unwrap_err();
+    assert_eq!(errno(&e), Some(Errno::LOOP), "{magic}: {e}");
+    // The kernel prints no `..`: `RESOLVE_IN_ROOT` would clamp one, not refuse it.
+    for p in ["/../d/t", "/d/../d/t", "d/.."] {
+        let e = f.root.statx_physical(p).unwrap_err();
+        assert!(matches!(e, Error::InvalidPath { .. }), "{p}: {e}");
+    }
     let e = f.root.statx_physical("missing").unwrap_err();
     assert_eq!(errno(&e), Some(Errno::NOENT));
 }
@@ -359,6 +368,10 @@ fn pin_refuses_a_symlink_in_a_parent_and_reads_through_the_pin() {
 
     let e = f.root.pin("l/f").unwrap_err();
     assert_eq!(errno(&e), Some(Errno::LOOP), "{e}");
+    for p in ["../d/f", "other/../d/f"] {
+        let e = f.root.pin(p).unwrap_err();
+        assert!(matches!(e, Error::InvalidPath { .. }), "{p}: {e}");
+    }
 
     let pinned = f.root.pin("d/f").unwrap();
     assert_eq!(pinned.stat().file_type(), FileType::Regular);

@@ -494,21 +494,28 @@ impl Seen {
 /// above it that is not one of the mounts `m` lies on (its parents), so
 /// mounted over it later. Told from the table alone, before any lookup.
 fn covered(mounts: &[MountInfo], m: &MountInfo) -> bool {
-    let mut below = Vec::new();
-    let mut parent = m.parent_id;
-    // A cycle cannot be longer than the table.
-    for _ in 0..mounts.len() {
-        let Some(p) = mounts.iter().find(|p| p.mount_id == parent) else {
-            break;
-        };
-        below.push(p.mount_id);
-        parent = p.parent_id;
-    }
+    let below = lies_on(mounts, m);
     mounts.iter().any(|o| {
         o.mount_id != m.mount_id
             && !below.contains(&o.mount_id)
             && m.mount_point.starts_with(&o.mount_point)
     })
+}
+
+/// The mounts `m` lies on: its parent, that one's parent and so on, up to
+/// one the table lacks or one already met.
+fn lies_on(mounts: &[MountInfo], m: &MountInfo) -> Vec<u64> {
+    let mut below = Vec::new();
+    let mut parent = m.parent_id;
+    // A line naming itself as its parent, or a cycle, would repeat for as long as the table.
+    while let Some(p) = mounts.iter().find(|p| p.mount_id == parent) {
+        if below.contains(&p.mount_id) {
+            break;
+        }
+        below.push(p.mount_id);
+        parent = p.parent_id;
+    }
+    below
 }
 
 /// [`reached_writable`] with the binary's name and each mount point looked

@@ -515,9 +515,9 @@ pkg/snapshot/snapshot.go:341-391`):
   not written, as BuildKit and overlay mode (ADR-0045). The exporter never
   resolves a symlink.
 - **The root is live.** Every entry is pinned once with `RootPath::pin`: its
-  physical path resolved with no symlink in any component and without leaving
-  the root's mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`, `O_PATH |
-  O_NOFOLLOW`). The pin's `statx` is checked against the walk's record: type,
+  physical path resolved with no symlink in a parent (a last one is pinned as
+  the link itself), no `..` and without leaving the root's mount
+  (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`, `O_PATH | O_NOFOLLOW`). The pin's `statx` is checked against the walk's record: type,
   device, inode; a regular file's size; a file's or symlink's `mtime` and
   `ctime`, not a directory's, whose entry is written from the walk's record.
   The inode number alone is not enough, since a file deleted and created again

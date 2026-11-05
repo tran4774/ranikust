@@ -426,9 +426,10 @@ impl RootPath {
     /// # Errors
     ///
     /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `EXDEV` for a
-    /// parent on another mount, `ENOENT` when `p` is gone.
+    /// parent on another mount, `ENOENT` when `p` is gone;
+    /// [`Error::InvalidPath`] for a path with a `..`.
     pub fn pin(&self, p: impl AsRef<Path>) -> Result<Pinned> {
-        let p = p.as_ref();
+        let p = path::physical(p.as_ref())?;
         let resolve = IN_ROOT
             .union(ResolveFlags::NO_SYMLINKS)
             .union(ResolveFlags::NO_XDEV);
@@ -501,10 +502,10 @@ impl RootPath {
     /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `EXDEV` for a
     /// parent on another mount when the root stays on its own
     /// (`stay_on_mount`), `ENOENT` when `p` or a parent is missing;
-    /// [`Error::InvalidPath`] for a path ending in `..`;
+    /// [`Error::InvalidPath`] for a path with a `..`;
     /// [`Error::Unsupported`] without `openat2`.
     pub fn statx_physical(&self, p: impl AsRef<Path>) -> Result<Stat> {
-        let p = p.as_ref();
+        let p = path::physical(p.as_ref())?;
         match path::target(p)? {
             Target::Root => meta::statx_at(self.fd(), OsStr::new(""), p),
             Target::Entry { parent, name } => {

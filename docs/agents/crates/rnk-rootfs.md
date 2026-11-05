@@ -57,9 +57,9 @@ impl RootPath {
     pub fn create_sub_root(&self, p, mode) -> Result<RootPath>; // mkdirat + openat on one parent fd; empty, euid's, parent's mount, else refused (ADR-0059)
     pub fn move_sub_root(&self, name, moved: &RootPath, to: &RootPath, to_name) -> Result<RootPath>; // renameat2(RENAME_NOREPLACE) of one plain name between two roots' fds; identity (dev, ino, mount) checked before and after (ADR-0061)
     pub fn statx(&self, p) -> Result<Stat>;              // no-follow; carries mnt_id, mount_root
-    pub fn statx_physical(&self, p) -> Result<Stat>;     // statx with no symlink in a parent (RESOLVE_NO_SYMLINKS; the last name not followed), across mounts unless stay_on_mount: a path the kernel printed (rnk-sandbox's mount walk, ADR-0101)
+    pub fn statx_physical(&self, p) -> Result<Stat>;     // statx with no symlink in a parent (RESOLVE_NO_SYMLINKS; the last name not followed) or `..`, across mounts unless stay_on_mount: a path the kernel printed (rnk-sandbox's mount walk, ADR-0101)
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // a directory's names, mount points included
-    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, root's mount only (the kaniko exporter)
+    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, no `..`, root's mount only (the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device

@@ -428,10 +428,14 @@ The decision:
   another mount id or a missing path not reached; a removed file's name
   leading nowhere), `a_symlink_on_the_way_places_nothing` (`/proc` through
   a symlink to `/`, a file through a symlinked directory) and
-  `rnk-rootfs`'s `statx_physical_refuses_a_symlink_in_a_parent`,
+  `rnk-rootfs`'s `statx_physical_refuses_a_symlink_in_a_parent` (a
+  `/proc/<pid>/root` magic link in a parent is `ELOOP` too, and a `..`
+  anywhere is refused, by `pin` as well),
   `a_covered_mount_is_not_looked_up` (sample tables: a mount covered at
   its mount point or above it, and the binary's own mount covered, not
   looked up; a mount on it, or one it lies on, does not cover it),
+  `a_mount_chain_ends_at_its_first_repeat` (a line naming itself as its
+  parent, a cycle of two: each mount met once),
   `a_table_that_changed_during_the_walk_places_nothing`,
   `a_build_that_cannot_be_kaniko_on_slash_walks_no_mount` (`NotWeighed`;
   links and an overlay root told as before) and the binary's
@@ -439,9 +443,12 @@ The decision:
   in a container, without `--mode=overlay`);
   `a_mount_root_is_reached_at_its_mount_point`,
   `a_symlink_on_the_way_places_nothing`,
-  `a_covered_mount_is_not_looked_up` and
-  `a_table_that_changed_during_the_walk_places_nothing` each failed with
-  its fix taken out; `STATX_ATTR_MOUNT_ROOT` [measured] in rootless
+  `a_covered_mount_is_not_looked_up`,
+  `a_table_that_changed_during_the_walk_places_nothing`,
+  `a_mount_chain_ends_at_its_first_repeat` and the `..` cases of
+  `statx_physical_refuses_a_symlink_in_a_parent` and
+  `pin_refuses_a_symlink_in_a_parent_and_reads_through_the_pin` each
+  failed with its fix taken out; `STATX_ATTR_MOUNT_ROOT` [measured] in rootless
   podman 5.7.0 on Linux 7.0: set at a file bound read-write or `:ro`, a
   directory bind, `/etc/hostname`, `/proc` and `/`, not at a file inside
   a mount (`/proc/version`, `/etc/passwd`, a file in the directory bind),
