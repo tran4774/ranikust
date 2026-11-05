@@ -181,9 +181,10 @@ What a change here must keep, with where it lives:
   namespace, the profile on top, both without `no_new_privs`, and only then
   sets the effective and permitted sets. After the profile, the command
   checks that its parent is the init (a faked fork fails as `Step::Init`),
-  and the pipe, capability and death-signal reads go through `libc` into
-  values set beforehand, so a call faked with errno 0 leaves nothing
-  uninitialised. A failed install is `Step::Seccomp`, whose message points
+  and the pipe, capability, death-signal, `fstatfs` and `RLIMIT_NOFILE`
+  reads go through `libc` into values set beforehand, which a call faked
+  with errno 0 leaves as they were; the umask is set before the profile
+  too. A failed install is `Step::Seccomp`, whose message points
   to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
   gets no filter and joins its keyring after its capability drop, before
   `setsid`. The default profile refuses `keyctl`, `add_key` and
@@ -277,7 +278,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   keyring call). The `tests::kernel` modules, skipped under qemu-user,
   install filters in forked children: `seccomp::profile`'s (compiled
   profiles), `caps`'s (an `EINVAL` from a bounding drop) and `child`'s (an
-  `EACCES` on the keyring join, a faked `setsid`).
+  `EACCES` on the keyring join, a faked `setsid`, `pipe2` or
+  `fstatfs`).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.

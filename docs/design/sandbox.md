@@ -79,8 +79,9 @@ network namespace. The first such `RUN` probes once
   so cannot fake its install, and under `--seccomp=unconfined` too, that
   refuses what that would open: `setns`, new user namespaces, `io_uring`,
   the netfilter, IPVS and IPsec interfaces, all netlink but route,
-  sock_diag, audit and uevent, and `clone3`. The exact list and the residual risk (every other interface
-  `CAP_NET_ADMIN` opens, rtnetlink first) are in the ADR.
+  sock_diag, audit and uevent, and `clone3`. The exact list and the
+  residual risk (every other interface `CAP_NET_ADMIN` opens, rtnetlink
+  first) are in the ADR.
 
 **Seccomp profile**
 ([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md),
@@ -116,8 +117,9 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   sets, since the install needs `CAP_SYS_ADMIN` without `no_new_privs`, so
   that a setuid binary of the `RUN` keeps working, and the init's and the
   command's own steps (step 5 on): the command checks that the init really
-  forked it, and calls the child reads back go through `libc` into values
-  set beforehand. What a faked success there still changes is in the
+  forked it, the umask is set before the profile too, and what the child
+  reads back from a call goes through `libc` into values set beforehand.
+  What a faked success there still changes is in the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.
@@ -269,13 +271,14 @@ The steps, in order:
      (`/proc/self/stat` fields 48 to 51, refused as `Step::Init` if zero;
      `/proc/1/cmdline` has no ptrace check) and forks. The new process, PID 2,
      checks that its parent is PID 1 (a fork the profile faked fails as
-     `Step::Init`), waits on a close-on-exec go pipe, then runs steps 6 to 8
-     and becomes the command.
+     `Step::Init` with `EPROTO`), waits on a close-on-exec go pipe, then
+     runs steps 6 to 8 and becomes the command.
    - The init keeps the death signal of step 1, drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
      and the go pipe's, the latter last: that lets the command go on (a failure
-     before kills the command unrun and is reported as `Step::Init`).
+     before kills the command unrun and is reported as `Step::Init`, unless
+     the profile fakes the command's read of that pipe).
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits.
