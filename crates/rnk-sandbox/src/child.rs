@@ -515,11 +515,12 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         loopback_up(err);
     }
     // Every step that keeps the `RUN` in and need not follow its profile
-    // comes before it: the profile is the operator's, and may answer any
-    // call with any errno, 0 (a faked success) included (ADR-0109). After
-    // it come the capability cut, since the install needs `CAP_SYS_ADMIN`,
-    // and the init's and the command's own steps, whose faked successes
-    // the threat model lists (section 6).
+    // comes before it: the profile is the operator's, and may refuse any
+    // call with any errno, one the child takes for "unsupported" included
+    // (errno 0, a faked success, is refused when it compiles; ADR-0109).
+    // After it come the capability cut, since the install needs
+    // `CAP_SYS_ADMIN`, and the init's and the command's own steps, which
+    // only a filter around ranikust could fake (threat model, section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
     // order); the command, PID 2, inherits it. Still as root: it counts
@@ -538,7 +539,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
     );
     new_session(err);
-    // Before the profile could fake it: the layer must not follow ranikust's umask.
+    // Before the profile, which could refuse it: the layer must not follow ranikust's umask.
     rustix::process::umask(Mode::from_raw_mode(0o022));
     // After the namespace is joined and every mount made, which the filters
     // would refuse. ADR-0033's first: the profile on top cannot fake its
@@ -578,8 +579,8 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// session of its own, so that no terminal signal reaches it, before the
 /// `RUN`'s profile. The command waits on the go pipe until the init has
 /// given all that up, so a failure of the init's own steps (`Step::Init`)
-/// comes before the command ran, unless the profile fakes the command's
-/// `read` of that pipe (threat model, section 6). The init reaps every
+/// comes before the command ran, unless a filter around ranikust fakes the
+/// command's `read` of that pipe (threat model, section 6). The init reaps every
 /// process that reparents to it; when the command exits, it writes the
 /// command's wait status on the status pipe and exits, and the kernel kills
 /// the rest, as when the command was PID 1 itself.
@@ -617,9 +618,9 @@ fn run_init(
         fail(err, Step::Init, last_errno());
     }
     if ret == 0 {
-        // Only a real fork has the init, PID 1, for its parent: a profile
-        // that fakes the `clone` (errno 0) would have the init run the
-        // command itself, and a faked `getppid` gives 0 or below.
+        // Only a real fork has the init, PID 1, for its parent: a filter
+        // around ranikust faking the `clone` (errno 0) would have the init
+        // run the command itself, and a faked `getppid` gives 0 or below.
         // SAFETY: a plain syscall without arguments.
         if unsafe { libc::getppid() } != 1 {
             fail(err, Step::Init, Errno::PROTO);
@@ -656,8 +657,8 @@ fn run_init(
 }
 
 /// The init's go pipe, close-on-exec, through `libc` into descriptors set
-/// to -1 first: after the `RUN`'s profile, a `pipe2` faked with errno 0
-/// writes nothing, and `rustix` would read its buffer uninitialised.
+/// to -1 first: a `pipe2` faked with errno 0, as a filter around ranikust
+/// may, writes nothing, and `rustix` would read its buffer uninitialised.
 fn init_pipe(err: RawFd) -> (OwnedFd, OwnedFd) {
     let mut fds: [libc::c_int; 2] = [-1, -1];
     // SAFETY: `pipe2` writes at most two descriptors into `fds`.
@@ -1988,9 +1989,9 @@ fn close_all_except(keep: &[RawFd]) {
 }
 
 /// Whether `dir` is on procfs, read through `libc` into a zeroed buffer:
-/// after the `RUN`'s profile, an `fstatfs` faked with errno 0 writes
-/// nothing, which `rustix` would read uninitialised; a zero type is not
-/// procfs's.
+/// an `fstatfs` faked with errno 0, as a filter around ranikust may,
+/// writes nothing, which `rustix` would read uninitialised; a zero type is
+/// not procfs's.
 fn on_procfs(dir: BorrowedFd<'_>) -> bool {
     // SAFETY: an all-zero `statfs` is a valid value of the C struct.
     let mut st: libc::statfs = unsafe { std::mem::zeroed() };
@@ -2001,7 +2002,7 @@ fn on_procfs(dir: BorrowedFd<'_>) -> bool {
 
 /// `RLIMIT_NOFILE`'s hard (`hard`) or soft bound, at most `cap`, which also
 /// stands for an unlimited or unreadable one. Through `libc` into a value
-/// set beforehand: after the `RUN`'s profile, a faked `prlimit64` writes
+/// set beforehand: a `prlimit64` faked by a filter around ranikust writes
 /// nothing, which `rustix` would read uninitialised.
 fn nofile_bound(hard: bool, cap: u32) -> RawFd {
     let cap = libc::rlim_t::from(cap);
@@ -2059,10 +2060,10 @@ fn close_listed(keep: &[RawFd]) -> bool {
     }
 }
 
-/// `setsid` through `libc`: after the `RUN`'s profile, which may fake it
-/// with errno 0, the result can be 0, which `rustix`'s `Pid` must never
-/// hold (a debug assertion, else undefined behaviour). A faked call leaves
-/// the command in its init's session, which has no controlling terminal
+/// `setsid` through `libc`: a filter around ranikust may fake it with
+/// errno 0, so the result can be 0, which `rustix`'s `Pid` must never hold
+/// (a debug assertion, else undefined behaviour). A faked call leaves the
+/// command in its init's session, which has no controlling terminal
 /// either.
 fn new_session(err: RawFd) {
     // SAFETY: a plain syscall without arguments.
@@ -2147,8 +2148,8 @@ fn clear_inheritable(err: RawFd) {
     );
 }
 
-/// This thread's capability sets, read through `libc` into zeroed data:
-/// after the `RUN`'s profile, a `capget` faked with errno 0 writes
+/// This thread's capability sets, read through `libc` into zeroed data: a
+/// `capget` faked with errno 0, as a filter around ranikust may, writes
 /// nothing, and `rustix` would read its buffer uninitialised. Empty sets
 /// then keep nothing, which fails safe.
 fn current_capabilities(err: RawFd) -> CapabilitySets {
@@ -2684,9 +2685,9 @@ mod tests {
             );
         }
 
-        /// The init's go pipe comes after the profile: a `pipe2` faked with
-        /// errno 0 writes no descriptor, which fails the `RUN` instead of
-        /// handing on two that were never opened.
+        /// A `pipe2` of the init's faked with errno 0, as a filter around
+        /// ranikust may, writes no descriptor, which fails the `RUN`
+        /// instead of handing on two that were never opened.
         #[test]
         fn a_faked_pipe_fails_the_init() {
             let rule = r#"{"names": ["pipe2"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
@@ -2709,9 +2710,9 @@ mod tests {
             std::hint::black_box(&mut words);
         }
 
-        /// The descriptor lists come after the profile: an `fstatfs` faked
-        /// with errno 0 makes `/proc/self/fd` read as not procfs, so the
-        /// list is not trusted, whatever the stack held before.
+        /// An `fstatfs` faked with errno 0, as a filter around ranikust
+        /// may, makes `/proc/self/fd` read as not procfs, so the list is
+        /// not trusted, whatever the stack held before.
         #[test]
         fn a_faked_fstatfs_is_not_procfs() {
             let dir = rustix::fs::open(
@@ -2733,9 +2734,9 @@ mod tests {
             );
         }
 
-        /// The descriptor-closing fallbacks come after the profile: a
-        /// `prlimit64` refused, or faked with errno 0 whatever the stack
-        /// held before, leaves the bound at its cap. `prlimit64` alone:
+        /// For the descriptor-closing fallbacks, a `prlimit64` refused, or
+        /// faked with errno 0 by a filter around ranikust whatever the
+        /// stack held before, leaves the bound at its cap. `prlimit64` alone:
         /// glibc and musl read the limit through it, and aarch64's glibc
         /// names no `getrlimit`.
         #[test]
@@ -2756,10 +2757,10 @@ mod tests {
             }
         }
 
-        /// The command's `setsid` comes after its profile, which may fake
-        /// it with errno 0 (ADR-0109): that fails nothing (the command
-        /// stays in its init's session) and never reaches a `Pid`; a real
-        /// refusal fails the `RUN`.
+        /// The command's `setsid` faked with errno 0, as a filter around
+        /// ranikust may (ADR-0109), fails nothing (the command stays in its
+        /// init's session) and never reaches a `Pid`; a real refusal fails
+        /// the `RUN`.
         #[test]
         fn a_faked_setsid_fails_nothing_and_a_refused_one_fails_the_run() {
             for (errno, want) in [(0, None), (libc::EPERM, Some((Step::Session, libc::EPERM)))] {

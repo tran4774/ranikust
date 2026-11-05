@@ -3431,9 +3431,10 @@ mod tests {
     }
 
     /// T2 (ADR-0109): every step that keeps a `RUN` in comes before its
-    /// profile, which may answer any call with a faked success (errno 0)
-    /// or an errno the child would take for "unsupported" (`EINVAL`). Under
-    /// such a profile the `RUN`'s bounding set is still Docker's defaults,
+    /// profile, which may answer any call with an errno the child would
+    /// take for "unsupported" (`EINVAL`); the cases with a faked success
+    /// (errno 0), which `--seccomp` refuses, stand for a profile that could
+    /// answer so. Under such a profile the `RUN`'s bounding set is still Docker's defaults,
     /// its inheritable and ambient sets stay empty (with ranikust holding
     /// `CAP_SYS_ADMIN` in both, which a root `execve` would add back; the
     /// ambient set goes with the inheritable one, so the case cannot tell
