@@ -104,8 +104,9 @@ below), so it must not be able to change what the set-up does.
   init not dumpable, starts its session and sets the umask, then installs
   ADR-0033's filter and the profile on top of it. After the profile come
   only the `capset` to the default sets, since the install needs
-  `CAP_SYS_ADMIN`, and the init's and the command's own steps (the init's fork, which the command
-  checks, its capability drop, the command's session and `USER` switch).
+  `CAP_SYS_ADMIN`, and the init's and the command's own steps (the init's
+  fork, which the command checks, its capability drop, the command's
+  session and `USER` switch).
   A call both filters refuse now gets the profile's errno; what is refused
   stays the same. An `EINVAL` from a bounding-set drop ends the list only
   when `caps::last_cap()` could not read the kernel's and assumed 63;

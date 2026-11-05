@@ -675,16 +675,15 @@ fn init_pipe(err: RawFd) -> (OwnedFd, OwnedFd) {
 }
 
 /// The command waits here until the init has closed its write end of the
-/// go pipe; any other outcome of the read fails the `RUN`.
+/// go pipe; any other outcome of the read fails the `RUN`, `EINTR`
+/// included: with no handler, the kernel restarts a read a signal
+/// interrupts, so only a filter answers so, and it could forever.
 fn wait_for_go(err: RawFd, go: &OwnedFd) {
     let mut byte = [0u8; 1];
-    loop {
-        match rustix::io::read(go, &mut byte) {
-            Ok(0) => return,
-            Ok(_) => fail(err, Step::Init, Errno::PROTO),
-            Err(Errno::INTR) => {}
-            Err(e) => fail(err, Step::Init, e),
-        }
+    match rustix::io::read(go, &mut byte) {
+        Ok(0) => {}
+        Ok(_) => fail(err, Step::Init, Errno::PROTO),
+        Err(e) => fail(err, Step::Init, e),
     }
 }
 
@@ -696,12 +695,10 @@ fn zero_args_and_environment(err: RawFd, parent: ParentCheck) {
     // SAFETY: `stat` is open in this process.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 1024];
-    let len = loop {
-        match rustix::io::pread(stat, &mut buf, 0) {
-            Ok(n) => break n,
-            Err(Errno::INTR) => {}
-            Err(e) => fail(err, Step::Init, e),
-        }
+    // One read: an `EINTR` comes only from a filter (`wait_for_go`).
+    let len = match rustix::io::pread(stat, &mut buf, 0) {
+        Ok(n) => n,
+        Err(e) => fail(err, Step::Init, e),
     };
     let Some(regions) = buf.get(..len).and_then(arg_and_env_regions) else {
         fail(err, Step::Init, Errno::INVAL)
@@ -795,12 +792,9 @@ fn parent_alive(parent: ParentCheck) -> bool {
     // SAFETY: `stat` is open in this process until it is closed below.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 256];
-    let len = loop {
-        match rustix::io::pread(stat, &mut buf, 0) {
-            Ok(n) => break n,
-            Err(Errno::INTR) => {}
-            Err(_) => return false,
-        }
+    // One read: an `EINTR` comes only from a filter (`wait_for_go`).
+    let Ok(len) = rustix::io::pread(stat, &mut buf, 0) else {
+        return false;
     };
     matches!(buf.get(..len).and_then(stat_pid_and_ppid), Some((_, ppid)) if ppid == parent.parent)
 }
@@ -867,16 +861,14 @@ pub(crate) fn default_signals() {
 /// its wait status. A tracee stop (the command may make the init its
 /// tracer with `PTRACE_TRACEME`) is never taken for an end: the init
 /// detaches, handing the stop signal on. Ends the init (status 125, nothing
-/// reported) if `waitpid` gives no child: none is left before the command
-/// was reaped, which cannot happen, or a filter answered it.
+/// reported) when `waitpid` returns 0 or fails, whatever the errno, `EINTR`
+/// included: a real one cannot, with the command unreaped, no `WNOHANG` and
+/// no handler; only a filter answers so, and it could forever.
 fn reap_until(command: libc::pid_t) -> i32 {
     loop {
         let mut status: libc::c_int = 0;
         // SAFETY: `waitpid` writes the status, which lives across the call.
         let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::__WALL) };
-        // Without `WNOHANG` a real `waitpid` never returns 0, and with no
-        // handler the kernel restarts one a signal interrupts: 0 or `EINTR`
-        // comes from a filter, which could answer so forever.
         if pid <= 0 {
             // SAFETY: `_exit` ends the process at once.
             unsafe { libc::_exit(125) }
@@ -2660,6 +2652,52 @@ mod tests {
             }
         }
 
+        /// The reads after the profile take `EINTR` for a failure instead of
+        /// reading again: only a filter answers so, and it could forever.
+        /// The alarm stops a loop.
+        #[test]
+        fn an_eintr_on_a_read_after_the_profile_fails_instead_of_looping() {
+            let stat = rustix::fs::open(
+                c"/proc/self/stat",
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            let parent = ParentCheck {
+                stat: stat.as_raw_fd(),
+                parent: 0,
+            };
+            let (go, _go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+            let eintr = |name: &str| {
+                format!(
+                    r#"{{"names": ["{name}"], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}"#,
+                    libc::EINTR
+                )
+            };
+            let alarm = || {
+                // SAFETY: `alarm` only arms a timer.
+                unsafe { libc::alarm(5) };
+            };
+            let init = |e| Some((Step::Init, e));
+            let go_read = failure_under(&eintr("read"), |w| {
+                alarm();
+                wait_for_go(w, &go);
+            });
+            assert_eq!(go_read, init(libc::EINTR), "go pipe");
+            let zeroing = failure_under(&eintr("pread64"), |w| {
+                alarm();
+                zero_args_and_environment(w, parent);
+            });
+            assert_eq!(zeroing, init(libc::EINTR), "argument areas");
+            let alive = failure_under(&eintr("pread64"), |w| {
+                alarm();
+                if !parent_alive(parent) {
+                    fail(w, Step::Init, Errno::SRCH);
+                }
+            });
+            assert_eq!(alive, init(libc::ESRCH), "parent check");
+        }
+
         /// A `#!` heredoc's `execveat` answered with no error fails the
         /// `RUN` with `EPROTO`, whatever `errno` held before.
         #[test]
@@ -2701,8 +2739,9 @@ mod tests {
         fn a_waitpid_answered_with_0_or_eintr_ends_the_init() {
             for errno in [0, libc::EINTR] {
                 let rule = format!(
-                    r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{{"names": ["wait4", "waitid"],
-                        "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}]}}"#
+                    r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                        {{"names": ["wait4", "waitid"], "action": "SCMP_ACT_ERRNO",
+                          "errnoRet": {errno}}}]}}"#
                 );
                 let prog = crate::SeccompProfile::faking(rule.as_bytes())
                     .unwrap()

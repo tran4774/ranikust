@@ -118,8 +118,7 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   (step 5 on). A filter around ranikust may still fake a success; the
   child checks what it can (the init's fork, an `execve` or `execveat` back
   without an error and a blocking `waitpid` back with no child fail the
-  `RUN`, and a read goes into a value set beforehand), and the rest is in
-  the
+  `RUN`, and a read goes into a value set beforehand), and the rest is in the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.

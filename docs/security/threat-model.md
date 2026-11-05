@@ -230,8 +230,8 @@ These follow from decisions and are documented to users rather than fixed:
   A filter around ranikust, which the operator's runtime installs and
   ranikust does not control, may still fake one, for ranikust's own calls
   and every step of the `RUN`'s set-up. The child checks what it can: a
-  faked fork of the init, `execve` or blocking `waitpid` fails the `RUN`,
-  and a read goes into a value set beforehand. The other steps trust the
+  faked fork of the init, `execve`, `execveat` or blocking `waitpid` fails
+  the `RUN`, and a read goes into a value set beforehand. The other steps trust the
   answer, such as the capability cut, the command's session and `USER`
   switch and the `PATH` search. Docker's default profile fakes no call.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary

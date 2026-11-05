@@ -182,11 +182,13 @@ What a change here must keep, with where it lives:
   on top, both without `no_new_privs`, and only then sets the effective and
   permitted sets. Against a filter around ranikust, which can fake a
   success, the command checks that its parent is the init (`Step::Init`),
-  an `execve` or `execveat` back without an error fails as `Step::Exec`
-  (`EPROTO`) and tries no next candidate, a blocking `waitpid` back with 0
-  or an error, `EINTR` included, ends the init (125), `last_errno` reads errno 0 as `EPROTO`, and the pipe, capability,
-  death-signal, `fstatfs` and `RLIMIT_NOFILE` reads go through `libc` into
-  values set beforehand. A failed install is `Step::Seccomp`, whose message
+  an `execve` (trying no next candidate) or `execveat` back without an
+  error fails as `Step::Exec` (`EPROTO`), a blocking `waitpid` back with 0
+  or an error, `EINTR` included, ends the init (125), an `EINTR` on a read
+  after the profile fails the `RUN` (only a filter gives it, possibly
+  forever), `last_errno` reads errno 0 as `EPROTO`, and the pipe,
+  capability, death-signal, `fstatfs` and `RLIMIT_NOFILE` reads go through
+  `libc` into values set beforehand. A failed install is `Step::Seccomp`, whose message
   points to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
   gets no filter and joins its keyring after its capability drop, before
   `setsid`. The default profile refuses `keyctl`, `add_key` and
@@ -285,12 +287,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   forked children: `seccomp::profile`'s (compiled profiles), `caps`'s (an
   `EINVAL` from a bounding drop) and `child`'s (a refused keyring join with
   the session keyring found or not, each `KeyringJoin`; an `execve` or
-  `execveat` back without an error; a `waitpid` back with 0 or `EINTR`; a
-  refused `umask` after the profile; a
-  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
-  last two on a stack filled beforehand, which shows an unwritten buffer in
-  a debug build only; these test the helpers, not their call sites, whose
-  `/proc/self/fd` opening overwrites that stack).
+  `execveat` back without an error; a `waitpid` back with 0 or `EINTR`; an
+  `EINTR` on the reads after the profile; a refused `umask` after the
+  profile; a faked `setsid`, `pipe2` or `fstatfs`, a faked or refused
+  `prlimit64`; the last two on a stack filled beforehand, which shows an
+  unwritten buffer in a debug build only; these test the helpers, not
+  their call sites, whose `/proc/self/fd` opening overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
