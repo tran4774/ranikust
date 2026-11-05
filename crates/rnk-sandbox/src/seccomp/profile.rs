@@ -25,8 +25,8 @@
 //! a listener, a flag other than `TSYNC`, `LOG` and `SPEC_ALLOW`, a name
 //! unknown here under an action other than `SCMP_ACT_ALLOW`, two conditions
 //! on one argument in a rule, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked
-//! success), one from 512 to 530 (the kernel's `ERESTART*` codes and their
-//! neighbours) or above 4095, and anything malformed.
+//! success) or from 512 up (where the kernel keeps its own codes), and
+//! anything malformed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -45,9 +45,9 @@ const DOCKER_DEFAULT: &[u8] = include_bytes!("default.json");
 /// The kernel caps an errno at `MAX_ERRNO`.
 const MAX_ERRNO: u32 = 4095;
 
-/// The `ERESTART*` codes and their neighbours in the kernel's
-/// `include/linux/errno.h`, refused as a profile's errno.
-const KERNEL_ERRNOS: std::ops::RangeInclusive<u32> = 512..=530;
+/// The first of the kernel's own codes (`ERESTARTSYS`), past the errnos a
+/// call returns to user space; a profile's errno stays below it.
+const FIRST_KERNEL_ERRNO: u32 = 512;
 
 /// The architectures runtime-spec names; only the native one is compiled.
 const ARCHES: [&str; 23] = [
@@ -503,19 +503,18 @@ fn refused_always(rules: &[Rule], default: Action) -> bool {
 
 /// Why a profile may not answer with `act`'s errno, if it may not
 /// (ADR-0109): 0 fakes a success the set-up after the profile would trust,
-/// and 512 (`ERESTARTSYS`) to 530, the kernel's `ERESTART*` codes and their
-/// neighbours, are no answer: on 516 (`ERESTART_RESTARTBLOCK`) the kernel
-/// may run its restart block instead, which can succeed.
+/// and from 512 (`ERESTARTSYS`) up the kernel keeps its own codes, which
+/// are no answer: on 516 (`ERESTART_RESTARTBLOCK`) it may run its restart
+/// block instead, which can succeed, and a later kernel may add more.
 fn errno_refused(act: Action, cx: &Context) -> Option<String> {
-    const GIVE: &str = "give an errno from 1 to 511 or 531 to 4095";
+    const GIVE: &str = "give an errno from 1 to 511";
     match act {
         Action::Errno(0) if !cx.fakes() => Some(format!(
             "0 would fake the success of the calls it refuses; {GIVE}"
         )),
-        Action::Errno(e) if KERNEL_ERRNOS.contains(&e) => Some(format!(
-            "{e} is in 512 to 530, the kernel's ERESTART* codes and their \
-             neighbours (on 516 the kernel may run its restart block instead \
-             of refusing); {GIVE}"
+        Action::Errno(e) if e >= FIRST_KERNEL_ERRNO => Some(format!(
+            "{e} is from 512 up, where the kernel keeps its own codes (on 516 \
+             it may run its restart block instead of refusing); {GIVE}"
         )),
         Action::Errno(_)
         | Action::KillProcess

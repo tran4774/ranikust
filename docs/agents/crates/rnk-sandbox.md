@@ -172,12 +172,11 @@ What a change here must keep, with where it lives:
   name under a refusing action, two conditions on one argument, a rule without
   names, over 4096 instructions) is `Error::SeccompProfile`, never weakened,
   as is an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success;
-  `SeccompProfile::faking` compiles one in the tests only), one from 512 to
-  530, the kernel's `ERESTART*` codes and their neighbours (516 may have the
-  kernel run its restart block instead), or above 4095. Syscall numbers come
-  from `libc` only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names
-  per target, ADR-0009); a call the profile allows that `libc` does not name
-  gets `ENOSYS`, and the T0 test
+  `SeccompProfile::faking` compiles one in the tests only) or from 512 up,
+  where the kernel keeps its own codes (516 may have it run its restart block
+  instead). Syscall numbers come from `libc` only (`seccomp/syscalls.rs`, a
+  table of `libc`'s `SYS_*` names per target, ADR-0009); a call the profile
+  allows that `libc` does not name gets `ENOSYS`, and the T0 test
   `calls_the_default_allows_but_libc_does_not_name_are_pinned` lists them per
   target. A profile can only let a call run, refuse it or kill, so after every
   mount the full sandbox's child makes every step that need not follow it
@@ -285,8 +284,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
-  aarch64, `includes`/`excludes`, refused profiles, errno 0, 512 to 530 and
-  above 4095 included, which ones refuse every keyring call);
+  aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno
+  from 512 to 600, 4095 and above included, which ones refuse every keyring
+  call);
   `errno_0_reads_as_eproto`. The `tests::kernel` modules, skipped under
   qemu-user, install filters in forked children: `seccomp::profile`'s
   (compiled profiles), `caps`'s (an `EINVAL` from a bounding drop) and

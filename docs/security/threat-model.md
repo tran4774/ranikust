@@ -225,10 +225,9 @@ These follow from decisions and are documented to users rather than fixed:
   filter is only as right as that compiler, which T0 tests check against a
   table of moby's profile and in forked children.
 - A `RUN`'s seccomp profile cannot fake a success: `--seccomp` refuses an
-  `SCMP_ACT_ERRNO` whose errno would be 0 or from 512 to 530 (the kernel's
-  `ERESTART*` codes and their neighbours); it refuses `SCMP_ACT_TRACE` and
-  `SCMP_ACT_NOTIFY`; and `SCMP_ACT_TRAP` kills the set-up, which has no
-  handler for it
+  `SCMP_ACT_ERRNO` whose errno would be 0 or from 512 up (the kernel's own
+  codes); it refuses `SCMP_ACT_TRACE` and `SCMP_ACT_NOTIFY`; and
+  `SCMP_ACT_TRAP` kills the set-up, which has no handler for it
   ([ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)).
   A filter around ranikust, which the operator's runtime installs and
   ranikust does not control, may still fake one, for ranikust's own calls
@@ -238,11 +237,12 @@ These follow from decisions and are documented to users rather than fixed:
   trust the answer, such as the capability cut, the command's session and
   `USER` switch and the `PATH` search. Docker's default profile fakes no
   call.
-- A `RUN`'s profile that refuses `close` can hang that `RUN` until the build
-  is cancelled, a limit of reliability, not of security: the descriptors the
-  init closes are counted by attempt, not by success (`close_listed`), and the
-  go pipe that starts the command stays open. Docker's default profile allows
-  `close`.
+- A `RUN`'s profile that refuses `close` hangs that `RUN` until the build is
+  cancelled, a limit of reliability, not of security: the go pipe that
+  starts the command stays open. If it refuses `close_range` too, the init
+  first busy-loops in `close_listed`, which counts attempts, not successes,
+  holding up to the soft `RLIMIT_NOFILE` in descriptors, then waits. Docker's
+  default profile allows `close`.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

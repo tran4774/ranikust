@@ -517,8 +517,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // Every step that keeps the `RUN` in and need not follow its profile
     // comes before it: the profile is the operator's, and may refuse any
     // call with any errno `--seccomp` accepts, one the child takes for
-    // "unsupported" included (errno 0, a faked success, and 512 to 530 are
-    // refused when it compiles; ADR-0109).
+    // "unsupported" included (errno 0, a faked success, and those from 512
+    // up are refused when it compiles; ADR-0109).
     // After it come the capability cut, since the install needs
     // `CAP_SYS_ADMIN`, and the init's and the command's own steps, which
     // only a filter around ranikust could fake (threat model, section 6).
@@ -1952,9 +1952,10 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// `/proc/self/fd` is there; a filter around ranikust that answers
 /// `close_range` with success without running it goes unnoticed, as no
 /// call here checks that the descriptors are gone (a `RUN`'s profile
-/// cannot answer so, ADR-0109); and in the init, a profile that refuses
-/// `close_range` and `close` keeps `close_listed` passing again, as it
-/// counts attempts, not successes (threat model, section 6).
+/// cannot answer so, ADR-0109); and in the init, under a profile that
+/// refuses `close_range` and `close`, `close_listed` counts attempts, not
+/// successes, so it passes again, leaking its own directory descriptor each
+/// time, until `openat` fails at `RLIMIT_NOFILE` (threat model, section 6).
 fn close_all_except(keep: &[RawFd]) {
     let mut ok = true;
     let mut next: u32 = 0;

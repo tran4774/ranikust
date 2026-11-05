@@ -129,11 +129,10 @@ after the host-safety review of that order:
   `defaultErrnoRet`, refuses the profile (exit 2), naming `syscalls[N]` or
   `defaultErrnoRet`. An errno above 4095 is refused too (the filter keeps
   only its low 16 bits), and a negative one is not a number the format
-  takes. A profile can then let a call run, refuse it with an errno from 1
-  to 4095 but 512 to 530 (below), or kill the `RUN`: the steps
-  after it see a refusal, never a success that did not happen. A filter
-  around ranikust, which the operator's runtime installs, may still fake
-  one; ranikust does not control it.
+  takes. A profile can then let a call run, refuse it with an errno from 1 to
+  511 (below), or kill the `RUN`: the steps after it see a refusal, never a
+  success that did not happen. A filter around ranikust, which the operator's
+  runtime installs, may still fake one; ranikust does not control it.
 - **Nor can it answer with an errno from 512 to 530** (the maintainer,
   2026-11-05, after the host-safety review of the errno rule: "Sửa luôn, coi
   là phần của quyết định (khuyến nghị)", fix it now, as part of the decision,
@@ -143,6 +142,12 @@ after the host-safety review of that order:
   checked on the same value: on 516 (`ERESTART_RESTARTBLOCK`) the kernel may
   run its restart block instead of returning the refusal, and that can
   succeed.
+- **Nor with any errno from 512 up** (the maintainer, 2026-11-05, on
+  `ENOGRACE`, 531, which the answer above left accepted: "Từ chối mọi giá
+  trị từ 512 trở lên (khuyến nghị)", refuse every value from 512 up, as
+  recommended). On the same value, a profile's errno must be from 1 to
+  511; this covers 531 and any code a later kernel adds there. An errno
+  above 4095 stays refused as above.
 - **After a refused keyring join, the child looks for ranikust's session
   keyring before the profile** ("Thăm dò keyring (khuyến nghị)", probe the
   keyring, as recommended), with
@@ -165,7 +170,7 @@ after the host-safety review of that order:
 - Good, because a profile can refuse a call but never fake its success:
   the steps after it see a refusal as one.
 - Bad, because a Docker profile file that answers a call with errno 0, or
-  with one from 512 to 530, is refused, though runc, through libseccomp,
+  with one from 512 up, is refused, though runc, through libseccomp,
   would install it [inferred].
 - Bad, because the steps after the profile still trust the answers of a
   filter around ranikust, which ranikust does not control (threat model,

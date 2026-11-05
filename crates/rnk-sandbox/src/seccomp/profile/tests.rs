@@ -175,7 +175,7 @@ const ACTIONS: &str = r#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[
     {"names":["getppid"],"action":"SCMP_ACT_TRAP","args":[{"index":0,"value":5,"op":"SCMP_CMP_EQ"}]},
     {"names":["getppid"],"action":"SCMP_ACT_KILL","args":[{"index":0,"value":6,"op":"SCMP_CMP_EQ"}]},
     {"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":14,"args":[{"index":0,"value":1,"op":"SCMP_CMP_EQ"}]},
-    {"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":4095,"args":[{"index":0,"value":8,"op":"SCMP_CMP_EQ"}]},
+    {"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":511,"args":[{"index":0,"value":8,"op":"SCMP_CMP_EQ"}]},
     {"name":"getppid","action":"SCMP_ACT_KILL_THREAD","args":[{"index":0,"value":9,"op":"SCMP_CMP_EQ"}]}
 ]}"#;
 
@@ -194,7 +194,7 @@ fn each_rule_has_its_action() {
         (4, libc::SECCOMP_RET_KILL_PROCESS),
         (5, libc::SECCOMP_RET_TRAP),
         (6, libc::SECCOMP_RET_KILL_THREAD),
-        (8, errno(4095)),
+        (8, errno(511)),
         (9, libc::SECCOMP_RET_KILL_THREAD),
     ] {
         assert_eq!(verdict(&p, g, a0(arg)), want, "{arg}");
@@ -206,16 +206,33 @@ fn spared() -> [u32; 3] {
     [libc::SYS_exit, libc::SYS_exit_group, libc::SYS_getppid].map(nr)
 }
 
-/// Distinct errnos for nearly every call, `nr + 1`, and a chain of 60
-/// rules on `getppid`, `1000 + arg0`: the search tree and the chain jump
-/// further than 8 bits allow.
+/// [`long_profile`]'s errno for call `n`: its place among the numbers,
+/// from 1 to 451, so that the errnos stay distinct below the chain's and
+/// below 512 (ADR-0109) however high the numbers go.
+fn long_errno(n: u32) -> u32 {
+    let numbers: std::collections::BTreeSet<u32> = syscalls::all()
+        .map(|(_, n)| n)
+        .filter(|n| !spared().contains(n))
+        .collect();
+    let place = numbers.iter().position(|&m| m == n).unwrap();
+    1 + u32::try_from(place).unwrap() % 451
+}
+
+/// [`long_profile`]'s errno for `getppid` with `arg0` from 0 to 59.
+fn chain_errno(arg0: u32) -> u32 {
+    452 + arg0
+}
+
+/// Distinct errnos for nearly every call ([`long_errno`]) and a chain of
+/// 60 rules on `getppid` ([`chain_errno`]): the search tree and the chain
+/// jump further than 8 bits allow.
 fn long_profile() -> Program {
     let mut rules: Vec<String> = syscalls::all()
         .filter(|(_, n)| !spared().contains(n))
         .map(|(name, n)| {
             format!(
                 r#"{{"names":["{name}"],"action":"SCMP_ACT_ERRNO","errnoRet":{}}}"#,
-                n + 1
+                long_errno(n)
             )
         })
         .collect();
@@ -223,7 +240,7 @@ fn long_profile() -> Program {
         rules.push(format!(
             r#"{{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":{},
             "args":[{{"index":0,"value":{i},"op":"SCMP_CMP_EQ"}}]}}"#,
-            1000 + i
+            chain_errno(i)
         ));
     }
     compiled(&format!(
@@ -242,11 +259,11 @@ fn long_jumps_reach_their_targets() {
         .any(|i| i.code == super::super::asm::JA && i.k > 255);
     assert!(far, "a jump through ja");
     for (_, n) in syscalls::all().filter(|(_, n)| !spared().contains(n)) {
-        let want = errno(i32::try_from(n + 1).unwrap());
+        let want = errno(i32::try_from(long_errno(n)).unwrap());
         assert_eq!(verdict_on(&p, AUDIT_ARCH, n, [0; 6]), want, "{n}");
     }
     for i in 0..60u32 {
-        let want = errno(i32::try_from(1000 + i).unwrap());
+        let want = errno(i32::try_from(chain_errno(i)).unwrap());
         assert_eq!(verdict(&p, libc::SYS_getppid, a0(u64::from(i))), want);
     }
     assert_eq!(verdict(&p, libc::SYS_getppid, a0(60)), ALLOW);
@@ -636,12 +653,12 @@ fn malformed_or_unsupported_profiles_are_refused() {
     }
 }
 
-/// 512 (`ERESTARTSYS`) to 530, the kernel's `ERESTART*` codes and their
-/// neighbours, are refused as an errno of a rule or of the default, even in
-/// a rule another architecture keeps or in the tests' faking profiles; 511
-/// and 531 compile (ADR-0109).
+/// Every errno from 512 up, where the kernel keeps its own codes, is refused
+/// as an errno of a rule or of the default, even in a rule another
+/// architecture keeps or in the tests' faking profiles; 511 compiles
+/// (ADR-0109).
 #[test]
-fn errnos_512_to_530_are_refused() {
+fn errnos_from_512_up_are_refused() {
     let errno_rule = |e: u32, extra: &str| {
         format!(
             r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["getppid"],
@@ -649,42 +666,34 @@ fn errnos_512_to_530_are_refused() {
         )
     };
     let default = |e: u32| format!(r#"{{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":{e}}}"#);
-    for e in [512, 513, 514, 516, 520, 530] {
+    let faking = Context {
+        faked_success: true,
+        ..cx((6, 8))
+    };
+    for e in (512..=600).chain([4095]) {
         let m = refusal(&errno_rule(e, ""));
         assert!(
             m.starts_with(&format!("syscalls[0]: errnoRet {e} is")),
             "{m}"
         );
-        assert!(m.contains("512 to 530"), "{m}");
+        assert!(m.contains("from 512 up"), "{m}");
         let m = refusal(&errno_rule(e, r#","includes":{"arches":["s390x"]}"#));
         assert!(m.starts_with("syscalls[0]: errnoRet"), "{m}");
-        assert!(m.contains("512 to 530"), "{m}");
+        assert!(m.contains("from 512 up"), "{m}");
         let m = refusal(&default(e));
         assert!(m.starts_with(&format!("defaultErrnoRet: {e} is")), "{m}");
-        let faking = Context {
-            faked_success: true,
-            ..cx((6, 8))
-        };
         for json in [errno_rule(e, ""), default(e)] {
             match compile(json.as_bytes(), &faking) {
-                Err(Error::SeccompProfile(m)) => assert!(m.contains("512 to 530"), "{m}"),
+                Err(Error::SeccompProfile(m)) => assert!(m.contains("from 512 up"), "{m}"),
                 Err(other) => panic!("{json}: {other}"),
                 Ok(_) => panic!("{json}: accepted"),
             }
         }
     }
-    for e in [511, 531] {
-        let p = compiled(&errno_rule(e, ""));
-        assert_eq!(
-            verdict(&p, libc::SYS_getppid, a0(0)),
-            errno(e.cast_signed())
-        );
-        let p = compiled(&default(e));
-        assert_eq!(
-            verdict(&p, libc::SYS_getppid, a0(0)),
-            errno(e.cast_signed())
-        );
-    }
+    let p = compiled(&errno_rule(511, ""));
+    assert_eq!(verdict(&p, libc::SYS_getppid, a0(0)), errno(511));
+    let p = compiled(&default(511));
+    assert_eq!(verdict(&p, libc::SYS_getppid, a0(0)), errno(511));
 }
 
 #[test]
@@ -1215,7 +1224,7 @@ mod kernel {
                 refused(getppid(a0(2)), 12),
                 refused(getppid(a0(7)), 13),
                 getppid(a0(3)) > 0,
-                refused(getppid(a0(8)), 4095),
+                refused(getppid(a0(8)), 511),
             ];
             checks
                 .iter()
@@ -1242,6 +1251,7 @@ mod kernel {
             .filter(|n| !spared().contains(n))
             .max()
             .unwrap();
+        // Worked out before the filter, which refuses the allocator's calls.
         let sample = [
             libc::SYS_read,
             libc::SYS_getpid,
@@ -1249,19 +1259,23 @@ mod kernel {
             libc::SYS_gettid,
             libc::SYS_sched_yield,
             libc::c_long::from(top),
-        ];
+        ]
+        .map(|call| {
+            let want = long_errno(u32::try_from(call).unwrap());
+            (call, i32::try_from(want).unwrap())
+        });
+        let chain = [0, 59].map(|i| (u64::from(i), i32::try_from(chain_errno(i)).unwrap()));
         exited_ok(under(&p, || {
             let mut n = 0;
-            for call in sample {
+            for (call, want) in sample {
                 n += 1;
-                let want = i32::try_from(call + 1).unwrap_or(0);
                 // SAFETY: refused by the filter before the kernel runs it.
                 let r = unsafe { libc::syscall(call, 0, 0, 0, 0, 0, 0) };
                 if !refused(r, want) {
                     return n;
                 }
             }
-            for (i, want) in [(0, 1000), (59, 1059)] {
+            for (i, want) in chain {
                 n += 1;
                 if !refused(getppid(a0(i)), want) {
                     return n;
