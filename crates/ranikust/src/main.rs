@@ -880,10 +880,10 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
 
 /// Kaniko mode on `/` refuses a PID namespace shared with a process of
 /// another mount namespace that ranikust can open through `/proc` when it
-/// starts, the only processes the scan counts (ADR-0101): a `RUN` shares
-/// that PID namespace and could reach that process's files, which the
-/// container's own mount table does not show. A scan that cannot tell, or
-/// one of too many threads, is refused too, each with its own guidance.
+/// starts (ADR-0101): a `RUN` shares that PID namespace and could reach
+/// that process's files, which the container's own mount table does not
+/// show. A scan that cannot tell, or one of too many threads, is refused
+/// too, each with its own guidance.
 fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Failure> {
     use exposure::PeerScan;
     match scan {
@@ -916,10 +916,10 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              build without knowing"
         ))
         .with_guidance(
-            "let the container's seccomp and LSM profiles allow listing /proc/<pid>/task, \
+            "let the container's seccomp and LSM profiles answer listing /proc/<pid>/task, \
              opening /proc/<pid>, /proc/<pid>/task/<tid> and their root and ns/mnt with O_PATH \
-             and fstat on ns/mnt, and share no PID namespace with another container \
-             (ADR-0101)",
+             and fstat on ns/mnt with success, EACCES or EPERM, never another error, and share \
+             no PID namespace with another container (ADR-0101)",
         )),
         PeerScan::Unlisted(e) => Err(Failure::error(format!(
             "{how}: cannot list the processes of its PID namespace in /proc ({e}); kaniko mode \
@@ -1552,7 +1552,7 @@ mod tests {
                      ranikust reaches through /proc: opening /proc/<pid>/task/<tid>/root failed \
                      ({errno})"
                 ),
-                "listing /proc/<pid>/task",
+                "with success, EACCES or EPERM, never another error",
             ),
             (
                 PeerScan::Unlisted(errno),

@@ -126,9 +126,10 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 /// Warns for each process listed in `/proc`, ranikust excepted, whose
 /// `/proc/<pid>/environ` ranikust reads and which sets one of `variables`
 /// ([`secret_variables`]) to a non-empty value, naming it by its pid and
-/// its escaped name: a `RUN` reads that environment too. A process whose
-/// environment cannot be read is skipped, and nothing is said when `/proc`
-/// cannot be listed. The caller runs it after
+/// its escaped name, empty when that cannot be read: a `RUN` reads that
+/// environment too. A process whose environment cannot be read is skipped,
+/// and nothing more is said once `/proc` cannot be listed. The caller runs
+/// it after
 /// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust warns only
 /// about environments a root `RUN` reads, not about one only its start-up
 /// privileges reach.
@@ -207,7 +208,8 @@ impl std::fmt::Display for Process {
 /// What the probe of one process found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Peer {
-    /// Each thread looked at in ranikust's own mount namespace or out of
+    /// No thread in another mount namespace within reach: each thread
+    /// looked at was in ranikust's own, or the process or thread was out of
     /// its reach (`EACCES`, `EPERM`), one at least not gone.
     Passed,
     /// A thread in another mount namespace, its `root` opened; the
@@ -263,15 +265,13 @@ pub(crate) enum PeerScan {
 }
 
 /// Looks, once, for a process of the PID namespace with a thread in another
-/// mount namespace whose `/proc/<pid>/task/<tid>/root` ranikust opens: a
-/// `RUN` on `/` shares the PID namespace and could reach that process's
-/// files, which the container's own mount table does not show (ADR-0101).
-/// Called before ranikust trims its capabilities, so it may reach a process
-/// a `RUN` would not: refused all the same (fails closed). It counts only
-/// the processes ranikust can open as it starts: one it cannot open then,
-/// or one that appears after the scan, is not counted, an accepted
-/// residual risk whose guidance is a PID namespace of the build
-/// container's own.
+/// mount namespace whose root ranikust opens (`/proc/<pid>/task/<tid>/root`,
+/// or `/proc/<pid>/root` where its threads may not be listed): a `RUN` on
+/// `/` shares the PID namespace and could reach that process's files, which
+/// the container's own mount table does not show (ADR-0101). It counts only
+/// the processes ranikust can open as it starts. Called before ranikust
+/// trims its capabilities, so it may reach a process a `RUN` would not:
+/// refused all the same (fails closed).
 pub(crate) fn scan_peers() -> PeerScan {
     let own = match namespace(rustix::fs::CWD, "/proc/self/ns/mnt") {
         Ok(own) => own,
@@ -400,6 +400,8 @@ fn walk<T: AsRef<[u8]>>(
             Err(Errno::NOENT | Errno::SRCH) => break,
             Err(e) => return (Peer::Unknown("listing /proc/<pid>/task", e, name()), seen),
         };
+        // A thread's name is its tid in ASCII digits; any other entry is
+        // not a thread.
         let Some(tid) = std::str::from_utf8(tid.as_ref())
             .ok()
             .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
@@ -724,6 +726,40 @@ mod tests {
         assert!(!comm(&me).is_empty());
         // Past the largest pid_max.
         assert_eq!(probe(own, "4294967295", 8), (Peer::Gone, 0));
+    }
+
+    #[test]
+    fn a_process_probed_as_one_is_told_through_its_own_entries() {
+        let own = namespace(rustix::fs::CWD, "/proc/self/ns/mnt").unwrap();
+        let open = |path: &Path| {
+            rustix::fs::open(
+                path,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap()
+        };
+        let me = open(Path::new("/proc/self"));
+        assert_eq!(task(own, &me, PROCESS_STEPS), Thread::Same);
+        assert_eq!(task((own.0, own.1 ^ 1), &me, PROCESS_STEPS), Thread::Other);
+        // A failure names the step of the steps given: a `root`, then an
+        // `ns/mnt`, that loops.
+        let fake = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("root", fake.path().join("root")).unwrap();
+        let dir = open(fake.path());
+        assert_eq!(
+            task(own, &dir, PROCESS_STEPS),
+            Thread::Unknown("opening /proc/<pid>/root", Errno::LOOP)
+        );
+        fs::remove_file(fake.path().join("root")).unwrap();
+        fs::create_dir_all(fake.path().join("root")).unwrap();
+        fs::create_dir_all(fake.path().join("ns")).unwrap();
+        assert_eq!(task(own, &dir, THREAD_STEPS), Thread::Gone);
+        std::os::unix::fs::symlink("mnt", fake.path().join("ns/mnt")).unwrap();
+        assert_eq!(
+            task(own, &dir, THREAD_STEPS),
+            Thread::Unknown("reading /proc/<pid>/task/<tid>/ns/mnt", Errno::LOOP)
+        );
     }
 
     #[test]
