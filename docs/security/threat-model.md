@@ -103,7 +103,10 @@ refused (ADR-0060).
 
 ## 6. Accepted risks
 
-These follow from decisions and are documented to users rather than fixed:
+These follow from decisions and are documented to users rather than fixed.
+An accepted risk found in review also has a draft security advisory
+([ADR-0111](../adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)):
+it stays a draft, or the maintainer closes it once the risk is listed here.
 
 - `RUN` runs as root inside its sandbox, and the sandbox is about as strong
   as `docker build` ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)).
@@ -354,3 +357,10 @@ before 1.0:
 Anything listed in §6, or anything that needs the operator to pass a
 dangerous flag knowingly, is not a vulnerability; it may still be a
 documentation bug.
+
+A finding that is not a blocker and is rated Low or Medium (a CVSS 3.1 base
+score below 7.0, where the reporter can give a vector) is a draft security
+advisory and does not hold up a release; Critical and High findings are
+fixed before one
+([workflow](../agents/workflow.md#security-findings),
+[ADR-0111](../adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).

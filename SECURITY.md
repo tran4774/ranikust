@@ -33,6 +33,11 @@ The maintainers aim to acknowledge a report within 7 days, agree on a fix and
 a disclosure date with the reporter, and publish a GitHub security advisory
 with the fix. The default embargo is 90 days.
 
+Findings the project makes itself, in its reviews and audits, are tracked as
+draft advisories too, and published after the release that contains the fix
+([workflow](docs/agents/workflow.md#security-findings),
+[ADR-0111](docs/adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).
+
 ## In scope
 
 These are vulnerabilities in ranikust, whatever the Dockerfile or image:

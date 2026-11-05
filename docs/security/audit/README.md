@@ -27,8 +27,11 @@ prior-run input, as the skill describes.
 | [`phase-1-2/`](phase-1-2/REPORT.md) | `ed718fb` (end of Phase 2) | deep, whole workspace and `.claude/`, source-only | 0 confirmed, 28 needs_validation, 11 rejected; lead 1 is a possible Full-sandbox escape through inherited descriptors (runc CVE-2024-21626 pattern) |
 
 Leads are unconfirmed until their VM or T2c plan has run. While a lead is
-open, treat its details as an unfixed vulnerability report: SECURITY.md
-asks for private disclosure.
+open, treat its details as an unfixed weakness: they stay out of every
+public issue, pull request, comment and commit, and a Low or Medium one is
+a draft security advisory
+([workflow](../../agents/workflow.md#security-findings),
+[ADR-0111](../../adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).
 
 ## Status of the phase-1-2 leads after the hardening pass (2026-11-03)
 

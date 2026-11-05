@@ -27,7 +27,7 @@ document only when a card sends you there.
 |---|---|
 | [overview.md](overview.md) | What ranikust is; where the pipeline, modes, crate graph and state are described |
 | [rules.md](rules.md) | The must-follow list: host safety, code traps, determinism, branches and commits, open questions, the keep-in-sync matrix, writing |
-| [workflow.md](workflow.md) | Dev loop, `just` recipes, adding a crate, dependency or ADR, GitHub flow and the limits on what agents do, subagents and when to use each, the context budget, the fix loop. Test tiers are in [`../testing.md`](../testing.md#tiers), commit and pull request conventions in [`CONTRIBUTING.md`](../../CONTRIBUTING.md#commits-and-pull-requests) |
+| [workflow.md](workflow.md) | Dev loop, `just` recipes, adding a crate, dependency or ADR, GitHub flow and the limits on what agents do, subagents and when to use each, the context budget, the fix loop, security findings. Test tiers are in [`../testing.md`](../testing.md#tiers), commit and pull request conventions in [`CONTRIBUTING.md`](../../CONTRIBUTING.md#commits-and-pull-requests) |
 | [phase-1.md](phase-1.md), [phase-2.md](phase-2.md) | Frozen records of Phase 1 (MVP) and Phase 2 (kaniko mode): scope, task order, acceptance criteria |
 | [kaniko-map.md](kaniko-map.md) | kaniko packages and flags to ranikust crates and flags, with source references; behaviour to match |
 | [glossary.md](glossary.md) | Terms used across code and docs |

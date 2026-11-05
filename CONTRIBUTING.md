@@ -222,7 +222,10 @@ run reports what it found.
    pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the
    `main` ruleset accepts changes only through a pull request whose gates,
-   `CI result` and `T2 result`, passed on a full run.
+   `CI result` and `T2 result`, passed on a full run. An open blocker or a
+   High or Critical security finding holds the release; a draft security
+   advisory for a Low or Medium one does not
+   ([ADR-0111](docs/adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).
 3. **Tag** (the maintainer only: the `release tags` ruleset lets only the
    maintainer create, move or delete `v*` tags): tag the merge commit and
    push the tag.
@@ -258,6 +261,11 @@ run reports what it found.
    which GitHub lists by label (`.github/release.yml`).
 6. **Publish** (the maintainer): read the draft, publish it on the releases
    page, and announce it in the repository's Discussions.
+7. **Advisories** (an agent prepares, the maintainer publishes): for each
+   draft security advisory whose fix is in the release, an agent prepares
+   its text, naming the release as the patched version, and the maintainer
+   publishes it, optionally requesting a CVE
+   ([workflow](docs/agents/workflow.md#security-findings)).
 
 Users check a release with `sha256sum -c SHA256SUMS` and
 `gh attestation verify` naming the release workflow and the tag
