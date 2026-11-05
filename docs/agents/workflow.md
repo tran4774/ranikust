@@ -357,9 +357,9 @@ loop itself before it hands back.
 
 1. The `host-safety` subagent reports to the main session.
 2. The main session files each finding that gets a draft
-   ([Security findings](#security-findings)) and sends every finding to be
-   fixed, that is every blocker except one the private fork fixes, to the
-   implementer with `SendMessage` when it answered within the hour, else
+   ([Security findings](#security-findings)) and sends every finding fixed
+   in the branch (every blocker except one the private fork fixes, and the
+   non-blockers fixed in the same round) to the implementer with `SendMessage` when it answered within the hour, else
    briefs a new `implementer` run with the branch, its worktree, the commit
    range and the findings; on a branch of its own (a docs-only change) it
    fixes them itself.
