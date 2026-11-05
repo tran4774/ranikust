@@ -311,7 +311,7 @@ agent starts at about 35k tokens. So:
   decisions already made with their dates, the ADR numbers it may use, and
   what is out of scope. It runs the `dev-loop`, its own `reviewer` rounds
   and `just check`, commits without pushing and hands back at most 40
-  lines (plus any security non-blocker it did not fix, in full). A
+  lines (plus any security finding it did not fix, in full). A
   hand-back whose last reviewer round did not finish gets one from the main
   session before the push.
 - **Follow-ups within the hour go to the same agent.** `SendMessage`
@@ -407,28 +407,28 @@ section owns what happens to one
   branch does not touch it is a `non-blocker` of the branch, marked "holds
   the next release". An audit lead is no blocker until it is confirmed as
   High or Critical.
-- **Fixed:** every blocker, in the loop, before the push, except one the
-  private fork fixes (a High or Critical one in released code, or a
-  Critical one in code on `main`, that the branch touches): the branch does
-  not push until the fix from the draft's private fork is merged into
-  `main`, then rebases and pushes, and until then its review and notes keep
-  the finding out of anything public. A finding that holds the next
-  release is fixed in the draft's temporary private fork, which the
-  maintainer opens and where agents work as the maintainer directs
+- **Routing.** Each case, and who fixes it:
+
+  | Finding | Fixed |
+  |---|---|
+  | A blocker the branch introduces, or a High one it touches in code on `main` in no release yet | In the loop, before the push |
+  | A blocker the private fork fixes: High or Critical in released code, or Critical in code on `main`, that the branch touches | In the draft's temporary private fork. The branch does not push until the fork's fix is merged into `main`, then merges `main` into it and pushes; until then its review and notes keep the finding out of anything public |
+  | Holds the next release: Critical in code on `main`, released or not, or High in released code | In the same private fork; the branch pushes and merges, and only the next release waits |
+  | Holds the next release: High in code on `main` in no release yet | An ordinary pull request with generic wording before the next release; no private fork |
+  | A Low or Medium draft | Later, an ordinary pull request with generic wording, its test staying; its diff may show the weakness before the release |
+  | A residual the maintainer accepts | No fix: a draft at once; the threat model's [section 6](../security/threat-model.md#6-accepted-risks) lists it in general words with the mitigation, and the maintainer closes the draft once that entry is on `main` |
+
+  The maintainer opens the private fork
   ([ADR-0087](../adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md), D6),
-  if it is Critical, released or not, or High in released code; a High one
-  in code on `main` in no release yet is fixed by an ordinary pull request
-  with generic wording, with no private fork. The branch pushes and merges
-  either way, and the next release waits for the fix.
+  and agents work there as the maintainer directs. Its fix reaches `main`
+  through the advisory's merge button, which the maintainer presses; GitHub
+  runs no status checks in the fork and enforces none of the branch's
+  protection rules at that merge.
 - **A draft advisory instead:** a Low or Medium non-blocker, and a residual
   the maintainer accepts, whatever its rating. It is not fixed in the pull
-  request at hand and holds up neither it nor a release. Later an ordinary
-  pull request fixes a Low or Medium one, worded generically, its test
-  staying; its diff may show the weakness before the release. A residual
-  the maintainer accepts has no fix: the threat model's
-  [section 6](../security/threat-model.md#6-accepted-risks) lists it in
-  general words with the mitigation. The maintainer may decide that a Low
-  or Medium finding is fixed in the pull request at hand instead.
+  request at hand and holds up neither it nor a release. The maintainer may
+  decide that a Low or Medium finding is fixed in the pull request at hand
+  instead.
 - **Audit leads.** Each open lead of a security audit is a draft. The main
   session estimates its severity from the threat model's section 8, since
   the skill gives a `needs_validation` record none. An unvalidated lead
@@ -445,10 +445,11 @@ section owns what happens to one
   fork fixes.
 - **Never public.** No detail of an unfixed weakness in an issue, pull
   request, comment, commit or doc, apart from a fix pull request's diff and
-  test, worded generically, and section 6; a pull request names an advisory
-  generically, if at all. A draft is visible to the repository's owners,
-  organization owners, security managers and users with the admin role, and
-  to the collaborators added to it
+  test, worded generically, and threat model section 6, in general words; a
+  pull request names an advisory generically, if at all. A draft is
+  visible to the repository's owners, organization owners, security
+  managers and users with the admin role, and to the collaborators added to
+  it
   ([GitHub](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/permission-levels-for-repository-security-advisories)).
 - **Publishing.** A draft stays a draft until a release that contains its
   fix is out ([CONTRIBUTING](../../CONTRIBUTING.md#releasing)). An agent then

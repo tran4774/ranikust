@@ -23,9 +23,9 @@ findings in GitHub Security Advisories and, for now, bypass them so that
 releases go out as fast as possible, and to move the reports kept on the
 machine there too. Follow-up questions the same day settled what counts as
 small, when an advisory is published, how a Low or Medium draft is fixed,
-what an audit lead is, which rating wins, what a High or Critical finding
-does to a reviewed branch that touches its code and to one that does not,
-and where an accepted residual is recorded.
+where an open audit lead goes and when it blocks, which rating wins, what
+a High or Critical finding does to a reviewed branch that touches its code
+and to one that does not, and where an accepted residual is recorded.
 
 ## Considered Options
 
@@ -58,20 +58,12 @@ this ADR owns the rules.
   "holds the next release": the branch pushes and merges, and only the next
   release waits for the fix. An audit lead is no blocker until it is
   confirmed as High or Critical.
-- **How each is fixed.**
-
-  | Finding | Fixed |
-  |---|---|
-  | A blocker of the branch under review that the next row does not name: one the branch introduces, or a High one it touches in code on `main` in no release yet | In the review loop, before the push; for the High one in unreleased code that is an ordinary pull request, as below |
-  | A blocker the private fork fixes: a High or Critical one in released code, or a Critical one in code on `main`, released or not, that the branch touches | Not in the loop: in the draft's temporary private fork, which the maintainer opens (D6) and where agents work as the maintainer directs. The branch does not push until that fix is merged into `main`, then rebases and pushes; until then its review and notes keep the finding out of anything public |
-  | Holds the next release: Critical in code on `main`, released or not, or High in released code | In the same private fork; the branch pushes and merges, and only the next release waits |
-  | Holds the next release: High in code on `main` in no release yet | By an ordinary public pull request with generic wording before the next release; no private fork |
-  | A Low or Medium draft | Later, by an ordinary public pull request with generic wording, its test staying |
-  | A residual the maintainer accepts | No fix: a draft at once; threat model section 6 lists it in general words with the mitigation, and once that entry is on `main` the maintainer closes the draft |
-
-  The diff of an ordinary fix may show the weakness before the release; the
-  maintainer accepts that. This is a default, not a ban: the maintainer may
-  have a Low or Medium finding fixed in the pull request at hand
+- **How each is fixed.** The routing table in
+  [workflow.md](../agents/workflow.md#security-findings) applies the
+  answers in Evidence; this ADR records the decision, not the procedure.
+  The diff of an ordinary fix may show the weakness before the release;
+  the maintainer accepts that. This is a default, not a ban: the maintainer
+  may have a Low or Medium finding fixed in the pull request at hand
   (Evidence).
 - **Audit leads.** Each open lead of a security audit becomes a draft. The
   main session estimates its severity from section 8, since the audit
@@ -116,8 +108,8 @@ this ADR owns the rules.
   and open; users learn of one only when its advisory is published.
 - Bad, because the diff of an ordinary fix pull request may show the
   weakness before the release that carries it.
-- Bad, because a branch that touches released code with a High or Critical
-  finding waits for the private fork's fix, however long that takes.
+- Bad, because a branch that touches code whose finding the private fork
+  fixes waits for that fix on `main`, however long it takes.
 - Bad, because creating an advisory is a `gh api` write, which the ask
   rules of ADR-0093 prompt for, as for a commit status [inferred from those
   rules; not tried].
@@ -162,13 +154,19 @@ No experiment; the maintainer's decision and answers, each given on
 - A High or Critical finding in released code that X touches: "X chờ bản
   sửa từ fork (khuyến nghị)" (X waits for the fix from the fork, as
   recommended). X does not push until the private fork's fix is merged into
-  `main`, then rebases and pushes; until then its review and notes keep the
+  `main`, then pushes, after merging `main` into it (our addition: the
+  repository never force-pushes); until then its review and notes keep the
   finding out of anything public.
 - [inferred] A Critical finding in code on `main` in no release yet that X
   touches is handled as the touched, released case (X waits for the fork's
-  fix on `main`, then rebases and pushes), from the answers on touched
-  released code and on Critical findings: a Critical finding always goes
-  through the private fork, so X's public loop cannot fix it. The maintainer may overrule this.
+  fix on `main`, then merges `main` into it and pushes), from the answers
+  on touched released code and on Critical findings: a Critical finding
+  always goes through the private fork, so X's public loop cannot fix it.
+  The maintainer may overrule this.
+- [inferred] A High finding in code on `main` in no release yet that X
+  touches is fixed in X's own loop. No answer covers it: it is the loop as
+  before this ADR, and the answer on High findings in that code already
+  accepts a public diff.
 - Whether the High rule for code on `main` in no release yet covers
   Critical: "Critical đi qua private fork (khuyến nghị)" (Critical goes
   through the private fork, as recommended). Only a High finding in that
@@ -201,6 +199,14 @@ No experiment; the maintainer's decision and answers, each given on
   the temporary private fork, merge its changes, and close or publish a
   draft. A collaborator added to an advisory has write permission: it
   sees the draft and edits its metadata.
+- [external] GitHub's
+  [Collaborating in a temporary private fork](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-repository-security-vulnerability):
+  "status checks do not run on pull requests in temporary private forks"
+  and "integrations, including CI, cannot access temporary private forks";
+  an advisory admin merges all the fork's open pull requests at once, from
+  the advisory; "GitHub won't enforce any of the protection rules" on the
+  target branch. So the fork's fix reaches `main` without CI and without
+  the ruleset's gates.
 - [external] FIRST's CVSS specifications
   ([v3.1](https://www.first.org/cvss/v3.1/specification-document),
   [v4.0](https://www.first.org/cvss/v4-0/specification-document)),

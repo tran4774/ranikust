@@ -61,8 +61,8 @@ score where you can; the rating is in
 a `blocker` only when the branch introduces it or touches the code it is
 in; in code the branch does not touch it is a `non-blocker`, marked "holds
 the next release". Give a security non-blocker, and a blocker the private
-fork fixes (a High or Critical one in released code, or a Critical one in
-code on `main`, that the branch touches), in full, however long: the main
-session files an advisory from it. Be specific and nitpicky; skip style that rustfmt or clippy
-already enforce. End with one line: "No blockers" or the number of
-blockers. Do not repeat the diff back.
+fork fixes (the routing table in the workflow names it), in full, however
+long: the main session files an advisory from it. Be specific and
+nitpicky; skip style that rustfmt or clippy already enforce. End with one
+line: "No blockers" or the number of blockers. Do not repeat the diff
+back.

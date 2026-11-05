@@ -67,10 +67,9 @@ fail-closed option meanwhile; never invent a decision.
   that stops without its closing line ("No blockers" or a count) is
   unfinished: say so, the caller runs one. Non-blockers you do not fix go
   in the report. A security non-blocker the `reviewer` finds, and a blocker
-  the private fork fixes (a High or Critical one in released code, or a
-  Critical one in code on `main`, that the branch touches), are not fixed in
-  this branch and get no test: they go in the report in full, for the main
-  session to file as an advisory
+  the private fork fixes (the routing table in the workflow names it), are
+  not fixed in this branch and get no test: they go in the report in full,
+  for the main session to file as an advisory
   (`docs/agents/workflow.md#security-findings`).
 - After three failed attempts at the same fix, stop and report what you
   know.
