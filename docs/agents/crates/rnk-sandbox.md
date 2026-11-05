@@ -278,7 +278,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`NotWeighed`), what cannot be told placing nothing (the binary's own
   name removed while it runs among them), a failed lookup keeping its
   errno unless the binary is reached,
-  `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`), the
+  `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`,
+  `red_team_binds_stacked_on_the_binarys_path`), the
   stub journal (placement through symlinks,
   removal, parent times, replay of dead journals only, a lock kept by a shared
   description), swaps and planted records, `Direct` children that fail before

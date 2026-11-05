@@ -1288,3 +1288,63 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     tree.parent_id = own.mount_id;
     assert_eq!(check(&[&own, &tree], &file), Ok(None));
 }
+
+/// Red team (ADR-0101, T21): binds stacked on the binary's path, as T1
+/// `binary-mounts-made` makes them. A read-write bind of the same file
+/// under its read-only one reaches it by path; with the file's name removed
+/// on the host the hidden bind places nothing. Over the binary's own mount,
+/// which then hides its name, the same file bound read-write reaches it by
+/// inode, and another file places nothing.
+#[test]
+fn red_team_binds_stacked_on_the_binarys_path() {
+    let table = |lines: &[&str]| {
+        let mut text = String::from("1 0 0:50 / / rw - overlay overlay rw\n");
+        for line in lines {
+            text.push_str(&format!("{line} - ext4 /dev/sda1 rw\n"));
+        }
+        rnk_rootfs::parse_mountinfo(text.as_bytes()).expect("sample mountinfo")
+    };
+    let bin = Path::new("/r/rnk");
+    let never = |_: &MountInfo| -> Option<MountRoot> { panic!("told by path") };
+    let under = table(&[
+        "11 1 8:1 /h/t/rnk /r/rnk rw",
+        "10 11 8:1 /h/t/rnk /r/rnk ro",
+    ]);
+    assert!(covered(&under, &under[1]));
+    assert_eq!(
+        reached_writable(&under, 10, Some(bin), BIN, never),
+        Some(true)
+    );
+    let removed = table(&[
+        "11 1 8:1 /h/t/rnk//deleted /r/rnk rw",
+        "10 11 8:1 /h/t/rnk//deleted /r/rnk ro",
+    ]);
+    assert_eq!(
+        reached_writable(&removed, 10, None, BIN, roots(&[(11, BIN.ino)])),
+        None
+    );
+    // The name leads to the top bind, file `ino` on mount 12.
+    let over = |ino: u64| {
+        move |p: &Path| -> Result<Option<Seen>, Errno> {
+            assert_eq!(p, Path::new("/r/rnk"));
+            Ok(Some(Seen {
+                mount: 12,
+                mount_root: true,
+                found: MountRoot::File(FileId { ino, ..BIN }),
+            }))
+        }
+    };
+    let same = table(&[
+        "10 1 8:1 /h/t/rnk /r/rnk ro",
+        "12 10 8:1 /h/t/rnk /r/rnk rw",
+    ]);
+    assert_eq!(
+        reached_by(&same, 10, bin, BIN, over(BIN.ino)),
+        Ok(Some(true))
+    );
+    let other = table(&[
+        "10 1 8:1 /h/t/rnk /r/rnk ro",
+        "12 10 8:1 /h/f/other /r/rnk rw",
+    ]);
+    assert_eq!(reached_by(&other, 10, bin, BIN, over(6)), Ok(None));
+}
