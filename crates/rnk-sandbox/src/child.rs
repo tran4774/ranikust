@@ -2616,7 +2616,7 @@ mod tests {
         /// ranikust by refusing `keyctl` whole, the `RUN` goes on, as
         /// before. `Direct` decides by the errno.
         #[test]
-        fn a_refused_keyring_join_fails_while_a_keyring_stays_reachable() {
+        fn a_refused_keyring_join_fails_while_the_session_keyring_is_found() {
             use KeyringJoin::{Direct, Optional, Required};
             use libc::{EACCES, EINVAL, ENOSYS, EPERM};
             // `KEYCTL_GET_KEYRING_ID` is 0, `KEYCTL_JOIN_SESSION_KEYRING` 1.

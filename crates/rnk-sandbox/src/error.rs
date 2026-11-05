@@ -80,7 +80,7 @@ pub enum Step {
     /// Joining a new session keyring (`Direct`).
     SessionKeyring,
     /// The same join, refused while ranikust's session keyring can still
-    /// be looked up, where the `RUN`'s profile lets a keyring call run
+    /// be looked up, unless the `RUN`'s profile refuses every keyring call
     /// (ADR-0109).
     KeyringRefused,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
@@ -205,9 +205,9 @@ impl Step {
             Step::MaskPath => "mask a /proc or /sys path",
             Step::SessionKeyring => "join a new session keyring",
             Step::KeyringRefused => {
-                "join a new session keyring, refused while ranikust's could still be looked up (a RUN \
-                 goes on without one only under a seccomp profile that refuses keyctl, add_key \
-                 and request_key, as --seccomp=default does)"
+                "join a new session keyring, refused while ranikust's could still be looked up \
+                 (a RUN goes on without one only under a seccomp profile that refuses keyctl, \
+                 add_key and request_key, as --seccomp=default does)"
             }
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",

@@ -172,12 +172,12 @@ What a change here must keep, with where it lives:
   name under a refusing action, two conditions on one argument, a rule without
   names, over 4096 instructions) is `Error::SeccompProfile`, never weakened,
   as is an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success;
-  `SeccompProfile::faking` compiles one in the tests only), one of the
-  kernel's own codes, 512 to 530 (516 may have the kernel run its restart
-  block instead), or above 4095. Syscall numbers come from `libc` only
-  (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
-  ADR-0009); a call the profile allows that `libc` does not name gets
-  `ENOSYS`, and the T0 test
+  `SeccompProfile::faking` compiles one in the tests only), one from 512 to
+  530, the kernel's `ERESTART*` codes and their neighbours (516 may have the
+  kernel run its restart block instead), or above 4095. Syscall numbers come
+  from `libc` only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names
+  per target, ADR-0009); a call the profile allows that `libc` does not name
+  gets `ENOSYS`, and the T0 test
   `calls_the_default_allows_but_libc_does_not_name_are_pinned` lists them per
   target. A profile can only let a call run, refuse it or kill, so after every
   mount the full sandbox's child makes every step that need not follow it
@@ -292,7 +292,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (compiled profiles), `caps`'s (an `EINVAL` from a bounding drop) and
   `child`'s (a refused keyring join with the session keyring found or not,
   each `KeyringJoin`; an `execve` or `execveat` back without an error; a
-  `waitpid` back with 0 or `EINTR` while an exited command waits to be reaped;
+  `waitpid` back with 0 or `EINTR` with an exited command still to reap;
   an `EINTR` on the reads after the profile, the parent check's against an
   unfiltered control; a refused `umask` after the profile; a faked `setsid`,
   `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the last two on a

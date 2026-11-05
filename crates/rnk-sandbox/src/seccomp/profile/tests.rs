@@ -636,11 +636,12 @@ fn malformed_or_unsupported_profiles_are_refused() {
     }
 }
 
-/// The kernel's own codes, 512 (`ERESTARTSYS`) to 530, are refused as an
-/// errno of a rule or of the default, even in a rule another architecture
-/// keeps or in the tests' faking profiles; 511 and 531 compile (ADR-0109).
+/// 512 (`ERESTARTSYS`) to 530, the kernel's restart codes and their
+/// neighbours, are refused as an errno of a rule or of the default, even in
+/// a rule another architecture keeps or in the tests' faking profiles; 511
+/// and 531 compile (ADR-0109).
 #[test]
-fn the_kernels_own_errnos_are_refused() {
+fn errnos_512_to_530_are_refused() {
     let errno_rule = |e: u32, extra: &str| {
         format!(
             r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["getppid"],

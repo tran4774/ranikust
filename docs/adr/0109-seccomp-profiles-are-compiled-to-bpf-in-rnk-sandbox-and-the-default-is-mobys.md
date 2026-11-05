@@ -130,11 +130,11 @@ after the host-safety review of that order:
   `defaultErrnoRet`. An errno above 4095 is refused too (the filter keeps
   only its low 16 bits), and a negative one is not a number the format
   takes. A profile can then let a call run, refuse it with an errno from 1
-  to 4095 but the kernel's own codes (below), or kill the `RUN`: the steps
+  to 4095 but 512 to 530 (below), or kill the `RUN`: the steps
   after it see a refusal, never a success that did not happen. A filter
   around ranikust, which the operator's runtime installs, may still fake
   one; ranikust does not control it.
-- **Nor can it answer with one of the kernel's own codes** (the maintainer,
+- **Nor can it answer with the kernel's restart codes** (the maintainer,
   2026-11-05, after the host-safety review of the errno rule: "Sửa luôn, coi
   là phần của quyết định (khuyến nghị)", fix it now, as part of the decision,
   as recommended). An errno from 512 to 530, the `ERESTART*` codes and their
