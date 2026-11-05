@@ -439,7 +439,7 @@ fn a_binary_in_a_root_that_is_not_an_overlay_is_weighed() {
     }
 }
 
-/// ADR-0101 (2026-11-05): a build that cannot be kaniko mode on a
+/// ADR-0101: a build that cannot be kaniko mode on a
 /// container's `/` walks no mount: a binary the walk would weigh is not
 /// weighed, one told without it is told as before.
 #[test]
@@ -1131,33 +1131,32 @@ fn a_mount_root_is_reached_at_its_mount_point() {
 #[test]
 fn a_symlink_on_the_way_places_nothing() {
     let root = RootPath::open("/").expect("/");
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::os::unix::fs::symlink("/", dir.path().join("r")).expect("symlink");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // The physical path, as the kernel would print it: `TMPDIR` may hold a symlink.
+    let dir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    std::os::unix::fs::symlink("/", dir.join("r")).expect("symlink");
     let proc_id = statx_of(rustix::fs::CWD, c"/proc", AtFlags::empty())
         .expect("statx")
         .stx_mnt_id;
     let mut proc = line_at(proc_id, Path::new("/proc"), false);
     assert_eq!(root_at(&root, &proc), Ok(Some(MountRoot::Directory)));
-    proc.mount_point = dir.path().join("r/proc");
+    proc.mount_point = dir.join("r/proc");
     assert_eq!(root_at(&root, &proc), Ok(None));
-    std::fs::create_dir(dir.path().join("d")).expect("mkdir");
-    std::fs::write(dir.path().join("d/f"), b"x").expect("write");
-    std::os::unix::fs::symlink("d", dir.path().join("l")).expect("symlink");
-    assert!(matches!(
-        seen_at(&root, &dir.path().join("d/f")),
-        Ok(Some(_))
-    ));
-    assert_eq!(seen_at(&root, &dir.path().join("l/f")), Ok(None));
+    std::fs::create_dir(dir.join("d")).expect("mkdir");
+    std::fs::write(dir.join("d/f"), b"x").expect("write");
+    std::os::unix::fs::symlink("d", dir.join("l")).expect("symlink");
+    assert!(matches!(seen_at(&root, &dir.join("d/f")), Ok(Some(_))));
+    assert_eq!(seen_at(&root, &dir.join("l/f")), Ok(None));
 }
 
-/// A sample line of mount `id` at `point` on the binary's sample device,
-/// its root `/elsewhere`.
 /// The root of the mount `m`, reached at its mount point from `root`, as
 /// [`reached_from_slash`] reaches it.
 fn root_at(root: &RootPath, m: &MountInfo) -> Result<Option<MountRoot>, Errno> {
     Ok(seen_at(root, &m.mount_point)?.and_then(|s| s.root_of(m)))
 }
 
+/// A sample line of mount `id` at `point` on the binary's sample device,
+/// its root `/elsewhere`.
 fn line_at(id: u64, point: &Path, read_only: bool) -> MountInfo {
     let mut m = mounts("8:1 /elsewhere /x rw", &[])
         .into_iter()
@@ -1209,20 +1208,22 @@ fn a_removed_name_of_the_binary_places_nothing() {
 /// looked up.
 #[test]
 fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("f");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // The physical path, as the kernel would print it: `TMPDIR` may hold a symlink.
+    let dir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    let file = dir.join("f");
     std::fs::write(&file, b"x").expect("write");
     let path = CString::new(file.as_os_str().as_bytes()).expect("a path");
     let st = statx_of(rustix::fs::CWD, &path, AtFlags::empty()).expect("statx");
     let binary = FileId::of(&st).expect("an inode");
-    let long = dir.path().join("x".repeat(300));
+    let long = dir.join("x".repeat(300));
     let root = RootPath::open("/").expect("/");
     assert_eq!(seen_at(&root, &long), Err(Errno::NAMETOOLONG));
     // The binary's own mount is a sample one, so its name places nothing:
     // only the writable mounts below count.
-    let own = line_at(u64::MAX, dir.path(), true);
+    let own = line_at(u64::MAX, &dir, true);
     let mut failing = line_at(u64::MAX - 1, &long, false);
-    let mut bind = line_at(u64::MAX - 4, &dir.path().join("bind"), false);
+    let mut bind = line_at(u64::MAX - 4, &dir.join("bind"), false);
     // Roots apart from the own mount's: no tree holds the binary's path.
     failing.fs_root = PathBuf::from("/failing");
     bind.fs_root = PathBuf::from("/bind");
@@ -1246,7 +1247,7 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     assert_eq!(check(&[&own, &failing, &bind], &file), Ok(Some(true)));
     assert_eq!(check(&[&own], &long), Err(Errno::NAMETOOLONG));
     assert_eq!(check(&[&own, &bind], &long), Ok(Some(true)));
-    let up = dir.path().join("..");
+    let up = dir.join("..");
     assert_eq!(seen_at(&root, &up), Err(Errno::IO));
     let mut refused = line_at(u64::MAX - 2, &up, false);
     refused.fs_root = PathBuf::from("/refused");
@@ -1256,7 +1257,7 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     assert_eq!(check(&[&own], &up), Err(Errno::IO));
     assert_eq!(check(&[&own, &bind], &up), Ok(Some(true)));
     // Its root holds the path the own mount would give the binary.
-    let mut tree = line_at(u64::MAX - 3, &dir.path().join("missing"), false);
+    let mut tree = line_at(u64::MAX - 3, &dir.join("missing"), false);
     tree.parent_id = own.mount_id;
     assert_eq!(check(&[&own, &tree], &file), Ok(None));
 }

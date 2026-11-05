@@ -173,10 +173,9 @@ fn main() -> ExitCode {
     // ADR-0101: a build runs from a copy of the binary no `RUN` can write.
     // Still single-threaded, no credential or state read: the copy starts
     // over from the top.
-    let sealing = if matches!(command, Command::Build(_)) {
-        // Only kaniko mode on a container's `/` reads the writable mounts that
-        // reach the binary (2026-11-05): a host build looks none up.
-        let walk = container::detect(&container::Real).is_some();
+    let sealing = if let Command::Build(args) = &command {
+        let root = rustix::process::geteuid().is_root();
+        let walk = may_be_kaniko_on_slash(args.mode, root, &container::Real);
         match rnk_sandbox::run_from_sealed_copy(seal_ways(fault.as_deref()), walk) {
             Ok(sealing) => Some(sealing),
             Err(e) => {
@@ -267,6 +266,14 @@ fn seal_ways(fault: Option<&str>) -> &'static [SealedCopy] {
         Some("seal-none") => &[],
         _ => &SealedCopy::ALL,
     }
+}
+
+/// Whether the build may be kaniko mode on a container's `/`, the only one
+/// that reads whether a writable mount reaches the binary, so the seal walks
+/// those mounts (ADR-0101): not with `--mode=overlay`, not without root
+/// (kaniko mode refuses), not outside a container (`container::detect`).
+fn may_be_kaniko_on_slash(mode: config::Mode, root: bool, host: &impl container::Host) -> bool {
+    mode != config::Mode::Overlay && root && container::detect(host).is_some()
 }
 
 /// Writes `ranikust: error: …` to stderr, then the guidance, if any.
@@ -826,9 +833,10 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
         ))
         .with_guidance(
             "run the binary from a file that stays in place, beside no writable directory mount \
-             whose source was removed and no writable mount another mount hides, or build it \
-             into an image run on an overlayfs root, as Docker's and containerd's default \
-             storage gives, where the binary's check reads no mount table (ADR-0101)",
+             whose source was removed and no writable mount another mount hides, and start the \
+             build again once no mount changes while it starts; or build it into an image run \
+             on an overlayfs root, as Docker's and containerd's default storage gives, where the \
+             binary's check reads no mount table (ADR-0101)",
         )),
         Some(BinaryMount::NotWeighed) => Err(Failure::error(format!(
             "{how}: ranikust did not find itself in a container when it started, so it did not \
@@ -836,9 +844,9 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
              without knowing"
         ))
         .with_guidance(
-            "start the build again once the files that tell a container (/.dockerenv, \
-             /run/.containerenv, /proc/self/cgroup) no longer change while it starts (ADR-0048, \
-             ADR-0101)",
+            "start the build again once what tells a container (files such as /.dockerenv, \
+             /run/.containerenv or /proc/self/cgroup, ADR-0048's list) no longer changes while \
+             it starts (ADR-0101)",
         )),
         Some(BinaryMount::NoMountId) => Err(Failure::error(format!(
             "{how}: cannot tell which mount ranikust's binary is on (statx gave no mount id: an \
@@ -1278,6 +1286,41 @@ mod tests {
         );
     }
 
+    /// A host where `container::detect` finds Docker, or nothing.
+    struct Host {
+        docker: bool,
+    }
+
+    impl container::Host for Host {
+        fn exists(&self, path: &str) -> bool {
+            self.docker && path == "/.dockerenv"
+        }
+        fn read(&self, _: &str) -> String {
+            String::new()
+        }
+        fn container_env(&self) -> Option<String> {
+            None
+        }
+    }
+
+    /// ADR-0101: the seal walks the writable mounts that may reach the
+    /// binary only where the build may be kaniko mode on a container's `/`:
+    /// as root, in a container, unless overlay mode is asked for.
+    #[test]
+    fn only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts() {
+        let (inside, outside) = (Host { docker: true }, Host { docker: false });
+        for mode in [config::Mode::Auto, config::Mode::Kaniko] {
+            assert!(may_be_kaniko_on_slash(mode, true, &inside), "{mode:?}");
+            assert!(!may_be_kaniko_on_slash(mode, true, &outside), "{mode:?}");
+            assert!(!may_be_kaniko_on_slash(mode, false, &inside), "{mode:?}");
+        }
+        assert!(!may_be_kaniko_on_slash(
+            config::Mode::Overlay,
+            true,
+            &inside
+        ));
+    }
+
     /// ADR-0101: kaniko mode on `/` refuses ranikust's binary on a writable
     /// mount other than `/`'s, with the guidance to mount it read-only, and
     /// one a writable mount reaches (its tree, another hard link), with
@@ -1364,6 +1407,9 @@ mod tests {
                     .message
                     .contains("cannot be reached at its mount point")
                 && unplaced.guidance.contains("stays in place")
+                && unplaced
+                    .guidance
+                    .contains("no mount changes while it starts")
                 && unplaced.guidance.contains("overlayfs root")
                 && !unplaced.guidance.contains("fuse-overlayfs"),
             "{}: {}",
@@ -1376,7 +1422,8 @@ mod tests {
                 .message
                 .contains("did not find itself in a container")
                 && unweighed.guidance.contains("start the build again")
-                && unweighed.guidance.contains("/.dockerenv"),
+                && unweighed.guidance.contains("/.dockerenv")
+                && unweighed.guidance.contains("ADR-0048's list"),
             "{}: {}",
             unweighed.message,
             unweighed.guidance

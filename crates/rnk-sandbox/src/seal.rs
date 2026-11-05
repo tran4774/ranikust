@@ -509,8 +509,9 @@ fn covered(mounts: &[MountInfo], m: &MountInfo) -> bool {
     })
 }
 
-/// [`reached_writable`] with the binary's name and each mount's root
-/// followed from this process's `/`; `Err` when `/` cannot be opened, or
+/// [`reached_writable`] with the binary's name and each mount point looked
+/// up from this process's `/` ([`seen_at`]), the binary's name not looked
+/// up when its own mount is [`covered`]; `Err` when `/` cannot be opened, or
 /// when a lookup fails and no writable mount was found to reach the binary.
 fn reached_from_slash(
     mounts: &[MountInfo],
@@ -563,7 +564,9 @@ fn reached_by(
 
 /// `walk` on the mount table `read` gives, read again once it is done:
 /// mount ids are reused, so a table that changed meanwhile places nothing
-/// (`None`), and nor does one that does not parse.
+/// (`None`), whatever the walk found, and nor does one that does not
+/// parse. A failed read is its error, the second one too, even after the
+/// walk found a reach: both refuse.
 fn on_a_stable_table(
     mut read: impl FnMut() -> Result<Vec<u8>, Errno>,
     walk: impl FnOnce(&[MountInfo]) -> Result<Option<bool>, Errno>,
@@ -590,7 +593,8 @@ fn on_a_stable_table(
 /// leads to it. `None` when `mounts` does not place the file (no name, or
 /// its own root's name removed, and no root that is the file), or when a
 /// mount that may reach it is a directory whose name was removed or whose
-/// root is no path, or one `root_of` cannot reach.
+/// root is no path, one another mount covers ([`covered`], not passed to
+/// `root_of`), or one `root_of` cannot reach.
 fn reached_writable(
     mounts: &[MountInfo],
     own: u64,
