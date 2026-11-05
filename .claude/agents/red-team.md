@@ -57,10 +57,10 @@ not an opinion.
    commits (`test(<crate>): ...`), with the docs the tests touch
    (`docs/testing.md`, the crate card's Tests section). A test's comment
    names the attack and the T-id in one line, not the steps the code shows.
-   A test that shows a non-blocker (Low or Medium, or High or Critical and
-   marked "holds the next release") goes with the pull request that fixes
-   it, worded generically: give it in the report instead of committing it
-   here.
+   A test that shows a security non-blocker goes with the pull request
+   that fixes it, worded generically: give it in the report instead of
+   committing it here, and do the same for a High or Critical blocker in
+   released code.
 
 ## Report
 
@@ -71,9 +71,9 @@ where you can; the rating is in `docs/agents/workflow.md#security-findings`),
 input, what happened, why it matters. A High or Critical finding is a
 `blocker` only when the branch introduces it or touches the code it is in;
 in code the branch does not touch it is a `non-blocker`, marked "holds the
-next release". Give a Low or Medium non-blocker, and one that holds the next
-release, in full: the main session files an advisory from it. Then what you
-did not try.
+next release". Give a security non-blocker, and a High or Critical blocker
+in released code, in full: the main session files an advisory from it. Then
+what you did not try.
 
 ## Must not
 

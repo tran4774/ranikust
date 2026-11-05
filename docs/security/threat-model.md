@@ -104,8 +104,9 @@ refused (ADR-0060).
 ## 6. Accepted risks
 
 These follow from decisions and are documented to users rather than fixed.
-A residual the maintainer accepts is listed here, and may be described here
-([Security findings](../agents/workflow.md#security-findings)).
+A residual the maintainer accepts is listed here in general words with the
+mitigation, and the maintainer closes its draft security advisory once the
+entry is on `main` ([Security findings](../agents/workflow.md#security-findings)).
 
 - `RUN` runs as root inside its sandbox, and the sandbox is about as strong
   as `docker build` ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md)).
