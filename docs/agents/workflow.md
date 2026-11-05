@@ -403,18 +403,18 @@ section owns what happens to one
   score where they can give one. When the two disagree the higher decides,
   and a score of 7.0 or more is at least High (9.0 or more is Critical).
 - **A High or Critical finding** is a `blocker` of the branch under review
-  when the branch introduces it or touches the code it is in. In code the
-  branch does not touch it is a `non-blocker` of the branch, marked "holds
-  the next release". An audit lead is no blocker until it is confirmed as
-  High or Critical.
+  when the branch introduces it or touches it: its diff changes a line of
+  the file the weakness is in. Otherwise it is a `non-blocker` of the
+  branch, marked "holds the next release". An audit lead is no blocker
+  until it is confirmed as High or Critical.
 - **Routing.** Each case, and who fixes it:
 
   | Finding | Fixed |
   |---|---|
-  | A blocker the branch introduces, or a High one it touches in code on `main` in no release yet | In the loop, before the push |
-  | A blocker the private fork fixes: High or Critical in released code, or Critical in code on `main`, that the branch touches | In the draft's temporary private fork. The branch does not push until the fork's fix is merged into `main`, then merges `main` into it and pushes; until then its review and notes keep the finding out of anything public |
-  | Holds the next release: Critical in code on `main`, released or not, or High in released code | In the same private fork; the branch pushes and merges, and only the next release waits |
-  | Holds the next release: High in code on `main` in no release yet | An ordinary pull request with generic wording before the next release; no private fork |
+  | A blocker the branch introduces, or a High or Critical one it touches in a weakness already on `main` in no release yet | In the loop, before the push |
+  | A blocker the private fork fixes: a High or Critical weakness already in a release that the branch touches | In the draft's temporary private fork. The branch does not push until the fork's fix is merged into `main`, then merges `main` into it and pushes; until then its review and notes keep the finding out of anything public |
+  | Holds the next release: a High or Critical weakness already in a release, or a Critical one on `main` in no release yet | In the same private fork; the branch pushes and merges, and only the next release waits |
+  | Holds the next release: a High weakness on `main` in no release yet | An ordinary pull request with generic wording before the next release; no private fork |
   | A Low or Medium draft | Later, an ordinary pull request with generic wording, its test staying; its diff may show the weakness before the release |
   | A residual the maintainer accepts | No fix: a draft at once; the threat model's [section 6](../security/threat-model.md#6-accepted-risks) lists it in general words with the mitigation, and the maintainer closes the draft once that entry is on `main` |
 
@@ -423,7 +423,10 @@ section owns what happens to one
   and agents work there as the maintainer directs. Its fix reaches `main`
   through the advisory's merge button, which the maintainer presses; GitHub
   runs no status checks in the fork and enforces none of the branch's
-  protection rules at that merge.
+  protection rules at that merge. So before the maintainer presses it, an
+  agent runs `just ci`, the relevant T2 tests in the VM, `host-safety` and
+  `red-team` on the fork's change and records the results in the draft;
+  the full CI on `main` after the merge is a second check.
 - **A draft advisory instead:** a Low or Medium non-blocker, and a residual
   the maintainer accepts, whatever its rating. It is not fixed in the pull
   request at hand and holds up neither it nor a release. The maintainer may
@@ -454,8 +457,11 @@ section owns what happens to one
 - **Publishing.** A draft stays a draft until a release that contains its
   fix is out ([CONTRIBUTING](../../CONTRIBUTING.md#releasing)). An agent then
   prepares its text and the maintainer publishes it, optionally requesting a
-  CVE. A residual the maintainer accepts becomes a draft at once; once its
-  section 6 entry is on `main`, the maintainer closes the draft.
+  CVE. A draft whose weakness no release ever contained is not published:
+  the maintainer closes it once the fix is on `main`, and the fix pull
+  request is the public record. A residual the maintainer accepts becomes a
+  draft at once; once its section 6 entry is on `main`, the maintainer
+  closes the draft.
 - **The maintainer's alone:** an advisory's state (publish, close,
   withdraw), a CVE request, opening its temporary private fork, and adding
   a collaborator to an advisory (it widens who sees unfixed details).

@@ -70,11 +70,11 @@ A table: attack, T-id, tier, test name, result (`held` / **broken** /
 `non-blocker`, severity (Low, Medium, High or Critical, and a CVSS score
 where you can; the rating is in `docs/agents/workflow.md#security-findings`),
 input, what happened, why it matters. A High or Critical finding is a
-`blocker` only when the branch introduces it or touches the code it is in;
-in code the branch does not touch it is a `non-blocker`, marked "holds the
-next release". Give a security non-blocker, and a blocker the private fork
-fixes, in full: the main session files an advisory from it. Then what you
-did not try.
+`blocker` only when the branch introduces it or its diff changes a line of
+the file the weakness is in; otherwise it is a `non-blocker`, marked
+"holds the next release". Give a security non-blocker, and a blocker the
+private fork fixes, in full: the main session files an advisory from it.
+Then what you did not try.
 
 ## Must not
 

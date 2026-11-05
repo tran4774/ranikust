@@ -53,11 +53,11 @@ this ADR owns the rules.
   score of 7.0 or more is at least High, 9.0 or more Critical. No CVSS
   version is pinned.
 - **Blocker.** A High or Critical finding is a blocker of the branch under
-  review when the branch introduces it or touches the code it is in. In
-  code the branch does not touch it is a non-blocker of the branch, marked
-  "holds the next release": the branch pushes and merges, and only the next
-  release waits for the fix. An audit lead is no blocker until it is
-  confirmed as High or Critical.
+  review when the branch introduces it or touches it: its diff changes a
+  line of the file the weakness is in. Otherwise it is a non-blocker of the
+  branch, marked "holds the next release": the branch pushes and merges,
+  and only the next release waits for the fix. An audit lead is no blocker
+  until it is confirmed as High or Critical.
 - **How each is fixed.** The routing table in
   [workflow.md](../agents/workflow.md#security-findings) applies the
   answers in Evidence; this ADR records the decision, not the procedure.
@@ -92,7 +92,13 @@ this ADR owns the rules.
   withdraw), requests a CVE, opens its temporary private fork and adds a
   collaborator to it, since that widens who sees unfixed details. A draft
   stays a draft until a release that contains its fix is out; an agent then
-  prepares its text and the maintainer publishes it.
+  prepares its text and the maintainer publishes it. One whose weakness no
+  release ever contained is closed, not published, once the fix is on
+  `main`; the fix pull request is the public record.
+- **Verifying a fork's fix.** GitHub runs no CI in a private fork and
+  enforces no ruleset at its merge, so before the maintainer merges it an
+  agent runs the checks the workflow lists and records the results in the
+  draft; the full CI on `main` after the merge is a second check.
 - **Transition.** The private reports held outside GitHub move into draft
   advisories. Fixes in progress on 2026-11-05 (#32, #82 and #33) finish as
   planned; the rule applies from the next review on.
@@ -108,8 +114,9 @@ this ADR owns the rules.
   and open; users learn of one only when its advisory is published.
 - Bad, because the diff of an ordinary fix pull request may show the
   weakness before the release that carries it.
-- Bad, because a branch that touches code whose finding the private fork
-  fixes waits for that fix on `main`, however long it takes.
+- Bad, because a branch that touches a High or Critical weakness already in
+  a release waits for the private fork's fix on `main`, however long it
+  takes.
 - Bad, because creating an advisory is a `gh api` write, which the ask
   rules of ADR-0093 prompt for, as for a commit status [inferred from those
   rules; not tried].
@@ -157,21 +164,32 @@ No experiment; the maintainer's decision and answers, each given on
   `main`, then pushes, after merging `main` into it (our addition: the
   repository never force-pushes); until then its review and notes keep the
   finding out of anything public.
-- [inferred] A Critical finding in code on `main` in no release yet that X
-  touches is handled as the touched, released case (X waits for the fork's
-  fix on `main`, then merges `main` into it and pushes), from the answers
-  on touched released code and on Critical findings: a Critical finding
-  always goes through the private fork, so X's public loop cannot fix it.
-  The maintainer may overrule this.
-- [inferred] A High finding in code on `main` in no release yet that X
-  touches is fixed in X's own loop. No answer covers it: it is the loop as
-  before this ADR, and the answer on High findings in that code already
-  accepts a public diff.
+- A Critical finding in a weakness on `main` in no release yet that X
+  touches: "X tự sửa trong vòng review" (X fixes it itself in its review
+  loop). The maintainer overruled our first reading, that X waits for the
+  fork's fix. A High finding in the same case is covered by this answer
+  together with the one on High findings in that code, which accepts a
+  public diff.
+- What "touches" means: "Cùng file (khuyến nghị)" (the same file, as
+  recommended). X touches a finding when its diff changes any line of the
+  file the weakness is in.
+- A draft whose weakness no release ever contained, for example one fixed
+  before the next release: "Đóng nháp, không publish (khuyến nghị)" (close
+  the draft, do not publish, as recommended). The maintainer closes it once
+  the fix is on `main`; the fix pull request is the public record.
+- How a fork's fix is verified, where GitHub runs no CI and enforces no
+  ruleset: "Agent chạy kiểm tra trước khi anh merge (khuyến nghị)" (an
+  agent runs the checks before the maintainer merges, as recommended).
+  Before the maintainer presses the advisory's merge button, an agent runs
+  `just ci`, the relevant T2 tests in the VM, `host-safety` and `red-team`
+  on the fork's change, and records the results in the draft; the full CI
+  on `main` after the merge is a second check.
 - Whether the High rule for code on `main` in no release yet covers
   Critical: "Critical đi qua private fork (khuyến nghị)" (Critical goes
   through the private fork, as recommended). Only a High finding in that
-  code goes through an ordinary pull request; a Critical one always goes
-  through the private fork, released or not. The question was asked because
+  code goes through an ordinary pull request; a Critical one goes through
+  the private fork, released or not, unless X touches it (the answer
+  above). The question was asked because
   [code] [SECURITY.md](../../SECURITY.md#supported-versions) supports
   `main`: a fix lands there and ships in the next release.
 - Where an accepted residual is recorded: "GHSA nháp, đóng khi §6 đã ghi
