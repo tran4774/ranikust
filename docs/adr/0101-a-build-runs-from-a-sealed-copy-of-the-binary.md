@@ -188,8 +188,8 @@ The decision:
   shows without placing the binary on it, is not detected: an accepted
   residual risk, with the guidance to mount the binary from a path that no
   writable mount shares, narrowed by the refusal of a process of another
-  mount namespace that ranikust reaches when it starts (the next item) to
-  the processes that appear later. The maintainer decided, on 2026-11-04 unless an
+  mount namespace that ranikust reaches when it starts (the next item).
+  The maintainer decided, on 2026-11-04 unless an
   item gives another date (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
@@ -294,19 +294,24 @@ The decision:
   and before anything is written, when it finds, once as it starts, a
   process of its PID namespace in another mount namespace (the device and
   inode of `/proc/<pid>/ns/mnt`, opened `O_PATH`, against its own) whose
-  `/proc/<pid>/root` it opens (`O_PATH`), with the guidance not to share
-  the build container's PID namespace with another container. A process
-  whose root it may not open (`EACCES`, `EPERM`) is not counted, such as
-  Kubernetes' pause container at uid 65535; one gone meanwhile (`ENOENT`,
-  `ESRCH`) is skipped; any other error, `/proc` that cannot be listed, or
-  more than 32768 processes refuse the build (fail closed), each with its
-  own message. A `--pid=host` container is refused by the same rule when
-  ranikust reaches a process of the host or of another container.
-  ranikust looks with its start-up privileges, before it trims them to a
-  `RUN`'s (ADR-0078), so it may refuse a process no `RUN` would reach (a
-  container given `CAP_SYS_PTRACE`, a Dockerfile whose `RUN`s are not
-  root): wider than needed, accepted as failing closed. A process that
-  appears after that look is not seen: an accepted residual risk.
+  `/proc/<pid>/root` it opens (`O_PATH`), both through one descriptor of
+  `/proc/<pid>`, so that a pid reused meanwhile is not taken for the
+  process, with the guidance not to share the build container's PID
+  namespace with another container. A process whose root it may not open
+  (`EACCES`, `EPERM`) is not counted, such as Kubernetes' pause container
+  at uid 65535; one gone meanwhile (`ENOENT`, `ESRCH`) is skipped, once
+  each of its threads (`/proc/<pid>/task`) is gone too, since a process
+  whose first thread has exited has no root of its own; any other error,
+  `/proc` or ranikust's own namespace that cannot be read, or more than
+  32768 processes and threads refuse the build (fail closed), each with
+  its own message and guidance. A `--pid=host` container is refused by the
+  same rule when ranikust reaches a process of the host or of another
+  container. ranikust looks with its start-up privileges, before it trims
+  them to a `RUN`'s (ADR-0078), so where it reaches a process a `RUN`
+  would not (a container given `CAP_SYS_PTRACE`, a Dockerfile whose `RUN`s
+  are not root), the refusal is wider than needed: accepted as failing
+  closed. A process that appears after that look is not seen: an accepted
+  residual risk.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -351,9 +356,8 @@ The decision:
   through a writable mount of another file system that the table shows
   without placing the binary on it, is not detected, a residual risk the
   maintainer accepted, narrowed by the refusal of a process of another
-  mount namespace that ranikust reaches when it starts to the processes
-  that appear later. The operator mounts the binary from a path that no
-  writable mount shares.
+  mount namespace that ranikust reaches when it starts. The operator
+  mounts the binary from a path that no writable mount shares.
 - Bad, because kaniko mode on `/` refuses a container that shares its PID
   namespace with another one whose processes ranikust reaches when it
   starts (a root sidecar under Kubernetes `shareProcessNamespace: true`,
@@ -547,7 +551,11 @@ The decision:
   `a_peer_scan_refuses_what_it_cannot_tell` (a probe's other error, an
   unreadable `/proc` entry), `a_peer_scan_past_its_bound_refuses`,
   `ranikust_itself_is_in_its_own_mount_namespace_and_a_missing_process_is_gone`
-  (the real probe) and the binary's
+  (the real probe),
+  `the_threads_of_a_process_are_probed_within_the_bound` (the walk of
+  the threads used when a process's first thread has exited, run on
+  ranikust's own threads),
+  `a_process_name_is_trimmed_and_escaped` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   (messages and guidance). T1 `pid-peers` (rootless podman 5.7.0, Linux
   7.0): in a default container with `--pid container:<peer>` and the

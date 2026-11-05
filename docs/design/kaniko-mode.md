@@ -151,14 +151,16 @@ the scheduler runs one stage at a time) or a private directory per stage
     does not show. With the binary's check, before anything is written,
     ranikust looks once through `/proc` (`exposure::scan_peers`): a
     process in another mount namespace (`/proc/<pid>/ns/mnt` by device and
-    inode) whose `/proc/<pid>/root` it opens refuses the build; one it may
-    not open (`EACCES`, `EPERM`) is not counted, one gone is skipped, and
-    any other error or more than 32768 processes refuse too. It looks with
-    its start-up privileges, wider than a `RUN`'s, so it may refuse a
-    process no `RUN` would reach (fails closed); a `--pid=host` container
-    is refused by the same rule when a process of the host or of another
-    container is in reach. A process that appears later is not seen, a
-    residual risk (ADR-0101).
+    inode) whose `/proc/<pid>/root` it opens, both through one descriptor
+    of `/proc/<pid>`, refuses the build; one it may not open (`EACCES`,
+    `EPERM`) is not counted, one gone is skipped once its threads
+    (`/proc/<pid>/task`) are gone too, and any other error or more than
+    32768 processes and threads refuse too, each with its own guidance. It
+    looks with its start-up privileges, before it trims them, so it may
+    refuse a process no `RUN` would reach (fails closed); a `--pid=host`
+    container is refused by the same rule when a process of the host or
+    of another container is in reach. A process that appears later is not
+    seen (ADR-0101).
   - **No process outlives its `RUN`.** ranikust is a child subreaper. After
     each `RUN` it kills everything that became its child during the `RUN`, and
     their descendants, through a pidfd after checking the parent and start time
