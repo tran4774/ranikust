@@ -7,14 +7,14 @@
 case_run() {
   local d
   d="$(out peers)"
-  rm -rf "$d" && mkdir -p "$d/ctx" "$d/look" "$d/t"
+  rm -rf "$d" && mkdir -p "$d/ctx" "$d/look" "$d/bin" "$d/w"
   printf 'FROM scratch\nCOPY Dockerfile /d\n' >"$d/ctx/Dockerfile"
   printf '%s\n' "FROM $BASE" \
     'RUN for p in /proc/[0-9]*; do [ -d "$p/root/w" ] && echo "RUN reached $p"; done; true' \
     >"$d/look/Dockerfile"
-  install -m 0755 "$RNK" "$d/t/ranikust"
-  peer refused "a root peer with a writable bind of its own" "$d/look" 1 -v "$d/t:/w"
-  peer built "a peer of another user" "$d/ctx" 2 --user 1000:1000 -v "$d/t:/w"
+  install -m 0755 "$RNK" "$d/bin/ranikust"
+  peer refused "a root peer with a writable bind of its own" "$d/look" 1 -v "$d/w:/w"
+  peer built "a peer of another user" "$d/ctx" 2 --user 1000:1000
   peer built "no peer" "$d/ctx" ""
 }
 
@@ -36,7 +36,7 @@ peer() {
       fail "$what: the peer did not start" || return 1
     pid=(--pid "container:$name")
   fi
-  got="$($ENGINE run --rm ${pid[@]+"${pid[@]}"} -v "$(out peers)/t/ranikust:/ranikust/bin/ranikust:ro" \
+  got="$($ENGINE run --rm ${pid[@]+"${pid[@]}"} -v "$(out peers)/bin/ranikust:/ranikust/bin/ranikust:ro" \
     -v "$ctx:/ranikust/ctx:ro" "$BASE" sh -c '
     /ranikust/bin/ranikust --mode=kaniko --context /ranikust/ctx --no-push \
       --state-dir /var/lib/rnk-peers

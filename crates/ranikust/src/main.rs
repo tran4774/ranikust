@@ -883,16 +883,17 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
 /// another mount namespace that ranikust reaches through `/proc` when it
 /// starts (ADR-0101): a `RUN` shares that PID namespace and could reach that
 /// process's files, which the container's own mount table does not show.
-/// A scan that cannot tell, or one of too many processes, is refused too,
+/// A scan that cannot tell, or one of too many threads, is refused too,
 /// each with its own guidance.
 fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Failure> {
     use exposure::PeerScan;
     match scan {
         PeerScan::None => Ok(()),
-        PeerScan::Reachable(exposure::Process { pid, comm }) => Err(Failure::error(format!(
-            "{how}: kaniko mode on / sharing its PID namespace with process {pid} ({comm}), of \
-             another mount namespace, whose files ranikust reaches through /proc/{pid}/root, \
-             would let RUN reach that process's files"
+        PeerScan::Reachable(process) => Err(Failure::error(format!(
+            "{how}: kaniko mode on / sharing its PID namespace with process {process}, of \
+             another mount namespace, whose files ranikust reaches through /proc/{}, would let \
+             RUN reach that process's files",
+            process.pid
         ))
         .with_guidance(
             "do not share the build container's PID namespace with another container: no \
@@ -900,9 +901,9 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              podman --pid container:<name> or --pid=host (ADR-0101)",
         )),
         PeerScan::TooMany => Err(Failure::error(format!(
-            "{how}: kaniko mode on / sharing its PID namespace with more than {} processes and \
-             threads; ranikust refuses to build without looking at each for one of another \
-             mount namespace that a RUN could reach",
+            "{how}: kaniko mode on / sharing its PID namespace with more than {} threads; \
+             ranikust refuses to build without looking at each for one of another mount \
+             namespace that a RUN could reach",
             exposure::PEER_SCAN_LIMIT
         ))
         .with_guidance(
@@ -910,15 +911,15 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              or shareProcessNamespace: true, no --pid=host or --pid container:<name>), where \
              fewer processes run (ADR-0101)",
         )),
-        PeerScan::Unknown(exposure::Process { pid, comm }, e) => Err(Failure::error(format!(
-            "{how}: cannot tell whether process {pid} ({comm}) is of another mount namespace \
-             that ranikust reaches through /proc/{pid}/root ({e}); kaniko mode on / refuses to \
+        PeerScan::Unknown(process, step, e) => Err(Failure::error(format!(
+            "{how}: cannot tell whether process {process} is of another mount namespace that \
+             ranikust reaches through /proc: {step} failed ({e}); kaniko mode on / refuses to \
              build without knowing"
         ))
         .with_guidance(
-            "let the container's seccomp and LSM profiles allow opening /proc/<pid>/root, \
-             /proc/<pid>/ns/mnt and /proc/<pid>/task with O_PATH, and share no PID namespace \
-             with another container (ADR-0101)",
+            "let the container's seccomp and LSM profiles allow listing /proc/<pid>/task and \
+             opening /proc/<pid>, /proc/<pid>/task/<tid> and its root and ns/mnt with O_PATH, \
+             and share no PID namespace with another container (ADR-0101)",
         )),
         PeerScan::Unlisted(e) => Err(Failure::error(format!(
             "{how}: cannot list the processes of its PID namespace in /proc ({e}); kaniko mode \
@@ -928,7 +929,8 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
         .with_guidance("mount /proc in the container, readable by root (ADR-0101)")),
         PeerScan::OwnNamespace(e) => Err(Failure::error(format!(
             "{how}: cannot read ranikust's own mount namespace, /proc/self/ns/mnt ({e}); kaniko \
-             mode on / refuses to build without knowing which processes are of another"
+             mode on / refuses to build without knowing which processes are of another mount \
+             namespace"
         ))
         .with_guidance(
             "mount /proc in the container, and let its seccomp profile allow opening \
@@ -1517,7 +1519,7 @@ mod tests {
                 && reached.message.starts_with(
                     "--mode=kaniko: kaniko mode on / sharing its PID namespace with process 42 \
                      (sleep), of another mount namespace, whose files ranikust reaches through \
-                     /proc/42/root"
+                     /proc/42,"
                 )
                 && reached
                     .message
@@ -1540,25 +1542,26 @@ mod tests {
         for (scan, message, says) in [
             (
                 PeerScan::TooMany,
-                format!(
-                    "more than {} processes and threads",
-                    exposure::PEER_SCAN_LIMIT
-                ),
+                format!("more than {} threads;", exposure::PEER_SCAN_LIMIT),
                 "fewer processes run",
             ),
             (
-                PeerScan::Unknown(sleep(), errno),
-                "cannot tell whether process 42 (sleep) is of another mount namespace".to_owned(),
-                "/proc/<pid>/ns/mnt",
+                PeerScan::Unknown(sleep(), "opening /proc/<pid>/task/<tid>/root", errno),
+                format!(
+                    "cannot tell whether process 42 (sleep) is of another mount namespace that \
+                     ranikust reaches through /proc: opening /proc/<pid>/task/<tid>/root failed \
+                     ({errno})"
+                ),
+                "listing /proc/<pid>/task",
             ),
             (
                 PeerScan::Unlisted(errno),
-                "cannot list the processes of its PID namespace in /proc".to_owned(),
+                format!("cannot list the processes of its PID namespace in /proc ({errno})"),
                 "mount /proc",
             ),
             (
                 PeerScan::OwnNamespace(errno),
-                "cannot read ranikust's own mount namespace, /proc/self/ns/mnt".to_owned(),
+                format!("cannot read ranikust's own mount namespace, /proc/self/ns/mnt ({errno})"),
                 "/proc/self/ns/mnt",
             ),
         ] {
@@ -1567,8 +1570,6 @@ mod tests {
                 refused.code == 1
                     && refused.message.starts_with("--mode=kaniko: ")
                     && refused.message.contains(&message)
-                    && (refused.message.contains(&errno.to_string())
-                        || refused.message.contains("processes and threads"))
                     && refused.guidance.contains(says)
                     && refused.guidance.ends_with("(ADR-0101)"),
                 "{}: {}",
@@ -1577,6 +1578,23 @@ mod tests {
             );
             guidance.push(refused.guidance);
         }
+        // A process whose name could not be read is named by its pid.
+        let unnamed = Process {
+            pid: "42".into(),
+            comm: String::new(),
+        };
+        let refused = refuse_reachable_peers(
+            how,
+            PeerScan::Unknown(unnamed, "opening /proc/<pid>", errno),
+        )
+        .unwrap_err();
+        assert!(
+            refused
+                .message
+                .contains("whether process 42 is of another mount namespace"),
+            "{}",
+            refused.message
+        );
         guidance.push(reached.guidance);
         guidance.sort();
         guidance.dedup();

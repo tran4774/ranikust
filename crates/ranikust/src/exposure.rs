@@ -163,7 +163,7 @@ fn other_pid(name: OsString, me: &str) -> Option<String> {
 
 /// The name a process gives itself (`/proc/<pid>/comm`), escaped, empty
 /// when it cannot be read.
-pub(crate) fn comm(pid: &str) -> String {
+fn comm(pid: &str) -> String {
     fs::read(format!("/proc/{pid}/comm"))
         .map(|c| escaped(&c))
         .unwrap_or_default()
@@ -178,34 +178,57 @@ fn escaped(comm: &[u8]) -> String {
         .to_string()
 }
 
-/// The most processes, threads looked at included, that [`scan_peers`]
-/// looks at; a PID namespace with more is refused rather than walked at
-/// length.
+/// The most threads [`scan_peers`] looks at, a process with none left
+/// counting as one; a PID namespace with more is refused rather than walked
+/// at length.
 pub(crate) const PEER_SCAN_LIMIT: usize = 32_768;
 
-/// A process [`scan_peers`] names: its pid and its escaped name.
+/// A process [`scan_peers`] names: its pid and its escaped name, empty when
+/// it could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Process {
     pub(crate) pid: String,
     pub(crate) comm: String,
 }
 
+impl std::fmt::Display for Process {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.comm.is_empty() {
+            write!(f, "{}", self.pid)
+        } else {
+            write!(f, "{} ({})", self.pid, self.comm)
+        }
+    }
+}
+
 /// What the probe of one process found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Peer {
-    /// In ranikust's own mount namespace.
+    /// Its threads in ranikust's own mount namespace, or refused to it.
     Same,
-    /// In another mount namespace, its `/proc/<pid>/root` opened; its name.
+    /// A thread in another mount namespace, its `root` opened; the
+    /// process's name.
     Reachable(String),
-    /// Its `/proc/<pid>/root` refused to ranikust (`EACCES`, `EPERM`).
+    /// Its threads' `root` refused to ranikust (`EACCES`, `EPERM`).
     Unreachable,
     /// Gone while it was looked at (`ENOENT`, `ESRCH`), with each of its
     /// threads.
     Gone,
     /// Threads past what is left of the bound.
     TooMany,
-    /// Any other error; its name.
-    Unknown(Errno, String),
+    /// Any other error: the step that failed, the error and the process's
+    /// name.
+    Unknown(&'static str, Errno, String),
+}
+
+/// What the probe of one thread found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Thread {
+    Same,
+    Other,
+    Unreachable,
+    Gone,
+    Unknown(&'static str, Errno),
 }
 
 /// What [`scan_peers`] found.
@@ -213,26 +236,27 @@ enum Peer {
 pub(crate) enum PeerScan {
     /// No process of another mount namespace that ranikust reaches.
     None,
-    /// The first process found in another mount namespace whose
-    /// `/proc/<pid>/root` ranikust opened.
+    /// The first process found with a thread in another mount namespace
+    /// whose `root` ranikust opened.
     Reachable(Process),
-    /// More than [`PEER_SCAN_LIMIT`] processes and threads.
+    /// More than [`PEER_SCAN_LIMIT`] threads.
     TooMany,
-    /// A process that could not be told, and why.
-    Unknown(Process, Errno),
+    /// A process that could not be told: the step that failed and the
+    /// error.
+    Unknown(Process, &'static str, Errno),
     /// `/proc` could not be listed.
     Unlisted(Errno),
     /// ranikust's own mount namespace could not be read.
     OwnNamespace(Errno),
 }
 
-/// Looks, once, for a process of the PID namespace in another mount
-/// namespace whose `/proc/<pid>/root` ranikust opens: a `RUN` on `/` shares
-/// the PID namespace and could reach that process's files, which the
-/// container's own mount table does not show (ADR-0101). Called before
-/// ranikust trims its capabilities, so it may reach a process a `RUN`
-/// would not: refused all the same (fails closed). A process that appears
-/// after the scan is not seen.
+/// Looks, once, for a process of the PID namespace with a thread in another
+/// mount namespace whose `/proc/<pid>/task/<tid>/root` ranikust opens: a
+/// `RUN` on `/` shares the PID namespace and could reach that process's
+/// files, which the container's own mount table does not show (ADR-0101).
+/// Called before ranikust trims its capabilities, so it may reach a process
+/// a `RUN` would not: refused all the same (fails closed). A process that
+/// appears after the scan is not seen.
 pub(crate) fn scan_peers() -> PeerScan {
     let own = match namespace(rustix::fs::CWD, "/proc/self/ns/mnt") {
         Ok(own) => own,
@@ -247,10 +271,10 @@ pub(crate) fn scan_peers() -> PeerScan {
     scan(names, PEER_SCAN_LIMIT, |pid, left| probe(own, pid, left))
 }
 
-/// The scan of `/proc`'s entry `names`, at most `limit` processes and
-/// threads, with `probe` (given what is left of `limit`, it returns the
-/// threads it looked at): the first process reached in another mount
-/// namespace, or the first that cannot be told.
+/// The scan of `/proc`'s entry `names`, at most `limit` threads, with
+/// `probe` (given what is left of `limit`, it returns the threads it looked
+/// at): the first process reached in another mount namespace, or the first
+/// that cannot be told.
 fn scan(
     names: impl IntoIterator<Item = Result<OsString, Errno>>,
     limit: usize,
@@ -266,28 +290,29 @@ fn scan(
             },
             Err(e) => return PeerScan::Unlisted(e),
         };
-        seen += 1;
-        if seen > limit {
-            return PeerScan::TooMany;
-        }
         let (peer, threads) = probe(&pid, limit - seen);
-        seen += threads;
+        // A process with no thread left counts as one, so that the bound
+        // holds for a `/proc` of exiting processes too.
+        seen += threads.max(1);
         match peer {
-            Peer::Same | Peer::Unreachable | Peer::Gone => {}
+            Peer::Same | Peer::Unreachable | Peer::Gone if seen <= limit => {}
+            Peer::Same | Peer::Unreachable | Peer::Gone | Peer::TooMany => {
+                return PeerScan::TooMany;
+            }
             Peer::Reachable(comm) => return PeerScan::Reachable(Process { pid, comm }),
-            Peer::TooMany => return PeerScan::TooMany,
-            Peer::Unknown(e, comm) => return PeerScan::Unknown(Process { pid, comm }, e),
+            Peer::Unknown(step, e, comm) => {
+                return PeerScan::Unknown(Process { pid, comm }, step, e);
+            }
         }
     }
     PeerScan::None
 }
 
 /// Probes process `pid` through one descriptor of its `/proc/<pid>`, so
-/// that a pid reused meanwhile is not mistaken for it: whether ranikust
-/// opens its `root`, then whether its mount namespace is `own`. A process
-/// whose first thread has exited has no `root` of its own: its other
-/// threads, at most `left`, are probed instead. Returns the threads it
-/// looked at too.
+/// that a pid reused meanwhile is not mistaken for it: each of its threads,
+/// at most `left`, since a thread may have a mount namespace and
+/// credentials of its own and the first one may have exited. Returns the
+/// threads it looked at too.
 fn probe(own: (u64, u64), pid: &str, left: usize) -> (Peer, usize) {
     let dir = match rustix::fs::open(
         format!("/proc/{pid}"),
@@ -296,38 +321,11 @@ fn probe(own: (u64, u64), pid: &str, left: usize) -> (Peer, usize) {
     ) {
         Ok(dir) => dir,
         Err(Errno::NOENT | Errno::SRCH) => return (Peer::Gone, 0),
-        Err(e) => return (Peer::Unknown(e, comm(pid)), 0),
+        Err(e) => return (Peer::Unknown("opening /proc/<pid>", e, String::new()), 0),
     };
-    match task(own, &dir) {
-        Peer::Gone => threads(own, &dir, left),
-        peer => (peer, 0),
-    }
-}
-
-/// The probe of one thread, or of a process through its first thread, at
-/// its `/proc` directory `dir`.
-fn task(own: (u64, u64), dir: &OwnedFd) -> Peer {
-    // Following the link takes the kernel's access check for it.
-    match rustix::fs::openat(dir, "root", OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
-        Ok(_) => {}
-        Err(Errno::ACCESS | Errno::PERM) => return Peer::Unreachable,
-        Err(Errno::NOENT | Errno::SRCH) => return Peer::Gone,
-        Err(e) => return Peer::Unknown(e, comm_at(dir)),
-    }
-    match namespace(dir, "ns/mnt") {
-        Ok(ns) if ns == own => Peer::Same,
-        Ok(_) => Peer::Reachable(comm_at(dir)),
-        Err(Errno::NOENT | Errno::SRCH) => Peer::Gone,
-        Err(e) => Peer::Unknown(e, comm_at(dir)),
-    }
-}
-
-/// The probe of the threads of the process at `dir`, at most `left`: the
-/// first one reached in another mount namespace or that cannot be told, else
-/// whether one was in reach at all; and how many were looked at.
-fn threads(own: (u64, u64), dir: &OwnedFd, left: usize) -> (Peer, usize) {
+    let unknown = |step, e| Peer::Unknown(step, e, comm_at(&dir));
     let list = rustix::fs::openat(
-        dir,
+        &dir,
         "task",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
@@ -336,7 +334,7 @@ fn threads(own: (u64, u64), dir: &OwnedFd, left: usize) -> (Peer, usize) {
     let list = match list {
         Ok(list) => list,
         Err(Errno::NOENT | Errno::SRCH) => return (Peer::Gone, 0),
-        Err(e) => return (Peer::Unknown(e, comm_at(dir)), 0),
+        Err(e) => return (unknown("listing /proc/<pid>/task", e), 0),
     };
     let mut seen = 0;
     let mut found = Peer::Gone;
@@ -344,10 +342,10 @@ fn threads(own: (u64, u64), dir: &OwnedFd, left: usize) -> (Peer, usize) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(Errno::NOENT | Errno::SRCH) => break,
-            Err(e) => return (Peer::Unknown(e, comm_at(dir)), seen),
+            Err(e) => return (unknown("listing /proc/<pid>/task", e), seen),
         };
-        let name = entry.file_name().to_bytes();
-        if name.is_empty() || !name.iter().all(u8::is_ascii_digit) {
+        let tid = entry.file_name().to_bytes();
+        if tid.is_empty() || !tid.iter().all(u8::is_ascii_digit) {
             continue;
         }
         seen += 1;
@@ -355,34 +353,53 @@ fn threads(own: (u64, u64), dir: &OwnedFd, left: usize) -> (Peer, usize) {
             return (Peer::TooMany, seen);
         }
         let thread = match rustix::fs::openat(
-            dir,
-            format!("task/{}", String::from_utf8_lossy(name)),
+            &dir,
+            format!("task/{}", String::from_utf8_lossy(tid)),
             OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         ) {
             Ok(thread) => thread,
             Err(Errno::NOENT | Errno::SRCH) => continue,
-            Err(e) => return (Peer::Unknown(e, comm_at(dir)), seen),
+            Err(e) => return (unknown("opening /proc/<pid>/task/<tid>", e), seen),
         };
         match task(own, &thread) {
-            Peer::Gone => {}
-            peer @ (Peer::Same | Peer::Unreachable) => found = peer,
-            peer @ (Peer::Reachable(_) | Peer::TooMany | Peer::Unknown(..)) => {
-                return (peer, seen);
-            }
+            Thread::Gone => {}
+            Thread::Same => found = Peer::Same,
+            Thread::Unreachable => found = Peer::Unreachable,
+            Thread::Other => return (Peer::Reachable(comm_at(&dir)), seen),
+            Thread::Unknown(step, e) => return (unknown(step, e), seen),
         }
     }
     (found, seen)
 }
 
-/// The escaped `comm` of the process or thread at `dir`, empty when it
-/// cannot be read.
+/// The probe of one thread, at its `/proc/<pid>/task/<tid>` directory
+/// `dir`: whether ranikust opens its `root`, then whether its mount
+/// namespace is `own`.
+fn task(own: (u64, u64), dir: &OwnedFd) -> Thread {
+    // Following the link takes the kernel's access check for it.
+    match rustix::fs::openat(dir, "root", OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
+        Ok(_) => {}
+        Err(Errno::ACCESS | Errno::PERM) => return Thread::Unreachable,
+        Err(Errno::NOENT | Errno::SRCH) => return Thread::Gone,
+        Err(e) => return Thread::Unknown("opening /proc/<pid>/task/<tid>/root", e),
+    }
+    match namespace(dir, "ns/mnt") {
+        Ok(ns) if ns == own => Thread::Same,
+        Ok(_) => Thread::Other,
+        Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
+        Err(e) => Thread::Unknown("opening /proc/<pid>/task/<tid>/ns/mnt", e),
+    }
+}
+
+/// The escaped `comm` of the process at `dir`, empty when it cannot be
+/// read.
 fn comm_at(dir: &OwnedFd) -> String {
     let Ok(fd) = rustix::fs::openat(dir, "comm", OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
     else {
         return String::new();
     };
-    // A name is at most 16 bytes, its newline included.
+    // The kernel prints at most 64 bytes, its newline included.
     let mut buf = [0u8; 64];
     match rustix::io::read(&fd, &mut buf) {
         Ok(n) => escaped(&buf[..n]),
@@ -449,9 +466,9 @@ mod tests {
                     "2" => Peer::Unreachable,
                     "3" => Peer::Gone,
                     "4" => Peer::Reachable("sleep".into()),
-                    _ => Peer::Unknown(Errno::IO, String::new()),
+                    _ => Peer::Unknown("x", Errno::IO, String::new()),
                 };
-                (peer, 0)
+                (peer, 1)
             },
         );
         assert_eq!(found, PeerScan::Reachable(process("4", "sleep")));
@@ -463,8 +480,8 @@ mod tests {
     #[test]
     fn a_peer_scan_with_no_process_reached_finds_none() {
         let found = scan(names(&["1", "2", "3"]), 3, |pid, _| match pid {
-            "1" => (Peer::Same, 0),
-            "2" => (Peer::Unreachable, 0),
+            "1" => (Peer::Same, 1),
+            "2" => (Peer::Unreachable, 1),
             _ => (Peer::Gone, 0),
         });
         assert_eq!(found, PeerScan::None);
@@ -473,72 +490,66 @@ mod tests {
     #[test]
     fn a_peer_scan_refuses_what_it_cannot_tell() {
         let found = scan(names(&["1", "2"]), 8, |pid, _| match pid {
-            "1" => (Peer::Same, 0),
-            _ => (Peer::Unknown(Errno::LOOP, "x".into()), 0),
+            "1" => (Peer::Same, 1),
+            _ => (Peer::Unknown("listing", Errno::LOOP, "x".into()), 0),
         });
-        assert_eq!(found, PeerScan::Unknown(process("2", "x"), Errno::LOOP));
+        assert_eq!(
+            found,
+            PeerScan::Unknown(process("2", "x"), "listing", Errno::LOOP)
+        );
         let mut list = names(&["1"]);
         list.push(Err(Errno::IO));
         list.extend(names(&["2"]));
         assert_eq!(
-            scan(list, 8, |_, _| (Peer::Same, 0)),
+            scan(list, 8, |_, _| (Peer::Same, 1)),
             PeerScan::Unlisted(Errno::IO)
         );
     }
 
     #[test]
     fn a_peer_scan_past_its_bound_refuses() {
-        // Entries that are not pids do not count.
+        // Entries that are not pids do not count, and a process with no
+        // thread left counts as one.
         let list = names(&["1", "self", "2", "sys", "3"]);
-        assert_eq!(scan(list, 3, |_, _| (Peer::Same, 0)), PeerScan::None);
-        let mut probed = 0;
+        assert_eq!(scan(list, 3, |_, _| (Peer::Gone, 0)), PeerScan::None);
         let list = names(&["1", "2", "3", "4"]);
-        let found = scan(list, 3, |_, _| {
-            probed += 1;
-            (Peer::Unreachable, 0)
-        });
-        assert_eq!((found, probed), (PeerScan::TooMany, 3));
-        // Threads looked at count too, and a probe is told what is left.
+        assert_eq!(scan(list, 3, |_, _| (Peer::Gone, 0)), PeerScan::TooMany);
+        // Each process counts its threads, and a probe is told what is left.
         let mut left = Vec::new();
         let found = scan(names(&["1", "2", "3"]), 4, |_, l| {
             left.push(l);
-            (Peer::Gone, 2)
+            (Peer::Unreachable, 2)
         });
-        assert_eq!((found, left), (PeerScan::TooMany, vec![3, 0]));
-        let found = scan(names(&["1"]), 4, |_, _| (Peer::TooMany, 4));
+        assert_eq!((found, left), (PeerScan::TooMany, vec![4, 2, 0]));
+        let found = scan(names(&["1"]), 4, |_, _| (Peer::TooMany, 5));
         assert_eq!(found, PeerScan::TooMany);
     }
 
     #[test]
-    fn ranikust_itself_is_in_its_own_mount_namespace_and_a_missing_process_is_gone() {
+    fn every_thread_of_a_process_is_probed_within_the_bound() {
         let own = namespace(rustix::fs::CWD, "/proc/self/ns/mnt").unwrap();
         let me = std::process::id().to_string();
-        assert_eq!(probe(own, &me, 8), (Peer::Same, 0));
+        // A second thread at least, whichever thread runs the test.
+        let (stop, parked) = std::sync::mpsc::channel::<()>();
+        let second = std::thread::spawn(move || parked.recv());
+        let (peer, seen) = probe(own, &me, PEER_SCAN_LIMIT);
+        assert_eq!(probe(own, &me, 1), (Peer::TooMany, 2));
+        // Another namespace's identity: reached at the first thread, named
+        // as the process's `comm` names it.
+        let reached = probe((own.0, own.1 ^ 1), &me, PEER_SCAN_LIMIT);
+        drop(stop);
+        second.join().unwrap().unwrap_err();
+        assert!(peer == Peer::Same && seen >= 2, "{peer:?} {seen}");
+        assert_eq!(reached, (Peer::Reachable(comm(&me)), 1));
+        assert!(!comm(&me).is_empty());
         // Past the largest pid_max.
         assert_eq!(probe(own, "4294967295", 8), (Peer::Gone, 0));
-        // Another namespace's identity, for the same process, named as
-        // `comm` names it.
-        assert_eq!(
-            probe((own.0, own.1 ^ 1), &me, 8),
-            (Peer::Reachable(comm(&me)), 0)
-        );
-        assert!(!comm(&me).is_empty());
     }
 
     #[test]
-    fn the_threads_of_a_process_are_probed_within_the_bound() {
-        let own = namespace(rustix::fs::CWD, "/proc/self/ns/mnt").unwrap();
-        let dir = rustix::fs::open(
-            "/proc/self",
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .unwrap();
-        let (peer, seen) = threads(own, &dir, PEER_SCAN_LIMIT);
-        assert!(peer == Peer::Same && seen >= 1, "{peer:?} {seen}");
-        let (peer, seen) = threads((own.0, own.1 ^ 1), &dir, PEER_SCAN_LIMIT);
-        assert!(matches!(peer, Peer::Reachable(_)) && seen == 1, "{peer:?}");
-        assert_eq!(threads(own, &dir, 0), (Peer::TooMany, 1));
+    fn a_process_is_named_by_its_pid_and_its_name_when_read() {
+        assert_eq!(process("7", "sleep").to_string(), "7 (sleep)");
+        assert_eq!(process("7", "").to_string(), "7");
     }
 
     #[test]
