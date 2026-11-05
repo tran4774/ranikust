@@ -256,9 +256,9 @@ ignores.
   (publish, close, withdraw), a CVE request and a temporary private fork,
   which are `gh api` writes that look like a draft's own; which issues an
   agent opens; when an agent adds `ci:full` (`ADR-0095`: GitHub cannot tell
-  who labelled); the allowed read-only `gh` commands taking a URL or `-R`, which
-  can read another repository or another host; and any command wrapped in
-  another (`bash -c`, a script, an alias) or spelled differently
+  who labelled); the allowed read-only `gh` commands taking a URL or `-R`,
+  which can read another repository or another host; and any command
+  wrapped in another (`bash -c`, a script, an alias) or spelled differently
   (`--'config'`, `git -C . fetch <url>`), which no pattern sees.
 
 The patterns are guardrails, not a boundary: they match command text, and
@@ -311,8 +311,9 @@ agent starts at about 35k tokens. So:
   decisions already made with their dates, the ADR numbers it may use, and
   what is out of scope. It runs the `dev-loop`, its own `reviewer` rounds
   and `just check`, commits without pushing and hands back at most 40
-  lines (plus any Low or Medium security non-blocker, in full). A hand-back whose last reviewer round did not finish gets one
-  from the main session before the push.
+  lines (plus any Low or Medium security non-blocker, in full). A
+  hand-back whose last reviewer round did not finish gets one from the main
+  session before the push.
 - **Follow-ups within the hour go to the same agent.** `SendMessage`
   reaches a warm cache for one hour; after that, a new agent briefed with
   the branch, its worktree, the commit range and the findings costs less
@@ -368,9 +369,9 @@ loop itself before it hands back.
    earlier findings, to re-check only the fix commits, on the local branch.
 5. No blocker left: the main session pushes and opens the draft pull
    request with a summary of the rounds ([GitHub flow](#github-flow)); the
-   maintainer merges it. A High or Critical finding in released code that
-   the branch does not touch is no blocker of the branch
-   ([Security findings](#security-findings)).
+   maintainer merges it. A High or Critical finding in code merged to
+   `main` that the branch does not touch, released or not, is no blocker of
+   the branch ([Security findings](#security-findings)).
 
 A test result counts only from the harness's exit status, never from an
 agent reading a printed table: a suite that prints a verdict table must
@@ -399,23 +400,35 @@ section owns what happens to one
   [threat model](../security/threat-model.md#8-rating-findings) and a CVSS
   score where they can give one. When the two disagree the higher decides,
   and a score of 7.0 or more is at least High (9.0 or more is Critical). A
-  confirmed High or Critical security finding is a blocker.
+  High or Critical security finding is always a blocker; an audit lead
+  becomes one only once it is confirmed as High or Critical (below).
 - **Fixed:** every blocker, in the loop, before a push and before a
-  release. A High or Critical finding in released code is the exception: it
-  gets a draft and is fixed in its temporary private fork, which the
-  maintainer opens and where agents work as he directs
-  ([ADR-0087](../adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md), D6).
-  When a review of branch X finds one in code X does not touch, X still
-  pushes and merges, and only the next release waits for the fix.
-- **A draft advisory instead:** a Low or Medium non-blocker, including a
-  residual the maintainer accepts. It is not fixed in the pull request at
-  hand and holds up neither it nor a release. Later an ordinary pull
-  request fixes a Low or Medium one, worded generically, its test staying;
-  its diff may show the weakness before the release. A residual the
-  maintainer accepts, whatever its rating, is no blocker and has no fix: the
-  threat model's
+  release. A High or Critical finding in code merged to `main` that the
+  branch under review does not touch is the exception, and gets a draft:
+  - in released code, it is fixed in the draft's temporary private fork,
+    which the maintainer opens and where agents work as the maintainer
+    directs
+    ([ADR-0087](../adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md), D6);
+  - in code in no release yet, an ordinary pull request with generic
+    wording fixes it, and there is no private fork (maintainer, 2026-11-05:
+    "Như E, sửa bằng PR thường (khuyến nghị)", E being the released-code
+    case above).
+
+  Either way the branch under review pushes and merges as usual, and the
+  next release waits for the fix.
+- **A draft advisory instead:** a Low or Medium non-blocker, and a residual
+  the maintainer accepts, whatever its rating. It is not fixed in the pull
+  request at hand and holds up neither it nor a release. Later an ordinary
+  pull request fixes a Low or Medium one, worded generically, its test
+  staying; its diff may show the weakness before the release. A residual
+  the maintainer accepts has no fix: the threat model's
   [section 6](../security/threat-model.md#6-accepted-risks) lists it, and
   may describe it.
+- **A default, not a ban.** The maintainer may have a Low or Medium finding
+  fixed in the pull request at hand: on #82 the maintainer chose to fix a
+  Low finding there, because it completed a decision that pull request
+  implements (maintainer, 2026-11-05: "Sửa luôn, coi là phần của quyết
+  định (khuyến nghị)").
 - **Audit leads.** Each open lead of a security audit is a draft with an
   estimated severity. An unvalidated lead blocks nothing, whatever the
   estimate; it becomes a blocker only once confirmed as High or Critical.
@@ -428,11 +441,11 @@ section owns what happens to one
   prompts), may update its text, and does not send the finding to the
   implementer.
 - **Never public.** No detail of an unfixed weakness in an issue, pull
-  request, comment, commit or doc, apart from the fix pull request of a Low
-  or Medium draft and section 6; a pull request names an advisory
-  generically, if at all. A draft is visible to the repository's owners,
-  organization owners, security managers and users with the admin role, and
-  to the collaborators added to it
+  request, comment, commit or doc, apart from the diff and test of an
+  ordinary fix pull request (generic wording) and section 6; a pull request
+  names an advisory generically, if at all. A draft is visible to the
+  repository's owners, organization owners, security managers and users with
+  the admin role, and to the collaborators added to it
   ([GitHub](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/permission-levels-for-repository-security-advisories)).
 - **Publishing.** A draft stays a draft until a release that contains its
   fix is out ([CONTRIBUTING](../../CONTRIBUTING.md#releasing)). An agent then

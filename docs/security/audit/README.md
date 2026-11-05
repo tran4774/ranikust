@@ -17,13 +17,14 @@ full output stays outside the repository.
 | `NEEDS-VALIDATION.md` | The leads the run left unresolved that are now fixed, rejected or accepted, with their trace, evidence, blockers and the exact VM (T2) or T2c plan |
 | `FINDINGS-DETAIL.md` | Reproduction detail for confirmed medium and higher findings |
 | `findings.json` | Every final record (confirmed, needs_validation, rejected) that is fixed, rejected or accepted, valid against the skill's `report-schema.json` |
-| `coverage-ledger.json` | Every coverage unit with its owner, reviewed paths, checks and hardening notes |
+| `coverage-ledger.json` | Every coverage unit with its owner, reviewed paths, checks and hardening notes, the open leads left out |
 | `run-metadata.json` | Source ref, profile, scope, execution policy, run status |
 | `architecture.md` | The architecture summary every agent of the run received |
 
 A later run reads the previous run's full output, kept outside the
-repository, as prior-run input, as the skill describes: a committed
-`findings.json` without the open leads would drop them.
+repository, as prior-run input, as the skill describes: the committed
+`findings.json` and `coverage-ledger.json` leave the open leads out, so a
+run reading them would drop the leads.
 
 ## Audits
 

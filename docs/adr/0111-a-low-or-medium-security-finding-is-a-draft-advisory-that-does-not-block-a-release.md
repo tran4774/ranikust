@@ -27,8 +27,8 @@ counts as small, what happens to the fixes already in progress, when an
 advisory is published, what happens to the open leads of a security audit,
 how a Low or Medium draft is fixed, which rating wins when two disagree,
 whether an unvalidated lead blocks anything, and what happens to a branch
-whose review finds a High or Critical finding in released code it does not
-touch.
+whose review finds a High or Critical finding in code it does not touch,
+released or not.
 
 ## Considered Options
 
@@ -42,50 +42,63 @@ touch.
 
 ## Decision Outcome
 
-A security finding rated Low or Medium that is not a blocker, including a
-residual the maintainer accepts, is filed as a draft repository security
-advisory (GHSA); it is not fixed in the pull request at hand and does not
-block a release, while a blocker, and every High or Critical finding once
-it is confirmed, is fixed first.
+A security finding rated Low or Medium that is not a blocker, and a
+residual the maintainer accepts whatever its rating, is filed as a draft
+repository security advisory (GHSA); it is not fixed in the pull request at
+hand and does not block a release, while a blocker is fixed first: a High
+or Critical security finding is always one, and an audit lead becomes one
+only once it is confirmed as High or Critical.
 
 - **Rating.** Each finding keeps its verdict (blocker or non-blocker) and
   gets a severity: Low, Medium, High or Critical, from the threat model's
   [section 8](../security/threat-model.md#8-rating-findings) and a CVSS
   score where the reporter can give one. When the two disagree the higher
   decides, and a score of 7.0 or more is at least High (9.0 or more is
-  Critical). No CVSS version is pinned. A confirmed High or Critical
-  finding is a blocker.
-- **Filed or fixed.** The draft takes a Low or Medium non-blocker, a
-  residual the maintainer accepts included. A blocker, and every confirmed
+  Critical). No CVSS version is pinned. A High or Critical security
+  finding is always a blocker; an audit lead becomes one only once it is
+  confirmed as High or Critical (below).
+- **Filed or fixed.** The draft takes a Low or Medium non-blocker, and a
+  residual the maintainer accepts, whatever its rating. A blocker, and every
   High or Critical finding, is fixed, never filed instead. A residual the
   maintainer accepts, whatever its rating, is no blocker and has no fix.
 - **How each is fixed.**
   - A blocker in a branch under review: in the review loop, before the push.
   - A High or Critical finding in released code: in the draft's temporary
-    private fork, which the maintainer opens (D6), where agents work as he
-    directs. When a review of a branch finds it in code the branch does not
-    touch, the branch still pushes and merges; only the next release waits
-    for the fix.
+    private fork, which the maintainer opens (D6), where agents work as the
+    maintainer directs. When a review of a branch finds it in code the
+    branch does not touch, the branch still pushes and merges; only the next
+    release waits for the fix.
+  - A High or Critical finding in code merged to `main` but in no release
+    yet, which the branch under review does not touch: the branch pushes
+    and merges normally; the finding is a draft and an ordinary public pull
+    request fixes it, with generic wording, before the next release, with no
+    private fork. The release waits for that fix. The diff may show the
+    weakness before the release, as for a Low or Medium draft.
   - A Low or Medium draft: later, through an ordinary public pull request
     with generic wording, its test staying. The diff may show the weakness
     before the release; the maintainer accepts that for this severity.
   - A residual the maintainer accepts has no fix: threat model section 6
     lists it, and may describe it.
+- **A default, not a ban.** The maintainer may have a Low or Medium finding
+  fixed in the pull request at hand: on #82 the maintainer chose to fix a
+  Low finding there, because it completed a decision that pull request
+  implements.
 - **Audit leads.** Each open lead of a security audit becomes a draft with
   an estimated severity. An unvalidated lead blocks nothing, whatever the
   estimate; it becomes a blocker only once confirmed as High or Critical.
   The public deliverables in `docs/security/audit/` carry a lead only once
   it is fixed, rejected or accepted. The phase-1-2 audit, already public,
   stays as it is.
-- **Bypass.** A draft holds up neither a pull request nor a release. The
-  maintainer chose this "for now" ("tạm thời"); ending it is a new ADR.
+- **Bypass.** A Low or Medium draft holds up neither a pull request nor a
+  release. The maintainer chose this "for now" ("tạm thời"); ending it is a
+  new ADR.
 - **Who files.** `host-safety` and `red-team` report as before. The main
   session files each such finding as a draft and does not send it back to
   the implementer; the pull request mentions it only generically, if at
   all.
 - **Where details live.** D6 stands: no detail of an unfixed weakness goes
   into an issue, pull request, comment, commit or doc, except the diff and
-  test of a Low or Medium fix pull request (generic wording) and a residual
+  test of an ordinary fix pull request (generic wording) and a residual
   the maintainer lists in threat model section 6. A draft advisory is the
   one place for the rest. It is visible to repository owners, organization
   owners, security managers and users with the admin role, and to the
@@ -114,18 +127,19 @@ it is confirmed, is fixed first.
   or the release.
 - Bad, because a release can ship while Low or Medium weaknesses are known
   and open; users learn of one only when its advisory is published.
-- Bad, because the diff of a Low or Medium fix pull request may show the
+- Bad, because the diff of an ordinary fix pull request (a Low or Medium
+  draft, or a High or Critical one in code not yet released) may show the
   weakness before the release that carries it.
 - Bad, because creating an advisory is a `gh api` write, which the ask
   rules of ADR-0093 prompt for, as for a commit status [inferred from those
   rules; not tried].
-- Neutral, because every blocker and every confirmed High or Critical
-  finding follows the loop as before; one in released code that a branch
-  does not touch holds only the next release.
+- Neutral, because every blocker and every High or Critical finding follows
+  the loop as before; one in code that a branch does not touch, released or
+  not, holds only the next release.
 
 ## Evidence
 
-No experiment; the maintainer's decision and his answers on 2026-11-05.
+No experiment; the maintainer's decision and answers of 2026-11-05.
 
 - The request: "Sửa lại workflow: nếu có lỗi security gì nhỏ, không nghiêm
   trọng thì sẽ dùng github Security Advisories để tracking. Và tạm thời sẽ
@@ -151,6 +165,13 @@ No experiment; the maintainer's decision and his answers on 2026-11-05.
 - A High or Critical finding in released code that the reviewed branch does
   not touch: "X push bình thường, release chờ (khuyến nghị)" (X pushes
   normally, the release waits, as recommended).
+- A High finding in code merged to `main` but in no release yet, which the
+  reviewed branch does not touch: "Như E, sửa bằng PR thường (khuyến nghị)"
+  (as in the released-code case, X pushes normally and the release waits, but
+  an ordinary pull request fixes it, with no private fork, as recommended).
+- On #82, a Low finding fixed in the pull request at hand: "Sửa luôn, coi là
+  phần của quyết định (khuyến nghị)" (fix it now, as part of the decision, as
+  recommended). The finding is not described here.
 - [external] GitHub's
   [About repository security advisories](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/about-repository-security-advisories):
   a draft is for private discussion, a temporary private fork carries a
