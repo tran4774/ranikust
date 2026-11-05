@@ -3456,12 +3456,12 @@ mod tests {
             runner.hold_networks();
             let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
                 .expect("Seccomp_filters in /proc/self/status");
-            let probe = "grep -E '^(Cap|Seccomp_filters)' /proc/self/status; \
+            // The umask from `/proc`: the shell's `umask` would call umask(2).
+            let probe = "grep -E '^(Cap|Seccomp_filters|Umask)' /proc/self/status; \
                  python3 -c 'import os; print(\"sid=%d\" % os.getsid(0))'; \
                  if unshare -U true; then echo userns=ok; else echo userns=refused; fi; \
                  if cat /proc/1/environ >/dev/null 2>&1; then echo environ=read; \
-                 else echo environ=refused; fi; \
-                 echo umask=$(umask)";
+                 else echo environ=refused; fi";
             let defaults = format!("{:016x}", caps::docker_default_mask());
             let cases = [
                 (
@@ -3570,7 +3570,7 @@ mod tests {
                 let mut want: Vec<(&str, String)> = vec![
                     ("CapBnd", defaults.clone()),
                     ("environ", "refused".into()),
-                    ("umask", "0022".into()),
+                    ("Umask", "0022".into()),
                 ];
                 match *name {
                     "seccomp, faked, held network" => {
@@ -3593,7 +3593,7 @@ mod tests {
                 }
                 for (key, value) in want {
                     let seen = match key {
-                        "userns" | "environ" | "umask" => text
+                        "userns" | "environ" => text
                             .lines()
                             .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
                             .map(str::trim),
