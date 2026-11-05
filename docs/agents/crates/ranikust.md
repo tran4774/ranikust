@@ -110,8 +110,9 @@ Each step before the next; design in
    `version`. Then, for `build` only, `rnk_sandbox::run_from_sealed_copy`
    (ADR-0101) runs the process again from a sealed copy of the binary,
    which starts over at step 0, asking for the walk of the writable mounts
-   that may reach the binary only when `container::detect` finds a
-   container (kaniko mode on `/` alone reads it); the copy's run logs the
+   that may reach the binary only when `may_be_kaniko_on_slash` holds (as
+   root, without `--mode=overlay`, and `container::detect` finds a
+   container: kaniko mode on `/` alone reads it); the copy's run logs the
    way at debug after step 3, or a warning when no way worked (the build
    goes on).
    `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd, `seal-none` both

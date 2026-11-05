@@ -67,15 +67,17 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    writable directory of its file system whose name was removed, a
    writable mount of it that is covered or whose mount point leads
    nowhere, to another mount or inside its mount, or a file with no link
-   left, is `Unplaced`, and a table that cannot be read, or a lookup of
-   the binary's name or of a mount point that fails otherwise (`openat2`,
-   `statx`; an error with no errno as `EIO`), `Unknown`, unless a writable
-   mount was found to reach the binary (`Exposed`). Only kaniko mode on a
-   container's `/` uses the answer, so `ranikust` asks for the walk only
-   where it finds itself in a container (`container::detect`, ADR-0048,
-   before the copy): a host build looks up no mount point, and a binary
-   the walk would weigh is `NotWeighed`, refused should kaniko mode on
-   `/` follow.
+   left, is `Unplaced`; a lookup of the binary's name or of a mount point
+   that fails otherwise (`openat2`, `statx`; an error with no errno as
+   `EIO`) is `Unknown` unless a writable mount was found to reach the
+   binary (`Exposed`), and a table that cannot be read, the first time or
+   once the walk is done, is `Unknown` whatever the walk found. Only
+   kaniko mode on a container's `/` uses the answer, so `ranikust` asks
+   for the walk only where that mode may follow (`may_be_kaniko_on_slash`,
+   before the copy: as root, without `--mode=overlay`, where
+   `container::detect` finds a container, ADR-0048): a host build looks up
+   no mount point, and a binary the walk would weigh is `NotWeighed`,
+   refused should kaniko mode on `/` follow all the same.
    The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
    close-on-exec descriptor, with the same arguments, environment and
    descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file

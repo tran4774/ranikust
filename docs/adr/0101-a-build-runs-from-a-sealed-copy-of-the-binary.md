@@ -135,14 +135,15 @@ The decision:
   kernel's mark of a root whose name was removed, is read as a mark, never
   a component. The walk of the writable mounts runs only where the build
   may be kaniko mode on a container's `/`, the only one that reads it:
-  where ranikust finds itself in a container (kaniko's test, ADR-0048);
-  a host build looks up no mount point. It passes the answer to the copy
-  in the variable; a run that ends without a checked copy measures the
-  file it runs from instead.
-  Kaniko mode on `/` refuses, before anything is
-  written, a binary on a writable mount other than `/`'s (a file or a
-  directory bound without `:ro` from outside the container or from inside
-  it, a volume), with the guidance to mount it read-only
+  as root, without `--mode=overlay`, where ranikust finds itself in a
+  container (kaniko's test, ADR-0048); a host build looks up no mount
+  point, and a binary the walk would have weighed is refused should
+  kaniko mode on `/` follow all the same. It passes the answer to the
+  copy in the variable; a run that ends without a checked copy measures
+  the file it runs from instead. Kaniko mode on `/` refuses, before
+  anything is written, a binary on a writable mount other than `/`'s (a
+  file or a directory bound without `:ro` from outside the container or
+  from inside it, a volume), with the guidance to mount it read-only
   (Docker `:ro`, Kubernetes `readOnly: true` on the `volumeMount`); a
   binary a writable mount reaches (bound `:ro` from a tree also bound
   read-write), with the guidance to put it outside the mounted tree, to
@@ -161,7 +162,8 @@ The decision:
   its mount point (another mount covering it among them), or a file with
   no link left; a binary not weighed because ranikust did not find itself
   in a container when it started; or a failed call (the mount table
-  unreadable among them), each with its own guidance; a fallback through `/proc/self/fdinfo` is
+  unreadable among them, the second read too, whatever the walk found),
+  each with its own guidance; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
@@ -432,8 +434,14 @@ The decision:
   looked up; a mount on it, or one it lies on, does not cover it),
   `a_table_that_changed_during_the_walk_places_nothing`,
   `a_build_that_cannot_be_kaniko_on_slash_walks_no_mount` (`NotWeighed`;
-  links and an overlay root told as before), each of the four failing
-  with its fix taken out; `STATX_ATTR_MOUNT_ROOT` [measured] in rootless
+  links and an overlay root told as before) and the binary's
+  `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts` (as root,
+  in a container, without `--mode=overlay`);
+  `a_mount_root_is_reached_at_its_mount_point`,
+  `a_symlink_on_the_way_places_nothing`,
+  `a_covered_mount_is_not_looked_up` and
+  `a_table_that_changed_during_the_walk_places_nothing` each failed with
+  its fix taken out; `STATX_ATTR_MOUNT_ROOT` [measured] in rootless
   podman 5.7.0 on Linux 7.0: set at a file bound read-write or `:ro`, a
   directory bind, `/etc/hostname`, `/proc` and `/`, not at a file inside
   a mount (`/proc/version`, `/etc/passwd`, a file in the directory bind),
