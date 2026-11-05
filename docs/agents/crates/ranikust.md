@@ -161,8 +161,8 @@ Each step before the next; design in
    listed; it counts only what it can open then, `EACCES`/`EPERM` not
    counted (a residual risk), gone skipped, any other error (with its
    step) or more than `PEER_SCAN_LIMIT` threads refused, each with its own
-   guidance); then the warnings for
-   secret-looking build arguments and file secrets.
+   guidance); then the warnings for secret-looking build arguments and file
+   secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
    bounds the uploads, and `rnk_sandbox::block_stop_signals`. Then
@@ -280,7 +280,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   reached, what cannot be told, the bound counted in threads; `walk`'s
   on fake threads: a later thread reached, threads passed over or gone, a
   process whose threads may not be listed; the real probe on each of
-  ranikust's own threads and a missing pid; escaped names, a process
+  ranikust's own threads and a missing pid, and on its `/proc/self` as
+  one process, with the step a failure names; escaped names, a process
   named by its pid alone).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`

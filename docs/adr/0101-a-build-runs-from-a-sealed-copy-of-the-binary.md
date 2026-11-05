@@ -304,8 +304,7 @@ The decision:
   build container a PID namespace of its own, shared with no other
   container.
 
-  The scan counts only the processes ranikust can open as it starts. Each
-  thread of each process is probed (`/proc/<pid>/task/<tid>`), since
+  Each thread of each process is probed (`/proc/<pid>/task/<tid>`), since
   a thread may have a mount namespace and credentials of its own and the
   first one may have exited, all through one descriptor of `/proc/<pid>`,
   so that a pid reused meanwhile is not taken for the process; a process
@@ -313,18 +312,18 @@ The decision:
   A process or thread it may not look into or whose root it may not open
   (`EACCES`, `EPERM`) is not counted, such as Kubernetes' pause container
   at uid 65535; one gone meanwhile (`ENOENT`, `ESRCH`) is skipped. Any
-  other error (named with the step that failed),
-  `/proc` or ranikust's own namespace that cannot be read, or more than
-  32768 threads (a process with none left counting as one) refuse the
-  build (fail closed), each with its own message and guidance. A
-  `--pid=host` container is refused by the same rule when ranikust
-  reaches a process of the host or of another container. ranikust looks
-  with its start-up privileges, before it trims them to a `RUN`'s
-  (ADR-0078), so where it reaches a process a `RUN` would not (a
-  container given `CAP_SYS_PTRACE`, a Dockerfile whose `RUN`s are not
-  root), the refusal is wider than needed: accepted as failing closed. A
-  process it cannot open at that look, and one that appears after it, are
-  not counted: accepted residual risks, with the same guidance.
+  other error (named with the step that failed), `/proc` or ranikust's own
+  namespace that cannot be read, or more than 32768 threads (a process
+  with none left counting as one) refuse the build (fail closed), each
+  with its own message and guidance. A `--pid=host` container is refused
+  by the same rule when ranikust reaches a process of the host or of
+  another container. ranikust looks with its start-up privileges, before
+  it trims them to a `RUN`'s (ADR-0078), so where it reaches a process a
+  `RUN` would not (a container given `CAP_SYS_PTRACE`, a Dockerfile whose
+  `RUN`s are not root), the refusal is wider than needed: accepted as
+  failing closed. The scan counts only the processes ranikust can open as
+  it starts: one it cannot open then, and one that appears after that
+  look, are not counted, accepted residual risks with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -575,7 +574,9 @@ The decision:
   `every_thread_of_a_process_is_probed_within_the_bound` (the real probe
   on ranikust's own process, with a second thread: each thread probed and
   counted, a missing process gone),
-  `a_process_name_is_trimmed_and_escaped`,
+  `a_process_probed_as_one_is_told_through_its_own_entries` (a process
+  probed as one through its own `/proc/self`, and the step a failure
+  names), `a_process_name_is_trimmed_and_escaped`,
   `a_process_is_named_by_its_pid_and_its_name_when_read` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   (messages and guidance). T1 `pid-peers` (rootless podman 5.7.0, Linux
