@@ -3629,8 +3629,8 @@ mod tests {
     /// be looked up, whatever the errno. Under a profile that refuses every
     /// keyring call, Docker's default or a file refusing them, the `RUN`
     /// runs: it reaches no keyring of ranikust's either. Under a filter that
-    /// refuses `keyctl` whole, as Docker's default around ranikust does, no
-    /// keyring is reachable and every `RUN` runs, as before.
+    /// refuses `keyctl` whole, as Docker's default around ranikust does, the
+    /// lookup is refused too and every `RUN` runs, as before.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_refused_keyring_join_fails_a_run_that_could_reach_a_keyring() {

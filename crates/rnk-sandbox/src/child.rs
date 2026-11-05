@@ -2212,7 +2212,7 @@ pub(crate) enum KeyringJoin {
     /// join and with which errno.
     Required,
     /// The full sandbox under a profile that refuses all three, or the
-    /// privilege probe's: the `RUN` goes on, since it can reach no keyring.
+    /// privilege probe's, whose command does not exist: the `RUN` goes on.
     Optional,
     /// `Direct`, under the container's profile: `ENOSYS`, `EPERM` and
     /// `EACCES` go on, any other errno fails as `Step::SessionKeyring`.
@@ -2235,7 +2235,7 @@ pub(crate) fn join_session_keyring(err: RawFd, how: KeyringJoin) {
     match how {
         KeyringJoin::Optional => {}
         KeyringJoin::Required => {
-            if session_keyring_reachable() {
+            if session_keyring_found() {
                 fail(err, Step::KeyringRefused, e);
             }
         }
@@ -2246,11 +2246,11 @@ pub(crate) fn join_session_keyring(err: RawFd, how: KeyringJoin) {
     }
 }
 
-/// Whether the session keyring, ranikust's once the join was refused, can
-/// still be looked up: a filter that refuses `keyctl` whole, as Docker's
-/// default does around ranikust, leaves none to reach. A success answered
-/// by a filter around ranikust counts as reachable.
-fn session_keyring_reachable() -> bool {
+/// Whether `KEYCTL_GET_KEYRING_ID` finds the session keyring, ranikust's
+/// once the join was refused; not when the lookup is refused, as under
+/// Docker's default profile around ranikust, which refuses `keyctl`
+/// whole. A success answered by a filter around ranikust counts as found.
+fn session_keyring_found() -> bool {
     // `KEYCTL_GET_KEYRING_ID` and `KEY_SPEC_SESSION_KEYRING` from
     // `linux/keyctl.h`; 0 asks not to create one.
     const KEYCTL_GET_KEYRING_ID: libc::c_long = 0;
@@ -2608,10 +2608,10 @@ mod tests {
         /// A refused keyring join (ADR-0109), by an LSM or a filter around
         /// ranikust: in the full sandbox it fails the `RUN` while the
         /// session keyring can still be looked up, whatever the errno,
-        /// unless the profile refuses every keyring call. A filter that
-        /// refuses `keyctl` whole, as Docker's default does around
-        /// ranikust, leaves none to reach: the `RUN` goes on, as before.
-        /// `Direct` decides by the errno.
+        /// unless the profile refuses every keyring call. Where a filter
+        /// refuses the lookup too, as Docker's default does around
+        /// ranikust by refusing `keyctl` whole, the `RUN` goes on, as
+        /// before. `Direct` decides by the errno.
         #[test]
         fn a_refused_keyring_join_fails_while_a_keyring_stays_reachable() {
             use KeyringJoin::{Direct, Optional, Required};
