@@ -194,10 +194,11 @@ What a change here must keep, with where it lives:
   installed binary's mount only to a copy that checks; otherwise the file run
   is measured. Whether a writable mount reaches the binary is told from
   `/proc/self/mountinfo`: a directory root by its path, compared by
-  component; a file root by its inode, its mount point reached from `/`
-  through `RootPath` and only `statx`'d, never opened; the binary's own name
-  counts only while it still leads to the binary on its mount. What cannot
-  be told is `Unplaced`, a call that fails otherwise `Unknown`.
+  component; a file root by its inode. Mount points and the binary's name
+  are reached from `/` through `RootPath` by `statx` only, never opened;
+  the binary's own name counts only while it still leads to the binary on
+  its mount. What cannot be told is `Unplaced` (fail closed), a call that
+  fails otherwise `Unknown`.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.

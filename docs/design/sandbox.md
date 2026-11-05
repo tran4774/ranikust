@@ -54,9 +54,10 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    in `/proc/self/mountinfo` reaches is `Exposed` (`reached_writable`): a
    directory root that contains the file's path in its file system
    (compared by component), or a file root that is the binary's inode
-   whatever its name (its mount point reached from `/` through `RootPath`,
-   `statx` only, checked to be that mount by its id; `//deleted` is read
-   as a mark, `MountInfo::root_deleted`). A table that cannot be parsed,
+   whatever its name (mount points and the binary's name reached from `/`
+   through `RootPath` by `statx` only, never opened, each mount point
+   checked to be its mount by its id; `//deleted` is read as a mark,
+   `MountInfo::root_deleted`). A table that cannot be parsed,
    does not place the file (its own name removed among them) or does not
    type a FUSE root (`root_type`), a writable directory of its file system
    whose name was removed, a writable mount of it whose mount point leads

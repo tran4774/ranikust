@@ -123,14 +123,15 @@ The decision:
   `/proc/self/mountinfo` (the `major:minor` of the line of the binary's
   own mount, not `statx`'s `st_dev`, which differs on btrfs subvolumes)
   has a root that contains the binary's path in that file system (its own
-  mount's root joined with its path below that mount; paths compared by
-  component, never opened) or, for a root that is a file, is the binary's
-  inode, whatever its name (reached at its mount point from `/` through
-  `RootPath`, `statx` only, and checked to be that mount by its id; the
-  table's `//deleted`, the kernel's mark of a root whose name was removed,
-  is read as a mark, never a component). It passes the answer to the copy
-  in the variable; a run that ends without a checked copy measures the file it
-  runs from instead. Kaniko mode on `/` refuses, before anything is
+  mount's root joined with its path below that mount, compared by
+  component) or, for a root that is a file, is the binary's inode, whatever
+  its name. The binary's name and those mounts' mount points are reached
+  from `/` through `RootPath` by `statx` only, never opened, and each mount
+  point is checked to be its mount by its id; the table's `//deleted`, the
+  kernel's mark of a root whose name was removed, is read as a mark, never
+  a component. It passes the answer to the copy in the variable; a run
+  that ends without a checked copy measures the file it runs from instead.
+  Kaniko mode on `/` refuses, before anything is
   written, a binary on a writable mount other than `/`'s (a file or a
   directory bound without `:ro` from outside the container or from inside
   it, a volume), with the guidance to mount it read-only
@@ -142,15 +143,15 @@ The decision:
   was removed, with the same guidance and to bind no link of it
   read-write; and a file with other hard links, with the guidance to give
   the binary a single link (a single-link copy mounted read-only, or, in
-  the container's root, no hard-link alias of it). It also refuses one
-  whose mount it cannot tell: a mount id of 0, which qemu-user's `statx`
-  gives for every file and Linux 6.8 and 7.0 give a memfd [measured]; a
-  mount table that cannot be parsed, does not place the file (its own
-  bound name removed among them) or does not type a FUSE root, a writable
-  mount of its file system that is a directory whose name was removed or
-  that cannot be reached at its mount point, or a file with no link left;
-  or a failed call (the mount table unreadable among them), each with its
-  own guidance; a fallback through `/proc/self/fdinfo` is
+  the container's root, no hard-link alias of it). It also refuses, failing
+  closed, one whose mount it cannot tell: a mount id of 0, which
+  qemu-user's `statx` gives for every file and Linux 6.8 and 7.0 give a
+  memfd [measured]; a mount table that cannot be parsed, does not place
+  the file (its own bound name removed among them) or does not type a FUSE
+  root, a writable mount of its file system that is a directory whose name
+  was removed or that cannot be reached at its mount point, or a file with
+  no link left; or a failed call (the mount table unreadable among them),
+  each with its own guidance; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
@@ -168,10 +169,11 @@ The decision:
   build no longer executes the installed file, `ETXTBSY` no longer guards
   it, so the binary must not be reachable through a writable mount other
   than the container's root. The check reads the container's own mount
-  table, so a writable view of the binary that this table does not show is
-  not detected: an accepted residual risk, with the guidance to mount the
-  binary from a path that no writable mount shares. The maintainer
-  decided, on 2026-11-04 (the second to fourth
+  table, so a writable view of the binary that this table does not show,
+  or a writable mount of another file system that it shows without placing
+  the binary on it, is not detected: an accepted residual risk, with the
+  guidance to mount the binary from a path that no writable mount shares.
+  The maintainer decided, on 2026-11-04 and 2026-11-05 (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
@@ -179,8 +181,10 @@ The decision:
   [in a third](https://github.com/tran4774/ranikust/issues/32#issuecomment-6633392547),
   after the second host-safety pass the next three
   [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
-  and the last
-  [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388)):
+  and the next
+  [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388);
+  on 2026-11-05 the last two
+  [in a sixth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6639451756)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -238,7 +242,15 @@ The decision:
     overlays (Docker's btrfs, zfs or vfs drivers, containerd's native
     snapshotter, podman `--rootfs`, nspawn, LXC) keep the link and
     writable-mount checks, and the guidance asks for a binary with a
-    single link: "fuse-overlayfs tính là overlay (khuyến nghị)".
+    single link: "fuse-overlayfs tính là overlay (khuyến nghị)";
+  - on 2026-11-05, to widen the residual risk accepted above, still in
+    general terms, to a writable mount of another file system that the
+    container's mount table shows without placing the binary on it, the
+    guidance unchanged: "Ghi rộng ra, vẫn chung chung (khuyến nghị)";
+  - on 2026-11-05, to record here that the cases ranikust cannot tell are
+    refused (fail closed), and that the mount points are reached through
+    `RootPath` by `statx` only, never opened: "Ghi vào ADR-0101 trên nhánh
+    (khuyến nghị)".
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -279,9 +291,10 @@ The decision:
   `target/release/ranikust` is a hard link of its copy in `deps/`
   [measured], so the operator mounts a copy (`cp`, `install`).
 - Bad, because the check sees only the container's own mount table: a
-  writable view of the binary that this table does not show is not
-  detected, a residual risk the maintainer accepted. The operator mounts
-  the binary from a path that no writable mount shares.
+  writable view of the binary that this table does not show, or a writable
+  mount of another file system that it shows without placing the binary on
+  it, is not detected, a residual risk the maintainer accepted. The
+  operator mounts the binary from a path that no writable mount shares.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
 - Neutral, because under an emulator (qemu-user, Rosetta) the process that
