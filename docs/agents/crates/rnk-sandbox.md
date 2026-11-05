@@ -285,11 +285,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   forked children: `seccomp::profile`'s (compiled profiles), `caps`'s (an
   `EINVAL` from a bounding drop) and `child`'s (a refused keyring join with
   the session keyring found or not, each `KeyringJoin`; an `execve` or a
-  `waitpid` back without an error; a faked `setsid`, `pipe2` or `fstatfs`, a
-  faked or refused `prlimit64`; the last two on a stack filled beforehand,
-  which shows an unwritten buffer in a debug build only; these test the
-  helpers, not their call sites, whose `/proc/self/fd` opening overwrites
-  that stack).
+  `waitpid` back without an error; a refused `umask` after the profile; a
+  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
+  last two on a stack filled beforehand, which shows an unwritten buffer in
+  a debug build only; these test the helpers, not their call sites, whose
+  `/proc/self/fd` opening overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.

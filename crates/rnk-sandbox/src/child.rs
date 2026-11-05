@@ -540,7 +540,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     );
     new_session(err);
     // Before the profile, which could refuse it: the layer must not follow ranikust's umask.
-    rustix::process::umask(Mode::from_raw_mode(0o022));
+    set_umask();
     // After the namespace is joined and every mount made, which the filters
     // would refuse. ADR-0033's first: the profile on top cannot fake its
     // install, and a call both refuse gets the profile's errno.
@@ -2336,11 +2336,18 @@ fn dup_to(err: RawFd, source: RawFd, target: RawFd) {
     }
 }
 
+/// The umask 022, through `libc`: after the `RUN`'s profile, which may
+/// refuse it, `rustix` would assert in a debug build that it cannot fail.
+fn set_umask() {
+    // SAFETY: `umask` only sets this process's file mode mask.
+    unsafe { libc::umask(0o022) };
+}
+
 /// The umask, signal dispositions and mask, and descriptors a container
 /// process starts with.
 fn reset_process_state() {
     // Files the command creates must not depend on ranikust's umask.
-    rustix::process::umask(Mode::from_raw_mode(0o022));
+    set_umask();
     // SAFETY: zeroed `sigaction` is `SIG_DFL` with an empty mask and no
     // flags; resetting a disposition to the default is async-signal-safe.
     // Rust's runtime ignores SIGPIPE, and ignored signals survive `execve`.
@@ -2755,6 +2762,16 @@ mod tests {
                 });
                 assert_eq!(got, None, "errno {errno}");
             }
+        }
+
+        /// The command's umask, set again after its profile, which may
+        /// refuse it: that fails nothing (022 was set before the profile).
+        /// The assertion it guards against, `rustix`'s, is in a debug
+        /// build only.
+        #[test]
+        fn a_refused_umask_after_the_profile_fails_nothing() {
+            let rule = r#"{"names": ["umask"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1}"#;
+            assert_eq!(failure_under(rule, |_| reset_process_state()), None);
         }
 
         /// The command's `setsid` faked with errno 0, as a filter around
