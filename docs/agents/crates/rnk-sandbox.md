@@ -176,15 +176,15 @@ What a change here must keep, with where it lives:
   every mount the full sandbox's child first makes every step it could
   fake that need not follow it: it joins the `RUN`'s new session keyring
   (the command, PID 2, inherits it), drops the bounding set, clears the
-  ambient and inheritable sets, makes the init not dumpable and gives it a
-  session. Then it installs ADR-0033's filter when it joined a held network
-  namespace, the profile on top, both without `no_new_privs`, and only then
-  sets the effective and permitted sets. After the profile, the command
-  checks that its parent is the init (a faked fork fails as `Step::Init`),
-  and the pipe, capability, death-signal, `fstatfs` and `RLIMIT_NOFILE`
-  reads go through `libc` into values set beforehand, which a call faked
-  with errno 0 leaves as they were; the umask is set before the profile
-  too. A failed install is `Step::Seccomp`, whose message points
+  ambient and inheritable sets, makes the init not dumpable, gives it a
+  session and sets the umask to 022. Then it installs ADR-0033's filter
+  when it joined a held network namespace, the profile on top, both
+  without `no_new_privs`, and only then sets the effective and permitted
+  sets. After the profile, the command checks that its parent is the init
+  (a faked fork fails as `Step::Init`), and the pipe, capability,
+  death-signal, `fstatfs` and `RLIMIT_NOFILE` reads go through `libc` into
+  values set beforehand, which a call faked with errno 0 leaves as they
+  were. A failed install is `Step::Seccomp`, whose message points
   to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
   gets no filter and joins its keyring after its capability drop, before
   `setsid`. The default profile refuses `keyctl`, `add_key` and
@@ -278,8 +278,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   keyring call). The `tests::kernel` modules, skipped under qemu-user,
   install filters in forked children: `seccomp::profile`'s (compiled
   profiles), `caps`'s (an `EINVAL` from a bounding drop) and `child`'s (an
-  `EACCES` on the keyring join, a faked `setsid`, `pipe2` or
-  `fstatfs`).
+  `EACCES` on the keyring join, a faked `setsid`, `pipe2`, `fstatfs` or
+  `prlimit64`; the last two on a stack filled beforehand).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
@@ -302,9 +302,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
   profile that refuses the keyring join; each `RUN` in a keyring of its own;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
-  `setsid`, `seccomp` or `capset` with 0 or `EINVAL` leave the bounding set,
-  the session, the init's dump flag, ADR-0033's filter and the capability
-  sets as they are, and a faked fork of the init fails the `RUN`;
+  `setsid`, `umask`, `seccomp` or `capset` with 0 or `EINVAL` leave the
+  bounding set, the session, the init's dump flag, the umask, ADR-0033's
+  filter and the capability sets as they are, and a faked fork of the init
+  fails the `RUN`;
   `an_lsm_refusing_the_keyring_join_fails_a_run_that_could_reach_keyrings`),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.

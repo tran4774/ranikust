@@ -233,9 +233,9 @@ These follow from decisions and are documented to users rather than fixed:
   before its init has dropped its capabilities and descriptors (the init
   is not dumpable, so the command cannot reach them); a faked `close` can
   leave the `RUN` waiting forever; a faked `openat2` in the `PATH` search
-  closes the command's stdin. The bounding set, the keyring, ADR-0033's
-  filter, the init's dump flag and the umask stay as they were; Docker's
-  default profile fakes none of these calls.
+  closes the command's stdin. Every step before the profile
+  ([sandbox design, step 4](../design/sandbox.md#per-run-sequence)) stays
+  as it was; Docker's default profile fakes none of these calls.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

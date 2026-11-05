@@ -113,13 +113,13 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   it comes before it (step 4): the session keyring, which `default` refuses
   (runc's order; ADR-0109 refines ADR-0080 there), the bounding-set drop,
   the ambient and inheritable clears, the init's non-dumpable flag and its
-  session, and ADR-0033's filter. After it come the `capset` to the default
-  sets, since the install needs `CAP_SYS_ADMIN` without `no_new_privs`, so
-  that a setuid binary of the `RUN` keeps working, and the init's and the
-  command's own steps (step 5 on): the command checks that the init really
-  forked it, the umask is set before the profile too, and what the child
-  reads back from a call goes through `libc` into values set beforehand.
-  What a faked success there still changes is in the
+  session, the umask, and ADR-0033's filter. After it come the `capset` to
+  the default sets, since the install needs `CAP_SYS_ADMIN` without
+  `no_new_privs`, so that a setuid binary of the `RUN` keeps working, and
+  the init's and the command's own steps (step 5 on): the command checks
+  that the init really forked it, and what the child reads back from a
+  call goes into values set beforehand. What a faked success there still
+  changes is in the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.
@@ -252,8 +252,8 @@ The steps, in order:
    refusal is ignored. Then the full sandbox's child, in this order, joins
    the `RUN`'s new session keyring (step 6), drops the bounding set and
    clears the ambient and inheritable sets (step 5), sets itself not dumpable
-   and starts a session of its own (the init's, step 5), installs ADR-0033's
-   filter and the seccomp profile on top of it
+   and starts a session of its own (the init's, step 5), sets the umask to
+   022, installs ADR-0033's filter and the seccomp profile on top of it
    ([above](#per-run-sequence)), and only then sets the effective and
    permitted sets (step 5).
 5. **Drop capabilities**, for **every** `USER`: reduce the **bounding** set to
