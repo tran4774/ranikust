@@ -584,8 +584,9 @@ The decision:
   writable bind of its own, the red team's configuration, is refused
   before the state directory exists and before any `RUN`; a peer run as
   uid 1000, which ranikust's probe meets with `EACCES`, and no peer build
-  [measured]. Under rootful Docker (the VM's quick suite) the case has
-  not run yet; its outcome there is [inferred].
+  [measured]. The same case under rootful Docker (T2, the VM's quick
+  suite, Linux 6.8, Docker 29.1.3, AppArmor enabled) gives the same
+  outcome [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its
