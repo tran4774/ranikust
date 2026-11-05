@@ -156,11 +156,12 @@ the scheduler runs one stage at a time) or a private directory per stage
     (the process as one where its threads may not be listed), refuses the
     build; a process or thread it may not look into or open (`EACCES`,
     `EPERM`) is not counted, one gone is skipped, and any other error or
-    more than 32768 threads refuse too, each with its own guidance. It
-    looks with its start-up privileges, before it trims them, so it may
-    refuse a process no `RUN` would reach (fails closed); a `--pid=host`
-    container is refused by the same rule when a process of the host or
-    of another container is in reach. It counts only the processes it can
+    more than 32768 threads refuse too, each with its own guidance. Its
+    own mount namespace is the one it started in, read before the set-up,
+    and the one it is in when it looks (a set-up that failed after its
+    `unshare` left it in a copy of its own). A `--pid=host` container is
+    refused by the same rule when a process of the host or of another
+    container is in reach. It counts only the processes it can
     open as it starts: one it cannot open then, and one that appears
     later, are not counted, residual risks accepted in ADR-0101, whose
     guidance is a PID namespace of the build container's own.

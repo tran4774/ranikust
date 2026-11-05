@@ -317,11 +317,10 @@ The decision:
   with none left counting as one) refuse the build (fail closed), each
   with its own message and guidance. A `--pid=host` container is refused
   by the same rule when ranikust reaches a process of the host or of
-  another container. ranikust looks with its start-up privileges, before
-  it trims them to a `RUN`'s (ADR-0078), so where it reaches a process a
-  `RUN` would not (a container given `CAP_SYS_PTRACE`, a Dockerfile whose
-  `RUN`s are not root), the refusal is wider than needed: accepted as
-  failing closed. The scan counts only the processes ranikust can open as
+  another container. ranikust's own mount namespace is the one it started
+  in, read before the set-up, and the one it is in when it looks: a
+  set-up that failed after its `unshare` left it in a copy no other
+  process is in. The scan counts only the processes ranikust can open as
   it starts: one it cannot open then, and one that appears after that
   look, are not counted, accepted residual risks with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
@@ -375,8 +374,7 @@ The decision:
   starts (a root sidecar under Kubernetes `shareProcessNamespace: true`,
   Docker or podman `--pid container:<name>`, `--pid=host` with root
   processes in reach), which built before: the operator gives the build a
-  PID namespace of its own. It may refuse one that no `RUN` would reach,
-  since ranikust looks before it trims its privileges.
+  PID namespace of its own.
 - Bad, because that refusal counts only the processes ranikust can open
   as it starts: one it cannot open then, or one that appears later, is
   not counted, a residual risk the maintainer accepted. The operator
@@ -574,10 +572,14 @@ The decision:
   `every_thread_of_a_process_is_probed_within_the_bound` (the real probe
   on ranikust's own process, with a second thread: each thread probed and
   counted, a missing process gone),
-  `a_process_probed_as_one_is_told_through_its_own_entries` (one thread,
-  or the process as one, probed on ranikust's own `/proc/self` and on a
-  fake directory: the step a failure names, a thread gone or out of
-  reach), `a_process_name_is_trimmed_and_escaped`,
+  `a_thread_or_a_process_as_one_is_told_through_its_own_entries` (one
+  thread, or the process as one, probed on ranikust's own `/proc/self`,
+  either of its two namespaces counting as its own, and on a fake
+  directory: the step a failure names, a thread gone or out of reach, an
+  `ns/mnt` denied while its `ns` is there),
+  `a_denied_ns_mnt_is_a_thread_gone_only_once_its_ns_is_gone`,
+  `ranikusts_own_namespaces_are_the_one_it_started_in_and_the_one_it_is_in`,
+  `a_process_name_is_trimmed_and_escaped`,
   `a_process_is_named_by_its_pid_and_its_name_when_read` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   (messages and guidance). T1 `pid-peers` (rootless podman 5.7.0, Linux
