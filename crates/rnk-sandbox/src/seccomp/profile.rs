@@ -25,7 +25,8 @@
 //! a listener, a flag other than `TSYNC`, `LOG` and `SPEC_ALLOW`, a name
 //! unknown here under an action other than `SCMP_ACT_ALLOW`, two conditions
 //! on one argument in a rule, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked
-//! success) or above 4095, and anything malformed.
+//! success), one of the kernel's own codes, 512 to 530, or above 4095, and
+//! anything malformed.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -43,6 +44,10 @@ const DOCKER_DEFAULT: &[u8] = include_bytes!("default.json");
 
 /// The kernel caps an errno at `MAX_ERRNO`.
 const MAX_ERRNO: u32 = 4095;
+
+/// The kernel's internal codes (`include/linux/errno.h`), refused as a
+/// profile's errno.
+const KERNEL_ERRNOS: std::ops::RangeInclusive<u32> = 512..=530;
 
 /// The architectures runtime-spec names; only the native one is compiled.
 const ARCHES: [&str; 23] = [
@@ -496,6 +501,25 @@ fn refused_always(rules: &[Rule], default: Action) -> bool {
         || (!default.runs() && !rules.iter().any(|r| r.action.runs()))
 }
 
+/// Why a profile may not answer with `act`'s errno, if it may not
+/// (ADR-0109): 0 fakes a success the set-up after the profile would trust,
+/// and the kernel's own codes, 512 (`ERESTARTSYS`) to 530, are no answer:
+/// on 516 (`ERESTART_RESTARTBLOCK`) the kernel may run its restart block
+/// instead, which can succeed.
+fn errno_refused(act: Action, cx: &Context) -> Option<String> {
+    const GIVE: &str = "give an errno from 1 to 511 or 531 to 4095";
+    match act {
+        Action::Errno(0) if !cx.fakes() => Some(format!(
+            "0 would fake the success of the calls it refuses; {GIVE}"
+        )),
+        Action::Errno(e) if KERNEL_ERRNOS.contains(&e) => Some(format!(
+            "{e} is one of the kernel's own codes (512 to 530), which can \
+             restart the call; {GIVE}"
+        )),
+        _ => None,
+    }
+}
+
 fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     let p: Json = serde_json::from_slice(json).map_err(|e| bad(e.to_string()))?;
     let default = action(
@@ -505,13 +529,8 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
         p.default_errno_ret,
         "defaultAction",
     )?;
-    // Errno 0 is a success the call never had: the set-up after the
-    // profile would trust it (ADR-0109).
-    if default == Action::Errno(0) && !cx.fakes() {
-        return Err(bad(
-            "defaultErrnoRet: 0 would fake the success of every call the default refuses; \
-             give an errno from 1 to 4095",
-        ));
+    if let Some(why) = errno_refused(default, cx) {
+        return Err(bad(format!("defaultErrnoRet: {why}")));
     }
     if p.architectures.as_ref().is_some_and(|a| !a.is_empty())
         && p.arch_map.as_ref().is_some_and(|m| !m.is_empty())
@@ -543,10 +562,8 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     for (i, r) in p.syscalls.iter().flatten().enumerate() {
         let what = format!("syscalls[{i}]");
         let (rule, names) = rule(r, &what)?;
-        if rule.action == Action::Errno(0) && !cx.fakes() {
-            return Err(bad(format!(
-                "{what}: errnoRet 0 would fake the call's success; give an errno from 1 to 4095"
-            )));
+        if let Some(why) = errno_refused(rule.action, cx) {
+            return Err(bad(format!("{what}: errnoRet {why}")));
         }
         if !cx.keeps(r)? {
             continue;

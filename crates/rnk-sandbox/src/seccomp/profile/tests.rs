@@ -636,6 +636,53 @@ fn malformed_or_unsupported_profiles_are_refused() {
     }
 }
 
+/// The kernel's own codes, 512 (`ERESTARTSYS`) to 530, are refused as an
+/// errno of a rule or of the default, even in a rule another architecture
+/// keeps or in the tests' faking profiles; 511 and 531 compile (ADR-0109).
+#[test]
+fn the_kernels_own_errnos_are_refused() {
+    let errno_rule = |e: u32, extra: &str| {
+        format!(
+            r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["getppid"],
+            "action":"SCMP_ACT_ERRNO","errnoRet":{e}{extra}}}]}}"#
+        )
+    };
+    let default = |e: u32| format!(r#"{{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":{e}}}"#);
+    for e in [512, 513, 514, 516, 520, 530] {
+        let m = refusal(&errno_rule(e, ""));
+        assert!(
+            m.starts_with(&format!("syscalls[0]: errnoRet {e} is")),
+            "{m}"
+        );
+        assert!(m.contains("512 to 530"), "{m}");
+        let m = refusal(&errno_rule(e, r#","includes":{"arches":["s390x"]}"#));
+        assert!(m.starts_with("syscalls[0]: errnoRet"), "{m}");
+        let m = refusal(&default(e));
+        assert!(m.starts_with(&format!("defaultErrnoRet: {e} is")), "{m}");
+        let faking = Context {
+            faked_success: true,
+            ..cx((6, 8))
+        };
+        assert!(
+            compile(errno_rule(e, "").as_bytes(), &faking).is_err(),
+            "{e}"
+        );
+        assert!(compile(default(e).as_bytes(), &faking).is_err(), "{e}");
+    }
+    for e in [511, 531] {
+        let p = compiled(&errno_rule(e, ""));
+        assert_eq!(
+            verdict(&p, libc::SYS_getppid, a0(0)),
+            errno(e.cast_signed())
+        );
+        let p = compiled(&default(e));
+        assert_eq!(
+            verdict(&p, libc::SYS_getppid, a0(0)),
+            errno(e.cast_signed())
+        );
+    }
+}
+
 #[test]
 fn a_profile_too_long_for_the_kernel_is_refused() {
     let rules: Vec<String> = (0..1000)
