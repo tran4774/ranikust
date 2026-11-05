@@ -2603,7 +2603,9 @@ mod tests {
 
         /// Fills the stack below its caller with procfs's magic, so that a
         /// buffer read before anything wrote it there looks like procfs,
-        /// or like a descriptor limit below every cap.
+        /// or like a descriptor limit below every cap. Only in a debug
+        /// build: an optimised one may inline the read into its caller's
+        /// own frame, which this does not reach.
         #[inline(never)]
         fn proc_magic_below() {
             // A local, not a promoted constant: it must be on the stack.
@@ -2637,12 +2639,14 @@ mod tests {
 
         /// The descriptor-closing fallbacks come after the profile: a
         /// `prlimit64` refused, or faked with errno 0 whatever the stack
-        /// held before, leaves the bound at its cap.
+        /// held before, leaves the bound at its cap. `prlimit64` alone:
+        /// glibc and musl read the limit through it, and aarch64's glibc
+        /// names no `getrlimit`.
         #[test]
         fn a_faked_or_refused_getrlimit_leaves_the_cap() {
             for errno in [0, libc::EPERM] {
                 let rule = format!(
-                    r#"{{"names": ["prlimit64", "getrlimit"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                    r#"{{"names": ["prlimit64"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
                 );
                 let got = failure_under(&rule, |w| {
                     proc_magic_below();

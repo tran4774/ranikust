@@ -224,18 +224,18 @@ These follow from decisions and are documented to users rather than fixed:
   filter is only as right as that compiler, which T0 tests check against a
   table of moby's profile and in forked children.
 - A `--seccomp` file may answer a call with a faked success (errno 0). Every
-  set-up step that need not follow the profile comes before it (ADR-0109),
-  and a faked fork of the init fails the `RUN`, but the other steps after
-  it trust its answers. For example, a faked `capset`, `setsid` or `USER`
+  set-up step that need not follow the profile comes before it
+  ([sandbox design, step 4](../design/sandbox.md#per-run-sequence);
+  ADR-0109) and stays as it was, and a faked fork of the init fails the
+  `RUN`, but the other steps after it trust its answers. For example, a faked `capset`, `setsid` or `USER`
   switch leaves the `RUN`'s init with its capabilities, the command in the
   init's session (which has no terminal either) or the command as root
   instead of its `USER`; a faked `read` of the go pipe starts the command
   before its init has dropped its capabilities and descriptors (the init
   is not dumpable, so the command cannot reach them); a faked `close` can
   leave the `RUN` waiting forever; a faked `openat2` in the `PATH` search
-  closes the command's stdin. Every step before the profile
-  ([sandbox design, step 4](../design/sandbox.md#per-run-sequence)) stays
-  as it was; Docker's default profile fakes none of these calls.
+  closes the command's stdin. Docker's default profile fakes none of these
+  calls.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

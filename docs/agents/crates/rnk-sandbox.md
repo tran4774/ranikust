@@ -278,8 +278,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   keyring call). The `tests::kernel` modules, skipped under qemu-user,
   install filters in forked children: `seccomp::profile`'s (compiled
   profiles), `caps`'s (an `EINVAL` from a bounding drop) and `child`'s (an
-  `EACCES` on the keyring join, a faked `setsid`, `pipe2`, `fstatfs` or
-  `prlimit64`; the last two on a stack filled beforehand).
+  `EACCES` on the keyring join, a faked `setsid`, `pipe2` or `fstatfs`, a
+  faked or refused `prlimit64`; the last two on a stack filled beforehand,
+  which shows an unwritten buffer in a debug build only).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
@@ -303,9 +304,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   profile that refuses the keyring join; each `RUN` in a keyring of its own;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with 0 or `EINVAL` leave the
-  bounding set, the session, the init's dump flag, the umask, ADR-0033's
-  filter and the capability sets as they are, and a faked fork of the init
-  fails the `RUN`;
+  bounding set, the session, the init's dump flag, ADR-0033's filter and
+  the capability sets as they are and the umask at 022 whatever
+  ranikust's, and a faked fork of the init fails the `RUN`;
   `an_lsm_refusing_the_keyring_join_fails_a_run_that_could_reach_keyrings`),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.

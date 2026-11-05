@@ -3544,7 +3544,7 @@ mod tests {
                     RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
                 spec.network = network;
                 output_to(&out, &mut spec);
-                // The tests run one at a time (`--test-threads=1`).
+                // This thread's own (it unshared `CLONE_FS`), and the `RUN` is cloned from it.
                 let ours = name
                     .starts_with("umask")
                     .then(|| rustix::process::umask(Mode::from_raw_mode(0o077)));
