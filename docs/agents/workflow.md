@@ -356,8 +356,8 @@ worktree) or the main session's own. `host-safety` is the reviewer below;
 loop itself before it hands back.
 
 1. The `host-safety` subagent reports to the main session.
-2. The main session files a security non-blocker, and a High or Critical
-   blocker in released code that the branch touches, as a draft
+2. The main session files a security non-blocker, and a blocker the
+   private fork fixes, as a draft
    ([Security findings](#security-findings)) and sends the other findings
    to the implementer with `SendMessage` when it answered within the hour,
    else briefs a new `implementer` run with the branch, its worktree, the
@@ -371,8 +371,8 @@ loop itself before it hands back.
 5. No blocker left: the main session pushes and opens the draft pull
    request with a summary of the rounds ([GitHub flow](#github-flow)); the
    maintainer merges it. A finding marked "holds the next release" does not
-   hold the branch; a High or Critical blocker in released code that the
-   branch touches does, until the private fork's fix is on `main`
+   hold the branch; a blocker the private fork fixes does, until the fork's
+   fix is on `main`
    ([Security findings](#security-findings)).
 
 A test result counts only from the harness's exit status, never from an
@@ -407,8 +407,9 @@ section owns what happens to one
   branch does not touch it is a `non-blocker` of the branch, marked "holds
   the next release". An audit lead is no blocker until it is confirmed as
   High or Critical.
-- **Fixed:** every blocker, in the loop, before the push, except a High or
-  Critical one in released code that the branch touches: the branch does
+- **Fixed:** every blocker, in the loop, before the push, except one the
+  private fork fixes (a High or Critical one in released code, or a
+  Critical one in code on `main`, that the branch touches): the branch does
   not push until the fix from the draft's private fork is merged into
   `main`, then rebases and pushes, and until then its review and notes keep
   the finding out of anything public. A finding that holds the next
@@ -440,8 +441,8 @@ section owns what happens to one
   input or test the report gives (REST
   `repos/{owner}/{repo}/security-advisories`, a `gh api` write, so it
   prompts), may update its text, and does not send the finding to the
-  implementer. This is for a security non-blocker and a High or Critical
-  blocker in released code that the branch touches.
+  implementer. This is for a security non-blocker and a blocker the private
+  fork fixes.
 - **Never public.** No detail of an unfixed weakness in an issue, pull
   request, comment, commit or doc, apart from a fix pull request's diff and
   test, worded generically, and section 6; a pull request names an advisory

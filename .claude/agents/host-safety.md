@@ -77,7 +77,9 @@ or failure scenario in one or two sentences, and the fix. A High or
 Critical finding is a `blocker` only when the branch introduces it or
 touches the code it is in; in code the branch does not touch it is a
 `non-blocker`, marked "holds the next release". Give a security
-non-blocker, and a High or Critical blocker in released code, in full,
-however long: the main session files an advisory from it. Say explicitly which checklist
+non-blocker, and a blocker the private fork fixes (a High or Critical one
+in released code, or a Critical one in code on `main`, that the branch
+touches), in full, however long: the main session files an advisory from
+it. Say explicitly which checklist
 items you verified as fine and which you could not check from the code
 alone (for example, races that need a test on a real kernel).

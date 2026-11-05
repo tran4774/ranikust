@@ -62,8 +62,8 @@ this ADR owns the rules.
 
   | Finding | Fixed |
   |---|---|
-  | A blocker of the branch under review, but the next row | In the review loop, before the push |
-  | A High or Critical blocker in released code that the branch touches | Not in the loop: in the draft's temporary private fork, which the maintainer opens (D6) and where agents work as the maintainer directs. The branch does not push until that fix is merged into `main`, then rebases and pushes; until then its review and notes keep the finding out of anything public |
+  | A blocker of the branch under review that the next row does not name: one the branch introduces, or a High one it touches in code on `main` in no release yet | In the review loop, before the push; for the High one in unreleased code that is an ordinary pull request, as below |
+  | A blocker the private fork fixes: a High or Critical one in released code, or a Critical one in code on `main`, released or not, that the branch touches | Not in the loop: in the draft's temporary private fork, which the maintainer opens (D6) and where agents work as the maintainer directs. The branch does not push until that fix is merged into `main`, then rebases and pushes; until then its review and notes keep the finding out of anything public |
   | Holds the next release: Critical in code on `main`, released or not, or High in released code | In the same private fork; the branch pushes and merges, and only the next release waits |
   | Holds the next release: High in code on `main` in no release yet | By an ordinary public pull request with generic wording before the next release; no private fork |
   | A Low or Medium draft | Later, by an ordinary public pull request with generic wording, its test staying |
@@ -84,7 +84,7 @@ this ADR owns the rules.
   new ADR.
 - **Who files.** `host-safety`, `red-team` and `reviewer` give each security
   finding a verdict and a severity, and report a security non-blocker, and a
-  High or Critical blocker in released code, in full. The main session
+  blocker the private fork fixes, in full. The main session
   files it as a draft and does not send it back to the implementer.
 - **Where details live.** D6 stands: no detail of an unfixed weakness goes
   into an issue, pull request, comment, commit or doc, except a fix pull
@@ -164,6 +164,11 @@ No experiment; the maintainer's decision and answers, each given on
   recommended). X does not push until the private fork's fix is merged into
   `main`, then rebases and pushes; until then its review and notes keep the
   finding out of anything public.
+- [inferred] A Critical finding in code on `main` in no release yet that X
+  touches is handled as the touched, released case (X waits for the fork's
+  fix on `main`, then rebases and pushes), from the answers on touched
+  released code and on Critical findings: a Critical finding always goes
+  through the private fork, so X's public loop cannot fix it. The maintainer may overrule this.
 - Whether the High rule for code on `main` in no release yet covers
   Critical: "Critical đi qua private fork (khuyến nghị)" (Critical goes
   through the private fork, as recommended). Only a High finding in that
