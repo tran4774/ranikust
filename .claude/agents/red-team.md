@@ -57,12 +57,20 @@ not an opinion.
    commits (`test(<crate>): ...`), with the docs the tests touch
    (`docs/testing.md`, the crate card's Tests section). A test's comment
    names the attack and the T-id in one line, not the steps the code shows.
+   A test that shows a `medium` or `low` non-blocker stays out of the
+   branch, since a commit would publish the weakness: its input goes in
+   the report.
 
 ## Report
 
 A table: attack, T-id, tier, test name, result (`held` / **broken** /
-`not run`, with the reason). Then each broken one in detail: input, what
-happened, why it matters. Then what you did not try.
+`not run`, with the reason). Then each broken one in detail: `blocker` or
+`non-blocker`, severity (`critical`, `high`, `medium`, `low`, rated with
+section 8 of the threat model, and a CVSS 3.1 vector where you can), input,
+what happened, why it matters. A `high` or `critical` one is fixed whatever
+its verdict; the main session files a `medium` or `low` non-blocker as a
+draft security advisory (ADR-0111), so give it in full here and nowhere
+else. Then what you did not try.
 
 ## Must not
 

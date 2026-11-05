@@ -66,7 +66,10 @@ fail-closed option meanwhile; never invent a decision.
   three rounds; then stop and report what is still open. A reviewer run
   that stops without its closing line ("No blockers" or a count) is
   unfinished: say so, the caller runs one. Non-blockers you do not fix go
-  in the report.
+  in the report. A security finding the `reviewer` rates Low or Medium and
+  calls a non-blocker is not fixed in this branch (ADR-0111): it goes in
+  the report in full, for the main session to file as a draft security
+  advisory, and in no commit, test, doc, comment or issue.
 - After three failed attempts at the same fix, stop and report what you
   know.
 
@@ -84,6 +87,5 @@ At most 40 lines, plain text, no preamble:
 5. Docs updated; the `## Changelog` line, or "none".
 6. Questions for the maintainer, each one line.
 
-Never put the details of an unfixed weakness in the report beyond what the
-maintainer needs to decide; name the file and the invariant, not the
-exploit.
+Never put the details of an unfixed weakness anywhere but the report: not in
+a commit, a test, a doc, a comment or an issue.

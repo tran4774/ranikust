@@ -54,7 +54,12 @@ requirement.
 ## Report
 
 Numbered findings, most severe first. For each: `blocker` or `non-blocker`,
-`path:line`, what is wrong, why it matters, and the smallest fix. Be
-specific and nitpicky; skip style that rustfmt or clippy already enforce.
-End with one line: "No blockers" or the number of blockers. Do not repeat the
-diff back.
+`path:line`, what is wrong, why it matters, and the smallest fix. A security
+finding also gets a severity (Low, Medium, High or Critical, rated with
+section 8 of the threat model, and a CVSS 3.1 vector where you can): a
+High or Critical one is fixed whatever its verdict, and a Low or Medium
+non-blocker is not fixed in this branch but filed by the main session as a
+draft security advisory (ADR-0111), so give it in full here and nowhere
+else. Be specific and nitpicky; skip style that rustfmt or clippy already
+enforce. End with one line: "No blockers" or the number of blockers. Do not
+repeat the diff back.
