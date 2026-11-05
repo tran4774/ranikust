@@ -135,9 +135,11 @@ These follow from decisions and are documented to users rather than fixed:
   it, even one whose name was removed, told by its inode; a file with
   another hard link), or one on a mount ranikust cannot tell (qemu-user, a
   memfd, a mount table that does not place it (its own name removed
-  among them), a writable directory of its file system whose name was
-  removed, a writable mount that cannot be reached at its mount point; a
-  fallback through `/proc/self/fdinfo` is
+  among them) or changes while it is read, a writable directory of its
+  file system whose name was removed, a writable mount that another
+  mount covers or that cannot be reached at its mount point, a binary
+  not weighed because ranikust did not find itself in a container when it
+  started; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95)), is refused before
   the build: the binary must not be reachable through a writable mount
   other than the container's root once the copy took its write protection

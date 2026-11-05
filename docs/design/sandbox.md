@@ -55,21 +55,27 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    directory root that contains the file's path in its file system
    (compared by component), or a file root that is the binary's inode
    whatever its name (mount points and the binary's name reached from `/`
-   through `RootPath` by `statx` only, never opened, each mount point
-   checked to be its mount by its id; `//deleted` is read as a mark,
-   `MountInfo::root_deleted`). A table that cannot be parsed,
-   does not place the file (its own name removed among them) or does not
-   type a FUSE root (`root_type`), a writable directory of its file system
-   whose name was removed, a writable mount of it whose mount point leads
-   nowhere or to another mount, or a file with no link left, is
-   `Unplaced`, and a table that cannot be read, or a lookup of the
-   binary's name or of a mount point that fails otherwise (`openat2`,
+   through `RootPath::statx_physical`, never opened, with no symlink on
+   the way, each mount point checked to be its mount's root by its id and
+   `STATX_ATTR_MOUNT_ROOT`; a mount another one covers, at its mount point
+   or above it and not one it lies on, told from the table alone and not
+   looked up; `//deleted` is read as a mark, `MountInfo::root_deleted`).
+   The table is read again once the walk is done: one that changed
+   meanwhile (mount ids are reused) places nothing. A table that cannot be
+   parsed or that changed, that does not place the file (its own name
+   removed among them) or does not type a FUSE root (`root_type`), a
+   writable directory of its file system whose name was removed, a
+   writable mount of it that is covered or whose mount point leads
+   nowhere, to another mount or inside its mount, or a file with no link
+   left, is `Unplaced`, and a table that cannot be read, or a lookup of
+   the binary's name or of a mount point that fails otherwise (`openat2`,
    `statx`; an error with no errno as `EIO`), `Unknown`, unless a writable
-   mount was found to reach the binary (`Exposed`). The measurement runs
-   at every start, so a host build too may look up the writable mount
-   points of its binary's file system (a binary with a single link, on a
-   read-only mount or on a root that is not an overlay); only kaniko mode
-   on `/` uses the answer.
+   mount was found to reach the binary (`Exposed`). Only kaniko mode on a
+   container's `/` uses the answer, so `ranikust` asks for the walk only
+   where it finds itself in a container (`container::detect`, ADR-0048,
+   before the copy): a host build looks up no mount point, and a binary
+   the walk would weigh is `NotWeighed`, refused should kaniko mode on
+   `/` follow.
    The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
    close-on-exec descriptor, with the same arguments, environment and
    descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file

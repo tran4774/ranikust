@@ -108,10 +108,13 @@ the scheduler runs one stage at a time) or a private directory per stage
     root that is not an overlay (overlayfs or fuse-overlayfs), a binary in
     the root too), and on a mount ranikust cannot tell (qemu-user, a
     memfd, a mount table that does not place it (its own name removed
-    among them), a writable directory of its file system whose name was
-    removed, a writable mount that cannot be reached at its mount point),
-    before anything is written: a `RUN` reaches it by name, and the build
-    no longer runs it (ADR-0101).
+    among them) or changes while it is read, a writable directory of its
+    file system whose name was removed, a writable mount that another
+    mount covers or that cannot be reached at its mount point, a binary
+    not weighed because ranikust did not find itself in a container when
+    it started), before anything is written: a `RUN` reaches it by name,
+    and the build no longer runs it (ADR-0101). Only a build that finds
+    itself in a container looks the writable mount points up.
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
     The `RUN` child drops every capability outside Docker's defaults from its

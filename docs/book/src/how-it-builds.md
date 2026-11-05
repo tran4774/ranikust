@@ -185,10 +185,12 @@ roots of podman `--rootfs`, systemd-nspawn or LXC, a binary in that root gets
 the same checks. It refuses too when it cannot tell which mount its binary is
 on, as under an emulator such as qemu-user or when started from a memfd: run
 ranikust natively, from a regular file. When `/proc/self/mountinfo` does not
-place the binary, or a writable directory beside it was removed at its source,
-or a writable mount beside it is hidden by another mount, run it from a file
-that stays in place, or build it into an image run on an overlayfs root, where
-the binary's check reads no mount table.
+place the binary or changes while it is read, or a writable directory beside
+it was removed at its source, or a writable mount beside it is hidden by
+another mount, run it from a file that stays in place, or build it into an
+image run on an overlayfs root, where the binary's check reads no mount table.
+ranikust looks for those mounts only when it finds itself in a container; if
+it did not when it started but does later, it refuses: start the build again.
 When the measurement fails, mount `/proc` so that `/proc/self/exe` and
 `/proc/self/mountinfo` can be read, and let the seccomp profile allow
 `fstatfs`, `openat2` and `statx` (ranikust looks up the binary's name and the

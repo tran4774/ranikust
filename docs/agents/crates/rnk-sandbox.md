@@ -54,10 +54,10 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 ## API
 
 ```rust
-pub fn run_from_sealed_copy(ways: &[SealedCopy]) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0
+pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101); walk: whether the build may be kaniko mode on a container's / (the caller's container::detect), else no mount point is looked up: execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0
 pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
 pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
-pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx at its mount point through RootPath), Unplaced: not placed (a writable directory whose source was removed, or a writable mount not reached at its mount point, among them); Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
+pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, NotWeighed, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx_physical at its mount point through RootPath, its mount's root), Unplaced: not placed (a writable directory whose source was removed, a writable mount covered or not reached at its mount point, a table changed during the walk, among them); NotWeighed: the walk not asked for; Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
@@ -195,11 +195,16 @@ What a change here must keep, with where it lives:
   is measured. Whether a writable mount reaches the binary is told from
   `/proc/self/mountinfo`: a directory root by its path, compared by
   component; a file root by its inode. Mount points and the binary's name
-  are reached from `/` through `RootPath` by `statx` only, never opened;
+  are reached from `/` through `RootPath::statx_physical` only, never
+  opened, with no symlink on the way; a mount point counts only when it
+  leads to its mount's root (`STATX_ATTR_MOUNT_ROOT`), a covered mount is
+  not looked up, and the table must read the same once the walk is done;
   the binary's own name counts only while it still leads to the binary on
   its mount. What cannot be told is `Unplaced`, a call that fails
   otherwise `Unknown` (both refused: fail closed), unless a writable mount
-  was found to reach the binary (`Exposed`).
+  was found to reach the binary (`Exposed`). The walk runs only when the
+  caller passes `walk` (`ranikust` found itself in a container): without
+  it a binary the walk would weigh is `NotWeighed`, refused too.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.
@@ -264,7 +269,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   apart by `statfs` magic, escaped names in the mount table,
   `red_team_escaped_names_in_the_mount_table_are_compared_unescaped`; a
   file bind told by its inode, renamed or replaced, a mount root reached at
-  its mount point, what cannot be told placing nothing (the binary's own
+  its mount point (a file inside the mount is not its root), a symlink on
+  the way placing nothing, a covered mount not looked up, a table that
+  changed during the walk placing nothing, no walk when not asked
+  (`NotWeighed`), what cannot be told placing nothing (the binary's own
   name removed while it runs among them), a failed lookup keeping its
   errno unless the binary is reached,
   `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`), the

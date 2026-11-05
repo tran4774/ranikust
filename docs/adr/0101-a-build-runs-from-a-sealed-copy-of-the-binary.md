@@ -126,11 +126,19 @@ The decision:
   mount's root joined with its path below that mount, compared by
   component) or, for a root that is a file, is the binary's inode, whatever
   its name. The binary's name and those mounts' mount points are reached
-  from `/` through `RootPath` by `statx` only, never opened, and each mount
-  point is checked to be its mount by its id; the table's `//deleted`, the
+  from `/` through `RootPath` by `statx` only, never opened, with no
+  symlink on the way (a path the kernel printed has none), and each mount
+  point is checked to be its mount's root (its id and
+  `STATX_ATTR_MOUNT_ROOT`); a mount another one covers, told from the
+  table alone, is not looked up, and the table is read again once the
+  walk is done and must not have changed. The table's `//deleted`, the
   kernel's mark of a root whose name was removed, is read as a mark, never
-  a component. It passes the answer to the copy in the variable; a run
-  that ends without a checked copy measures the file it runs from instead.
+  a component. The walk of the writable mounts runs only where the build
+  may be kaniko mode on a container's `/`, the only one that reads it:
+  where ranikust finds itself in a container (kaniko's test, ADR-0048);
+  a host build looks up no mount point. It passes the answer to the copy
+  in the variable; a run that ends without a checked copy measures the
+  file it runs from instead.
   Kaniko mode on `/` refuses, before anything is
   written, a binary on a writable mount other than `/`'s (a file or a
   directory bound without `:ro` from outside the container or from inside
@@ -146,12 +154,14 @@ The decision:
   the container's root, no hard-link alias of it). It also refuses, failing
   closed, one whose mount it cannot tell: a mount id of 0, which
   qemu-user's `statx` gives for every file and Linux 6.8 and 7.0 give a
-  memfd [measured]; a mount table that cannot be parsed, does not place
-  the file (its own bound name removed among them) or does not type a FUSE
-  root, a writable mount of its file system that is a directory whose name
-  was removed or that cannot be reached at its mount point, or a file with
-  no link left; or a failed call (the mount table unreadable among them),
-  each with its own guidance; a fallback through `/proc/self/fdinfo` is
+  memfd [measured]; a mount table that cannot be parsed, changes while it
+  is walked, does not place the file (its own bound name removed among
+  them) or does not type a FUSE root, a writable mount of its file system
+  that is a directory whose name was removed or that cannot be reached at
+  its mount point (another mount covering it among them), or a file with
+  no link left; a binary not weighed because ranikust did not find itself
+  in a container when it started; or a failed call (the mount table
+  unreadable among them), each with its own guidance; a fallback through `/proc/self/fdinfo` is
   [#95](https://github.com/tran4774/ranikust/issues/95). A binary in the
   container's own root builds when that root is an overlay, where a write
   copies the file up and leaves the image's layers as they are: overlayfs
@@ -184,8 +194,10 @@ The decision:
   [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
   and the next
   [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388);
-  the last two
-  [in a sixth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6639451756)):
+  the next two
+  [in a sixth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6639451756),
+  and the last
+  [in a seventh](https://github.com/tran4774/ranikust/issues/32#issuecomment-6650030126)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -252,7 +264,12 @@ The decision:
   - on 2026-11-05, to record here that the cases ranikust cannot tell are
     refused (fail closed), and that the mount points are reached through
     `RootPath` by `statx` only, never opened: "Ghi vào ADR-0101 trên nhánh
-    (khuyến nghị)".
+    (khuyến nghị)";
+  - on 2026-11-05, after the third host-safety pass, to walk the writable
+    mounts only where the build may be kaniko mode on a container's `/`,
+    so that a host build looks up no mount point: "Chỉ đo khi có thể là
+    kaniko trên / (khuyến nghị)" (measure only where it may be kaniko on
+    `/`, as recommended).
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -405,16 +422,29 @@ The decision:
   root that is no path, a mount point that leads elsewhere, a binary whose
   name no longer leads to it),
   `a_mount_root_is_reached_at_its_mount_point` (on the host running it:
-  `/proc` a directory, a file its own inode, another mount id or a missing
-  path not reached, a removed file's name leading nowhere),
+  `/proc` a directory; a file inside a mount, `/proc/version` among them,
+  another mount id or a missing path not reached; a removed file's name
+  leading nowhere), `a_symlink_on_the_way_places_nothing` (`/proc` through
+  a symlink to `/`, a file through a symlinked directory) and
+  `rnk-rootfs`'s `statx_physical_refuses_a_symlink_in_a_parent`,
+  `a_covered_mount_is_not_looked_up` (sample tables: a mount covered at
+  its mount point or above it, and the binary's own mount covered, not
+  looked up; a mount on it, or one it lies on, does not cover it),
+  `a_table_that_changed_during_the_walk_places_nothing`,
+  `a_build_that_cannot_be_kaniko_on_slash_walks_no_mount` (`NotWeighed`;
+  links and an overlay root told as before), each of the four failing
+  with its fix taken out; `STATX_ATTR_MOUNT_ROOT` [measured] in rootless
+  podman 5.7.0 on Linux 7.0: set at a file bound read-write or `:ro`, a
+  directory bind, `/etc/hostname`, `/proc` and `/`, not at a file inside
+  a mount (`/proc/version`, `/etc/passwd`, a file in the directory bind),
   `a_removed_name_of_the_binary_places_nothing` (on the host running it,
   the binary's own name removed while it runs, a link left elsewhere: it
   failed with the stale name placed),
   `a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached` (a name
   too long keeps its errno and a path `RootPath` refuses is `EIO`, at a
   mount point or at the binary's name, unless a writable bind of the
-  binary is found; a name that leads to the binary on another mount
-  places nothing),
+  binary is found, its root given since a host has no file bind; a name
+  that leads to the binary on another mount places nothing),
   `a_binary_in_a_root_that_is_not_an_overlay_is_weighed` (an overlay root
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one
