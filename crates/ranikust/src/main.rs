@@ -909,7 +909,7 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
         .with_guidance(
             "build in a container with a PID namespace of its own (no Kubernetes hostPID: true \
              or shareProcessNamespace: true, no --pid=host or --pid container:<name>), where \
-             fewer processes run (ADR-0101)",
+             fewer threads run (ADR-0101)",
         )),
         PeerScan::Unknown(process, step, e) => Err(Failure::error(format!(
             "{how}: cannot tell whether process {process} is of another mount namespace that \
@@ -917,9 +917,10 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              build without knowing"
         ))
         .with_guidance(
-            "let the container's seccomp and LSM profiles allow listing /proc/<pid>/task and \
-             opening /proc/<pid>, /proc/<pid>/task/<tid> and its root and ns/mnt with O_PATH, \
-             and share no PID namespace with another container (ADR-0101)",
+            "let the container's seccomp and LSM profiles allow listing /proc/<pid>/task, \
+             opening /proc/<pid>, /proc/<pid>/task/<tid> and their root and ns/mnt with O_PATH \
+             and fstat on ns/mnt, and share no PID namespace with another container \
+             (ADR-0101)",
         )),
         PeerScan::Unlisted(e) => Err(Failure::error(format!(
             "{how}: cannot list the processes of its PID namespace in /proc ({e}); kaniko mode \
@@ -1543,7 +1544,7 @@ mod tests {
             (
                 PeerScan::TooMany,
                 format!("more than {} threads;", exposure::PEER_SCAN_LIMIT),
-                "fewer processes run",
+                "fewer threads run",
             ),
             (
                 PeerScan::Unknown(sleep(), "opening /proc/<pid>/task/<tid>/root", errno),

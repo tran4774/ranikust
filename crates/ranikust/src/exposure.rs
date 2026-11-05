@@ -204,13 +204,12 @@ impl std::fmt::Display for Process {
 /// What the probe of one process found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Peer {
-    /// Its threads in ranikust's own mount namespace, or refused to it.
-    Same,
+    /// Each thread looked at in ranikust's own mount namespace or out of
+    /// its reach (`EACCES`, `EPERM`), one at least not gone.
+    Passed,
     /// A thread in another mount namespace, its `root` opened; the
     /// process's name.
     Reachable(String),
-    /// Its threads' `root` refused to ranikust (`EACCES`, `EPERM`).
-    Unreachable,
     /// Gone while it was looked at (`ENOENT`, `ESRCH`), with each of its
     /// threads.
     Gone,
@@ -230,6 +229,16 @@ enum Thread {
     Gone,
     Unknown(&'static str, Errno),
 }
+
+/// The steps of a thread's probe, as a refusal names them: through
+/// `/proc/<pid>/task/<tid>`, or through `/proc/<pid>` for a process whose
+/// threads ranikust may not list.
+type Steps = [&'static str; 2];
+const THREAD_STEPS: Steps = [
+    "opening /proc/<pid>/task/<tid>/root",
+    "reading /proc/<pid>/task/<tid>/ns/mnt",
+];
+const PROCESS_STEPS: Steps = ["opening /proc/<pid>/root", "reading /proc/<pid>/ns/mnt"];
 
 /// What [`scan_peers`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,10 +304,8 @@ fn scan(
         // holds for a `/proc` of exiting processes too.
         seen += threads.max(1);
         match peer {
-            Peer::Same | Peer::Unreachable | Peer::Gone if seen <= limit => {}
-            Peer::Same | Peer::Unreachable | Peer::Gone | Peer::TooMany => {
-                return PeerScan::TooMany;
-            }
+            Peer::Passed | Peer::Gone if seen <= limit => {}
+            Peer::Passed | Peer::Gone | Peer::TooMany => return PeerScan::TooMany,
             Peer::Reachable(comm) => return PeerScan::Reachable(Process { pid, comm }),
             Peer::Unknown(step, e, comm) => {
                 return PeerScan::Unknown(Process { pid, comm }, step, e);
@@ -321,74 +328,109 @@ fn probe(own: (u64, u64), pid: &str, left: usize) -> (Peer, usize) {
     ) {
         Ok(dir) => dir,
         Err(Errno::NOENT | Errno::SRCH) => return (Peer::Gone, 0),
+        // Not even looked into, so its root is out of reach too.
+        Err(Errno::ACCESS | Errno::PERM) => return (Peer::Passed, 1),
         Err(e) => return (Peer::Unknown("opening /proc/<pid>", e, String::new()), 0),
     };
-    let unknown = |step, e| Peer::Unknown(step, e, comm_at(&dir));
-    let list = rustix::fs::openat(
+    let tids = rustix::fs::openat(
         &dir,
         "task",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .and_then(rustix::fs::Dir::read_from);
-    let list = match list {
-        Ok(list) => list,
+    .and_then(rustix::fs::Dir::read_from)
+    .map(|list| list.map(|entry| entry.map(|e| e.file_name().to_bytes().to_vec())));
+    let thread = |tid: Option<&str>| {
+        let Some(tid) = tid else {
+            return task(own, &dir, PROCESS_STEPS);
+        };
+        match rustix::fs::openat(
+            &dir,
+            format!("task/{tid}"),
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(at) => task(own, &at, THREAD_STEPS),
+            Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
+            // Not even looked into, so its root is out of reach too.
+            Err(Errno::ACCESS | Errno::PERM) => Thread::Unreachable,
+            Err(e) => Thread::Unknown("opening /proc/<pid>/task/<tid>", e),
+        }
+    };
+    walk(tids, left, thread, || comm_at(&dir))
+}
+
+/// What [`probe`] decides from a process's thread ids `tids` (its
+/// `/proc/<pid>/task`), at most `left`, with `thread` probing one (`None`:
+/// the process itself, when its threads may not be listed) and `name`
+/// reading the process's name: the first thread reached or that cannot be
+/// told, else whether one was there at all; and how many were looked at.
+fn walk<T: AsRef<[u8]>>(
+    tids: rustix::io::Result<impl IntoIterator<Item = rustix::io::Result<T>>>,
+    left: usize,
+    mut thread: impl FnMut(Option<&str>) -> Thread,
+    name: impl Fn() -> String,
+) -> (Peer, usize) {
+    let named = |found: Thread| match found {
+        Thread::Same | Thread::Unreachable => Peer::Passed,
+        Thread::Other => Peer::Reachable(name()),
+        Thread::Gone => Peer::Gone,
+        Thread::Unknown(step, e) => Peer::Unknown(step, e, name()),
+    };
+    let tids = match tids {
+        Ok(tids) => tids,
         Err(Errno::NOENT | Errno::SRCH) => return (Peer::Gone, 0),
-        Err(e) => return (unknown("listing /proc/<pid>/task", e), 0),
+        Err(Errno::ACCESS | Errno::PERM) if left == 0 => return (Peer::TooMany, 1),
+        // Threads that may not be listed: the process is probed as one, as
+        // a `RUN` reaches it through `/proc/<pid>/root`.
+        Err(Errno::ACCESS | Errno::PERM) => return (named(thread(None)), 1),
+        Err(e) => return (Peer::Unknown("listing /proc/<pid>/task", e, name()), 0),
     };
     let mut seen = 0;
     let mut found = Peer::Gone;
-    for entry in list {
-        let entry = match entry {
-            Ok(entry) => entry,
+    for tid in tids {
+        let tid = match tid {
+            Ok(tid) => tid,
             Err(Errno::NOENT | Errno::SRCH) => break,
-            Err(e) => return (unknown("listing /proc/<pid>/task", e), seen),
+            Err(e) => return (Peer::Unknown("listing /proc/<pid>/task", e, name()), seen),
         };
-        let tid = entry.file_name().to_bytes();
-        if tid.is_empty() || !tid.iter().all(u8::is_ascii_digit) {
+        let Some(tid) = std::str::from_utf8(tid.as_ref())
+            .ok()
+            .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+        else {
             continue;
-        }
+        };
         seen += 1;
         if seen > left {
             return (Peer::TooMany, seen);
         }
-        let thread = match rustix::fs::openat(
-            &dir,
-            format!("task/{}", String::from_utf8_lossy(tid)),
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(thread) => thread,
-            Err(Errno::NOENT | Errno::SRCH) => continue,
-            Err(e) => return (unknown("opening /proc/<pid>/task/<tid>", e), seen),
-        };
-        match task(own, &thread) {
-            Thread::Gone => {}
-            Thread::Same => found = Peer::Same,
-            Thread::Unreachable => found = Peer::Unreachable,
-            Thread::Other => return (Peer::Reachable(comm_at(&dir)), seen),
-            Thread::Unknown(step, e) => return (unknown(step, e), seen),
+        match named(thread(Some(tid))) {
+            Peer::Gone => {}
+            Peer::Passed => found = Peer::Passed,
+            peer @ (Peer::Reachable(_) | Peer::TooMany | Peer::Unknown(..)) => {
+                return (peer, seen);
+            }
         }
     }
     (found, seen)
 }
 
-/// The probe of one thread, at its `/proc/<pid>/task/<tid>` directory
-/// `dir`: whether ranikust opens its `root`, then whether its mount
-/// namespace is `own`.
-fn task(own: (u64, u64), dir: &OwnedFd) -> Thread {
+/// The probe of one thread, or of a process as one, at its `/proc`
+/// directory `dir`: whether ranikust opens its `root`, then whether its
+/// mount namespace is `own`; a failure names the step of `steps`.
+fn task(own: (u64, u64), dir: &OwnedFd, [root, ns]: Steps) -> Thread {
     // Following the link takes the kernel's access check for it.
     match rustix::fs::openat(dir, "root", OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
         Ok(_) => {}
         Err(Errno::ACCESS | Errno::PERM) => return Thread::Unreachable,
         Err(Errno::NOENT | Errno::SRCH) => return Thread::Gone,
-        Err(e) => return Thread::Unknown("opening /proc/<pid>/task/<tid>/root", e),
+        Err(e) => return Thread::Unknown(root, e),
     }
     match namespace(dir, "ns/mnt") {
-        Ok(ns) if ns == own => Thread::Same,
+        Ok(found) if found == own => Thread::Same,
         Ok(_) => Thread::Other,
         Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
-        Err(e) => Thread::Unknown("opening /proc/<pid>/task/<tid>/ns/mnt", e),
+        Err(e) => Thread::Unknown(ns, e),
     }
 }
 
@@ -462,8 +504,7 @@ mod tests {
             |pid, _| {
                 probed.push(pid.to_owned());
                 let peer = match pid {
-                    "1" => Peer::Same,
-                    "2" => Peer::Unreachable,
+                    "1" | "2" => Peer::Passed,
                     "3" => Peer::Gone,
                     "4" => Peer::Reachable("sleep".into()),
                     _ => Peer::Unknown("x", Errno::IO, String::new()),
@@ -480,8 +521,7 @@ mod tests {
     #[test]
     fn a_peer_scan_with_no_process_reached_finds_none() {
         let found = scan(names(&["1", "2", "3"]), 3, |pid, _| match pid {
-            "1" => (Peer::Same, 1),
-            "2" => (Peer::Unreachable, 1),
+            "1" | "2" => (Peer::Passed, 1),
             _ => (Peer::Gone, 0),
         });
         assert_eq!(found, PeerScan::None);
@@ -490,7 +530,7 @@ mod tests {
     #[test]
     fn a_peer_scan_refuses_what_it_cannot_tell() {
         let found = scan(names(&["1", "2"]), 8, |pid, _| match pid {
-            "1" => (Peer::Same, 1),
+            "1" => (Peer::Passed, 1),
             _ => (Peer::Unknown("listing", Errno::LOOP, "x".into()), 0),
         });
         assert_eq!(
@@ -501,7 +541,7 @@ mod tests {
         list.push(Err(Errno::IO));
         list.extend(names(&["2"]));
         assert_eq!(
-            scan(list, 8, |_, _| (Peer::Same, 1)),
+            scan(list, 8, |_, _| (Peer::Passed, 1)),
             PeerScan::Unlisted(Errno::IO)
         );
     }
@@ -518,11 +558,145 @@ mod tests {
         let mut left = Vec::new();
         let found = scan(names(&["1", "2", "3"]), 4, |_, l| {
             left.push(l);
-            (Peer::Unreachable, 2)
+            (Peer::Passed, 2)
         });
         assert_eq!((found, left), (PeerScan::TooMany, vec![4, 2, 0]));
         let found = scan(names(&["1"]), 4, |_, _| (Peer::TooMany, 5));
         assert_eq!(found, PeerScan::TooMany);
+    }
+
+    type Tids = rustix::io::Result<Vec<rustix::io::Result<&'static str>>>;
+
+    fn tids(list: &[&'static str]) -> Tids {
+        Ok(list.iter().map(|t| Ok(*t)).collect())
+    }
+
+    #[test]
+    fn a_later_thread_reached_refuses_its_process_by_the_process_name() {
+        let mut probed = Vec::new();
+        let found = walk(
+            tids(&[".", "1", "..", "2", "3", "4"]),
+            PEER_SCAN_LIMIT,
+            |tid| {
+                probed.push(tid.map(str::to_owned));
+                match tid {
+                    Some("1") => Thread::Same,
+                    Some("2") => Thread::Unreachable,
+                    Some("3") => Thread::Other,
+                    _ => Thread::Unknown("x", Errno::IO),
+                }
+            },
+            || "java".to_owned(),
+        );
+        assert_eq!(found, (Peer::Reachable("java".into()), 3));
+        assert_eq!(
+            probed,
+            [Some("1"), Some("2"), Some("3")].map(|t| t.map(str::to_owned))
+        );
+        let found = walk(
+            tids(&["1", "2"]),
+            8,
+            |tid| match tid {
+                Some("1") => Thread::Gone,
+                _ => Thread::Unknown("opening /proc/<pid>/task/<tid>/root", Errno::LOOP),
+            },
+            || "java".to_owned(),
+        );
+        assert_eq!(
+            found,
+            (
+                Peer::Unknown(
+                    "opening /proc/<pid>/task/<tid>/root",
+                    Errno::LOOP,
+                    "java".into()
+                ),
+                2
+            )
+        );
+    }
+
+    #[test]
+    fn threads_passed_over_or_gone_pass_their_process() {
+        let name = || -> String { unreachable!("a process passed over is not named") };
+        let passed = |tid: Option<&str>| match tid {
+            Some("1") => Thread::Unreachable,
+            Some("2") => Thread::Gone,
+            _ => Thread::Same,
+        };
+        assert_eq!(
+            walk(tids(&["1", "2", "3"]), 3, passed, name),
+            (Peer::Passed, 3)
+        );
+        assert_eq!(walk(tids(&["2"]), 3, passed, name), (Peer::Gone, 1));
+        assert_eq!(walk(tids(&[]), 3, passed, name), (Peer::Gone, 0));
+        // A listing cut short by the process's exit keeps what was seen.
+        let cut: Tids = Ok(vec![Ok("1"), Err(Errno::SRCH), Ok("3")]);
+        assert_eq!(walk(cut, 3, passed, name), (Peer::Passed, 1));
+        let gone: Tids = Err(Errno::NOENT);
+        assert_eq!(walk(gone, 3, passed, name), (Peer::Gone, 0));
+    }
+
+    #[test]
+    fn a_process_whose_threads_may_not_be_listed_is_probed_as_one() {
+        for denied in [Errno::ACCESS, Errno::PERM] {
+            for (found, want) in [
+                (Thread::Unreachable, Peer::Passed),
+                (Thread::Same, Peer::Passed),
+                (Thread::Gone, Peer::Gone),
+                (Thread::Other, Peer::Reachable("java".into())),
+                (
+                    Thread::Unknown("opening /proc/<pid>/root", Errno::LOOP),
+                    Peer::Unknown("opening /proc/<pid>/root", Errno::LOOP, "java".into()),
+                ),
+            ] {
+                let mut probed = Vec::new();
+                let got = walk(
+                    Err::<Vec<rustix::io::Result<&str>>, _>(denied),
+                    1,
+                    |tid| {
+                        probed.push(tid.is_none());
+                        found
+                    },
+                    || "java".to_owned(),
+                );
+                assert_eq!((got, probed), ((want, 1), vec![true]));
+            }
+            let none = |_: Option<&str>| -> Thread { unreachable!("past the bound") };
+            let denied: Tids = Err(denied);
+            assert_eq!(walk(denied, 0, none, String::new), (Peer::TooMany, 1));
+        }
+        // Any other error refuses, named as the listing.
+        let other: Tids = Err(Errno::LOOP);
+        let found = walk(other, 1, |_| Thread::Same, || "java".to_owned());
+        assert_eq!(
+            found,
+            (
+                Peer::Unknown("listing /proc/<pid>/task", Errno::LOOP, "java".into()),
+                0
+            )
+        );
+        let midway: Tids = Ok(vec![Ok("1"), Err(Errno::IO)]);
+        let found = walk(midway, 2, |_| Thread::Same, || "java".to_owned());
+        assert_eq!(
+            found,
+            (
+                Peer::Unknown("listing /proc/<pid>/task", Errno::IO, "java".into()),
+                1
+            )
+        );
+    }
+
+    #[test]
+    fn the_threads_of_a_process_count_against_the_bound() {
+        let same = |_: Option<&str>| Thread::Same;
+        assert_eq!(
+            walk(tids(&["1", "2"]), 2, same, String::new),
+            (Peer::Passed, 2)
+        );
+        assert_eq!(
+            walk(tids(&["1", "2", "3"]), 2, same, String::new),
+            (Peer::TooMany, 3)
+        );
     }
 
     #[test]
@@ -539,7 +713,7 @@ mod tests {
         let reached = probe((own.0, own.1 ^ 1), &me, PEER_SCAN_LIMIT);
         drop(stop);
         second.join().unwrap().unwrap_err();
-        assert!(peer == Peer::Same && seen >= 2, "{peer:?} {seen}");
+        assert!(peer == Peer::Passed && seen >= 2, "{peer:?} {seen}");
         assert_eq!(reached, (Peer::Reachable(comm(&me)), 1));
         assert!(!comm(&me).is_empty());
         // Past the largest pid_max.
