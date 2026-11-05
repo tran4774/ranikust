@@ -75,11 +75,11 @@ network namespace. The first such `RUN` probes once
   `setns` as its first step, before any mount, so `sysfs` shows it.
 - The child stays in the build's user namespace, but as root it holds every
   capability in the helper's. So after every mount it installs a seccomp
-  filter (`seccomp.rs`), before the `RUN`'s profile, which goes on top and so
-  cannot fake its install, and under `--seccomp=unconfined` too, that refuses
-  what that would open: `setns`, new user namespaces, `io_uring`, the netfilter, IPVS and
-  IPsec interfaces, all netlink but route, sock_diag, audit and uevent, and
-  `clone3`. The exact list and the residual risk (every other interface
+  filter (`seccomp.rs`), before the `RUN`'s profile, which goes on top and
+  so cannot fake its install, and under `--seccomp=unconfined` too, that
+  refuses what that would open: `setns`, new user namespaces, `io_uring`,
+  the netfilter, IPVS and IPsec interfaces, all netlink but route,
+  sock_diag, audit and uevent, and `clone3`. The exact list and the residual risk (every other interface
   `CAP_NET_ADMIN` opens, rtnetlink first) are in the ADR.
 
 **Seccomp profile**
@@ -108,14 +108,19 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   longer than the kernel's 4096 instructions, and anything malformed; a file
   that is not a regular file or is over 1 MiB.
 - The profile is the operator's and may answer any call with any errno, 0 (a
-  faked success) included, so every step it could fake comes before it
-  (step 4): the session keyring, which `default` refuses (runc's order;
-  ADR-0109 refines ADR-0080 there), the bounding-set drop, the ambient and
-  inheritable clears, the init's non-dumpable flag and its session, and
-  ADR-0033's filter. Only the `capset` to the default sets comes after: the
-  install needs `CAP_SYS_ADMIN`, without `no_new_privs`, so that a setuid
-  binary of the `RUN` keeps working. A failed install names the filter and
-  points to `--seccomp=unconfined`.
+  faked success) included, so every step it could fake that need not follow
+  it comes before it (step 4): the session keyring, which `default` refuses
+  (runc's order; ADR-0109 refines ADR-0080 there), the bounding-set drop,
+  the ambient and inheritable clears, the init's non-dumpable flag and its
+  session, and ADR-0033's filter. After it come the `capset` to the default
+  sets, since the install needs `CAP_SYS_ADMIN` without `no_new_privs`, so
+  that a setuid binary of the `RUN` keeps working, and the init's and the
+  command's own steps (step 5 on): the command checks that the init really
+  forked it, and calls the child reads back go through `libc` into values
+  set beforehand. What a faked success there still changes is in the
+  [threat model](../security/threat-model.md#6-accepted-risks). A failed
+  install names the filter: the profile's points to `--seccomp=unconfined`,
+  ADR-0033's to `--allow network.none-userns`.
 - A `Direct` `RUN` gets none: in kaniko mode on `/` the container's own
   profile applies, and `--seccomp` is refused (exit 2).
 
@@ -263,8 +268,9 @@ The steps, in order:
      copy of the argument and environment strings ranikust started with
      (`/proc/self/stat` fields 48 to 51, refused as `Step::Init` if zero;
      `/proc/1/cmdline` has no ptrace check) and forks. The new process, PID 2,
-     waits on a close-on-exec go pipe, then runs steps 6 to 8 and becomes the
-     command.
+     checks that its parent is PID 1 (a fork the profile faked fails as
+     `Step::Init`), waits on a close-on-exec go pipe, then runs steps 6 to 8
+     and becomes the command.
    - The init keeps the death signal of step 1, drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
@@ -291,8 +297,8 @@ The steps, in order:
    `--seccomp=unconfined` and in `Direct`; the default profile refuses
    `keyctl`, `add_key` and `request_key`. A join refused by a filter
    (`EPERM`, `ENOSYS`) is ignored; one an LSM refuses (`EACCES`) fails a
-   full-sandbox `RUN` whose profile lets one of those three calls run
-   (ADR-0109).
+   full-sandbox `RUN` whose profile lets one of those three calls run, as
+   `Step::KeyringRefused` (ADR-0109).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A

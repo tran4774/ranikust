@@ -223,6 +223,14 @@ These follow from decisions and are documented to users rather than fixed:
   profile is not checked here. ranikust compiles it with its own code, so the
   filter is only as right as that compiler, which T0 tests check against a
   table of moby's profile and in forked children.
+- A `--seccomp` file may answer a call with a faked success (errno 0). Every
+  set-up step that need not follow the profile comes before it (ADR-0109),
+  but the steps after it trust its answers: a faked `capset`, `setsid` or
+  `USER` switch leaves the `RUN`'s init with its capabilities, the command
+  in the init's session (which has no terminal either) or the command as
+  root instead of its `USER`. The bounding set, the keyring, ADR-0033's
+  filter and the init's dump flag stay as they were; Docker's default
+  profile fakes none of these calls.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

@@ -174,20 +174,25 @@ What a change here must keep, with where it lives:
   `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
   lists them per target. A profile may fake any call's result, so after
   every mount the full sandbox's child first makes every step it could
-  fake: it joins the `RUN`'s new session keyring (the command, PID 2,
-  inherits it), drops the bounding set, clears the ambient and inheritable
-  sets, makes the init not dumpable and gives it a session. Then it installs
-  ADR-0033's filter when it joined a held network namespace, the profile on
-  top, both without `no_new_privs`, and only then sets the effective and
-  permitted sets. A failed install is `Step::Seccomp`, whose message points
+  fake that need not follow it: it joins the `RUN`'s new session keyring
+  (the command, PID 2, inherits it), drops the bounding set, clears the
+  ambient and inheritable sets, makes the init not dumpable and gives it a
+  session. Then it installs ADR-0033's filter when it joined a held network
+  namespace, the profile on top, both without `no_new_privs`, and only then
+  sets the effective and permitted sets. After the profile, the command
+  checks that its parent is the init (a faked fork fails as `Step::Init`),
+  and the pipe, capability and death-signal reads go through `libc` into
+  values set beforehand, so a call faked with errno 0 leaves nothing
+  uninitialised. A failed install is `Step::Seccomp`, whose message points
   to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
   gets no filter and joins its keyring after its capability drop, before
   `setsid`. The default profile refuses `keyctl`, `add_key` and
   `request_key`; root's user and persistent keyrings stay reachable under
   `--seccomp=unconfined`, a profile file that allows them, and in `Direct`.
-  A join refused with `EACCES` (an LSM) fails the `RUN` unless its profile
-  refuses all three calls (`SeccompProfile::refuses_keyrings`), in `Direct`
-  and in the probe.
+  A join refused with `EACCES` (an LSM) fails the `RUN` as
+  `Step::KeyringRefused` unless its profile refuses all three calls
+  (`SeccompProfile::refuses_keyrings`); in `Direct` and in the probe it is
+  ignored.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
   inheritable empty. The drops go up to the kernel's last capability; an
@@ -296,7 +301,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   profile that refuses the keyring join; each `RUN` in a keyring of its own;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `seccomp` or `capset` with 0 or `EINVAL` leave the bounding set,
-  the session, ADR-0033's filter and the capability sets as they are;
+  the session, the init's dump flag, ADR-0033's filter and the capability
+  sets as they are, and a faked fork of the init fails the `RUN`;
   `an_lsm_refusing_the_keyring_join_fails_a_run_that_could_reach_keyrings`),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.

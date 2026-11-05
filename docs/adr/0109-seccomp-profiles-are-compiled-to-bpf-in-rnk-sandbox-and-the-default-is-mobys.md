@@ -102,9 +102,10 @@ not be able to change what the set-up does.
   steps first, as recommended). The child joins the `RUN`'s session keyring,
   drops the bounding set, clears the ambient and inheritable sets, makes the
   init not dumpable and starts its session, then installs ADR-0033's filter
-  and the profile on top of it. Only the `capset` to the default sets comes
-  after the profile, since the install needs `CAP_SYS_ADMIN`, and the init's
-  and the command's own steps, which fail the `RUN` when a call is refused.
+  and the profile on top of it. After the profile come only the `capset`
+  to the default sets, since the install needs `CAP_SYS_ADMIN`, and the
+  init's and the command's own steps (the init's fork, which the command
+  checks, its capability drop, the command's session and `USER` switch).
   A call both filters refuse now gets the profile's errno; what is refused
   stays the same. An `EINVAL` from a bounding-set drop ends the list only
   when `caps::last_cap()` could not read the kernel's and assumed 63;
@@ -114,8 +115,8 @@ not be able to change what the set-up does.
   (khuyến nghị)", fail when the profile allows `keyctl`, as recommended);
   under a profile that refuses all three, as `default` does, it is ignored
   as before.
-- A failed install names the filter (the profile or ADR-0033's) and points
-  to `--seccomp=unconfined`.
+- A failed install names the filter: the profile's failure points to
+  `--seccomp=unconfined`, ADR-0033's to `--allow network.none-userns`.
 
 ### Consequences
 
@@ -124,6 +125,10 @@ not be able to change what the set-up does.
   is linked.
 - Good, because a profile, whatever it answers, cannot undo the bounding
   set, the session, the keyring or ADR-0033's filter.
+- Bad, because the steps after the profile trust its answers: a faked
+  `capset`, `setsid` or `USER` switch leaves the init with its
+  capabilities, the command in the init's session or the command as root
+  (threat model, section 6).
 - Good, because `default` is what `docker build` and BuildKit apply, and a
   user's Docker profile file works unchanged within the limits above.
 - Bad, because the compiler is security-critical code of ranikust's own (64-bit
