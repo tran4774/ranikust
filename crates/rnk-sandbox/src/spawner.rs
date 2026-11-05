@@ -768,7 +768,7 @@ impl Runner {
     }
 
     /// The probe's runner: its command does not exist, so nothing it starts
-    /// reaches a keyring, and a refused keyring join is left to the `RUN`s
+    /// runs, and a refused keyring join is left to the `RUN`s
     /// that follow, under their own profile (ADR-0109).
     pub(crate) fn for_probe(mut self) -> Self {
         self.probe = true;
@@ -3624,16 +3624,15 @@ mod tests {
 
     /// T2 (ADR-0109): a refused join of the session keyring, by an LSM or
     /// a filter around ranikust (filters on this thread stand in for both),
-    /// fails a `RUN` whose profile lets it reach a keyring (unconfined, or a
+    /// fails a `RUN` whose profile lets a keyring call run (unconfined, or a
     /// file that allows `keyctl`) while ranikust's session keyring can still
     /// be looked up, whatever the errno. Under a profile that refuses every
     /// keyring call, Docker's default or a file refusing them, the `RUN`
-    /// runs: it reaches no keyring of ranikust's either. Under a filter that
-    /// refuses `keyctl` whole, as Docker's default around ranikust does, the
-    /// lookup is refused too and every `RUN` runs, as before.
+    /// runs. Under a filter that refuses `keyctl` whole, as Docker's default
+    /// around ranikust does, the lookup is refused too and every `RUN` runs.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
-    fn a_refused_keyring_join_fails_a_run_that_could_reach_a_keyring() {
+    fn a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl() {
         in_private_mount_namespace(|| {
             let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
             let top = mounts.path().canonicalize().unwrap();

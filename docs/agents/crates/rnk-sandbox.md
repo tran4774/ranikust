@@ -284,15 +284,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
-  aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno
-  from 512 to 600, 4095 and above included, which ones refuse every keyring
-  call);
+  aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno from
+  512 to 600, 4095 and above included, which ones refuse every keyring call);
   `errno_0_reads_as_eproto`. The `tests::kernel` modules, skipped under
   qemu-user, install filters in forked children: `seccomp::profile`'s
   (compiled profiles), `caps`'s (an `EINVAL` from a bounding drop) and
   `child`'s (a refused keyring join with the session keyring found or not,
   each `KeyringJoin`; an `execve` or `execveat` back without an error; a
-  `waitpid` back with 0 or `EINTR` with an exited command still to reap;
+  `waitpid` back with 0 or `EINTR` with a command still to reap;
   an `EINTR` on the reads after the profile, the parent check's against an
   unfiltered control; a refused `umask` after the profile; a faked `setsid`,
   `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the last two on a
@@ -327,7 +326,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   bounding set, the session, the init's dump flag, ADR-0033's filter and
   the capability sets as they are and the umask at 022 whatever
   ranikust's, and a faked fork of the init fails the `RUN`;
-  `a_refused_keyring_join_fails_a_run_that_could_reach_a_keyring`: under
+  `a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl`: under
   filters on the test thread, while the keyring can be looked up, a join
   refused with `EPERM` fails `unconfined`, not `default`, and one refused
   with `EACCES` fails `unconfined` and a file allowing `keyctl`, not

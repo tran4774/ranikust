@@ -49,6 +49,9 @@ const MAX_ERRNO: u32 = 4095;
 /// call returns to user space; a profile's errno stays below it.
 const FIRST_KERNEL_ERRNO: u32 = 512;
 
+/// What a refused errno's message asks for instead.
+const GIVE_ERRNO: &str = "give an errno from 1 to 511";
+
 /// The architectures runtime-spec names; only the native one is compiled.
 const ARCHES: [&str; 23] = [
     "SCMP_ARCH_X86",
@@ -83,7 +86,7 @@ const ARCHES: [&str; 23] = [
 pub struct SeccompProfile {
     pub(crate) program: Program,
     /// The filter refuses `keyctl`, `add_key` and `request_key` whatever
-    /// their arguments: a `RUN` under it reaches no keyring.
+    /// their arguments.
     refuses_keyrings: bool,
 }
 
@@ -128,8 +131,8 @@ impl SeccompProfile {
     }
 
     /// Whether the profile refuses `keyctl`, `add_key` and `request_key`
-    /// whatever their arguments, with any errno or a kill: then a `RUN`
-    /// under it reaches no keyring, ranikust's included (ADR-0109).
+    /// whatever their arguments, with any errno or a kill: then a refused
+    /// keyring join does not fail a `RUN` under it (ADR-0109).
     pub(crate) fn refuses_keyrings(&self) -> bool {
         self.refuses_keyrings
     }
@@ -371,7 +374,11 @@ fn action(name: &str, errno: Option<u64>, what: &str) -> Result<Action> {
                     .ok()
                     .filter(|&e| e <= MAX_ERRNO)
                     .map(Action::Errno)
-                    .ok_or_else(|| bad(format!("{what}: errno {e} is above {MAX_ERRNO}"))),
+                    .ok_or_else(|| {
+                        bad(format!(
+                            "{what}: errno {e} is above {MAX_ERRNO}; {GIVE_ERRNO}"
+                        ))
+                    }),
             };
         }
         "SCMP_ACT_LOG" => Action::Log,
@@ -489,8 +496,8 @@ fn bad(msg: impl Into<String>) -> Error {
     Error::SeccompProfile(msg.into())
 }
 
-/// The calls that reach a keyring: the profile must refuse all three for a
-/// `RUN` to reach none.
+/// The keyring calls: a profile must refuse all three for a refused join
+/// not to fail a `RUN` under it.
 const KEYRING_CALLS: [&str; 3] = ["keyctl", "add_key", "request_key"];
 
 /// Whether a call with these `rules` never runs, whatever its arguments: a
@@ -507,14 +514,13 @@ fn refused_always(rules: &[Rule], default: Action) -> bool {
 /// are no answer: on 516 (`ERESTART_RESTARTBLOCK`) it may run its restart
 /// block instead, which can succeed, and a later kernel may add more.
 fn errno_refused(act: Action, cx: &Context) -> Option<String> {
-    const GIVE: &str = "give an errno from 1 to 511";
     match act {
         Action::Errno(0) if !cx.fakes() => Some(format!(
-            "0 would fake the success of the calls it refuses; {GIVE}"
+            "0 would fake the success of the calls it refuses; {GIVE_ERRNO}"
         )),
         Action::Errno(e) if e >= FIRST_KERNEL_ERRNO => Some(format!(
             "{e} is from 512 up, where the kernel keeps its own codes (on 516 \
-             it may run its restart block instead of refusing); {GIVE}"
+             it may run its restart block instead of refusing); {GIVE_ERRNO}"
         )),
         Action::Errno(_)
         | Action::KillProcess

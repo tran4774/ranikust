@@ -2754,11 +2754,16 @@ mod tests {
                     .unwrap()
                     .program;
                 let status = crate::seccomp::under_filter(&prog, || {
-                    // SAFETY: the forked command only exits.
+                    // SAFETY: `under_filter`'s child is single-threaded, and
+                    // the forked command only exits.
                     let command = unsafe { libc::fork() };
                     if command == 0 {
                         // SAFETY: `_exit` ends the process at once.
                         unsafe { libc::_exit(7) }
+                    }
+                    // Without a command, `ECHILD` would give 125 too.
+                    if command < 0 {
+                        return 202;
                     }
                     // SAFETY: `alarm` only arms a timer.
                     unsafe { libc::alarm(5) };

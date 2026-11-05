@@ -206,16 +206,21 @@ fn spared() -> [u32; 3] {
     [libc::SYS_exit, libc::SYS_exit_group, libc::SYS_getppid].map(nr)
 }
 
-/// [`long_profile`]'s errno for call `n`: its place among the numbers,
-/// from 1 to 451, so that the errnos stay distinct below the chain's and
-/// below 512 (ADR-0109) however high the numbers go.
+/// [`long_profile`]'s errno for call `n`: its place among the numbers, from
+/// 1 to 451, distinct and below the chain's and 512 (ADR-0109); a longer
+/// table fails here rather than give two calls one errno.
 fn long_errno(n: u32) -> u32 {
     let numbers: std::collections::BTreeSet<u32> = syscalls::all()
         .map(|(_, n)| n)
         .filter(|n| !spared().contains(n))
         .collect();
-    let place = numbers.iter().position(|&m| m == n).unwrap();
-    1 + u32::try_from(place).unwrap() % 451
+    let place = u32::try_from(numbers.iter().position(|&m| m == n).unwrap()).unwrap();
+    assert!(
+        place < 451,
+        "{} numbers: too many for long_profile",
+        numbers.len()
+    );
+    1 + place
 }
 
 /// [`long_profile`]'s errno for `getppid` with `arg0` from 0 to 59.
@@ -492,10 +497,9 @@ fn defaults_unknown_calls_and_flags() {
 
 /// A profile refuses the keyring calls only when none of `keyctl`,
 /// `add_key` and `request_key` can run, whatever its arguments (ADR-0109):
-/// a `RUN` under it then reaches no keyring, and a refused join does not
-/// fail it.
+/// a refused join does not fail a `RUN` under it.
 #[test]
-fn keyrings_are_refused_only_when_no_call_can_reach_one() {
+fn keyrings_are_refused_only_when_no_keyring_call_can_run() {
     let refuses = |json: &str| {
         compile(json.as_bytes(), &cx((6, 8)))
             .unwrap()

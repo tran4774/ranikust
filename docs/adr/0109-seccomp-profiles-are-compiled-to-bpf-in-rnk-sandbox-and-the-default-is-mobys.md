@@ -145,8 +145,8 @@ after the host-safety review of that order:
 - **Nor with any errno from 512 up** (the maintainer, 2026-11-05, on
   `ENOGRACE`, 531, which the answer above left accepted: "Từ chối mọi giá
   trị từ 512 trở lên (khuyến nghị)", refuse every value from 512 up, as
-  recommended). On the same value, a profile's errno must be from 1 to
-  511; this covers 531 and any code a later kernel adds there. An errno
+  recommended). Checked on the same value, a profile's errno must be from
+  1 to 511; this covers 531 and any code a later kernel adds there. An errno
   above 4095 stays refused as above.
 - **After a refused keyring join, the child looks for ranikust's session
   keyring before the profile** ("Thăm dò keyring (khuyến nghị)", probe the
