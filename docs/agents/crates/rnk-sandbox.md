@@ -272,7 +272,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   keyring call). The `tests::kernel` modules, skipped under qemu-user,
   install filters in forked children: `seccomp::profile`'s (compiled
   profiles), `caps`'s (an `EINVAL` from a bounding drop) and `child`'s (an
-  `EACCES` on the keyring join).
+  `EACCES` on the keyring join, a faked `setsid`).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.

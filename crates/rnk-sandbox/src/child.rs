@@ -540,7 +540,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         Step::Init,
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
     );
-    check(err, Step::Session, rustix::process::setsid().map(drop));
+    new_session(err);
     // After the namespace is joined and every mount made, which the filters
     // would refuse. ADR-0033's first: the profile on top cannot fake its
     // install, and a call both refuse gets the profile's errno.
@@ -935,7 +935,7 @@ pub(crate) fn switch_user_and_exec(
     // No controlling terminal: a `RUN` must not read the operator's keys or
     // push input into the operator's shell (`TIOCSTI`). Also a process
     // group of its own, which `Direct` kills afterwards.
-    check(err, Step::Session, rustix::process::setsid().map(drop));
+    new_session(err);
     // Change to WORKDIR before switching user, in case only root may
     // traverse its parents, and again after if that was refused (runc).
     let workdir = args.workdir.as_c_str();
@@ -2005,6 +2005,18 @@ fn close_listed(keep: &[RawFd]) -> bool {
     }
 }
 
+/// `setsid` through `libc`: after the `RUN`'s profile, which may fake it
+/// with errno 0, the result can be 0, which `rustix`'s `Pid` must never
+/// hold (a debug assertion, else undefined behaviour). A faked call leaves
+/// the command in its init's session, which has no controlling terminal
+/// either.
+fn new_session(err: RawFd) {
+    // SAFETY: a plain syscall without arguments.
+    if unsafe { libc::setsid() } < 0 {
+        fail(err, Step::Session, last_errno());
+    }
+}
+
 /// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]), failing
 /// as `step`, which names the filter. Without `no_new_privs`: the child
 /// still has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must
@@ -2431,6 +2443,32 @@ mod tests {
     mod kernel {
         use super::*;
 
+        /// Runs `step` in a forked child under a profile that answers
+        /// `rule` (a JSON rule) and allows the rest; gives the failure it
+        /// recorded, if any, checking that it exited as `fail` does.
+        fn failure_under(rule: &str, step: impl Fn(RawFd)) -> Option<(Step, i32)> {
+            let json = format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
+            let prog = crate::SeccompProfile::from_json(json.as_bytes())
+                .unwrap()
+                .program;
+            let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+            let status = crate::seccomp::under_filter(&prog, || {
+                step(w.as_raw_fd());
+                0
+            });
+            drop(w);
+            let mut record = [0u8; 8];
+            let n = rustix::io::read(&r, &mut record).unwrap();
+            assert!(libc::WIFEXITED(status), "{rule}: status {status:#x}");
+            if n == 0 {
+                assert_eq!(libc::WEXITSTATUS(status), 0, "{rule}");
+                return None;
+            }
+            assert_eq!(libc::WEXITSTATUS(status), 127, "{rule}");
+            assert_eq!(n, 8, "{rule}");
+            Some(decode_failure(record).expect("a failure record"))
+        }
+
         /// The keyring join refused with `errno`, as an LSM (`EACCES`) or
         /// a filter around ranikust (`EPERM`, `ENOSYS`) does: `EACCES` fails
         /// the `RUN` unless its profile refuses every keyring call
@@ -2445,36 +2483,27 @@ mod tests {
                 (libc::EINVAL, true, true),
             ] {
                 // `KEYCTL_JOIN_SESSION_KEYRING` is 1.
-                let json = format!(
-                    r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
-                        {{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno},
-                          "args": [{{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}}]}}]}}"#
+                let rule = format!(
+                    r#"{{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno},
+                        "args": [{{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}}]}}"#
                 );
-                let prog = crate::SeccompProfile::from_json(json.as_bytes())
-                    .unwrap()
-                    .program;
-                let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
-                let status = crate::seccomp::under_filter(&prog, || {
-                    join_session_keyring(w.as_raw_fd(), eacces_ok);
-                    0
-                });
-                drop(w);
-                let mut record = [0u8; 8];
-                let n = rustix::io::read(&r, &mut record).unwrap();
-                let case = format!("errno {errno}, eacces_ok {eacces_ok}: status {status:#x}");
-                assert!(libc::WIFEXITED(status), "{case}");
-                if fails {
-                    assert_eq!(libc::WEXITSTATUS(status), 127, "{case}");
-                    assert_eq!(n, 8, "{case}");
-                    assert_eq!(
-                        decode_failure(record),
-                        Some((Step::SessionKeyring, errno)),
-                        "{case}"
-                    );
-                } else {
-                    assert_eq!(libc::WEXITSTATUS(status), 0, "{case}");
-                    assert_eq!(n, 0, "{case}");
-                }
+                let got = failure_under(&rule, |w| join_session_keyring(w, eacces_ok));
+                let want = fails.then_some((Step::SessionKeyring, errno));
+                assert_eq!(got, want, "errno {errno}, eacces_ok {eacces_ok}");
+            }
+        }
+
+        /// The command's `setsid` comes after its profile, which may fake
+        /// it with errno 0 (ADR-0109): that fails nothing (the command
+        /// stays in its init's session) and never reaches a `Pid`; a real
+        /// refusal fails the `RUN`.
+        #[test]
+        fn a_faked_setsid_fails_nothing_and_a_refused_one_fails_the_run() {
+            for (errno, want) in [(0, None), (libc::EPERM, Some((Step::Session, libc::EPERM)))] {
+                let rule = format!(
+                    r#"{{"names": ["setsid"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                );
+                assert_eq!(failure_under(&rule, new_session), want, "errno {errno}");
             }
         }
     }
