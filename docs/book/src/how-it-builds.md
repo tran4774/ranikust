@@ -202,7 +202,7 @@ shares it too (Kubernetes `shareProcessNamespace: true` or `hostPID: true`,
 Docker or podman `--pid container:<name>` or `--pid=host`), a `RUN` could
 reach that container's files through `/proc`. ranikust refuses to build when,
 as it starts, it reaches a process of another mount namespace there, or cannot
-tell (an error, or more than 32768 processes); it looks before it gives up
+tell (an error, or more than 32768 threads); it looks before it gives up
 what a `RUN` does not keep, so it may refuse a process no `RUN` would reach.
 Give the build container a PID namespace of its own ([ADR-0101]). Devices
 you give the container with `--device` stay reachable by a `RUN`: ranikust
