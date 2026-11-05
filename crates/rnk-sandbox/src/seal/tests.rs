@@ -1027,8 +1027,9 @@ fn a_covered_mount_is_not_looked_up() {
 }
 
 /// ADR-0101: the chain of mounts a mount lies on ends at its first repeat,
-/// so a line that names itself as its parent, or a cycle, costs a step per
-/// mount on it, not one per line of the table.
+/// so a line that names itself as its parent, or a cycle, holds each mount
+/// on the chain once; a line on itself lies on no `/`, so `/` covers it
+/// (not looked up: unplaced).
 #[test]
 fn a_mount_chain_ends_at_its_first_repeat() {
     let mut table = mounts("8:1 /elsewhere /x rw", &[]);
@@ -1040,8 +1041,8 @@ fn a_mount_chain_ends_at_its_first_repeat() {
     );
     (a.parent_id, b.parent_id) = (31, 30);
     table.extend([own.clone(), a, b.clone()]);
-    table.extend((100..1100).map(|id| line_at(id, Path::new("/many"), false)));
     assert_eq!(lies_on(&table, &own), [20]);
+    assert!(covered(&table, &own));
     assert_eq!(lies_on(&table, &b), [30, 31]);
     let sample = table.iter().find(|m| m.mount_id == 10).expect("line 10");
     assert_eq!(lies_on(&table, sample), [1]);

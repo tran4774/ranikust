@@ -178,9 +178,10 @@ impl WalkDiff {
 }
 
 /// The layer entry for `p`, which the walk saw as `meta`; `None` for a
-/// socket. The entry is pinned once ([`RootPath::pin`]: no symlink in any
-/// component, on the root's mount) and checked to be the walk's inode;
-/// its link target and xattrs are read from that pin.
+/// socket. The entry is pinned once ([`RootPath::pin`]: no symlink in a
+/// parent, a last one pinned as the link itself, no `..`, on the root's
+/// mount) and checked to be the walk's inode; its link target and xattrs
+/// are read from that pin.
 fn make_entry(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Option<Entry>> {
     if meta.kind == FileType::Socket {
         return Ok(None);

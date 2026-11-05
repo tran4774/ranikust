@@ -507,7 +507,7 @@ fn covered(mounts: &[MountInfo], m: &MountInfo) -> bool {
 fn lies_on(mounts: &[MountInfo], m: &MountInfo) -> Vec<u64> {
     let mut below = Vec::new();
     let mut parent = m.parent_id;
-    // A line naming itself as its parent, or a cycle, would repeat for as long as the table.
+    // A line naming itself as its parent, or a cycle, would never end the loop.
     while let Some(p) = mounts.iter().find(|p| p.mount_id == parent) {
         if below.contains(&p.mount_id) {
             break;
