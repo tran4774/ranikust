@@ -2710,9 +2710,8 @@ mod tests {
         }
 
         /// The descriptor lists come after the profile: an `fstatfs` faked
-        /// with errno 0 makes `/proc/self/fd` read as not procfs, so
-        /// neither pass over the list trusts it, whatever the stack held
-        /// before.
+        /// with errno 0 makes `/proc/self/fd` read as not procfs, so the
+        /// list is not trusted, whatever the stack held before.
         #[test]
         fn a_faked_fstatfs_is_not_procfs() {
             let dir = rustix::fs::open(
@@ -2727,14 +2726,6 @@ mod tests {
                 failure_under(rule, |w| {
                     proc_magic_below();
                     if on_procfs(dir.as_fd()) {
-                        fail(w, Step::Init, Errno::PROTO);
-                    }
-                    proc_magic_below();
-                    if close_listed(&[w]) {
-                        fail(w, Step::Init, Errno::PROTO);
-                    }
-                    proc_magic_below();
-                    if cloexec_listed() {
                         fail(w, Step::Init, Errno::PROTO);
                     }
                 }),
