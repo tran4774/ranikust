@@ -541,6 +541,10 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
     );
     new_session(err);
+    // The command's, before a profile could fake it: files a `RUN`
+    // creates, and so its layer, must not follow ranikust's umask. The
+    // command sets it again for `Direct`.
+    rustix::process::umask(Mode::from_raw_mode(0o022));
     // After the namespace is joined and every mount made, which the filters
     // would refuse. ADR-0033's first: the profile on top cannot fake its
     // install, and a call both refuse gets the profile's errno.
@@ -579,7 +583,8 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// session of its own, so that no terminal signal reaches it, before the
 /// `RUN`'s profile. The command waits on the go pipe until
 /// the init has given all that up, so a failure of the init's own steps
-/// (`Step::Init`) always comes before the command ran. The init reaps every
+/// (`Step::Init`) comes before the command ran, unless the profile fakes
+/// the command's `read` of that pipe (threat model, section 6). The init reaps every
 /// process that reparents to it; when the command exits, it writes the
 /// command's wait status on the status pipe and exits, and the kernel kills
 /// the rest, as when the command was PID 1 itself.
@@ -1976,11 +1981,7 @@ fn close_all_except(keep: &[RawFd]) {
     if ok || close_listed(keep) {
         return;
     }
-    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
-        .maximum
-        .unwrap_or(1 << 20)
-        .min(1 << 20);
-    let limit = RawFd::try_from(limit).unwrap_or(1 << 20);
+    let limit = nofile_bound(true, 1 << 20);
     for fd in 0..=limit {
         if !keep.contains(&fd) {
             // SAFETY: closing a descriptor number; a closed one fails with
@@ -1988,6 +1989,39 @@ fn close_all_except(keep: &[RawFd]) {
             unsafe { libc::close(fd) };
         }
     }
+}
+
+/// Whether `dir` is on procfs, read through `libc` into a zeroed buffer:
+/// after the `RUN`'s profile, an `fstatfs` faked with errno 0 writes
+/// nothing, which `rustix` would read uninitialised; a zero type is not
+/// procfs's.
+fn on_procfs(dir: BorrowedFd<'_>) -> bool {
+    // SAFETY: an all-zero `statfs` is a valid value of the C struct.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `fstatfs` writes one `statfs` at the pointer.
+    let r = unsafe { libc::fstatfs(dir.as_raw_fd(), &raw mut st) };
+    r == 0 && i128::from(st.f_type) == i128::from(PROC_SUPER_MAGIC)
+}
+
+/// `RLIMIT_NOFILE`'s hard (`hard`) or soft bound, at most `cap`, which also
+/// stands for an unlimited or unreadable one. Through `libc` into a value
+/// set beforehand: after the `RUN`'s profile, a faked `prlimit64` writes
+/// nothing, which `rustix` would read uninitialised.
+fn nofile_bound(hard: bool, cap: u32) -> RawFd {
+    let cap = u64::from(cap);
+    let mut lim = libc::rlimit {
+        rlim_cur: cap,
+        rlim_max: cap,
+    };
+    // SAFETY: `getrlimit` writes one `rlimit` at the pointer.
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } == 0;
+    let bound = match (read, hard) {
+        (false, _) => cap,
+        (true, true) => lim.rlim_max,
+        (true, false) => lim.rlim_cur,
+    };
+    // `RLIM_INFINITY` is above any cap.
+    RawFd::try_from(bound.min(cap)).unwrap_or(RawFd::MAX)
 }
 
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
@@ -2003,9 +2037,8 @@ fn close_listed(keep: &[RawFd]) -> bool {
         ) else {
             return false;
         };
-        match rustix::fs::fstatfs(&dir) {
-            Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
-            _ => return false,
+        if !on_procfs(dir.as_fd()) {
+            return false;
         }
         let own = dir.as_raw_fd();
         let mut closed = 0;
@@ -2186,8 +2219,9 @@ fn set_capability_sets(err: RawFd, args: &ChildArgs) {
 /// `RUN`'s profile. Where `keyctl` is missing or refused by a filter
 /// around ranikust (`ENOSYS`, `EPERM`: an outer profile, such as Docker's),
 /// the `RUN` cannot reach any keyring either. `EACCES`, an LSM's refusal of
-/// the join alone, fails the `RUN` unless `eacces_ok` (ADR-0109): its
-/// profile refuses every keyring call, or it is `Direct`.
+/// the join alone, fails the `RUN` as `Step::KeyringRefused` unless
+/// `eacces_ok` (ADR-0109): its profile refuses every keyring call, it is
+/// `Direct`, or it is the privilege probe's.
 pub(crate) fn join_session_keyring(err: RawFd, eacces_ok: bool) {
     // `KEYCTL_JOIN_SESSION_KEYRING` from `linux/keyctl.h`, a stable ABI.
     const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
@@ -2294,11 +2328,7 @@ fn reset_process_state() {
     if r != 0 && !cloexec_listed() {
         // Linux before 5.11 without a readable `/proc/self/fd`: mark each
         // descriptor number one by one, up to a bound.
-        let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
-            .current
-            .unwrap_or(1 << 16)
-            .min(1 << 16);
-        let limit = RawFd::try_from(limit).unwrap_or(1 << 16);
+        let limit = nofile_bound(false, 1 << 16);
         for fd in 3..limit {
             // SAFETY: `F_GETFD`/`F_SETFD` on a descriptor number; a closed
             // one fails with EBADF and is skipped.
@@ -2326,9 +2356,8 @@ fn cloexec_listed() -> bool {
     };
     // After entering the root, `/proc` is the image's path: only the proc
     // mounted there may be trusted to list the descriptors.
-    match rustix::fs::fstatfs(&dir) {
-        Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
-        _ => return false,
+    if !on_procfs(dir.as_fd()) {
+        return false;
     }
     let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
     let mut entries = RawDir::new(&dir, &mut buf);
@@ -2506,8 +2535,9 @@ mod tests {
         use super::*;
 
         /// Runs `step` in a forked child under a profile that answers
-        /// `rule` (a JSON rule) and allows the rest; gives the failure it
-        /// recorded, if any, checking that it exited as `fail` does.
+        /// `rule` (a JSON rule, or none if empty) and allows the rest;
+        /// gives the failure it recorded, if any, checking that it exited
+        /// as `fail` does.
         fn failure_under(rule: &str, step: impl Fn(RawFd)) -> Option<(Step, i32)> {
             let json = format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
             let prog = crate::SeccompProfile::from_json(json.as_bytes())
@@ -2558,6 +2588,42 @@ mod tests {
                 let want = fails.then_some((step, errno));
                 assert_eq!(got, want, "errno {errno}, eacces_ok {eacces_ok}");
             }
+        }
+
+        /// The init's go pipe comes after the profile: a `pipe2` faked with
+        /// errno 0 writes no descriptor, which fails the `RUN` instead of
+        /// handing on two that were never opened.
+        #[test]
+        fn a_faked_pipe_fails_the_init() {
+            let rule = r#"{"names": ["pipe2"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| drop(init_pipe(w))),
+                Some((Step::Init, libc::EBADF))
+            );
+            assert_eq!(failure_under("", |w| drop(init_pipe(w))), None);
+        }
+
+        /// The descriptor lists come after the profile: an `fstatfs` faked
+        /// with errno 0 makes `/proc/self/fd` read as not procfs, so the
+        /// list is not trusted.
+        #[test]
+        fn a_faked_fstatfs_is_not_procfs() {
+            let dir = rustix::fs::open(
+                c"/proc/self/fd",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            assert!(on_procfs(dir.as_fd()));
+            let rule = r#"{"names": ["fstatfs"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| {
+                    if on_procfs(dir.as_fd()) {
+                        fail(w, Step::Init, Errno::PROTO);
+                    }
+                }),
+                None
+            );
         }
 
         /// The command's `setsid` comes after its profile, which may fake

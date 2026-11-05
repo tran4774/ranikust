@@ -3514,7 +3514,7 @@ mod tests {
             let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
             output_to(&out, &mut spec);
             let forked = runner.run(spec, None, |job| clone_child(job, parent));
-            let forked_text = fs::read_to_string(&out).unwrap_or_default();
+            let forked_text = fs::read_to_string(&out).unwrap();
             println!("fork, faked: {forked:?}\n{forked_text}");
             let mut got = Vec::new();
             for (name, rules, network) in cases {
@@ -3549,14 +3549,12 @@ mod tests {
             }
             drop(mounts);
             let mut wrong = Vec::new();
-            if !matches!(
+            let parent_checked = matches!(
                 &forked,
-                Err(Error::Setup {
-                    step: Step::Init,
-                    ..
-                })
-            ) || !forked_text.is_empty()
-            {
+                Err(Error::Setup { step: Step::Init, source })
+                    if source.raw_os_error() == Some(libc::EPROTO)
+            );
+            if !parent_checked || !forked_text.is_empty() {
                 wrong.push(format!("fork, faked: {forked:?}, output {forked_text:?}"));
             }
             for (name, ok, text) in &got {
