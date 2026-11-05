@@ -79,9 +79,8 @@ pub enum Step {
     MaskPath,
     /// Joining a new session keyring (`Direct`).
     SessionKeyring,
-    /// The same join, refused while ranikust's session keyring can still
-    /// be looked up, unless the `RUN`'s profile refuses every keyring call
-    /// (ADR-0109).
+    /// The same join refused while ranikust's session keyring can still be
+    /// looked up and the `RUN`'s profile lets a keyring call run (ADR-0109).
     KeyringRefused,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
     Secret,

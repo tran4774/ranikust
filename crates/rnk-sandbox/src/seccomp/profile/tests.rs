@@ -636,7 +636,7 @@ fn malformed_or_unsupported_profiles_are_refused() {
     }
 }
 
-/// 512 (`ERESTARTSYS`) to 530, the kernel's restart codes and their
+/// 512 (`ERESTARTSYS`) to 530, the kernel's `ERESTART*` codes and their
 /// neighbours, are refused as an errno of a rule or of the default, even in
 /// a rule another architecture keeps or in the tests' faking profiles; 511
 /// and 531 compile (ADR-0109).

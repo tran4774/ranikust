@@ -1124,10 +1124,9 @@ impl Runner {
         } else {
             None
         };
-        // A refused keyring join fails a full-sandbox `RUN` while
-        // ranikust's session keyring can still be looked up, unless its
-        // profile refuses every keyring call (ADR-0109), but not the
-        // probe's; `Direct` is under the container's profile.
+        // A refused join fails a full-sandbox `RUN` (not the probe's) while
+        // ranikust's session keyring is found and the `RUN`'s profile lets
+        // a keyring call run (ADR-0109).
         let keyring = match spec.isolation {
             Isolation::Full
                 if self.probe || profile.is_some_and(SeccompProfile::refuses_keyrings) =>

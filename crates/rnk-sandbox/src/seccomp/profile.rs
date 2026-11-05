@@ -503,7 +503,7 @@ fn refused_always(rules: &[Rule], default: Action) -> bool {
 
 /// Why a profile may not answer with `act`'s errno, if it may not
 /// (ADR-0109): 0 fakes a success the set-up after the profile would trust,
-/// and 512 (`ERESTARTSYS`) to 530, the kernel's restart codes and their
+/// and 512 (`ERESTARTSYS`) to 530, the kernel's `ERESTART*` codes and their
 /// neighbours, are no answer: on 516 (`ERESTART_RESTARTBLOCK`) the kernel
 /// may run its restart block instead, which can succeed.
 fn errno_refused(act: Action, cx: &Context) -> Option<String> {
@@ -513,8 +513,9 @@ fn errno_refused(act: Action, cx: &Context) -> Option<String> {
             "0 would fake the success of the calls it refuses; {GIVE}"
         )),
         Action::Errno(e) if KERNEL_ERRNOS.contains(&e) => Some(format!(
-            "{e} is in 512 to 530, the kernel's ERESTART codes and their \
-             neighbours (on 516 the kernel may restart the call); {GIVE}"
+            "{e} is in 512 to 530, the kernel's ERESTART* codes and their \
+             neighbours (on 516 the kernel may run its restart block instead \
+             of refusing); {GIVE}"
         )),
         Action::Errno(_)
         | Action::KillProcess

@@ -134,7 +134,7 @@ after the host-safety review of that order:
   after it see a refusal, never a success that did not happen. A filter
   around ranikust, which the operator's runtime installs, may still fake
   one; ranikust does not control it.
-- **Nor can it answer with the kernel's restart codes** (the maintainer,
+- **Nor can it answer with an errno from 512 to 530** (the maintainer,
   2026-11-05, after the host-safety review of the errno rule: "Sửa luôn, coi
   là phần của quyết định (khuyến nghị)", fix it now, as part of the decision,
   as recommended). An errno from 512 to 530, the `ERESTART*` codes and their
