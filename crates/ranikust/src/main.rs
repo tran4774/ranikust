@@ -273,7 +273,10 @@ fn seal_ways(fault: Option<&str>) -> &'static [SealedCopy] {
 /// those mounts (ADR-0101): not with `--mode=overlay`, not without root
 /// (kaniko mode refuses), not outside a container (`container::detect`).
 fn may_be_kaniko_on_slash(mode: config::Mode, root: bool, host: &impl container::Host) -> bool {
-    mode != config::Mode::Overlay && root && container::detect(host).is_some()
+    match mode {
+        config::Mode::Overlay => false,
+        config::Mode::Auto | config::Mode::Kaniko => root && container::detect(host).is_some(),
+    }
 }
 
 /// Writes `ranikust: error: …` to stderr, then the guidance, if any.
@@ -1287,11 +1290,11 @@ mod tests {
     }
 
     /// A host where `container::detect` finds Docker, or nothing.
-    struct Host {
+    struct FakeHost {
         docker: bool,
     }
 
-    impl container::Host for Host {
+    impl container::Host for FakeHost {
         fn exists(&self, path: &str) -> bool {
             self.docker && path == "/.dockerenv"
         }
@@ -1308,7 +1311,7 @@ mod tests {
     /// as root, in a container, unless overlay mode is asked for.
     #[test]
     fn only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts() {
-        let (inside, outside) = (Host { docker: true }, Host { docker: false });
+        let (inside, outside) = (FakeHost { docker: true }, FakeHost { docker: false });
         for mode in [config::Mode::Auto, config::Mode::Kaniko] {
             assert!(may_be_kaniko_on_slash(mode, true, &inside), "{mode:?}");
             assert!(!may_be_kaniko_on_slash(mode, true, &outside), "{mode:?}");

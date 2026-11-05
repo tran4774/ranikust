@@ -188,7 +188,9 @@ ranikust natively, from a regular file. When `/proc/self/mountinfo` does not
 place the binary or changes while it is read, or a writable directory beside
 it was removed at its source, or a writable mount beside it is hidden by
 another mount, run it from a file that stays in place, or build it into an
-image run on an overlayfs root, where the binary's check reads no mount table.
+image run on an overlayfs root, where the binary's check reads no mount table;
+for a table that changed, start the build again once no mount changes while it
+starts.
 ranikust looks for those mounts only when it finds itself in a container; if
 it did not when it started but does later, it refuses: start the build again.
 When the measurement fails, mount `/proc` so that `/proc/self/exe` and

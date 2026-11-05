@@ -109,8 +109,9 @@ pub enum BinaryMount {
     /// line it cannot parse, no line for its mount, a mount root that is
     /// not a path, a path outside that mount, a root of its own whose name
     /// was removed) or does not type a FUSE root; a writable mount of its
-    /// file system is a directory whose name was removed, or cannot be
-    /// reached at its mount point; or the file has no name left.
+    /// file system is a directory whose name was removed, is covered by
+    /// another mount, or cannot be reached at its mount point; the table
+    /// changed while the walk ran; or the file has no name left.
     Unplaced,
     /// Not weighed: the caller asked for no walk of the writable mounts
     /// that may reach the file, since the build cannot be kaniko mode on a
@@ -511,8 +512,9 @@ fn covered(mounts: &[MountInfo], m: &MountInfo) -> bool {
 
 /// [`reached_writable`] with the binary's name and each mount point looked
 /// up from this process's `/` ([`seen_at`]), the binary's name not looked
-/// up when its own mount is [`covered`]; `Err` when `/` cannot be opened, or
-/// when a lookup fails and no writable mount was found to reach the binary.
+/// up when its own mount is [`covered`] or absent from the table; `Err`
+/// when `/` cannot be opened, or when a lookup fails and no writable mount
+/// was found to reach the binary.
 fn reached_from_slash(
     mounts: &[MountInfo],
     own: u64,

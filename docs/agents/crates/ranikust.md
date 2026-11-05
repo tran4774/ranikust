@@ -269,6 +269,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   nothing created through a planted link; `0700`), `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`
+  and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`
   (ADR-0101); `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
   and never uncovers protected paths. `build.rs`: `kaniko_units` (what each

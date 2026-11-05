@@ -40,13 +40,13 @@ Card: [rnk-rootfs](../agents/crates/rnk-rootfs.md).
 - **The last symlink** is followed, inside the root, by `open_at` (unless
   `no_follow`), `sub_root` and `create_dir_all`; never by `statx`,
   `set_meta`, `read_link`, `hard_link`, `rename`, `remove_*`.
-- **No symlink at all** for a physical path, one the kernel printed (a
-  mount point in `/proc/self/mountinfo`, a `readlink` of a descriptor):
-  `statx_physical` and `pin` resolve every component with
-  `RESOLVE_NO_SYMLINKS`, so a symlink on the way is `ELOOP`; `pin` also
-  stays on the root's mount (the kaniko exporter), `statx_physical`
-  crosses mounts unless `stay_on_mount` (`rnk-sandbox`'s mount walk,
-  ADR-0101).
+- **No symlink in a parent** for a physical path, one the kernel printed
+  (a mount point in `/proc/self/mountinfo`, a `readlink` of a descriptor):
+  `statx_physical` and `pin` resolve with `RESOLVE_NO_SYMLINKS`, so a
+  symlink on the way is `ELOOP`, and a last one is the link itself, not
+  followed; `pin` also stays on the root's mount (the kaniko exporter),
+  `statx_physical` crosses mounts unless `stay_on_mount` (`rnk-sandbox`'s
+  mount walk, ADR-0101).
 - **`EAGAIN`.** With `RESOLVE_IN_ROOT`, the kernel answers `EAGAIN` when a
   rename or mount anywhere on the system raced with a `..` step, because it
   cannot prove the walk stayed inside. The T0 suite hit it as soon as one

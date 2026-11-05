@@ -498,9 +498,11 @@ impl RootPath {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `ENOENT` when
-    /// `p` or a parent is missing; [`Error::InvalidPath`] for a path ending
-    /// in `..`; [`Error::Unsupported`] without `openat2`.
+    /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `EXDEV` for a
+    /// parent on another mount when the root stays on its own
+    /// (`stay_on_mount`), `ENOENT` when `p` or a parent is missing;
+    /// [`Error::InvalidPath`] for a path ending in `..`;
+    /// [`Error::Unsupported`] without `openat2`.
     pub fn statx_physical(&self, p: impl AsRef<Path>) -> Result<Stat> {
         let p = p.as_ref();
         match path::target(p)? {

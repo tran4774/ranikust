@@ -203,8 +203,9 @@ What a change here must keep, with where it lives:
   its mount. What cannot be told is `Unplaced`, a call that fails
   otherwise `Unknown` (both refused: fail closed), unless a writable mount
   was found to reach the binary (`Exposed`). The walk runs only when the
-  caller passes `walk` (`ranikust` found itself in a container): without
-  it a binary the walk would weigh is `NotWeighed`, refused too.
+  caller passes `walk` (`ranikust`'s `may_be_kaniko_on_slash`: as root,
+  without `--mode=overlay`, in a container): without it a binary the walk
+  would weigh is `NotWeighed`, refused should kaniko mode on `/` follow.
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.

@@ -1057,10 +1057,13 @@ fn a_table_that_changed_during_the_walk_places_nothing() {
         Ok(None)
     );
     assert_eq!(on_a_stable_table(reads(vec![]), never), Err(Errno::IO));
-    assert_eq!(
-        on_a_stable_table(reads(vec![table.clone()]), walk(Ok(Some(false)))),
-        Err(Errno::IO)
-    );
+    // A failed second read wins even over a reach the walk found.
+    for found in [Ok(Some(true)), Ok(Some(false))] {
+        assert_eq!(
+            on_a_stable_table(reads(vec![table.clone()]), walk(found)),
+            Err(Errno::IO)
+        );
+    }
 }
 
 /// ADR-0101: a mount's root is reached at its mount point through
@@ -1089,8 +1092,10 @@ fn a_mount_root_is_reached_at_its_mount_point() {
         .expect("/proc's line");
     let root = RootPath::open("/").expect("/");
     assert_eq!(root_at(&root, proc), Ok(Some(MountRoot::Directory)));
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("f");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // The physical path, as the kernel would print it: `TMPDIR` may hold a symlink.
+    let dir = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+    let file = dir.join("f");
     std::fs::write(&file, b"x").expect("write");
     let st = id(&CString::new(file.as_os_str().as_bytes()).expect("a path"));
     let mut at_file = proc.clone();
@@ -1104,7 +1109,7 @@ fn a_mount_root_is_reached_at_its_mount_point() {
     another.mount_id = u64::MAX;
     assert_eq!(root_at(&root, &another), Ok(None));
     let mut missing = proc.clone();
-    missing.mount_point = dir.path().join("missing");
+    missing.mount_point = dir.join("missing");
     assert_eq!(root_at(&root, &missing), Ok(None));
     let open = File::open(&file).expect("open");
     let name = || {
