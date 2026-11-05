@@ -3503,14 +3503,13 @@ mod tests {
                     Network::Host,
                 ),
             ];
-            // `clone(SIGCHLD, ...)`, the init's fork of the command, faked:
-            // the `RUN` fails, and the command never runs, so it writes
-            // nothing.
-            runner.seccomp = Some(allow_but(&errno_rule(
-                "clone",
-                0,
-                Some(libc::SIGCHLD.unsigned_abs()),
-            )));
+            // `clone(SIGCHLD, ...)`, the init's fork of the command, faked,
+            // and `setsid` too, which the init, a session leader already,
+            // would otherwise fail: the `RUN` fails, and the command never
+            // runs, so it writes nothing.
+            let fork = errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs()));
+            let setsid = errno_rule("setsid", 0, None);
+            runner.seccomp = Some(allow_but(&format!("{fork},{setsid}")));
             let out = top.join("out-fork");
             let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
             output_to(&out, &mut spec);
