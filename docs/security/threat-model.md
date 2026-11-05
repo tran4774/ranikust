@@ -151,9 +151,9 @@ These follow from decisions and are documented to users rather than fixed:
   the same checks for its links and the other writable mounts that reach
   it. The check reads the container's own mount table, so a writable view
   of the binary that this table does not show, or one through a writable
-  mount of another file system that it shows without placing the binary
-  on it, is not detected: a residual risk accepted in ADR-0101. Mount the
-  binary from a path that no writable mount shares.
+  mount of another file system that the table shows without placing the
+  binary on it, is not detected: a residual risk accepted in ADR-0101.
+  Mount the binary from a path that no writable mount shares.
 - A full-sandbox `RUN`'s init (PID 1, ADR-0080) is a copy of ranikust: its
   argument and environment strings are zeroed before the command starts, so
   `/proc/1/cmdline`, which has no ptrace check, shows no `--build-arg`

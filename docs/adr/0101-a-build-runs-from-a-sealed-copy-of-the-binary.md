@@ -170,10 +170,11 @@ The decision:
   it, so the binary must not be reachable through a writable mount other
   than the container's root. The check reads the container's own mount
   table, so a writable view of the binary that this table does not show,
-  or one through a writable mount of another file system that it shows
-  without placing the binary on it, is not detected: an accepted residual
-  risk, with the guidance to mount the binary from a path that no writable
-  mount shares. The maintainer decided, on 2026-11-04 (the second to fourth
+  or one through a writable mount of another file system that the table
+  shows without placing the binary on it, is not detected: an accepted
+  residual risk, with the guidance to mount the binary from a path that no
+  writable mount shares. The maintainer decided, on 2026-11-04 unless an
+  item gives another date (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
@@ -293,8 +294,8 @@ The decision:
   [measured], so the operator mounts a copy (`cp`, `install`).
 - Bad, because the check sees only the container's own mount table: a
   writable view of the binary that this table does not show, or one
-  through a writable mount of another file system that it shows without
-  placing the binary on it, is not detected, a residual risk the
+  through a writable mount of another file system that the table shows
+  without placing the binary on it, is not detected, a residual risk the
   maintainer accepted. The operator mounts the binary from a path that no
   writable mount shares.
 - Neutral, because file capabilities and set-user-ID bits of the installed
