@@ -549,24 +549,44 @@ pub(crate) fn read_seccomp(arg: Option<&SeccompArg>) -> Result<Seccomp, Invalid>
     Ok(Seccomp::Profile(compiled))
 }
 
-/// The bytes of a `--seccomp` file: a regular file, opened without
-/// blocking on a FIFO or taking a terminal, at most [`MAX_SECCOMP_FILE`].
+/// The bytes of a `--seccomp` file: a regular file, at most
+/// [`MAX_SECCOMP_FILE`]. The path is pinned with `O_PATH` and checked on
+/// that descriptor before anything opens it, then reopened through this
+/// thread's `/proc/thread-self/fd` (as the stub journals are): a device
+/// node named there is never opened, which could act on the device
+/// (`/dev/watchdog` arms on open), nor a FIFO.
 fn read_seccomp_file(path: &Path) -> Result<Vec<u8>, Invalid> {
     use std::io::Read as _;
 
     use rustix::fs::{FileType, Mode, OFlags};
     let shown = path.display();
-    let fd = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|e| Invalid(format!("--seccomp={shown}: cannot open the file: {e}")))?;
-    let st = rustix::fs::fstat(&fd)
+    let cannot_open = |e| Invalid(format!("--seccomp={shown}: cannot open the file: {e}"));
+    let pinned = rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+        .map_err(cannot_open)?;
+    let st = rustix::fs::fstat(&pinned)
         .map_err(|e| Invalid(format!("--seccomp={shown}: cannot stat the file: {e}")))?;
     if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
         return Err(Invalid(format!("--seccomp={shown}: not a regular file")));
     }
+    let proc = rustix::fs::open(
+        "/proc/thread-self/fd",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(cannot_open)?;
+    if rustix::fs::fstatfs(&proc).map_err(cannot_open)?.f_type != rustix::fs::PROC_SUPER_MAGIC {
+        return Err(Invalid(format!(
+            "--seccomp={shown}: cannot open the file: /proc/thread-self/fd is not on procfs"
+        )));
+    }
+    let num = std::os::fd::AsRawFd::as_raw_fd(&pinned).to_string();
+    let fd = rustix::fs::openat(
+        &proc,
+        num.as_str(),
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(cannot_open)?;
     let too_large = || {
         Invalid(format!(
             "--seccomp={shown}: larger than {MAX_SECCOMP_FILE} bytes"

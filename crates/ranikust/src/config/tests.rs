@@ -494,3 +494,39 @@ fn seccomp_files_that_cannot_be_profiles_are_refused() {
         assert!(err.0.contains(want), "{}: {}", path.display(), err.0);
     }
 }
+
+/// A `--seccomp` path that is not a regular file is only looked at
+/// (`O_PATH`, which no watch sees), never opened: a device node there could
+/// act on its open (`/dev/watchdog` arms). A FIFO stands in for one; the
+/// regular file is the control, whose open the watch does see.
+#[test]
+fn a_seccomp_path_that_is_not_a_regular_file_is_never_opened() {
+    use rustix::fs::inotify;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let fifo = tmp.path().join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("mkfifo");
+    let good = tmp.path().join("good.json");
+    std::fs::write(&good, br#"{"defaultAction": "SCMP_ACT_ALLOW"}"#).expect("write");
+    let opened = |path: &Path| {
+        let watch = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)
+            .expect("inotify_init1");
+        inotify::add_watch(&watch, path, inotify::WatchFlags::OPEN).expect("inotify_add_watch");
+        let read = read_seccomp(Some(&SeccompArg::File(path.to_path_buf())));
+        let mut buf = [0u8; 256];
+        let seen = match rustix::io::read(&watch, &mut buf) {
+            Ok(n) => n > 0,
+            Err(rustix::io::Errno::AGAIN) => false,
+            Err(e) => panic!("read the inotify events: {e}"),
+        };
+        (seen, read.is_ok())
+    };
+    assert_eq!(opened(&good), (true, true), "the control: an open is seen");
+    assert_eq!(opened(&fifo), (false, false), "the FIFO was opened");
+}
