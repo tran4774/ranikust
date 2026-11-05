@@ -37,8 +37,9 @@ A Low or Medium weakness the project finds itself, in a review or an audit,
 and does not fix first is tracked in a private draft advisory and published
 after the release that fixes it (closed instead, if no release ever
 contained the weakness), so a release may ship with known Low or Medium
-weaknesses still open, and with audit leads not yet confirmed. A
-residual the maintainer accepts has no fix release; the
+weaknesses still open, with audit leads not yet confirmed, and with a High
+or Critical weakness that an open branch is fixing. A residual the
+maintainer accepts has no fix release; the
 [threat model](docs/security/threat-model.md#6-accepted-risks) documents it
 ([workflow](docs/agents/workflow.md#security-findings),
 [ADR-0111](docs/adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).

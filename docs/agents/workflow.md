@@ -356,8 +356,8 @@ worktree) or the main session's own. `host-safety` is the reviewer below;
 loop itself before it hands back.
 
 1. The `host-safety` subagent reports to the main session.
-2. The main session files a security non-blocker, and a blocker the
-   private fork fixes, as a draft
+2. The main session files a security non-blocker, a blocker the private
+   fork fixes, and a Low or Medium blocker already in a release, as a draft
    ([Security findings](#security-findings)) and sends the other findings
    to the implementer with `SendMessage` when it answered within the hour,
    else briefs a new `implementer` run with the branch, its worktree, the
@@ -411,7 +411,8 @@ section owns what happens to one
 
   | Finding | Fixed |
   |---|---|
-  | Any other blocker: one the branch introduces, a High or Critical weakness already on `main` in no release yet that the branch touches, or a Low or Medium one | In the loop, before the push. It is only the branch's blocker: no draft, and the release does not wait for it |
+  | Any other blocker: one the branch introduces, or one in no release yet (a High or Critical weakness that the branch touches, or a Low or Medium one) | In the loop, before the push. It is only the branch's blocker: no draft, and the release does not wait for it |
+  | A Low or Medium blocker already in a release | In the loop, before the push, and it also gets a draft, published after the release that contains the fix ([ADR-0087](../adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md), D6) |
   | A blocker the private fork fixes: a High or Critical weakness already in a release that the branch touches | In the draft's temporary private fork. The branch does not push until the fork's fix is merged into `main`, then merges `main` into it and pushes; until then its review and notes keep the finding out of anything public |
   | Holds the next release: a High or Critical weakness already in a release, or a Critical one on `main` in no release yet, that the branch does not touch | In the same private fork; the branch pushes and merges, and only the next release waits |
   | Holds the next release: a High weakness on `main` in no release yet that the branch does not touch | An ordinary pull request with generic wording before the next release; no private fork |
@@ -445,7 +446,8 @@ section owns what happens to one
   `repos/{owner}/{repo}/security-advisories`, a `gh api` write, so it
   prompts), may update its text, and does not send the finding to the
   implementer. This is for a security non-blocker and a blocker the private
-  fork fixes.
+  fork fixes; a Low or Medium blocker already in a release is fixed in the
+  loop as usual, and the report gives it in full too, for its draft.
 - **Never public.** No detail of an unfixed weakness in an issue, pull
   request, comment, commit or doc, apart from a fix pull request's diff and
   test, worded generically, and threat model section 6, in general words; a

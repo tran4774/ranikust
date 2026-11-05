@@ -76,9 +76,9 @@ is in `docs/agents/workflow.md#security-findings`), `path:line`, the attack
 or failure scenario in one or two sentences, and the fix. A High or
 Critical finding is a `blocker` only when the branch introduces it or its
 diff changes a line of a file the weakness is in; otherwise it is a
-`non-blocker`, marked "holds the next release". Give a security
-non-blocker, and a blocker the private fork fixes (the routing table in the
-workflow names it), in full, however long: the main session files an
-advisory from it. Say explicitly which checklist items you verified as fine
-and which you could not check from the code alone (for example, races that
-need a test on a real kernel).
+`non-blocker`, marked "holds the next release". Give each security finding
+that gets a draft (the routing table in the workflow names them) in full,
+however long: the main session files the advisory from it. Say explicitly
+which checklist items you verified as fine and which you could not check
+from the code alone (for example, races that need a test on a real
+kernel).

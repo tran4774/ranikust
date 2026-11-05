@@ -92,12 +92,12 @@ procedure is [workflow.md, Security findings](../agents/workflow.md#security-fin
   without asking, as ADR-0093 lets them open `task`, `question` and `bug`
   issues. The maintainer alone changes its state (publish, close,
   withdraw), requests a CVE, opens its temporary private fork, merges a
-  private fork's change and adds a collaborator to the advisory, since that
-  widens who sees unfixed details. A draft
-  stays a draft until a release that contains its fix is out; an agent then
-  prepares its text and the maintainer publishes it. One whose weakness no
-  release ever contained is closed, not published, once the fix is on
-  `main`; the fix pull request is the public record.
+  private fork's change and adds a collaborator to the advisory (that
+  widens who sees unfixed details). A draft stays a draft until a release
+  that contains its fix is out; an agent then prepares its text and the
+  maintainer publishes it. One whose weakness no release ever contained is
+  closed, not published, once the fix is on `main`; the fix pull request is
+  the public record.
 - **Verifying a fork's fix.** GitHub runs no CI in a private fork and
   enforces no ruleset at its merge, so before the maintainer merges it an
   agent runs the checks the workflow lists and records the results in the
@@ -120,12 +120,16 @@ procedure is [workflow.md, Security findings](../agents/workflow.md#security-fin
 - Bad, because a branch that touches a High or Critical weakness already in
   a release waits for the private fork's fix on `main`, however long it
   takes.
+- Bad, because a known High or Critical weakness on `main` that a branch
+  touches holds only that branch, with no draft: if the branch stalls past
+  a release, the release ships with it.
 - Bad, because creating an advisory is a `gh api` write, which the ask
   rules of ADR-0093 prompt for, as for a commit status [inferred from those
   rules; not tried].
 - Neutral, because a blocker the branch introduces follows the loop as
   before; a High or Critical finding in code a branch does not touch holds
-  only the next release.
+  only the next release, and one on `main` in no release yet that a branch
+  touches holds only that branch.
 
 ## Evidence
 
@@ -179,8 +183,15 @@ No experiment; the maintainer's decision and answers, each given on
   does not wait for it.
 - What "touches" means: "Cùng file (khuyến nghị)" (the same file, as
   recommended). X touches a finding when its diff changes any line of a
-  file the weakness is in; for a weakness that spans two files, that is the
-  natural reading of "the same file".
+  file the weakness is in. [inferred] For a weakness that spans two files,
+  that is the natural reading of "the same file"; it is the agents'
+  reading, not part of the answer.
+- [inferred] A Low or Medium blocker already in a release is fixed in the
+  loop and also gets a draft, published after the release that contains the
+  fix. It follows ADR-0087 D6 (a finding about released code goes to a
+  private advisory) and the publication answer, and is not a new decision;
+  the answer on a blocker the branch touches covered only a High or
+  Critical weakness in no release yet.
 - A draft whose weakness no release ever contained, for example one fixed
   before the next release: "Đóng nháp, không publish (khuyến nghị)" (close
   the draft, do not publish, as recommended). The maintainer closes it once

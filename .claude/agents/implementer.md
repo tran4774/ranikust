@@ -70,7 +70,9 @@ fail-closed option meanwhile; never invent a decision.
   the private fork fixes (the routing table in the workflow names it), are
   not fixed in this branch and get no test: they go in the report in full,
   for the main session to file as an advisory
-  (`docs/agents/workflow.md#security-findings`).
+  (`docs/agents/workflow.md#security-findings`). A Low or Medium blocker
+  already in a release is fixed like any blocker, and goes in the report in
+  full too, for its draft.
 - After three failed attempts at the same fix, stop and report what you
   know.
 

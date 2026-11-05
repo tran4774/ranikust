@@ -72,9 +72,10 @@ where you can; the rating is in `docs/agents/workflow.md#security-findings`),
 input, what happened, why it matters. A High or Critical finding is a
 `blocker` only when the branch introduces it or its diff changes a line of
 a file the weakness is in; otherwise it is a `non-blocker`, marked
-"holds the next release". Give a security non-blocker, and a blocker the
-private fork fixes, in full: the main session files an advisory from it.
-Then what you did not try.
+"holds the next release". Give each security finding that gets a draft (the
+routing table in `docs/agents/workflow.md#security-findings` names them) in
+full: the main session files the advisory from it. Then what you did not
+try.
 
 ## Must not
 
