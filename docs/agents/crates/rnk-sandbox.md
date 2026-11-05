@@ -222,10 +222,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, the stub journal (placement through symlinks, removal,
   parent times, replay of dead journals only, a lock kept by a shared
-  description), swaps and planted records, `Direct` children that fail before
-  executing, mount sources and remount flags, `Direct` refusals, the sealed
-  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
-  reading its own stream back), the init's status records,
+  description), swaps and planted records, the journal's red-team tests (a
+  file, FIFO, socket or whiteout where a directory is needed or as the
+  target; stubs a `RUN` swaps for symlinks out of the root or for nodes;
+  planted stub records aimed outside, naming `/` or ending in `..`),
+  `Direct` children that fail before executing, mount sources and remount
+  flags, `Direct` refusals, the sealed heredoc memfd, the relay (a surviving
+  write end, a full stream, a `RUN` reading its own stream back), the init's
+  status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). `tests/direct_only.rs`: a `start_direct` sandbox
@@ -268,7 +272,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   hopping caught by the sweep, non-blocking flood) and `src/spawner.rs`
   (`a_cancel_kills_a_running_run`, `a_direct_run_leaves_no_process_behind`,
   `a_direct_heredoc_runs_from_an_anonymous_file`, loopback for
-  `--network=none`).
+  `--network=none`); in `src/journal.rs`, a block device where a directory
+  is needed or as the target
+  (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`).
 
 ## Metrics
 
