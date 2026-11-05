@@ -657,17 +657,20 @@ fn the_kernels_own_errnos_are_refused() {
         assert!(m.contains("512 to 530"), "{m}");
         let m = refusal(&errno_rule(e, r#","includes":{"arches":["s390x"]}"#));
         assert!(m.starts_with("syscalls[0]: errnoRet"), "{m}");
+        assert!(m.contains("512 to 530"), "{m}");
         let m = refusal(&default(e));
         assert!(m.starts_with(&format!("defaultErrnoRet: {e} is")), "{m}");
         let faking = Context {
             faked_success: true,
             ..cx((6, 8))
         };
-        assert!(
-            compile(errno_rule(e, "").as_bytes(), &faking).is_err(),
-            "{e}"
-        );
-        assert!(compile(default(e).as_bytes(), &faking).is_err(), "{e}");
+        for json in [errno_rule(e, ""), default(e)] {
+            match compile(json.as_bytes(), &faking) {
+                Err(Error::SeccompProfile(m)) => assert!(m.contains("512 to 530"), "{m}"),
+                Err(other) => panic!("{json}: {other}"),
+                Ok(_) => panic!("{json}: accepted"),
+            }
+        }
     }
     for e in [511, 531] {
         let p = compiled(&errno_rule(e, ""));

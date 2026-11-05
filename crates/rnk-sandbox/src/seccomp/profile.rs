@@ -45,8 +45,8 @@ const DOCKER_DEFAULT: &[u8] = include_bytes!("default.json");
 /// The kernel caps an errno at `MAX_ERRNO`.
 const MAX_ERRNO: u32 = 4095;
 
-/// The kernel's internal codes (`include/linux/errno.h`), refused as a
-/// profile's errno.
+/// The `ERESTART*` codes and their neighbours in the kernel's
+/// `include/linux/errno.h`, refused as a profile's errno.
 const KERNEL_ERRNOS: std::ops::RangeInclusive<u32> = 512..=530;
 
 /// The architectures runtime-spec names; only the native one is compiled.
@@ -516,7 +516,12 @@ fn errno_refused(act: Action, cx: &Context) -> Option<String> {
             "{e} is one of the kernel's own codes (512 to 530), which can \
              restart the call; {GIVE}"
         )),
-        _ => None,
+        Action::Errno(_)
+        | Action::KillProcess
+        | Action::KillThread
+        | Action::Trap
+        | Action::Log
+        | Action::Allow => None,
     }
 }
 
