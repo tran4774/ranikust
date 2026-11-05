@@ -311,7 +311,7 @@ agent starts at about 35k tokens. So:
   decisions already made with their dates, the ADR numbers it may use, and
   what is out of scope. It runs the `dev-loop`, its own `reviewer` rounds
   and `just check`, commits without pushing and hands back at most 40
-  lines (plus any security finding it did not fix, in full). A
+  lines (plus any security finding that gets a draft, in full). A
   hand-back whose last reviewer round did not finish gets one from the main
   session before the push.
 - **Follow-ups within the hour go to the same agent.** `SendMessage`
@@ -356,13 +356,13 @@ worktree) or the main session's own. `host-safety` is the reviewer below;
 loop itself before it hands back.
 
 1. The `host-safety` subagent reports to the main session.
-2. The main session files a security non-blocker, a blocker the private
-   fork fixes, and a Low or Medium blocker already in a release, as a draft
-   ([Security findings](#security-findings)) and sends the other findings
-   to the implementer with `SendMessage` when it answered within the hour,
-   else briefs a new `implementer` run with the branch, its worktree, the
-   commit range and the findings; on a branch of its own (a docs-only
-   change) it fixes them itself.
+2. The main session files each finding that gets a draft
+   ([Security findings](#security-findings)) and sends every finding to be
+   fixed, that is every blocker except one the private fork fixes, to the
+   implementer with `SendMessage` when it answered within the hour, else
+   briefs a new `implementer` run with the branch, its worktree, the commit
+   range and the findings; on a branch of its own (a docs-only change) it
+   fixes them itself.
 3. The implementer fixes on its branch, runs `just check` (and the VM
    suites when set-up or the sandbox changed), commits without pushing and
    reports.

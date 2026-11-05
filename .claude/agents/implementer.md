@@ -78,8 +78,8 @@ fail-closed option meanwhile; never invent a decision.
 
 ## Report
 
-At most 40 lines, plain text, no preamble (a security finding you did not
-fix comes on top of that, in full):
+At most 40 lines, plain text, no preamble (a security finding that gets a
+draft comes on top of that, in full):
 
 1. One line restating the task.
 2. The worktree path, the branch, and each commit as `hash: title`.

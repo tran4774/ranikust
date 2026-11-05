@@ -158,7 +158,7 @@ procedure and the brief template: [workflow.md](docs/agents/workflow.md#context-
   `CLAUDE_CODE_SUBAGENT_MODEL`), `opus` implements, reviews, host-safety
   and red-team.
 - An `implementer` or `Explore` hand-back is at most 40 lines (plus any
-  security finding it did not fix, in full); reviewers report their
+  security finding that gets a draft, in full); reviewers report their
   findings in full. Follow up an agent that answered within
   the hour with `SendMessage` (its cache lives one hour); later, start a
   new agent briefed with the branch, its worktree, the commit range and

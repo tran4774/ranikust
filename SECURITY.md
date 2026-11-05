@@ -34,12 +34,12 @@ a disclosure date with the reporter, and publish a GitHub security advisory
 with the fix. The default embargo is 90 days.
 
 A Low or Medium weakness the project finds itself, in a review or an audit,
-and does not fix first is tracked in a private draft advisory and published
-after the release that fixes it (closed instead, if no release ever
-contained the weakness), so a release may ship with known Low or Medium
-weaknesses still open, with audit leads not yet confirmed, and with a High
-or Critical weakness that an open branch is fixing. A residual the
-maintainer accepts has no fix release; the
+and does not fix first, or that was already in a release, is tracked in a
+private draft advisory and published after the release that fixes it
+(closed instead, if no release ever contained the weakness), so a release
+may ship with known Low or Medium weaknesses still open, with audit leads
+not yet confirmed, and with a High or Critical weakness that a branch under
+review is fixing. A residual the maintainer accepts has no fix release; the
 [threat model](docs/security/threat-model.md#6-accepted-risks) documents it
 ([workflow](docs/agents/workflow.md#security-findings),
 [ADR-0111](docs/adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).
