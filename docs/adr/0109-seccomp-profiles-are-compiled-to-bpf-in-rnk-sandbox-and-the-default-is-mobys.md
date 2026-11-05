@@ -130,21 +130,30 @@ after the host-safety review of that order:
   `defaultErrnoRet`. An errno above 4095 is refused too (the filter keeps
   only its low 16 bits), and a negative one is not a number the format
   takes. A profile can then let a call run, refuse it with an errno from 1
-  to 4095, or kill the `RUN`: the steps after it see a refusal, never a
-  success that did not happen. A filter around ranikust, which the
-  operator's runtime installs, may still fake one; ranikust does not
-  control it.
+  to 4095 but the kernel's own codes (below), or kill the `RUN`: the steps
+  after it see a refusal, never a success that did not happen. A filter
+  around ranikust, which the operator's runtime installs, may still fake
+  one; ranikust does not control it.
+- **Nor can it answer with one of the kernel's own codes** (the
+  maintainer, 2026-11-05, after the host-safety review of the errno rule:
+  "Sửa luôn, coi là phần của quyết định (khuyến nghị)", fix it now, as part
+  of the decision, as recommended). An errno from 512 to 530, the
+  `ERESTART*` codes and the others `include/linux/errno.h` keeps for the
+  kernel, in a rule's `errnoRet` or the `defaultErrnoRet`, refuses the
+  profile (exit 2) as errno 0 does, checked on the same value: on 516
+  (`ERESTART_RESTARTBLOCK`) the kernel may run its restart block instead of
+  returning the refusal, and that can succeed.
 - **After a refused keyring join, the child looks for ranikust's session
   keyring before the profile** ("Thăm dò keyring (khuyến nghị)", probe the
   keyring, as recommended), with
   `keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING, 0)`, instead of
   deciding by the join's errno. If the lookup succeeds, the `RUN` fails as
   `Step::KeyringRefused` unless its profile refuses `keyctl`, `add_key` and
-  `request_key`; if it is refused too, no keyring is reachable and the
-  `RUN` goes on. This holds under `unconfined` as well. Docker's default
-  profile around ranikust refuses `keyctl` whole, so a build in Docker runs
-  as before. `Direct` keeps its errno rule (`EPERM`, `ENOSYS` and `EACCES`
-  go on).
+  `request_key`; if the lookup is refused too, the `RUN` goes on. This
+  holds under `unconfined` as well. Docker's default profile around
+  ranikust refuses `keyctl` whole, the lookup included, so a build in
+  Docker runs as before. `Direct` keeps its errno rule (`EPERM`, `ENOSYS`
+  and `EACCES` go on).
 
 ### Consequences
 
@@ -155,8 +164,9 @@ after the host-safety review of that order:
   set, the session, the keyring or ADR-0033's filter.
 - Good, because a profile can refuse a call but never fake its success:
   the steps after it see a refusal as one.
-- Bad, because a Docker profile file that answers a call with errno 0 is
-  refused, though runc, through libseccomp, would install it [inferred].
+- Bad, because a Docker profile file that answers a call with errno 0, or
+  with one from 512 to 530, is refused, though runc, through libseccomp,
+  would install it [inferred].
 - Bad, because the steps after the profile still trust the answers of a
   filter around ranikust, which ranikust does not control (threat model,
   section 6).

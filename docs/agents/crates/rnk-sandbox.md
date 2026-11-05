@@ -10,7 +10,8 @@ with `pivot_root` (or `MS_MOVE`), with the capability bounding set cut to
 Docker's defaults and Docker's default seccomp profile, and probes its own
 capabilities. Never a bare `chroot` where mounting is possible; no `RUN`
 process outlives the build. User namespaces, the `proc`/`sysfs` fallbacks
-and `--userns` are Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)).
+and `--userns` are Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)).
 
 ## Owns
 
@@ -160,47 +161,50 @@ What a change here must keep, with where it lives:
   Linux 5.12; an older kernel refuses a root with a mount below it).
   Then `pivot_root(".", ".")` + `umount2(MNT_DETACH)`; where seccomp refuses
   it and `/` is a mount root, `MS_MOVE` + `chroot(".")`.
-- **Seccomp** ([ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)): the profile is compiled in the parent, before the
-  set-up, for the native architecture only (another's calls and x32 get
-  `EPERM`), the running kernel and Docker's 14 capabilities; arguments
-  compare as 64-bit values, the strictest matching action wins, a number
-  `libc` does not name gets `ENOSYS` under a refusing default, and what the
-  crate does not support (`SCMP_ACT_NOTIFY`, `SCMP_ACT_TRACE`, a listener,
-  an unknown flag, field or name under a refusing action, two conditions on
-  one argument, a rule without names, over 4096 instructions) is
-  `Error::SeccompProfile`, never weakened, as is an `SCMP_ACT_ERRNO` whose
-  errno is 0 (a faked success; `SeccompProfile::faking` compiles one in the
-  tests only) or above 4095. Syscall numbers come from `libc` only
+- **Seccomp**
+  ([ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)):
+  the profile is compiled in the parent, before the set-up, for the native
+  architecture only (another's calls and x32 get `EPERM`), the running kernel
+  and Docker's 14 capabilities; arguments compare as 64-bit values, the
+  strictest matching action wins, a number `libc` does not name gets `ENOSYS`
+  under a refusing default, and what the crate does not support
+  (`SCMP_ACT_NOTIFY`, `SCMP_ACT_TRACE`, a listener, an unknown flag, field or
+  name under a refusing action, two conditions on one argument, a rule without
+  names, over 4096 instructions) is `Error::SeccompProfile`, never weakened,
+  as is an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success;
+  `SeccompProfile::faking` compiles one in the tests only), one of the
+  kernel's own codes, 512 to 530 (516 may have the kernel run its restart
+  block instead), or above 4095. Syscall numbers come from `libc` only
   (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
   ADR-0009); a call the profile allows that `libc` does not name gets
-  `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
-  lists them per target. A profile can only let a call run, refuse it or
-  kill, so after every mount the full sandbox's child makes every step that
-  need not follow it first, in the order of the design's
-  [step 4](../../design/sandbox.md#per-run-sequence), then installs
-  ADR-0033's filter when it joined a held network namespace and the profile
-  on top, both without `no_new_privs`, and only then sets the effective and
-  permitted sets. Against a filter around ranikust, which can fake a
-  success, the command checks that its parent is the init (`Step::Init`),
-  an `execve` (trying no next candidate) or `execveat` back without an
-  error fails as `Step::Exec` (`EPROTO`), a blocking `waitpid` back with 0
-  or an error, `EINTR` included, ends the init (125), an `EINTR` on a read
-  after the profile fails the `RUN` (only a filter gives it, possibly
-  forever), `last_errno` reads errno 0 as `EPROTO`, and the pipe,
-  capability, death-signal, `fstatfs` and `RLIMIT_NOFILE` reads go through
-  `libc` into values set beforehand. A failed install is `Step::Seccomp`, whose message
-  points to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
-  gets no filter and joins its keyring after its capability drop, before
-  `setsid`. The default profile refuses `keyctl`, `add_key` and
-  `request_key`; root's user and persistent keyrings stay reachable under
-  `--seccomp=unconfined`, a profile file that allows them, and in `Direct`.
-  After a refused join, whatever the errno, the child looks ranikust's
-  session keyring up before the profile (`KeyringJoin::Required`): found,
-  the `RUN` fails as `Step::KeyringRefused`; refused too, it goes on. A
-  profile that refuses all three calls (`SeccompProfile::refuses_keyrings`)
-  and the probe skip the lookup (`Optional`); `Direct` goes on after
-  `EPERM`, `ENOSYS` or `EACCES` and fails as `Step::SessionKeyring`
-  otherwise.
+  `ENOSYS`, and the T0 test
+  `calls_the_default_allows_but_libc_does_not_name_are_pinned` lists them per
+  target. A profile can only let a call run, refuse it or kill, so after every
+  mount the full sandbox's child makes every step that need not follow it
+  first, in the order of the design's
+  [step 4](../../design/sandbox.md#per-run-sequence), then installs ADR-0033's
+  filter when it joined a held network namespace and the profile on top, both
+  without `no_new_privs`, and only then sets the effective and permitted sets.
+  Against a filter around ranikust, which can fake a success, the command
+  checks that its parent is the init (`Step::Init`), an `execve` (trying no
+  next candidate) or `execveat` back without an error fails as `Step::Exec`
+  (`EPROTO`), a blocking `waitpid` back with 0 or an error, `EINTR` included,
+  ends the init (125), an `EINTR` on a read after the profile fails the `RUN`
+  (only a filter gives it, possibly forever), `last_errno` reads errno 0 as
+  `EPROTO`, and the pipe, capability, death-signal, `fstatfs` and
+  `RLIMIT_NOFILE` reads go through `libc` into values set beforehand. A failed
+  install is `Step::Seccomp`, whose message points to `--seccomp=unconfined`,
+  or `Step::NetworkFilter`. `Direct` gets no filter and joins its keyring
+  after its capability drop, before `setsid`. The default profile refuses
+  `keyctl`, `add_key` and `request_key`; root's user and persistent keyrings
+  stay reachable under `--seccomp=unconfined`, a profile file that allows
+  them, and in `Direct`. After a refused join, whatever the errno, the child
+  looks ranikust's session keyring up before the profile
+  (`KeyringJoin::Required`): found, the `RUN` fails as `Step::KeyringRefused`;
+  the lookup refused too, it goes on. A profile that refuses all three calls
+  (`SeccompProfile::refuses_keyrings`) and the probe skip the lookup
+  (`Optional`); `Direct` goes on after `EPERM`, `ENOSYS` or `EACCES` and fails
+  as `Step::SessionKeyring` otherwise.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
   inheritable empty. The drops go up to the kernel's last capability; an
@@ -281,18 +285,20 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
-  aarch64, `includes`/`excludes`, refused profiles, errno 0 and above 4095
-  included, which ones refuse every keyring call); `errno_0_reads_as_eproto`.
-  The `tests::kernel` modules, skipped under qemu-user, install filters in
-  forked children: `seccomp::profile`'s (compiled profiles), `caps`'s (an
-  `EINVAL` from a bounding drop) and `child`'s (a refused keyring join with
-  the session keyring found or not, each `KeyringJoin`; an `execve` or
-  `execveat` back without an error; a `waitpid` back with 0 or `EINTR`; an
-  `EINTR` on the reads after the profile; a refused `umask` after the
-  profile; a faked `setsid`, `pipe2` or `fstatfs`, a faked or refused
-  `prlimit64`; the last two on a stack filled beforehand, which shows an
-  unwritten buffer in a debug build only; these test the helpers, not
-  their call sites, whose `/proc/self/fd` opening overwrites that stack).
+  aarch64, `includes`/`excludes`, refused profiles, errno 0, 512 to 530 and
+  above 4095 included, which ones refuse every keyring call);
+  `errno_0_reads_as_eproto`. The `tests::kernel` modules, skipped under
+  qemu-user, install filters in forked children: `seccomp::profile`'s
+  (compiled profiles), `caps`'s (an `EINVAL` from a bounding drop) and
+  `child`'s (a refused keyring join with the session keyring found or not,
+  each `KeyringJoin`; an `execve` or `execveat` back without an error; a
+  `waitpid` back with 0 or `EINTR` while an exited command waits to be reaped;
+  an `EINTR` on the reads after the profile, the parent check's against an
+  unfiltered control; a refused `umask` after the profile; a faked `setsid`,
+  `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the last two on a
+  stack filled beforehand, which shows an unwritten buffer in a debug build
+  only; these test the helpers, not their call sites, whose `/proc/self/fd`
+  opening overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
@@ -311,7 +317,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;
   `red_team_no_run_outlives_the_thread_that_cloned_it`;
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
-  delays, threat model section 6; `a_running_binary_cannot_be_opened_for_writing`;
+  delays, threat model section 6;
+  `a_running_binary_cannot_be_opened_for_writing`;
   `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
   profile that refuses the keyring join; each `RUN` in a keyring of its own;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,

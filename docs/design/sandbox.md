@@ -105,11 +105,13 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
 - Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
   `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
   `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success; the
-  message names `syscalls[N]` or `defaultErrnoRet`) or above 4095, two
-  conditions on one argument in a rule, a rule without names (the message
-  names the rule, `syscalls[N]`; ADR-0109), a filter longer than the
-  kernel's 4096 instructions, and anything malformed; a file that is not a
-  regular file or is over 1 MiB.
+  message names `syscalls[N]` or `defaultErrnoRet`), one of the kernel's
+  own codes, 512 to 530 (on 516 the kernel may run its restart block
+  instead of returning the refusal), or above 4095, two conditions on one
+  argument in a rule, a rule without names (the message names the rule,
+  `syscalls[N]`; ADR-0109), a filter longer than the kernel's 4096
+  instructions, and anything malformed; a file that is not a regular file
+  or is over 1 MiB.
 - The profile is the operator's and may refuse any call with any errno, so
   every step that need not follow it comes before it, in the order of
   step 4. After it come the `capset` to the default sets, since the install
@@ -278,6 +280,11 @@ The steps, in order:
      and the go pipe's, the latter last: that lets the command go on (a failure
      before kills the command unrun and is reported as `Step::Init`, unless
      a filter around ranikust fakes the command's read of that pipe).
+   - A read after the profile answered with `EINTR` (the argument areas',
+     the parent check's, the go pipe's) fails the `RUN` as `Step::Init`
+     instead of reading again: with no handler, the kernel restarts a read
+     a signal interrupts, so only a filter answers so, and it could
+     forever.
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits; a `waitpid`
@@ -304,9 +311,9 @@ The steps, in order:
    errno, the full sandbox's child looks ranikust's session keyring up,
    still before the profile (`KEYCTL_GET_KEYRING_ID`): found, it fails a
    `RUN` whose profile lets one of those three calls run, as
-   `Step::KeyringRefused`; refused too, as under Docker's default profile
-   around ranikust, which refuses `keyctl` whole, no keyring is reachable
-   and the `RUN` goes on. In `Direct` a join refused with `EPERM`, `ENOSYS`
+   `Step::KeyringRefused`; where the lookup is refused too, as under
+   Docker's default profile around ranikust, which refuses `keyctl` whole,
+   the `RUN` goes on. In `Direct` a join refused with `EPERM`, `ENOSYS`
    or `EACCES` is ignored (ADR-0109).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
