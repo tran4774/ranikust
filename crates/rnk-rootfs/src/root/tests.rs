@@ -368,7 +368,7 @@ fn pin_refuses_a_symlink_in_a_parent_and_reads_through_the_pin() {
 
     let e = f.root.pin("l/f").unwrap_err();
     assert_eq!(errno(&e), Some(Errno::LOOP), "{e}");
-    for p in ["../d/f", "other/../d/f"] {
+    for p in ["../d/f", "other/../d/f", "d/.."] {
         let e = f.root.pin(p).unwrap_err();
         assert!(matches!(e, Error::InvalidPath { .. }), "{p}: {e}");
     }

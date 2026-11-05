@@ -437,7 +437,8 @@ The decision:
   its mount point or above it, and the binary's own mount covered, not
   looked up; a mount on it, or one it lies on, does not cover it),
   `a_mount_chain_ends_at_its_first_repeat` (a line naming itself as its
-  parent, a cycle of two: each mount met once),
+  parent, a cycle of two: each mount met once; the line on itself covered
+  by `/`),
   `a_table_that_changed_during_the_walk_places_nothing`,
   `a_build_that_cannot_be_kaniko_on_slash_walks_no_mount` (`NotWeighed`;
   links and an overlay root told as before) and the binary's

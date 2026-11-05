@@ -1027,9 +1027,9 @@ fn a_covered_mount_is_not_looked_up() {
 }
 
 /// ADR-0101: the chain of mounts a mount lies on ends at its first repeat,
-/// so a line that names itself as its parent, or a cycle, holds each mount
-/// on the chain once; a line on itself lies on no `/`, so `/` covers it
-/// (not looked up: unplaced).
+/// so the chain of a line naming itself as its parent, or of a cycle,
+/// holds each mount once; a line on itself lies on no `/`, so `/` covers
+/// it.
 #[test]
 fn a_mount_chain_ends_at_its_first_repeat() {
     let mut table = mounts("8:1 /elsewhere /x rw", &[]);
