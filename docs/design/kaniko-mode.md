@@ -152,10 +152,11 @@ the scheduler runs one stage at a time) or a private directory per stage
     ranikust looks once through `/proc` (`exposure::scan_peers`): a
     process with a thread in another mount namespace
     (`/proc/<pid>/task/<tid>/ns/mnt` by device and inode) whose root it
-    opens, every thread probed through one descriptor of `/proc/<pid>`,
-    refuses the build; a thread it may not open (`EACCES`, `EPERM`) is not
-    counted, one gone is skipped, and any other error or more than 32768
-    threads refuse too, each with its own guidance. It
+    opens, every thread probed through one descriptor of `/proc/<pid>`
+    (the process as one where its threads may not be listed), refuses the
+    build; a process or thread it may not look into or open (`EACCES`,
+    `EPERM`) is not counted, one gone is skipped, and any other error or
+    more than 32768 threads refuse too, each with its own guidance. It
     looks with its start-up privileges, before it trims them, so it may
     refuse a process no `RUN` would reach (fails closed); a `--pid=host`
     container is refused by the same rule when a process of the host or

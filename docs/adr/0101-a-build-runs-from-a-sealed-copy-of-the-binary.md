@@ -300,10 +300,12 @@ The decision:
   Each thread of each process is probed (`/proc/<pid>/task/<tid>`), since
   a thread may have a mount namespace and credentials of its own and the
   first one may have exited, all through one descriptor of `/proc/<pid>`,
-  so that a pid reused meanwhile is not taken for the process. A thread
-  whose root it may not open (`EACCES`, `EPERM`) is not counted, such as
-  Kubernetes' pause container at uid 65535; one gone meanwhile (`ENOENT`,
-  `ESRCH`) is skipped. Any other error (named with the step that failed),
+  so that a pid reused meanwhile is not taken for the process; a process
+  whose threads it may not list is probed as one, through `/proc/<pid>`.
+  A process or thread it may not look into or whose root it may not open
+  (`EACCES`, `EPERM`) is not counted, such as Kubernetes' pause container
+  at uid 65535; one gone meanwhile (`ENOENT`, `ESRCH`) is skipped. Any
+  other error (named with the step that failed),
   `/proc` or ranikust's own namespace that cannot be read, or more than
   32768 threads (a process with none left counting as one) refuse the
   build (fail closed), each with its own message and guidance. A
@@ -553,6 +555,11 @@ The decision:
   `a_peer_scan_with_no_process_reached_finds_none`,
   `a_peer_scan_refuses_what_it_cannot_tell` (a probe's other error, an
   unreadable `/proc` entry), `a_peer_scan_past_its_bound_refuses`,
+  `a_later_thread_reached_refuses_its_process_by_the_process_name`,
+  `threads_passed_over_or_gone_pass_their_process`,
+  `a_process_whose_threads_may_not_be_listed_is_probed_as_one`,
+  `the_threads_of_a_process_count_against_the_bound` (the walk of a
+  process's threads on a fake probe),
   `every_thread_of_a_process_is_probed_within_the_bound` (the real probe
   on ranikust's own process, with a second thread: each thread probed and
   counted, a missing process gone),
@@ -565,8 +572,8 @@ The decision:
   writable bind of its own, the red team's configuration, is refused
   before the state directory exists and before any `RUN`; a peer run as
   uid 1000, which ranikust's probe meets with `EACCES`, and no peer build
-  [measured]. Under rootful Docker the case is not run yet (the VM's
-  quick suite runs it) [inferred].
+  [measured]. Under rootful Docker (the VM's quick suite) the case has
+  not run yet; its outcome there is [inferred].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its

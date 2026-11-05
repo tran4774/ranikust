@@ -157,9 +157,10 @@ Each step before the next; design in
    another mount namespace whose root it opens (`refuse_reachable_peers`
    on `exposure::scan_peers`, ADR-0101: once, with the start-up
    privileges, each thread of `/proc/<pid>/task` through one descriptor
-   of `/proc/<pid>`; `EACCES`/`EPERM` not counted, gone skipped, any
-   other error (with its step) or more than `PEER_SCAN_LIMIT` threads
-   refused, each with its own guidance); then the warnings for
+   of `/proc/<pid>`, the process as one where its threads may not be
+   listed; `EACCES`/`EPERM` not counted, gone skipped, any other error
+   (with its step) or more than `PEER_SCAN_LIMIT` threads refused, each
+   with its own guidance); then the warnings for
    secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
@@ -275,9 +276,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   nothing created through a planted link; `0700`), `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
-  reached, what cannot be told, the bound counted in threads; the real
-  probe on each of ranikust's own threads and a missing pid; escaped
-  names, a process named by its pid alone).
+  reached, what cannot be told, the bound counted in threads; `walk`'s
+  on fake threads: a later thread reached, threads passed over or gone, a
+  process whose threads may not be listed; the real probe on each of
+  ranikust's own threads and a missing pid; escaped names, a process
+  named by its pid alone).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`
