@@ -11,10 +11,16 @@
 //!   reads it once, at the start (ADR-0078), but cannot hide it.
 //!
 //! It also checks what it refuses to build under: a writable `/proc/sys`
-//! ([`proc_sys_read_only`]).
+//! ([`proc_sys_read_only`]), and a process of another mount namespace in
+//! its PID namespace that it reaches through `/proc` ([`scan_peers`],
+//! ADR-0101).
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+
+use rustix::fs::{Mode, OFlags};
+use rustix::io::Errno;
 
 use crate::config::BuildArg;
 
@@ -124,37 +130,159 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 /// another user) a `RUN` cannot read either, and is skipped.
 pub(crate) fn warn_credential_holders(variables: &[String]) {
     let names: Vec<&str> = variables.iter().map(String::as_str).collect();
-    let me = std::process::id().to_string();
     let Ok(dir) = fs::read_dir("/proc") else {
         return;
     };
-    for entry in dir.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name
-            .to_str()
-            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
-        else {
-            continue;
-        };
-        if pid == me {
-            continue;
-        }
-        let Ok(environ) = fs::read(entry.path().join("environ")) else {
+    let me = std::process::id().to_string();
+    for pid in dir.flatten().filter_map(|e| other_pid(e.file_name(), &me)) {
+        let Ok(environ) = fs::read(format!("/proc/{pid}/environ")) else {
             continue;
         };
         let found = held(&environ, &names);
         if found.is_empty() {
             continue;
         }
-        let comm = fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
         tracing::warn!(
             "process {pid} ({}) holds {} in its environment, which every RUN can read through \
              /proc/{pid}/environ in kaniko mode on /; start ranikust as the container's PID 1 \
              (exec it) so that no other process holds the credentials",
-            comm.trim(),
+            comm(&pid),
             found.join(", ")
         );
     }
+}
+
+/// The pid an entry of `/proc` names, when it names a process (digits
+/// only) other than ranikust (`me`).
+fn other_pid(name: OsString, me: &str) -> Option<String> {
+    name.into_string()
+        .ok()
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n != me)
+}
+
+/// The name a process gives itself (`/proc/<pid>/comm`), empty when it
+/// cannot be read.
+pub(crate) fn comm(pid: &str) -> String {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|c| c.trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// The most processes [`scan_peers`] looks at; a PID namespace with more is
+/// refused rather than walked at length.
+pub(crate) const PEER_SCAN_LIMIT: usize = 32_768;
+
+/// What the probe of one process found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Peer {
+    /// In ranikust's own mount namespace.
+    Same,
+    /// In another mount namespace, its `/proc/<pid>/root` opened.
+    Reachable,
+    /// Its `/proc/<pid>/root` refused (`EACCES`, `EPERM`): a process of
+    /// another user, or one that is not dumpable.
+    Unreachable,
+    /// Gone while it was looked at (`ENOENT`, `ESRCH`).
+    Gone,
+    /// Any other error.
+    Unknown(Errno),
+}
+
+/// What [`scan_peers`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PeerScan {
+    /// No process of another mount namespace that ranikust reaches.
+    None,
+    /// The first process found in another mount namespace whose
+    /// `/proc/<pid>/root` ranikust opened.
+    Reachable(String),
+    /// More than [`PEER_SCAN_LIMIT`] processes.
+    TooMany,
+    /// A process that could not be told (its pid), or ranikust's own mount
+    /// namespace or `/proc` (none), and why.
+    Unknown(Option<String>, Errno),
+}
+
+/// Looks, once, for a process of the PID namespace in another mount
+/// namespace whose `/proc/<pid>/root` ranikust opens: a `RUN` on `/` shares
+/// the PID namespace, so it could open that root too and reach that
+/// process's files, which the container's own mount table does not show
+/// (ADR-0101). Called before ranikust trims its capabilities, so it may
+/// reach more than a `RUN` would: refused all the same (fails closed). A
+/// process that appears after the scan is not seen.
+pub(crate) fn scan_peers() -> PeerScan {
+    let own = match namespace("/proc/self/ns/mnt") {
+        Ok(own) => own,
+        Err(e) => return PeerScan::Unknown(None, e),
+    };
+    let errno = |e: &std::io::Error| Errno::from_io_error(e).unwrap_or(Errno::IO);
+    let dir = match fs::read_dir("/proc") {
+        Ok(dir) => dir,
+        Err(e) => return PeerScan::Unknown(None, errno(&e)),
+    };
+    let names = dir.map(|entry| entry.map(|e| e.file_name()).map_err(|e| errno(&e)));
+    scan(names, PEER_SCAN_LIMIT, |pid| probe(own, pid))
+}
+
+/// The scan of `/proc`'s entry `names`, at most `limit` processes, with
+/// `probe`: the first process reached in another mount namespace, or the
+/// first that cannot be told.
+fn scan(
+    names: impl IntoIterator<Item = Result<OsString, Errno>>,
+    limit: usize,
+    mut probe: impl FnMut(&str) -> Peer,
+) -> PeerScan {
+    let me = std::process::id().to_string();
+    let mut seen = 0;
+    for name in names {
+        let pid = match name {
+            Ok(name) => match other_pid(name, &me) {
+                Some(pid) => pid,
+                None => continue,
+            },
+            Err(e) => return PeerScan::Unknown(None, e),
+        };
+        seen += 1;
+        if seen > limit {
+            return PeerScan::TooMany;
+        }
+        match probe(&pid) {
+            Peer::Same | Peer::Unreachable | Peer::Gone => {}
+            Peer::Reachable => return PeerScan::Reachable(pid),
+            Peer::Unknown(e) => return PeerScan::Unknown(Some(pid), e),
+        }
+    }
+    PeerScan::None
+}
+
+/// Probes process `pid`: whether ranikust opens its `/proc/<pid>/root`,
+/// then whether its mount namespace is `own`.
+fn probe(own: (u64, u64), pid: &str) -> Peer {
+    // Following the link takes the same access check as a `RUN` would.
+    match rustix::fs::open(
+        format!("/proc/{pid}/root"),
+        OFlags::PATH | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(_) => {}
+        Err(Errno::ACCESS | Errno::PERM) => return Peer::Unreachable,
+        Err(Errno::NOENT | Errno::SRCH) => return Peer::Gone,
+        Err(e) => return Peer::Unknown(e),
+    }
+    match namespace(&format!("/proc/{pid}/ns/mnt")) {
+        Ok(ns) if ns == own => Peer::Same,
+        Ok(_) => Peer::Reachable,
+        Err(Errno::NOENT | Errno::SRCH) => Peer::Gone,
+        Err(e) => Peer::Unknown(e),
+    }
+}
+
+/// A mount namespace's identity: the device and inode of its
+/// `/proc/<pid>/ns/mnt`.
+fn namespace(path: &str) -> rustix::io::Result<(u64, u64)> {
+    let fd = rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
+    let st = rustix::fs::fstat(&fd)?;
+    Ok((st.st_dev, st.st_ino))
 }
 
 /// Whether `path` (`/proc/sys`) is on a read-only mount. A writable one lets
@@ -181,6 +309,87 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(proc_sys_read_only(dir.path()), Ok(false));
         assert!(proc_sys_read_only(&dir.path().join("missing")).is_err());
+    }
+
+    fn names(list: &[&str]) -> Vec<Result<OsString, Errno>> {
+        list.iter().map(|n| Ok(OsString::from(n))).collect()
+    }
+
+    #[test]
+    fn a_peer_scan_refuses_the_first_process_reached_in_another_mount_namespace() {
+        let me = std::process::id().to_string();
+        let mut probed = Vec::new();
+        let found = scan(
+            names(&["self", "1", &me, "2", "3", "x9", "4", "5"]),
+            PEER_SCAN_LIMIT,
+            |pid| {
+                probed.push(pid.to_owned());
+                match pid {
+                    "1" => Peer::Same,
+                    "2" => Peer::Unreachable,
+                    "3" => Peer::Gone,
+                    "4" => Peer::Reachable,
+                    _ => Peer::Unknown(Errno::IO),
+                }
+            },
+        );
+        assert_eq!(found, PeerScan::Reachable("4".into()));
+        // Neither ranikust itself nor an entry that is not a pid is probed,
+        // and the scan stops at the first process reached.
+        assert_eq!(probed, ["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn a_peer_scan_with_no_process_reached_finds_none() {
+        let found = scan(names(&["1", "2", "3"]), 3, |pid| match pid {
+            "1" => Peer::Same,
+            "2" => Peer::Unreachable,
+            _ => Peer::Gone,
+        });
+        assert_eq!(found, PeerScan::None);
+    }
+
+    #[test]
+    fn a_peer_scan_refuses_what_it_cannot_tell() {
+        let found = scan(names(&["1", "2"]), 8, |pid| match pid {
+            "1" => Peer::Same,
+            _ => Peer::Unknown(Errno::LOOP),
+        });
+        assert_eq!(found, PeerScan::Unknown(Some("2".into()), Errno::LOOP));
+        let mut list = names(&["1"]);
+        list.push(Err(Errno::IO));
+        list.extend(names(&["2"]));
+        assert_eq!(
+            scan(list, 8, |_| Peer::Same),
+            PeerScan::Unknown(None, Errno::IO)
+        );
+    }
+
+    #[test]
+    fn a_peer_scan_past_its_bound_refuses() {
+        // Entries that are not pids do not count.
+        let list = names(&["1", "self", "2", "sys", "3"]);
+        assert_eq!(scan(list, 3, |_| Peer::Same), PeerScan::None);
+        let mut probed = 0;
+        let list = names(&["1", "2", "3", "4"]);
+        let found = scan(list, 3, |_| {
+            probed += 1;
+            Peer::Unreachable
+        });
+        assert_eq!((found, probed), (PeerScan::TooMany, 3));
+    }
+
+    #[test]
+    fn ranikust_itself_is_in_its_own_mount_namespace_and_a_missing_process_is_gone() {
+        let own = namespace("/proc/self/ns/mnt").unwrap();
+        assert_eq!(probe(own, &std::process::id().to_string()), Peer::Same);
+        // Past the largest pid_max.
+        assert_eq!(probe(own, "4294967295"), Peer::Gone);
+        // Another namespace's identity, for the same process.
+        assert_eq!(
+            probe((own.0, own.1 ^ 1), &std::process::id().to_string()),
+            Peer::Reachable
+        );
     }
 
     #[test]

@@ -778,6 +778,7 @@ fn refuse_unsafe_slash(
         }
     }
     refuse_writable_binary(how, binary)?;
+    refuse_reachable_peers(how, exposure::scan_peers())?;
     // What ranikust cannot close itself (ADR-0051, B4 and B5; ADR-0078).
     // The processes holding credentials are looked for after the set-up,
     // with the capabilities a `RUN` keeps (`kaniko`).
@@ -875,6 +876,56 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
             "{how}: the mount of ranikust's binary was not measured; kaniko mode on / refuses \
              to build without knowing"
         ))),
+    }
+}
+
+/// Kaniko mode on `/` refuses a PID namespace shared with a process of
+/// another mount namespace that ranikust reaches through `/proc` when it
+/// starts (ADR-0101): a `RUN` shares that PID namespace and could reach that
+/// process's files, which the container's own mount table does not show.
+/// A scan that cannot tell, or one of too many processes, is refused too.
+fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Failure> {
+    const GUIDANCE: &str = "do not share the build container's PID namespace with another \
+                            container: no Kubernetes shareProcessNamespace: true or hostPID: true \
+                            on its pod, no Docker or podman --pid container:<name> or --pid=host \
+                            (ADR-0101)";
+    match scan {
+        exposure::PeerScan::None => Ok(()),
+        exposure::PeerScan::Reachable(pid) => Err(Failure::error(format!(
+            "{how}: kaniko mode on / sharing its PID namespace with process {pid} ({}), of \
+             another mount namespace, whose files ranikust reaches through /proc/{pid}/root, \
+             would let RUN reach that process's files",
+            exposure::comm(&pid)
+        ))
+        .with_guidance(GUIDANCE)),
+        exposure::PeerScan::TooMany => Err(Failure::error(format!(
+            "{how}: kaniko mode on / sharing its PID namespace with more than {} processes; \
+             ranikust refuses to build without looking at each for one of another mount \
+             namespace that a RUN could reach",
+            exposure::PEER_SCAN_LIMIT
+        ))
+        .with_guidance(GUIDANCE)),
+        exposure::PeerScan::Unknown(pid, e) => {
+            let what = match pid {
+                Some(pid) => format!(
+                    "whether process {pid} ({}) is of another mount namespace that ranikust \
+                     reaches through /proc/{pid}/root",
+                    exposure::comm(&pid)
+                ),
+                None => "which processes share its PID namespace, or its own mount namespace, \
+                         from /proc"
+                    .to_owned(),
+            };
+            Err(Failure::error(format!(
+                "{how}: cannot tell {what} ({e}); kaniko mode on / refuses to build without \
+                 knowing"
+            ))
+            .with_guidance(
+                "mount /proc in the container so that /proc, /proc/<pid>/root and \
+                 /proc/<pid>/ns/mnt can be read, and share no PID namespace with another \
+                 container (ADR-0101)",
+            ))
+        }
     }
 }
 
@@ -1441,6 +1492,63 @@ mod tests {
             no_id.message,
             no_id.guidance
         );
+    }
+
+    #[test]
+    fn kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace() {
+        use exposure::PeerScan;
+        let how = "--mode=kaniko";
+        refuse_reachable_peers(how, PeerScan::None).unwrap();
+        let mine = std::process::id().to_string();
+        let reached = refuse_reachable_peers(how, PeerScan::Reachable(mine.clone())).unwrap_err();
+        let shared = "do not share the build container's PID namespace";
+        assert!(
+            reached.code == 1
+                && reached.message.starts_with(&format!(
+                    "--mode=kaniko: kaniko mode on / sharing its PID namespace with process {mine} ("
+                ))
+                && reached.message.contains("of another mount namespace")
+                && reached.message.contains(&format!("/proc/{mine}/root"))
+                && reached.message.ends_with("would let RUN reach that process's files")
+                && reached.guidance.starts_with(shared)
+                && reached.guidance.contains("shareProcessNamespace: true")
+                && reached.guidance.contains("hostPID: true")
+                && reached.guidance.contains("--pid container:<name>")
+                && reached.guidance.contains("--pid=host"),
+            "{}: {}",
+            reached.message,
+            reached.guidance
+        );
+        let many = refuse_reachable_peers(how, PeerScan::TooMany).unwrap_err();
+        assert!(
+            many.code == 1
+                && many.message.contains(&format!(
+                    "more than {} processes",
+                    exposure::PEER_SCAN_LIMIT
+                ))
+                && many.guidance.starts_with(shared),
+            "{}: {}",
+            many.message,
+            many.guidance
+        );
+        let errno = rustix::io::Errno::LOOP;
+        for (pid, what) in [
+            (Some(mine.clone()), format!("whether process {mine} (")),
+            (None, "which processes share its PID namespace".to_owned()),
+        ] {
+            let unknown = refuse_reachable_peers(how, PeerScan::Unknown(pid, errno)).unwrap_err();
+            assert!(
+                unknown.code == 1
+                    && unknown.message.contains(&what)
+                    && unknown.message.contains(&errno.to_string())
+                    && unknown.message.contains("without knowing")
+                    && unknown.guidance.contains("/proc/<pid>/ns/mnt")
+                    && unknown.guidance.contains("share no PID namespace"),
+                "{}: {}",
+                unknown.message,
+                unknown.guidance
+            );
+        }
     }
 
     /// `--snapshot-mode` and `--snapshot-workers` reach the walk with their
