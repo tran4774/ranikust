@@ -235,16 +235,18 @@ pub(crate) fn userns_network() -> Option<Vec<libc::sock_filter>> {
 /// `no_new_privs` as an unprivileged test needs, and gives its wait status;
 /// exit code 200 when the filter could not be installed, 201 when `check`
 /// panicked (so the child never unwinds into the test harness's copy).
-/// `check` must only make system calls. Its tests live in `tests::kernel` modules, which
-/// `just test-aarch64` skips under qemu-user: a filter of aarch64 numbers
-/// cannot be installed in an x86_64 kernel.
+/// `check` must only make system calls. Its tests live in `tests::kernel`
+/// modules, which `just test-aarch64` skips under qemu-user: a filter of
+/// aarch64 numbers cannot be installed in an x86_64 kernel.
 #[cfg(test)]
 pub(crate) fn under_filter(prog: &Program, check: impl Fn() -> i32) -> i32 {
     let fprog = libc::sock_fprog {
         len: u16::try_from(prog.insns.len()).unwrap(),
         filter: prog.insns.as_ptr().cast_mut(),
     };
-    // SAFETY: the child only makes syscalls and exits with `_exit`.
+    // SAFETY: the child only makes syscalls and exits with `_exit`, unless
+    // `check` panics (a failing test): the panic hook may then wait for a
+    // lock another thread held at the fork, a hang, never a pass.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {

@@ -1125,8 +1125,8 @@ impl Runner {
             None
         };
         // An LSM's `EACCES` on the keyring join fails a full-sandbox `RUN`
-        // whose profile lets it reach a keyring (ADR-0109); `Direct` is
-        // under the container's profile, as before.
+        // whose profile lets it reach a keyring (ADR-0109), but not the
+        // probe's; `Direct` is under the container's profile.
         let keyring_eacces_ok = match spec.isolation {
             Isolation::Full => self.probe || profile.is_some_and(SeccompProfile::refuses_keyrings),
             Isolation::Direct => true,
@@ -3428,15 +3428,22 @@ mod tests {
     /// or an errno the child would take for "unsupported" (`EINVAL`). Under
     /// such a profile the `RUN`'s bounding set is still Docker's defaults,
     /// its inheritable and ambient sets stay empty (with ranikust holding
-    /// `CAP_SYS_ADMIN` in both, which a root `execve` would add back), its
-    /// session belongs to its PID namespace, so no terminal of the
-    /// operator's is its controlling one, and ADR-0033's filter is still
-    /// installed under a held network namespace: `unshare -U` is refused,
-    /// which a control without that filter shows it would not be.
+    /// `CAP_SYS_ADMIN` in both, which a root `execve` would add back; the
+    /// ambient set goes with the inheritable one, so the case cannot tell
+    /// the two clears apart), its session belongs to its PID namespace, so
+    /// no terminal of the operator's is its controlling one, its init is
+    /// not dumpable (its `/proc/1/environ` stays closed to the command),
+    /// and ADR-0033's filter is still installed under a held network
+    /// namespace: `unshare -U` is refused, which a control without that
+    /// filter shows it would not be. A faked fork of the init fails the
+    /// `RUN` before the command runs, never leaving it as PID 1 without
+    /// an init.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_profile_cannot_fake_the_steps_before_it() {
-        // `PR_CAPBSET_DROP` and `PR_CAP_AMBIENT` (`linux/prctl.h`).
+        // `PR_SET_DUMPABLE`, `PR_CAPBSET_DROP` and `PR_CAP_AMBIENT`
+        // (`linux/prctl.h`).
+        const SET_DUMPABLE: u32 = 4;
         const CAPBSET_DROP: u32 = 24;
         const CAP_AMBIENT: u32 = 47;
         in_private_mount_namespace(|| {
@@ -3451,7 +3458,9 @@ mod tests {
                 .expect("Seccomp_filters in /proc/self/status");
             let probe = "grep -E '^(Cap|Seccomp_filters)' /proc/self/status; \
                  python3 -c 'import os; print(\"sid=%d\" % os.getsid(0))'; \
-                 if unshare -U true; then echo userns=ok; else echo userns=refused; fi";
+                 if unshare -U true; then echo userns=ok; else echo userns=refused; fi; \
+                 if cat /proc/1/environ >/dev/null 2>&1; then echo environ=read; \
+                 else echo environ=refused; fi";
             let defaults = format!("{:016x}", caps::docker_default_mask());
             let cases = [
                 (
@@ -3467,6 +3476,11 @@ mod tests {
                 (
                     "setsid, faked",
                     errno_rule("setsid", 0, None),
+                    Network::Host,
+                ),
+                (
+                    "dumpable, faked",
+                    errno_rule("prctl", 0, Some(SET_DUMPABLE)),
                     Network::Host,
                 ),
                 (
@@ -3489,6 +3503,20 @@ mod tests {
                     Network::Host,
                 ),
             ];
+            // `clone(SIGCHLD, ...)`, the init's fork of the command, faked:
+            // the `RUN` fails, and the command never runs, so it writes
+            // nothing.
+            runner.seccomp = Some(allow_but(&errno_rule(
+                "clone",
+                0,
+                Some(libc::SIGCHLD.unsigned_abs()),
+            )));
+            let out = top.join("out-fork");
+            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+            output_to(&out, &mut spec);
+            let forked = runner.run(spec, None, |job| clone_child(job, parent));
+            let forked_text = fs::read_to_string(&out).unwrap_or_default();
+            println!("fork, faked: {forked:?}\n{forked_text}");
             let mut got = Vec::new();
             for (name, rules, network) in cases {
                 if name.starts_with("capset") {
@@ -3522,8 +3550,19 @@ mod tests {
             }
             drop(mounts);
             let mut wrong = Vec::new();
+            if !matches!(
+                &forked,
+                Err(Error::Setup {
+                    step: Step::Init,
+                    ..
+                })
+            ) || !forked_text.is_empty()
+            {
+                wrong.push(format!("fork, faked: {forked:?}, output {forked_text:?}"));
+            }
             for (name, ok, text) in &got {
-                let mut want: Vec<(&str, String)> = vec![("CapBnd", defaults.clone())];
+                let mut want: Vec<(&str, String)> =
+                    vec![("CapBnd", defaults.clone()), ("environ", "refused".into())];
                 match *name {
                     "seccomp, faked, held network" => {
                         want.push(("Seccomp_filters", (own + 2).to_string()));
@@ -3545,9 +3584,9 @@ mod tests {
                 }
                 for (key, value) in want {
                     let seen = match key {
-                        "userns" => text
+                        "userns" | "environ" => text
                             .lines()
-                            .find_map(|l| l.strip_prefix("userns="))
+                            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
                             .map(str::trim),
                         _ => status_value(text, key),
                     };
@@ -3628,7 +3667,7 @@ mod tests {
                     assert!(
                         matches!(
                             &r,
-                            Err(Error::Setup { step: Step::SessionKeyring, source })
+                            Err(Error::Setup { step: Step::KeyringRefused, source })
                                 if source.raw_os_error() == Some(libc::EACCES)
                         ),
                         "{name}: {r:?}"

@@ -568,13 +568,18 @@ fn read_seccomp_file(path: &Path) -> Result<Vec<u8>, Invalid> {
     if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
         return Err(Invalid(format!("--seccomp={shown}: not a regular file")));
     }
+    let no_proc = |e| {
+        Invalid(format!(
+            "--seccomp={shown}: cannot open /proc/thread-self/fd to reopen the file: {e}"
+        ))
+    };
     let proc = rustix::fs::open(
         "/proc/thread-self/fd",
         OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(cannot_open)?;
-    if rustix::fs::fstatfs(&proc).map_err(cannot_open)?.f_type != rustix::fs::PROC_SUPER_MAGIC {
+    .map_err(no_proc)?;
+    if rustix::fs::fstatfs(&proc).map_err(no_proc)?.f_type != rustix::fs::PROC_SUPER_MAGIC {
         return Err(Invalid(format!(
             "--seccomp={shown}: cannot open the file: /proc/thread-self/fd is not on procfs"
         )));

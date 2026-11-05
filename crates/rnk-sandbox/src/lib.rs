@@ -1,9 +1,10 @@
 //! Isolated execution of `RUN` commands, and privilege probing.
 //!
 //! Creates the namespaces, mounts `proc`, `dev` and `sys`, enters the stage
-//! rootfs with `pivot_root` (or `MS_MOVE` where seccomp blocks it), installs
-//! the `RUN`'s seccomp profile ([`SeccompProfile`], Docker's by default),
-//! drops capabilities, manages stub mountpoints, switches to the `USER` ids that
+//! rootfs with `pivot_root` (or `MS_MOVE` where seccomp blocks it), drops
+//! the bounding set, installs the `RUN`'s seccomp profile
+//! ([`SeccompProfile`], Docker's by default), cuts the other capability
+//! sets, manages stub mountpoints, switches to the `USER` ids that
 //! `rnk-rootfs` resolved in the rootfs, and executes the command. In sequential
 //! kaniko mode it runs `RUN` directly on `/`, like kaniko.
 //!

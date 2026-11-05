@@ -165,8 +165,8 @@ pub(crate) struct ChildArgs {
     pub(crate) profile: Option<Program>,
     /// An `EACCES` on the session keyring's join, an LSM's refusal, lets
     /// the `RUN` start: its profile refuses every keyring call
-    /// ([`crate::SeccompProfile`]), or it is `Direct`, under the
-    /// container's profile.
+    /// ([`crate::SeccompProfile`]), it is `Direct`, under the container's
+    /// profile, or it is the privilege probe's.
     pub(crate) keyring_eacces_ok: bool,
     /// Capabilities to drop from the bounding set.
     pub(crate) drops: BoundingDrops,
@@ -517,12 +517,12 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     if args.loopback {
         loopback_up(err);
     }
-    // Every step that keeps the `RUN` in comes before its profile, the
-    // operator's, which may answer any call with any errno, 0 (a faked
-    // success) included (ADR-0109). After it only the steps that need it
-    // there: the capability cut, since the install needs `CAP_SYS_ADMIN`,
-    // and the init's and the command's own, which fail the `RUN` when a
-    // call is refused.
+    // Every step that keeps the `RUN` in and need not follow its profile
+    // comes before it: the profile is the operator's, and may answer any
+    // call with any errno, 0 (a faked success) included (ADR-0109). After
+    // it come the capability cut, since the install needs `CAP_SYS_ADMIN`,
+    // and the init's and the command's own steps, whose faked successes
+    // the threat model lists (section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
     // order); the command, PID 2, inherits it. Still as root: it counts
@@ -596,11 +596,7 @@ fn run_init(
     zero_args_and_environment(err, parent);
     // The command blocks reading the go pipe until every write end is
     // closed: the init's goes in `close_all_except`, after its own steps.
-    let (go_r, go_w) = check(
-        err,
-        Step::Init,
-        rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC),
-    );
+    let (go_r, go_w) = init_pipe(err);
     // A plain `fork`: no `CLONE_VM`, a null stack, the child continues on a
     // copy of this stack, as the spawner's clone.
     let null: libc::c_long = 0;
@@ -621,6 +617,13 @@ fn run_init(
         fail(err, Step::Init, last_errno());
     }
     if ret == 0 {
+        // Only a real fork has the init, PID 1, for its parent: a profile
+        // that fakes the `clone` (errno 0) would have the init run the
+        // command itself, and a faked `getppid` gives 0 or below.
+        // SAFETY: a plain syscall without arguments.
+        if unsafe { libc::getppid() } != 1 {
+            fail(err, Step::Init, Errno::PROTO);
+        }
         // The command: the status pipe is the init's alone.
         // SAFETY: closing a descriptor number this process holds.
         unsafe { libc::close(status_w) };
@@ -650,6 +653,24 @@ fn run_init(
     // SAFETY: `_exit` ends the process at once; the kernel then kills what
     // is left of the namespace.
     unsafe { libc::_exit(0) }
+}
+
+/// The init's go pipe, close-on-exec, through `libc` into descriptors set
+/// to -1 first: after the `RUN`'s profile, a `pipe2` faked with errno 0
+/// writes nothing, and `rustix` would read its buffer uninitialised.
+fn init_pipe(err: RawFd) -> (OwnedFd, OwnedFd) {
+    let mut fds: [libc::c_int; 2] = [-1, -1];
+    // SAFETY: `pipe2` writes at most two descriptors into `fds`.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        fail(err, Step::Init, last_errno());
+    }
+    let [r, w] = fds;
+    if r < 0 || w < 0 {
+        fail(err, Step::Init, Errno::BADF);
+    }
+    // SAFETY: both are new descriptors of this process, owned by nothing
+    // else.
+    unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) }
 }
 
 /// The command waits here until the init has closed its write end of the
@@ -753,10 +774,14 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t) {
         fail_init(e);
     }
     // Armed at the start; checked again, with ranikust still the parent.
-    match rustix::process::parent_process_death_signal() {
-        Ok(Some(Signal::KILL)) => {}
-        Ok(_) => fail_init(Errno::INVAL),
-        Err(e) => fail_init(e),
+    // Through `libc` into a set variable: a faked `prctl` writes nothing.
+    let mut signal: libc::c_int = 0;
+    // SAFETY: `PR_GET_PDEATHSIG` writes one `int` at the pointer.
+    if unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &raw mut signal) } < 0 {
+        fail_init(last_errno());
+    }
+    if signal != libc::SIGKILL {
+        fail_init(Errno::INVAL);
     }
     if !parent_alive(parent) {
         fail_init(Errno::SRCH);
@@ -2079,11 +2104,7 @@ fn clear_ambient(err: RawFd) {
 /// for its permitted one. The ambient set goes with it (the kernel keeps
 /// only capabilities both permitted and inheritable there).
 fn clear_inheritable(err: RawFd) {
-    let current = check(
-        err,
-        Step::CapabilitySets,
-        rustix::thread::capabilities(None),
-    );
+    let current = current_capabilities(err);
     check(
         err,
         Step::CapabilitySets,
@@ -2097,14 +2118,54 @@ fn clear_inheritable(err: RawFd) {
     );
 }
 
+/// This thread's capability sets, read through `libc` into zeroed data:
+/// after the `RUN`'s profile, a `capget` faked with errno 0 writes
+/// nothing, and `rustix` would read its buffer uninitialised. Empty sets
+/// then keep nothing, which fails safe.
+fn current_capabilities(err: RawFd) -> CapabilitySets {
+    // `struct __user_cap_header_struct` and `__user_cap_data_struct` of
+    // `linux/capability.h`, version 3: two data structs of 32 bits each.
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: libc::c_int,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const VERSION_3: u32 = 0x2008_0522;
+    let mut header = Header {
+        version: VERSION_3,
+        pid: 0,
+    };
+    let empty = Data {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    };
+    let mut data = [empty; 2];
+    // SAFETY: `capget` writes two data structs, as version 3 asks.
+    let r = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
+    if r < 0 {
+        fail(err, Step::CapabilitySets, last_errno());
+    }
+    let [low, high] = data;
+    let set = |l: u32, h: u32| CapabilitySet::from_bits_retain(u64::from(l) | u64::from(h) << 32);
+    CapabilitySets {
+        effective: set(low.effective, high.effective),
+        permitted: set(low.permitted, high.permitted),
+        inheritable: set(low.inheritable, high.inheritable),
+    }
+}
+
 /// Effective and permitted to Docker's defaults, of those the process has;
 /// inheritable empty.
 fn set_capability_sets(err: RawFd, args: &ChildArgs) {
-    let current = check(
-        err,
-        Step::CapabilitySets,
-        rustix::thread::capabilities(None),
-    );
+    let current = current_capabilities(err);
     let keep = current.permitted & CapabilitySet::from_bits_retain(args.keep);
     check(
         err,
@@ -2137,6 +2198,7 @@ pub(crate) fn join_session_keyring(err: RawFd, eacces_ok: bool) {
         match last_errno() {
             Errno::NOSYS | Errno::PERM => {}
             Errno::ACCESS if eacces_ok => {}
+            Errno::ACCESS => fail(err, Step::KeyringRefused, Errno::ACCESS),
             e => fail(err, Step::SessionKeyring, e),
         }
     }
@@ -2488,7 +2550,12 @@ mod tests {
                         "args": [{{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}}]}}"#
                 );
                 let got = failure_under(&rule, |w| join_session_keyring(w, eacces_ok));
-                let want = fails.then_some((Step::SessionKeyring, errno));
+                let step = if errno == libc::EACCES {
+                    Step::KeyringRefused
+                } else {
+                    Step::SessionKeyring
+                };
+                let want = fails.then_some((step, errno));
                 assert_eq!(got, want, "errno {errno}, eacces_ok {eacces_ok}");
             }
         }

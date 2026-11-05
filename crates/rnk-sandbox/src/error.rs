@@ -79,6 +79,9 @@ pub enum Step {
     MaskPath,
     /// Joining a new session keyring.
     SessionKeyring,
+    /// The same join, refused with `EACCES` (an LSM) where the `RUN`'s
+    /// profile lets it reach a keyring (ADR-0109).
+    KeyringRefused,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
     Secret,
     /// Creating the network namespace of `--network=none` in the helper
@@ -103,7 +106,7 @@ pub enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 42] = [
+    const ALL: [Step; 43] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -137,6 +140,7 @@ impl Step {
         Step::ReadonlyPath,
         Step::MaskPath,
         Step::SessionKeyring,
+        Step::KeyringRefused,
         Step::Secret,
         Step::NetNamespace,
         Step::JoinNetwork,
@@ -198,9 +202,11 @@ impl Step {
             Step::Session => "start a new session",
             Step::ReadonlyPath => "make a /proc path read-only",
             Step::MaskPath => "mask a /proc or /sys path",
-            Step::SessionKeyring => {
-                "join a new session keyring (where an LSM refuses it, RUN needs a seccomp \
-                 profile that refuses keyctl, add_key and request_key, as --seccomp=default does)"
+            Step::SessionKeyring => "join a new session keyring",
+            Step::KeyringRefused => {
+                "join a new session keyring, which an LSM refused (a RUN goes on without one \
+                 only under a seccomp profile that refuses keyctl, add_key and request_key, \
+                 as --seccomp=default does)"
             }
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",
@@ -436,8 +442,8 @@ mod tests {
     }
 
     /// A filter that fails to install is named, the profile's failure says
-    /// how to run without it, and a refused keyring join which profile lets
-    /// the `RUN` go on.
+    /// how to run without it, and a keyring join an LSM refused which
+    /// profile lets the `RUN` go on; any other failed join names no flag.
     #[test]
     fn a_failed_filter_install_names_the_filter() {
         let text = |step| {
@@ -453,7 +459,9 @@ mod tests {
         let network = text(Step::NetworkFilter);
         assert!(network.contains("network.none-userns"), "{network}");
         assert!(!network.contains("--seccomp=unconfined"), "{network}");
+        let refused = text(Step::KeyringRefused);
+        assert!(refused.contains("--seccomp=default"), "{refused}");
         let keyring = text(Step::SessionKeyring);
-        assert!(keyring.contains("--seccomp=default"), "{keyring}");
+        assert!(!keyring.contains("--seccomp"), "{keyring}");
     }
 }
