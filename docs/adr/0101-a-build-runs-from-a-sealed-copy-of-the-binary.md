@@ -51,7 +51,9 @@ Chosen option: (y). At start-up a build runs again from a sealed memfd copy
 of ranikust's binary, else an `O_TMPFILE` copy; when neither works it
 builds on from the installed binary with today's barriers and a warning.
 Kaniko mode on `/` refuses a binary on a writable mount other than `/`'s,
-reached by one, or on one it cannot tell, sealed or not (below).
+reached by one, or on one it cannot tell, sealed or not, and a PID
+namespace shared with a process of another mount namespace that ranikust
+reaches through `/proc` when it starts (below).
 The maintainer chose (x) first, 2026-11-04 ("tất cả theo khuyến nghị", all
 as recommended). Building it showed the overlay's limits; asked whether to
 keep the overlay first, the maintainer answered on 2026-11-04: "Luôn dùng
@@ -185,7 +187,9 @@ The decision:
   or one through a writable mount of another file system that the table
   shows without placing the binary on it, is not detected: an accepted
   residual risk, with the guidance to mount the binary from a path that no
-  writable mount shares. The maintainer decided, on 2026-11-04 unless an
+  writable mount shares, narrowed by the refusal of a process of another
+  mount namespace that ranikust reaches when it starts (the next item) to
+  the processes that appear later. The maintainer decided, on 2026-11-04 unless an
   item gives another date (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
@@ -198,8 +202,9 @@ The decision:
   [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388);
   the next two
   [in a sixth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6639451756),
-  and the last
-  [in a seventh](https://github.com/tran4774/ranikust/issues/32#issuecomment-6650030126)):
+  the next
+  [in a seventh](https://github.com/tran4774/ranikust/issues/32#issuecomment-6650030126),
+  and the last after the red team's review of the pull request):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
     "Từ chối, hướng dẫn `:ro` (khuyến nghị)" (refuse, with guidance to
@@ -271,7 +276,37 @@ The decision:
     mounts only where the build may be kaniko mode on a container's `/`,
     so that a host build looks up no mount point: "Chỉ đo khi có thể là
     kaniko trên / (khuyến nghị)" (measure only where it may be kaniko on
-    `/`, as recommended).
+    `/`, as recommended);
+  - on 2026-11-05, after the red team's review, to refuse in #32, before
+    the build, kaniko mode on `/` where a visible process lives in another
+    mount namespace and ranikust can open its `/proc/<pid>/root`, so that
+    a `RUN` could too, with the guidance not to share the PID namespace;
+    an unreachable process is not counted, the check runs once at
+    start-up, and a process that appears later stays a residual risk:
+    "Từ chối trong #32 (khuyến nghị)" (refuse in #32, as recommended).
+- **A process of another mount namespace, in kaniko mode on `/`.** A `RUN`
+  there shares the container's PID namespace. Where another container
+  shares it too (Kubernetes `shareProcessNamespace: true` or
+  `hostPID: true`, Docker or podman `--pid container:<name>` or
+  `--pid=host`), a `RUN` could reach the files of that container's
+  processes through `/proc`, which the build container's mount table does
+  not show. Kaniko mode on `/` refuses to build, with the binary's check
+  and before anything is written, when it finds, once as it starts, a
+  process of its PID namespace in another mount namespace (the device and
+  inode of `/proc/<pid>/ns/mnt`, opened `O_PATH`, against its own) whose
+  `/proc/<pid>/root` it opens (`O_PATH`), with the guidance not to share
+  the build container's PID namespace with another container. A process
+  whose root it may not open (`EACCES`, `EPERM`) is not counted, such as
+  Kubernetes' pause container at uid 65535; one gone meanwhile (`ENOENT`,
+  `ESRCH`) is skipped; any other error, `/proc` that cannot be listed, or
+  more than 32768 processes refuse the build (fail closed), each with its
+  own message. A `--pid=host` container is refused by the same rule when
+  ranikust reaches a process of the host or of another container.
+  ranikust looks with its start-up privileges, before it trims them to a
+  `RUN`'s (ADR-0078), so it may refuse a process no `RUN` would reach (a
+  container given `CAP_SYS_PTRACE`, a Dockerfile whose `RUN`s are not
+  root): wider than needed, accepted as failing closed. A process that
+  appears after that look is not seen: an accepted residual risk.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -315,8 +350,17 @@ The decision:
   writable view of the binary that this table does not show, or one
   through a writable mount of another file system that the table shows
   without placing the binary on it, is not detected, a residual risk the
-  maintainer accepted. The operator mounts the binary from a path that no
+  maintainer accepted, narrowed by the refusal of a process of another
+  mount namespace that ranikust reaches when it starts to the processes
+  that appear later. The operator mounts the binary from a path that no
   writable mount shares.
+- Bad, because kaniko mode on `/` refuses a container that shares its PID
+  namespace with another one whose processes ranikust reaches when it
+  starts (a root sidecar under Kubernetes `shareProcessNamespace: true`,
+  Docker or podman `--pid container:<name>`, `--pid=host` with root
+  processes in reach), which built before: the operator gives the build a
+  PID namespace of its own. It may refuse one that no `RUN` would reach,
+  since ranikust looks before it trims its privileges.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
 - Neutral, because under an emulator (qemu-user, Rosetta) the process that
@@ -495,6 +539,22 @@ The decision:
   another file bound read-write and replaced builds. The red team's
   configuration, run again by hand, is refused the same way, the
   installed binary unchanged [measured].
+- A process of another mount namespace: T0
+  `a_peer_scan_refuses_the_first_process_reached_in_another_mount_namespace`
+  (ranikust itself and entries that are not pids are not probed; a process
+  in its own namespace, unreachable or gone is passed over),
+  `a_peer_scan_with_no_process_reached_finds_none`,
+  `a_peer_scan_refuses_what_it_cannot_tell` (a probe's other error, an
+  unreadable `/proc` entry), `a_peer_scan_past_its_bound_refuses`,
+  `ranikust_itself_is_in_its_own_mount_namespace_and_a_missing_process_is_gone`
+  (the real probe) and the binary's
+  `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
+  (messages and guidance). T1 `pid-peers` (rootless podman 5.7.0, Linux
+  7.0): in a default container with `--pid container:<peer>` and the
+  binary bound `:ro`, a root peer with a writable bind of its own, the red
+  team's configuration, is refused before the state directory exists and
+  before any `RUN`; a peer run as uid 1000, which
+  ranikust's probe meets with `EACCES`, and no peer build [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its

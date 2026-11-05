@@ -95,7 +95,11 @@ These are documented properties, not vulnerabilities:
   that holds it, read-only: Docker `:ro`, Kubernetes `readOnly: true`; a
   file with one link, no link of it bound read-write; on a root that is
   not an overlay (overlayfs or fuse-overlayfs), a binary in the root too),
-  or on a mount it cannot determine
+  or on a mount it cannot determine, and kaniko mode on a container's `/`
+  whose PID namespace another container or the host shares, when ranikust
+  reaches one of their processes through `/proc` as it starts (give the
+  build container a PID namespace of its own: no Kubernetes
+  `shareProcessNamespace` or `hostPID`, no `--pid`)
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks));
   the rootless mode and its AppArmor advice for Ubuntu 24.04 or later are

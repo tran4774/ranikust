@@ -196,7 +196,15 @@ build again.
 When the measurement fails, mount `/proc` so that `/proc/self/exe` and
 `/proc/self/mountinfo` can be read, and let the seccomp profile allow
 `fstatfs`, `openat2` and `statx` (ranikust looks up the binary's name and the
-writable mount points of its file system with `openat2` and `statx`). Devices
+writable mount points of its file system with `openat2` and `statx`).
+A `RUN` shares the container's PID namespace, so where another container
+shares it too (Kubernetes `shareProcessNamespace: true` or `hostPID: true`,
+Docker or podman `--pid container:<name>` or `--pid=host`), a `RUN` could
+reach that container's files through `/proc`. ranikust refuses to build when,
+as it starts, it reaches a process of another mount namespace there, or cannot
+tell (more than 32768 processes among them); it looks with more privileges
+than a `RUN` keeps, so it may refuse a process no `RUN` would reach. Give the
+build container a PID namespace of its own ([ADR-0101]). Devices
 you give the container with `--device` stay reachable by a `RUN`: ranikust
 cannot tell them from the container's own, so pass only what the build needs.
 

@@ -1,10 +1,9 @@
 # ADR-0101 (T21): kaniko mode on `/` in a container that shares its PID
-# namespace with another one (`--pid container:<peer>`). A root peer, which
-# ranikust reaches through /proc when it starts, is refused before the
-# state directory exists and before any RUN, even with its own mounts
-# holding the binary's tree read-write while the build container binds the
-# binary read-only (the red team's scenario, with a RUN that only looks); a
-# peer of another user, which ranikust does not reach, and no peer build.
+# namespace with another one (`--pid container:<peer>`). A root peer with a
+# writable bind of its own, which ranikust reaches through /proc when it
+# starts, is refused before the state directory exists and before any RUN
+# (the red team's configuration, with a RUN that only looks); a peer of
+# another user, which ranikust does not reach, and no peer build.
 case_run() {
   local d name="rnk-peer-$$"
   d="$(out peers)"

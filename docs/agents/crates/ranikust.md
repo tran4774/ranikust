@@ -52,7 +52,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `setup.rs` | `enter_namespace`, `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay` |
 | `statedir.rs` | `prepare` (ADR-0050 checks), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
-| `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only` |
+| `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
 | `limits.rs` | `--limit <name>=<value>`: bounds on what a registry or image can make ranikust hold or wait for (ADR-0079, T15) |
 | `startup.rs` | the kernel check (ADR-0028) |
 | `build.rs` | `run`: the Dockerfile, the stage graph, the context walk, `rnk-sched` over a `StageRunner`, outputs |
@@ -153,7 +153,12 @@ Each step before the next; design in
    a binary not weighed because no container was found at the start
    (`NotWeighed`), or a failed call, each with its own
    guidance; a link of it bound read-write, even a removed one, is a
-   reach); then the warnings for
+   reach), and with a process of its PID namespace in another mount
+   namespace whose `/proc/<pid>/root` it opens (`refuse_reachable_peers`
+   on `exposure::scan_peers`, ADR-0101: once, with the start-up
+   privileges, so wider than a `RUN`'s; `EACCES`/`EPERM` not counted, gone
+   skipped, any other error or more than `PEER_SCAN_LIMIT` processes
+   refused); then the warnings for
    secret-looking build arguments and file secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
@@ -267,8 +272,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   guidance sends a user back to the mode they used), `statedir` (each
   ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
   nothing created through a planted link; `0700`), `container` (every signal
-  of kaniko's container check on a fake host, in kaniko's order).
-  `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`
+  of kaniko's container check on a fake host, in kaniko's order),
+  `exposure` (`scan_peers`' decisions on a fake probe: the first process
+  reached, what cannot be told, the bound; the real probe on ranikust
+  itself and a missing pid).
+  `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
+  `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`
   (ADR-0101); `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
@@ -304,7 +313,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   a directory root and names removed on the host after the binds included;
   `binary-mounts-made` its mount tables made inside the container (covered
   and stacked binds, a mount added during the walk, a container told only
-  once ranikust started).
+  once ranikust started); `pid-peers` the test of `refuse_reachable_peers`
+  (`--pid container:<peer>`: a root peer refused before any `RUN`, a peer
+  of another user and no peer build).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

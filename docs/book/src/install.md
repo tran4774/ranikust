@@ -77,7 +77,12 @@ overlay (overlayfs, as Docker's and containerd's default storage gives, or
 fuse-overlayfs, as rootless podman's can), such as
 [Docker's btrfs, zfs or vfs drivers or a directory root](how-it-builds.md#on-a-containers-),
 it too must have one link (leave it no hard-link alias) and no other writable
-mount may reach it. Put the build context there too, read-only:
+mount may reach it. Give the container a PID namespace of its own: no
+`shareProcessNamespace: true` or `hostPID: true` on its Kubernetes pod, no
+`--pid container:<name>` or `--pid=host`. ranikust refuses to build where it
+reaches, as it starts, a process of another container or of the host through
+`/proc`, since a `RUN` could reach that process's files. Put the build context
+there too, read-only:
 
 ```sh
 docker run --rm \
