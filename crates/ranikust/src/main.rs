@@ -916,10 +916,11 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              build without knowing"
         ))
         .with_guidance(
-            "let the container's seccomp and LSM profiles answer listing /proc/<pid>/task, \
-             opening /proc/<pid>, /proc/<pid>/task/<tid> and their root and ns/mnt with O_PATH \
-             and fstat on ns/mnt with success, EACCES or EPERM, never another error, and share \
-             no PID namespace with another container (ADR-0101)",
+            "let the container's seccomp and LSM profiles answer opening /proc/<pid>, \
+             /proc/<pid>/task, /proc/<pid>/task/<tid> and their root with success, EACCES or \
+             EPERM and nothing else, allow reading the /proc/<pid>/task they open, opening \
+             ns/mnt with O_PATH and fstat on it, and share no PID namespace with another \
+             container (ADR-0101)",
         )),
         PeerScan::Unlisted(e) => Err(Failure::error(format!(
             "{how}: cannot list the processes of its PID namespace in /proc ({e}); kaniko mode \
@@ -1552,7 +1553,7 @@ mod tests {
                      ranikust reaches through /proc: opening /proc/<pid>/task/<tid>/root failed \
                      ({errno})"
                 ),
-                "with success, EACCES or EPERM, never another error",
+                "with success, EACCES or EPERM and nothing else, allow reading",
             ),
             (
                 PeerScan::Unlisted(errno),

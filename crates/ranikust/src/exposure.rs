@@ -125,11 +125,10 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 
 /// Warns for each process listed in `/proc`, ranikust excepted, whose
 /// `/proc/<pid>/environ` ranikust reads and which sets one of `variables`
-/// ([`secret_variables`]) to a non-empty value, naming it by its pid and
-/// its escaped name, empty when that cannot be read: a `RUN` reads that
-/// environment too. A process whose environment cannot be read is skipped,
-/// and nothing more is said once `/proc` cannot be listed. The caller runs
-/// it after
+/// ([`secret_variables`]) to a non-empty value, naming it as [`Process`]
+/// does: a `RUN` reads that environment too. A process whose environment
+/// cannot be read is skipped, and nothing more is said once `/proc` cannot
+/// be listed. The caller runs it after
 /// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust warns only
 /// about environments a root `RUN` reads, not about one only its start-up
 /// privileges reach.
@@ -147,12 +146,16 @@ pub(crate) fn warn_credential_holders(variables: &[String]) {
         if found.is_empty() {
             continue;
         }
+        let process = Process {
+            comm: comm(&pid),
+            pid,
+        };
         tracing::warn!(
-            "process {pid} ({}) holds {} in its environment, which every RUN can read through \
-             /proc/{pid}/environ in kaniko mode on /; start ranikust as the container's PID 1 \
+            "process {process} holds {} in its environment, which every RUN can read through \
+             /proc/{}/environ in kaniko mode on /; start ranikust as the container's PID 1 \
              (exec it) so that no other process holds the credentials",
-            comm(&pid),
-            found.join(", ")
+            found.join(", "),
+            process.pid
         );
     }
 }
@@ -346,24 +349,32 @@ fn probe(own: (u64, u64), pid: &str, left: usize) -> (Peer, usize) {
     )
     .and_then(rustix::fs::Dir::read_from)
     .map(|list| list.map(|entry| entry.map(|e| e.file_name().to_bytes().to_vec())));
-    let thread = |tid: Option<&str>| {
-        let Some(tid) = tid else {
-            return task(own, &dir, PROCESS_STEPS);
-        };
-        match rustix::fs::openat(
-            &dir,
-            format!("task/{tid}"),
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(at) => task(own, &at, THREAD_STEPS),
-            Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
-            // Not even looked into, so its root is out of reach too.
-            Err(Errno::ACCESS | Errno::PERM) => Thread::Unreachable,
-            Err(e) => Thread::Unknown("opening /proc/<pid>/task/<tid>", e),
-        }
+    walk(
+        tids,
+        left,
+        |tid| thread_at(own, &dir, tid),
+        || comm_at(&dir),
+    )
+}
+
+/// The probe of thread `tid` of the process at `dir`, its `/proc/<pid>`,
+/// or of the process as one (`None`) where its threads may not be listed.
+fn thread_at(own: (u64, u64), dir: &OwnedFd, tid: Option<&str>) -> Thread {
+    let Some(tid) = tid else {
+        return task(own, dir, PROCESS_STEPS);
     };
-    walk(tids, left, thread, || comm_at(&dir))
+    match rustix::fs::openat(
+        dir,
+        format!("task/{tid}"),
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(at) => task(own, &at, THREAD_STEPS),
+        Err(Errno::NOENT | Errno::SRCH) => Thread::Gone,
+        // Not even looked into, so its root is out of reach too.
+        Err(Errno::ACCESS | Errno::PERM) => Thread::Unreachable,
+        Err(e) => Thread::Unknown("opening /proc/<pid>/task/<tid>", e),
+    }
 }
 
 /// What [`probe`] decides from a process's thread ids `tids` (its
@@ -400,8 +411,7 @@ fn walk<T: AsRef<[u8]>>(
             Err(Errno::NOENT | Errno::SRCH) => break,
             Err(e) => return (Peer::Unknown("listing /proc/<pid>/task", e, name()), seen),
         };
-        // A thread's name is its tid in ASCII digits; any other entry is
-        // not a thread.
+        // Only a tid in ASCII digits names a thread (not `.` or `..`).
         let Some(tid) = std::str::from_utf8(tid.as_ref())
             .ok()
             .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
@@ -740,26 +750,47 @@ mod tests {
             .unwrap()
         };
         let me = open(Path::new("/proc/self"));
-        assert_eq!(task(own, &me, PROCESS_STEPS), Thread::Same);
-        assert_eq!(task((own.0, own.1 ^ 1), &me, PROCESS_STEPS), Thread::Other);
-        // A failure names the step of the steps given: a `root`, then an
-        // `ns/mnt`, that loops.
+        let pid = std::process::id().to_string();
+        // The process as one, and its first thread, whose tid is its pid.
+        for tid in [None, Some(pid.as_str())] {
+            assert_eq!(thread_at(own, &me, tid), Thread::Same, "{tid:?}");
+            let other = (own.0, own.1 ^ 1);
+            assert_eq!(thread_at(other, &me, tid), Thread::Other, "{tid:?}");
+        }
+        // A failure names the step of its path: the process's own `root`, a
+        // thread's `root`, then a thread's `ns/mnt`, each a loop.
         let fake = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink("root", fake.path().join("root")).unwrap();
+        let at = |p: &str| fake.path().join(p);
+        std::os::unix::fs::symlink("root", at("root")).unwrap();
+        fs::create_dir_all(at("task/1/ns")).unwrap();
+        std::os::unix::fs::symlink("root", at("task/1/root")).unwrap();
         let dir = open(fake.path());
         assert_eq!(
-            task(own, &dir, PROCESS_STEPS),
+            thread_at(own, &dir, None),
             Thread::Unknown("opening /proc/<pid>/root", Errno::LOOP)
         );
-        fs::remove_file(fake.path().join("root")).unwrap();
-        fs::create_dir_all(fake.path().join("root")).unwrap();
-        fs::create_dir_all(fake.path().join("ns")).unwrap();
-        assert_eq!(task(own, &dir, THREAD_STEPS), Thread::Gone);
-        std::os::unix::fs::symlink("mnt", fake.path().join("ns/mnt")).unwrap();
         assert_eq!(
-            task(own, &dir, THREAD_STEPS),
-            Thread::Unknown("reading /proc/<pid>/task/<tid>/ns/mnt", Errno::LOOP)
+            thread_at(own, &dir, Some("1")),
+            Thread::Unknown("opening /proc/<pid>/task/<tid>/root", Errno::LOOP)
         );
+        assert_eq!(thread_at(own, &dir, Some("2")), Thread::Gone);
+        fs::remove_file(at("task/1/root")).unwrap();
+        fs::create_dir(at("task/1/root")).unwrap();
+        assert_eq!(thread_at(own, &dir, Some("1")), Thread::Gone);
+        std::os::unix::fs::symlink("mnt", at("task/1/ns/mnt")).unwrap();
+        let looped = Thread::Unknown("reading /proc/<pid>/task/<tid>/ns/mnt", Errno::LOOP);
+        assert_eq!(thread_at(own, &dir, Some("1")), looped);
+        // A thread it may not look into is out of reach; root reads through
+        // the mode.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(at("task"), fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = thread_at(own, &dir, Some("1"));
+        fs::set_permissions(at("task"), fs::Permissions::from_mode(0o755)).unwrap();
+        if rustix::process::geteuid().is_root() {
+            assert_eq!(denied, looped);
+        } else {
+            assert_eq!(denied, Thread::Unreachable);
+        }
     }
 
     #[test]
