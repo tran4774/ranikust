@@ -46,7 +46,7 @@ fn a0(v: u64) -> [u64; 6] {
 }
 
 fn compiled(json: &str) -> Program {
-    compile(json.as_bytes(), &cx((6, 8))).unwrap()
+    compile(json.as_bytes(), &cx((6, 8))).unwrap().program
 }
 
 fn refusal(json: &str) -> String {
@@ -255,7 +255,7 @@ fn long_jumps_reach_their_targets() {
 /// `RUN` (Docker's capabilities, kernel 6.8).
 #[test]
 fn docker_default_allows_and_refuses_what_moby_says() {
-    let p = compile(DOCKER_DEFAULT, &cx((6, 8))).unwrap();
+    let p = compile(DOCKER_DEFAULT, &cx((6, 8))).unwrap().program;
     let eperm = errno(libc::EPERM);
     let enosys = errno(libc::ENOSYS);
     let newuser = u64::try_from(libc::CLONE_NEWUSER).unwrap();
@@ -369,10 +369,10 @@ fn docker_default_allows_and_refuses_what_moby_says() {
         }
     }
     // ptrace and process_vm_* need 4.8.
-    let old = compile(DOCKER_DEFAULT, &cx((4, 7))).unwrap();
+    let old = compile(DOCKER_DEFAULT, &cx((4, 7))).unwrap().program;
     assert_eq!(verdict(&old, libc::SYS_ptrace, a0(0)), eperm);
     assert_eq!(verdict(&old, libc::SYS_process_vm_writev, a0(0)), eperm);
-    let new = compile(DOCKER_DEFAULT, &cx((5, 0))).unwrap();
+    let new = compile(DOCKER_DEFAULT, &cx((5, 0))).unwrap().program;
     assert_eq!(verdict(&new, libc::SYS_ptrace, a0(0)), ALLOW);
 }
 
@@ -470,6 +470,94 @@ fn defaults_unknown_calls_and_flags() {
         r#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["s390_runtime_instr"],
         "action":"SCMP_ACT_KILL","includes":{"arches":["s390x"]}}]}"#,
     );
+}
+
+/// A profile refuses the keyring calls only when none of `keyctl`,
+/// `add_key` and `request_key` can run, whatever its arguments (ADR-0109):
+/// a `RUN` under it then reaches no keyring, and an `EACCES` on its join
+/// does not fail it.
+#[test]
+fn keyrings_are_refused_only_when_no_call_can_reach_one() {
+    let refuses = |json: &str| {
+        compile(json.as_bytes(), &cx((6, 8)))
+            .unwrap()
+            .refuses_keyrings()
+    };
+    let rule = |names: &str, action: &str, args: &str| {
+        format!(r#"{{"names":[{names}],"action":"{action}","args":[{args}]}}"#)
+    };
+    let all = r#""keyctl","add_key","request_key""#;
+    let two = r#""add_key","request_key""#;
+    let on_join = r#"{"index":0,"value":1,"op":"SCMP_CMP_EQ"}"#;
+    let profile = |default: &str, rules: &[String]| {
+        format!(
+            r#"{{"defaultAction":"{default}","syscalls":[{}]}}"#,
+            rules.join(",")
+        )
+    };
+    let errno = "SCMP_ACT_ERRNO";
+    let allow = "SCMP_ACT_ALLOW";
+    assert!(SeccompProfile::docker_default().unwrap().refuses_keyrings());
+    for (json, want) in [
+        (profile(allow, &[]), false),
+        (profile("SCMP_ACT_LOG", &[]), false),
+        (profile(errno, &[]), true),
+        (profile("SCMP_ACT_KILL_PROCESS", &[]), true),
+        (profile(allow, &[rule(all, errno, "")]), true),
+        (profile(allow, &[rule(all, "SCMP_ACT_TRAP", "")]), true),
+        // Errno 0 fakes success: the call still does not run.
+        (
+            profile(
+                allow,
+                &[format!(
+                    r#"{{"names":[{all}],"action":"SCMP_ACT_ERRNO","errnoRet":0}}"#
+                )],
+            ),
+            true,
+        ),
+        (profile(allow, &[rule(two, errno, "")]), false),
+        (
+            profile(
+                allow,
+                &[rule(two, errno, ""), rule(r#""keyctl""#, errno, on_join)],
+            ),
+            false,
+        ),
+        (profile(errno, &[rule(r#""keyctl""#, allow, "")]), false),
+        (
+            profile(errno, &[rule(r#""keyctl""#, allow, on_join)]),
+            false,
+        ),
+        (
+            profile(errno, &[rule(r#""add_key""#, "SCMP_ACT_LOG", "")]),
+            false,
+        ),
+        // The strictest matching rule wins: an unconditional refusal
+        // covers a conditional allow.
+        (
+            profile(
+                errno,
+                &[
+                    rule(r#""keyctl""#, allow, on_join),
+                    rule(r#""keyctl""#, errno, ""),
+                ],
+            ),
+            true,
+        ),
+        // A rule `includes` keeps out does not count.
+        (
+            profile(
+                errno,
+                &[
+                    r#"{"names":["keyctl"],"action":"SCMP_ACT_ALLOW","includes":{"arches":["s390x"]}}"#
+                        .to_owned(),
+                ],
+            ),
+            true,
+        ),
+    ] {
+        assert_eq!(refuses(&json), want, "{json}");
+    }
 }
 
 #[test]
@@ -997,39 +1085,10 @@ fn kernel_releases_parse_as_moby_reads_them() {
 mod kernel {
     use super::*;
 
-    /// Runs `check` in a forked child under `prog`, installed with
-    /// `no_new_privs` as an unprivileged test needs, and gives its wait status.
-    /// `check` gives 0, or the number of the check that failed.
+    /// [`under_filter`](crate::seccomp::under_filter); `check` gives 0, or
+    /// the number of the check that failed.
     fn under(prog: &Program, check: impl Fn() -> i32) -> i32 {
-        let fprog = libc::sock_fprog {
-            len: u16::try_from(prog.insns.len()).unwrap(),
-            filter: prog.insns.as_ptr().cast_mut(),
-        };
-        // SAFETY: the child only makes syscalls and exits with `_exit`.
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0);
-        if pid == 0 {
-            // SAFETY: plain syscalls in the forked child; `fprog` lives on.
-            unsafe {
-                // A SIGSYS of a check dumps no core.
-                if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
-                    || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
-                    || libc::syscall(
-                        libc::SYS_seccomp,
-                        libc::SECCOMP_SET_MODE_FILTER,
-                        prog.flags,
-                        &raw const fprog,
-                    ) != 0
-                {
-                    libc::_exit(200);
-                }
-                libc::_exit(check());
-            }
-        }
-        let mut status = 0;
-        // SAFETY: reaping the child forked above.
-        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
-        status
+        crate::seccomp::under_filter(prog, check)
     }
 
     fn exited_ok(status: i32) {

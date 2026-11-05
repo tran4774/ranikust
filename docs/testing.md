@@ -686,10 +686,11 @@ Exceptions, all from emulation (the native CI job runs them all):
   are skipped: qemu-user runs a thread of its own, so the set-up stops at its
   single-thread check before the privilege refusal the tests expect.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` and
-  the tests of `seccomp::profile::tests::kernel` are skipped: their filters
-  are written for aarch64 syscall numbers, and qemu-user cannot install them
-  in the x86_64 host kernel. The same profiles still run on the tests'
-  interpreter there.
+  the tests of every `tests::kernel` module (rnk-sandbox's seccomp profiles,
+  capability drops and keyring join under a filter) are skipped: their
+  filters are written for aarch64 syscall numbers, and qemu-user cannot
+  install them in the x86_64 host kernel. The same profiles still run on the
+  tests' interpreter there.
 - The tests that spawn an aarch64 binary themselves (ranikust's `cli` and
   `metrics`, rnk-store's `processes`): without a binfmt_misc entry for
   aarch64 the kernel cannot execute it, so the recipe skips them with a

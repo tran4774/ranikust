@@ -86,9 +86,11 @@ pub enum Step {
     NetNamespace,
     /// Joining that network namespace.
     JoinNetwork,
-    /// Installing a seccomp filter: the `RUN`'s profile, or the filter of
-    /// a `RUN` in such a namespace.
+    /// Installing the `RUN`'s seccomp profile.
     Seccomp,
+    /// Installing the seccomp filter of a `RUN` in such a namespace
+    /// (ADR-0033).
+    NetworkFilter,
     /// `chroot` into a root other than `/` (`Isolation::Direct`).
     Chroot,
     /// Giving the command the `RLIMIT_NOFILE` ranikust started with.
@@ -101,7 +103,7 @@ pub enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 41] = [
+    const ALL: [Step; 42] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -139,6 +141,7 @@ impl Step {
         Step::NetNamespace,
         Step::JoinNetwork,
         Step::Seccomp,
+        Step::NetworkFilter,
         Step::Chroot,
         Step::FileLimit,
         Step::CoreLimit,
@@ -199,7 +202,13 @@ impl Step {
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",
             Step::JoinNetwork => "join the network namespace",
-            Step::Seccomp => "install a seccomp filter",
+            Step::Seccomp => {
+                "install the RUN's seccomp profile (--seccomp=unconfined runs RUN without one)"
+            }
+            Step::NetworkFilter => {
+                "install the seccomp filter of RUN --network=none in a user namespace \
+                 (--allow network.none-userns, ADR-0033)"
+            }
             Step::Chroot => "chroot into the root",
             Step::FileLimit => "set RLIMIT_NOFILE",
             Step::CoreLimit => "set RLIMIT_CORE",
@@ -421,5 +430,24 @@ mod tests {
         let text = e.to_string();
         assert!(text.contains("pivot_root"), "{text}");
         assert!(text.contains("not permitted"), "{text}");
+    }
+
+    /// A filter that fails to install is named, and the profile's failure
+    /// says how to run without it.
+    #[test]
+    fn a_failed_filter_install_names_the_filter() {
+        let text = |step| {
+            Error::Setup {
+                step,
+                source: io::Error::from_raw_os_error(libc::EINVAL),
+            }
+            .to_string()
+        };
+        let profile = text(Step::Seccomp);
+        assert!(profile.contains("seccomp profile"), "{profile}");
+        assert!(profile.contains("--seccomp=unconfined"), "{profile}");
+        let network = text(Step::NetworkFilter);
+        assert!(network.contains("network.none-userns"), "{network}");
+        assert!(!network.contains("--seccomp=unconfined"), "{network}");
     }
 }

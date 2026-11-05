@@ -28,6 +28,7 @@ use rustix::mount::{
 use rustix::process::{Gid, Signal, Uid};
 use rustix::thread::{CapabilitySet, CapabilitySets};
 
+use crate::caps::BoundingDrops;
 use crate::error::Step;
 use crate::plan::{
     DEV_NODES, DEV_NULL, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM,
@@ -157,12 +158,18 @@ pub(crate) struct ChildArgs {
     /// by a user namespace and with `lo` already up, which the child joins
     /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
     pub(crate) netns: Option<RawFd>,
-    /// The seccomp filters installed before the capability drop, in order:
-    /// the `RUN`'s profile ([`crate::SeccompProfile`]) unless unconfined,
-    /// then, with `netns`, [`crate::seccomp::userns_network`] on top.
-    pub(crate) seccomp: Vec<Program>,
-    /// Capabilities to drop from the bounding set, and how many.
-    pub(crate) drops: ([u32; 64], usize),
+    /// With `netns`, [`crate::seccomp::userns_network`]: installed first.
+    pub(crate) network_filter: Option<Program>,
+    /// The `RUN`'s profile ([`crate::SeccompProfile`]) unless unconfined:
+    /// installed on top, last of the steps that need `CAP_SYS_ADMIN`.
+    pub(crate) profile: Option<Program>,
+    /// An `EACCES` on the session keyring's join, an LSM's refusal, lets
+    /// the `RUN` start: its profile refuses every keyring call
+    /// ([`crate::SeccompProfile`]), or it is `Direct`, under the
+    /// container's profile.
+    pub(crate) keyring_eacces_ok: bool,
+    /// Capabilities to drop from the bounding set.
+    pub(crate) drops: BoundingDrops,
     /// The capabilities kept (Docker's defaults), as a mask.
     pub(crate) keep: u64,
     pub(crate) uid: Uid,
@@ -510,17 +517,41 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     if args.loopback {
         loopback_up(err);
     }
-    // Before the profile, which refuses `keyctl` (runc's order); the
-    // command, PID 2, inherits the keyring. Still as root: it counts against
-    // root's key quota, and the command keeps possessing it after the switch.
-    join_session_keyring(err);
+    // Every step that keeps the `RUN` in comes before its profile, the
+    // operator's, which may answer any call with any errno, 0 (a faked
+    // success) included (ADR-0109). After it only the steps that need it
+    // there: the capability cut, since the install needs `CAP_SYS_ADMIN`,
+    // and the init's and the command's own, which fail the `RUN` when a
+    // call is refused.
+    //
+    // The keyring before the profile, which refuses `keyctl` (runc's
+    // order); the command, PID 2, inherits it. Still as root: it counts
+    // against root's key quota, and the command keeps possessing it after
+    // the switch.
+    join_session_keyring(err, args.keyring_eacces_ok);
+    check(err, Step::BoundingSet, args.drops.drop_all());
+    clear_ambient(err);
+    clear_inheritable(err);
+    // The init's own: the command, PID 2, inherits both until its
+    // `execve`, and gets a session of its own, in which no terminal of the
+    // operator's can be its controlling one.
+    check(
+        err,
+        Step::Init,
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
+    );
+    check(err, Step::Session, rustix::process::setsid().map(drop));
     // After the namespace is joined and every mount made, which the filters
-    // would refuse.
-    for p in &args.seccomp {
-        install_filter(err, p);
+    // would refuse. ADR-0033's first: the profile on top cannot fake its
+    // install, and a call both refuse gets the profile's errno.
+    if let Some(p) = &args.network_filter {
+        install_filter(err, p, Step::NetworkFilter);
+    }
+    if let Some(p) = &args.profile {
+        install_filter(err, p, Step::Seccomp);
     }
 
-    drop_capabilities(err, args);
+    set_capability_sets(err, args);
     run_init(err, parent, fds.status_w, args, ptrs)
 }
 
@@ -543,9 +574,10 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// The init then keeps only what it needs to wait: no capability, no
 /// descriptor but the status pipe's write end, no signal handler (the
 /// kernel drops every signal a process of the namespace sends to its PID 1
-/// whose disposition is the default), not dumpable, its copy of ranikust's
-/// argument and environment strings zeroed, in a session of its own so that
-/// no terminal signal reaches it. The command waits on the go pipe until
+/// whose disposition is the default), its copy of ranikust's argument and
+/// environment strings zeroed; [`run`] made it not dumpable and gave it a
+/// session of its own, so that no terminal signal reaches it, before the
+/// `RUN`'s profile. The command waits on the go pipe until
 /// the init has given all that up, so a failure of the init's own steps
 /// (`Step::Init`) always comes before the command ran. The init reaps every
 /// process that reparents to it; when the command exits, it writes the
@@ -558,19 +590,10 @@ fn run_init(
     args: &ChildArgs,
     ptrs: &ExecPtrs<'_>,
 ) -> ! {
-    // Before the fork, so the command inherits it until its own `execve`.
-    check(
-        err,
-        Step::Init,
-        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
-    );
     // `/proc/1/cmdline` has no ptrace check: the strings ranikust started
     // with (`--build-arg` values, `--secret` paths, the environment) must not
     // be readable there by the command.
     zero_args_and_environment(err, parent);
-    // Before the fork, so the command does not inherit it: it starts its own
-    // session and resets its own state.
-    check(err, Step::Init, rustix::process::setsid().map(drop));
     // The command blocks reading the go pipe until every write end is
     // closed: the init's goes in `close_all_except`, after its own steps.
     let (go_r, go_w) = check(
@@ -1982,10 +2005,11 @@ fn close_listed(keep: &[RawFd]) -> bool {
     }
 }
 
-/// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]). Without
-/// `no_new_privs`: the child still has `CAP_SYS_ADMIN` here, and a setuid
-/// binary of the `RUN` must keep working.
-fn install_filter(err: RawFd, p: &Program) {
+/// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]), failing
+/// as `step`, which names the filter. Without `no_new_privs`: the child
+/// still has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must
+/// keep working.
+fn install_filter(err: RawFd, p: &Program, step: Step) {
     let prog = libc::sock_fprog {
         len: u16::try_from(p.insns.len()).unwrap_or(u16::MAX),
         filter: p.insns.as_ptr().cast_mut(),
@@ -2004,8 +2028,8 @@ fn install_filter(err: RawFd, p: &Program) {
     // synchronise; the child has none.
     match r {
         0 => {}
-        r if r < 0 => fail(err, Step::Seccomp, last_errno()),
-        _ => fail(err, Step::Seccomp, Errno::SRCH),
+        r if r < 0 => fail(err, step, last_errno()),
+        _ => fail(err, step, Errno::SRCH),
     }
 }
 
@@ -2013,18 +2037,10 @@ fn install_filter(err: RawFd, p: &Program) {
 /// permitted set to the defaults (of those the process has), inheritable
 /// empty, as Docker since 20.10.14. Root keeps the defaults through
 /// `execve`; any other user loses them at `setresuid` and can regain at
-/// most the defaults through a setuid binary or file capabilities.
+/// most the defaults through a setuid binary or file capabilities. The
+/// full sandbox's child makes the same steps around its profile ([`run`]).
 pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
-    let (drops, len) = &args.drops;
-    for &cap in drops.iter().take(*len) {
-        let set = CapabilitySet::from_bits_retain(1u64.checked_shl(cap).unwrap_or(0));
-        match rustix::thread::remove_capability_from_bounding_set(set) {
-            Ok(()) => {}
-            // Past the kernel's last capability.
-            Err(Errno::INVAL) => break,
-            Err(e) => fail(err, Step::BoundingSet, e),
-        }
-    }
+    check(err, Step::BoundingSet, args.drops.drop_all());
     trim_capabilities(err, args);
 }
 
@@ -2033,11 +2049,45 @@ pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
 /// unlike the bounding set (ADR-0051). Same rules as
 /// [`drop_capabilities`].
 pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
+    clear_ambient(err);
+    set_capability_sets(err, args);
+}
+
+fn clear_ambient(err: RawFd) {
     match rustix::thread::clear_ambient_capability_set() {
         // Kernels before 4.3 have no ambient set.
         Ok(()) | Err(Errno::INVAL) => {}
         Err(e) => fail(err, Step::AmbientSet, e),
     }
+}
+
+/// Empties the inheritable set and keeps the others as they are, so that
+/// it can come before the profile, whose install needs `CAP_SYS_ADMIN`: a
+/// root command's `execve` adds the inheritable set to the bounding set
+/// for its permitted one. The ambient set goes with it (the kernel keeps
+/// only capabilities both permitted and inheritable there).
+fn clear_inheritable(err: RawFd) {
+    let current = check(
+        err,
+        Step::CapabilitySets,
+        rustix::thread::capabilities(None),
+    );
+    check(
+        err,
+        Step::CapabilitySets,
+        rustix::thread::set_capabilities(
+            None,
+            CapabilitySets {
+                inheritable: CapabilitySet::empty(),
+                ..current
+            },
+        ),
+    );
+}
+
+/// Effective and permitted to Docker's defaults, of those the process has;
+/// inheritable empty.
+fn set_capability_sets(err: RawFd, args: &ChildArgs) {
     let current = check(
         err,
         Step::CapabilitySets,
@@ -2060,18 +2110,22 @@ pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
 
 /// A new, empty session keyring, so that a `RUN` cannot use the keys of
 /// ranikust's session keyring (threat T11), as runc does, before the
-/// `RUN`'s profile. Where `keyctl` is missing or refused (an outer profile,
-/// such as Docker's), the `RUN` cannot reach any keyring either.
-pub(crate) fn join_session_keyring(err: RawFd) {
+/// `RUN`'s profile. Where `keyctl` is missing or refused by a filter
+/// around ranikust (`ENOSYS`, `EPERM`: an outer profile, such as Docker's),
+/// the `RUN` cannot reach any keyring either. `EACCES`, an LSM's refusal of
+/// the join alone, fails the `RUN` unless `eacces_ok` (ADR-0109): its
+/// profile refuses every keyring call, or it is `Direct`.
+pub(crate) fn join_session_keyring(err: RawFd, eacces_ok: bool) {
     // `KEYCTL_JOIN_SESSION_KEYRING` from `linux/keyctl.h`, a stable ABI.
     const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
     let anonymous: libc::c_long = 0;
     // SAFETY: a plain syscall; a null name asks for an anonymous keyring.
     let r = unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_JOIN_SESSION_KEYRING, anonymous) };
     if r < 0 {
-        let e = last_errno();
-        if !matches!(e, Errno::NOSYS | Errno::PERM | Errno::ACCESS) {
-            fail(err, Step::SessionKeyring, e);
+        match last_errno() {
+            Errno::NOSYS | Errno::PERM => {}
+            Errno::ACCESS if eacces_ok => {}
+            e => fail(err, Step::SessionKeyring, e),
         }
     }
 }
@@ -2373,6 +2427,58 @@ pub(crate) fn decode_failure(record: [u8; 8]) -> Option<(Step, i32)> {
 mod tests {
     use super::*;
 
+    /// Seccomp filters run by the kernel, in a forked child.
+    mod kernel {
+        use super::*;
+
+        /// The keyring join refused with `errno`, as an LSM (`EACCES`) or
+        /// a filter around ranikust (`EPERM`, `ENOSYS`) does: `EACCES` fails
+        /// the `RUN` unless its profile refuses every keyring call
+        /// (ADR-0109); the others never do; any other errno always does.
+        #[test]
+        fn an_eacces_on_the_keyring_join_fails_unless_the_profile_refuses_keyrings() {
+            for (errno, eacces_ok, fails) in [
+                (libc::EACCES, false, true),
+                (libc::EACCES, true, false),
+                (libc::EPERM, false, false),
+                (libc::ENOSYS, false, false),
+                (libc::EINVAL, true, true),
+            ] {
+                // `KEYCTL_JOIN_SESSION_KEYRING` is 1.
+                let json = format!(
+                    r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                        {{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno},
+                          "args": [{{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}}]}}]}}"#
+                );
+                let prog = crate::SeccompProfile::from_json(json.as_bytes())
+                    .unwrap()
+                    .program;
+                let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+                let status = crate::seccomp::under_filter(&prog, || {
+                    join_session_keyring(w.as_raw_fd(), eacces_ok);
+                    0
+                });
+                drop(w);
+                let mut record = [0u8; 8];
+                let n = rustix::io::read(&r, &mut record).unwrap();
+                let case = format!("errno {errno}, eacces_ok {eacces_ok}: status {status:#x}");
+                assert!(libc::WIFEXITED(status), "{case}");
+                if fails {
+                    assert_eq!(libc::WEXITSTATUS(status), 127, "{case}");
+                    assert_eq!(n, 8, "{case}");
+                    assert_eq!(
+                        decode_failure(record),
+                        Some((Step::SessionKeyring, errno)),
+                        "{case}"
+                    );
+                } else {
+                    assert_eq!(libc::WEXITSTATUS(status), 0, "{case}");
+                    assert_eq!(n, 0, "{case}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn fd_paths() {
         for (fd, want) in [
@@ -2506,8 +2612,10 @@ mod tests {
             hostname: Vec::new(),
             loopback: false,
             netns: None,
-            seccomp: Vec::new(),
-            drops: ([0; 64], 0),
+            network_filter: None,
+            profile: None,
+            keyring_eacces_ok: false,
+            drops: BoundingDrops::NONE,
             keep: 0,
             uid: Uid::ROOT,
             gid: Gid::ROOT,

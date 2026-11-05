@@ -76,6 +76,9 @@ const ARCHES: [&str; 23] = [
 #[derive(Clone)]
 pub struct SeccompProfile {
     pub(crate) program: Program,
+    /// The filter refuses `keyctl`, `add_key` and `request_key` whatever
+    /// their arguments: a `RUN` under it reaches no keyring.
+    refuses_keyrings: bool,
 }
 
 impl SeccompProfile {
@@ -101,10 +104,14 @@ impl SeccompProfile {
     /// what ranikust does not support (see ADR-0109), or as
     /// [`SeccompProfile::docker_default`].
     pub fn from_json(json: &[u8]) -> Result<Self> {
-        let cx = Context::live()?;
-        Ok(Self {
-            program: compile(json, &cx)?,
-        })
+        compile(json, &Context::live()?)
+    }
+
+    /// Whether the profile refuses `keyctl`, `add_key` and `request_key`
+    /// whatever their arguments, with any errno or a kill: then a `RUN`
+    /// under it reaches no keyring, ranikust's included (ADR-0109).
+    pub(crate) fn refuses_keyrings(&self) -> bool {
+        self.refuses_keyrings
     }
 }
 
@@ -113,6 +120,7 @@ impl fmt::Debug for SeccompProfile {
         f.debug_struct("SeccompProfile")
             .field("instructions", &self.program.insns.len())
             .field("flags", &self.program.flags)
+            .field("refuses_keyrings", &self.refuses_keyrings)
             .finish()
     }
 }
@@ -293,6 +301,14 @@ impl Action {
         }
     }
 
+    /// Whether the call runs: allowed, logged or not.
+    fn runs(self) -> bool {
+        match self {
+            Self::Allow | Self::Log => true,
+            Self::KillProcess | Self::KillThread | Self::Trap | Self::Errno(_) => false,
+        }
+    }
+
     /// Lower first: the kernel's precedence between stacked filters.
     fn rank(self) -> u8 {
         match self {
@@ -436,7 +452,19 @@ fn bad(msg: impl Into<String>) -> Error {
     Error::SeccompProfile(msg.into())
 }
 
-fn compile(json: &[u8], cx: &Context) -> Result<Program> {
+/// The calls that reach a keyring: the profile must refuse all three for a
+/// `RUN` to reach none.
+const KEYRING_CALLS: [&str; 3] = ["keyctl", "add_key", "request_key"];
+
+/// Whether a call with these `rules` never runs, whatever its arguments: a
+/// rule without conditions refuses it, which wins over any other, or the
+/// default refuses it and no rule lets it run.
+fn refused_always(rules: &[Rule], default: Action) -> bool {
+    rules.iter().any(|r| r.conds.is_empty() && !r.action.runs())
+        || (!default.runs() && !rules.iter().any(|r| r.action.runs()))
+}
+
+fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     let p: Json = serde_json::from_slice(json).map_err(|e| bad(e.to_string()))?;
     let default = action(
         p.default_action
@@ -500,15 +528,23 @@ fn compile(json: &[u8], cx: &Context) -> Result<Program> {
     for rules in calls.values_mut() {
         rules.sort_by_key(|r| r.action.rank());
     }
+    // A call `libc` does not number counts as reachable.
+    let refuses_keyrings = KEYRING_CALLS.iter().all(|name| {
+        syscalls::number(name)
+            .is_some_and(|nr| refused_always(calls.get(&nr).map_or(&[], Vec::as_slice), default))
+    });
     let insns = emit(&calls, default).map_err(|e| match e {
         AsmError::TooLong(n) => bad(format!(
             "the profile compiles to {n} instructions, more than the kernel's {MAX_INSNS}"
         )),
         AsmError::Label => bad("internal error: a jump of the filter is wrong"),
     })?;
-    Ok(Program {
-        insns: insns.into(),
-        flags,
+    Ok(SeccompProfile {
+        program: Program {
+            insns: insns.into(),
+            flags,
+        },
+        refuses_keyrings,
     })
 }
 

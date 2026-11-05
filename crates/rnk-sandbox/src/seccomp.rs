@@ -37,7 +37,8 @@
 //! libraries' `getifaddrs` need it (ADR-0033 records the residual risk).
 //!
 //! The `RUN`'s seccomp profile ([`SeccompProfile`], ADR-0109) is compiled
-//! by [`profile`] and installed under this filter, which stacks on it.
+//! by [`profile`] and installed on top of this filter: the profile is the
+//! operator's, and must not be able to fake this filter's install.
 
 mod asm;
 mod profile;
@@ -228,6 +229,45 @@ pub(crate) fn userns_network() -> Option<Vec<libc::sock_filter>> {
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) fn userns_network() -> Option<Vec<libc::sock_filter>> {
     None
+}
+
+/// Runs `check` in a forked child under `prog`, installed with
+/// `no_new_privs` as an unprivileged test needs, and gives its wait status;
+/// exit code 200 when the filter could not be installed. `check` must only
+/// make system calls. Its tests live in `tests::kernel` modules, which
+/// `just test-aarch64` skips under qemu-user: a filter of aarch64 numbers
+/// cannot be installed in an x86_64 kernel.
+#[cfg(test)]
+pub(crate) fn under_filter(prog: &Program, check: impl Fn() -> i32) -> i32 {
+    let fprog = libc::sock_fprog {
+        len: u16::try_from(prog.insns.len()).unwrap(),
+        filter: prog.insns.as_ptr().cast_mut(),
+    };
+    // SAFETY: the child only makes syscalls and exits with `_exit`.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        // SAFETY: plain syscalls in the forked child; `fprog` lives on.
+        unsafe {
+            // A SIGSYS of a check dumps no core.
+            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || libc::syscall(
+                    libc::SYS_seccomp,
+                    libc::SECCOMP_SET_MODE_FILTER,
+                    prog.flags,
+                    &raw const fprog,
+                ) != 0
+            {
+                libc::_exit(200);
+            }
+            libc::_exit(check());
+        }
+    }
+    let mut status = 0;
+    // SAFETY: reaping the child forked above.
+    assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+    status
 }
 
 #[cfg(test)]
