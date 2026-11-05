@@ -1948,9 +1948,10 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// Limits, known and accepted: the last fallback stops at 2^20, so a
 /// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
 /// stay open where neither `close_range` (Linux 5.9) nor a readable
-/// `/proc/self/fd` is there; and a seccomp profile that answers
+/// `/proc/self/fd` is there; and a filter around ranikust that answers
 /// `close_range` with success without running it goes unnoticed, as no
-/// call here checks that the descriptors are gone.
+/// call here checks that the descriptors are gone (a `RUN`'s profile
+/// cannot answer so, ADR-0109).
 fn close_all_except(keep: &[RawFd]) {
     let mut ok = true;
     let mut next: u32 = 0;
@@ -2654,7 +2655,8 @@ mod tests {
 
         /// The reads after the profile take `EINTR` for a failure instead of
         /// reading again: only a filter answers so, and it could forever.
-        /// The alarm stops a loop.
+        /// The alarm stops a loop. The parent check reads this process's
+        /// `stat` and its real parent, so that unfiltered it holds.
         #[test]
         fn an_eintr_on_a_read_after_the_profile_fails_instead_of_looping() {
             let stat = rustix::fs::open(
@@ -2665,7 +2667,8 @@ mod tests {
             .unwrap();
             let parent = ParentCheck {
                 stat: stat.as_raw_fd(),
-                parent: 0,
+                // SAFETY: a plain syscall without arguments.
+                parent: unsafe { libc::getppid() },
             };
             let (go, _go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
             let eintr = |name: &str| {
@@ -2689,13 +2692,16 @@ mod tests {
                 zero_args_and_environment(w, parent);
             });
             assert_eq!(zeroing, init(libc::EINTR), "argument areas");
-            let alive = failure_under(&eintr("pread64"), |w| {
-                alarm();
-                if !parent_alive(parent) {
-                    fail(w, Step::Init, Errno::SRCH);
-                }
-            });
-            assert_eq!(alive, init(libc::ESRCH), "parent check");
+            let alive = |rule: &str| {
+                failure_under(rule, |w| {
+                    alarm();
+                    if !parent_alive(parent) {
+                        fail(w, Step::Init, Errno::SRCH);
+                    }
+                })
+            };
+            assert_eq!(alive(""), None, "parent check, unfiltered");
+            assert_eq!(alive(&eintr("pread64")), init(libc::ESRCH), "parent check");
         }
 
         /// A `#!` heredoc's `execveat` answered with no error fails the
@@ -2733,28 +2739,37 @@ mod tests {
         }
 
         /// A `waitpid` of the init's answered with 0 or `EINTR` ends the
-        /// init (125) instead of waiting on in a loop; the alarm stops that
-        /// loop.
+        /// init (125) instead of waiting on in a loop, though its command
+        /// has exited (7) and waits to be reaped: unfiltered, the init
+        /// reaps it and gives its status. The alarm stops a loop.
         #[test]
         fn a_waitpid_answered_with_0_or_eintr_ends_the_init() {
-            for errno in [0, libc::EINTR] {
-                let rule = format!(
-                    r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
-                        {{"names": ["wait4", "waitid"], "action": "SCMP_ACT_ERRNO",
-                          "errnoRet": {errno}}}]}}"#
-                );
-                let prog = crate::SeccompProfile::faking(rule.as_bytes())
+            let init_under = |rule: &str| {
+                let json =
+                    format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
+                let prog = crate::SeccompProfile::faking(json.as_bytes())
                     .unwrap()
                     .program;
                 let status = crate::seccomp::under_filter(&prog, || {
+                    // SAFETY: the forked command only exits.
+                    let command = unsafe { libc::fork() };
+                    if command == 0 {
+                        // SAFETY: `_exit` ends the process at once.
+                        unsafe { libc::_exit(7) }
+                    }
                     // SAFETY: `alarm` only arms a timer.
                     unsafe { libc::alarm(5) };
-                    reap_until(1)
+                    libc::WEXITSTATUS(reap_until(command))
                 });
-                assert!(
-                    libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 125,
-                    "errno {errno}: status {status:#x}"
+                libc::WIFEXITED(status).then_some(libc::WEXITSTATUS(status))
+            };
+            assert_eq!(init_under(""), Some(7), "unfiltered");
+            for errno in [0, libc::EINTR] {
+                let rule = format!(
+                    r#"{{"names": ["wait4", "waitid"], "action": "SCMP_ACT_ERRNO",
+                        "errnoRet": {errno}}}"#
                 );
+                assert_eq!(init_under(&rule), Some(125), "errno {errno}");
             }
         }
 
