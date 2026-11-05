@@ -170,10 +170,10 @@ The decision:
   it, so the binary must not be reachable through a writable mount other
   than the container's root. The check reads the container's own mount
   table, so a writable view of the binary that this table does not show,
-  or a writable mount of another file system that it shows without placing
-  the binary on it, is not detected: an accepted residual risk, with the
-  guidance to mount the binary from a path that no writable mount shares.
-  The maintainer decided, on 2026-11-04 and 2026-11-05 (the second to fourth
+  or one through a writable mount of another file system that it shows
+  without placing the binary on it, is not detected: an accepted residual
+  risk, with the guidance to mount the binary from a path that no writable
+  mount shares. The maintainer decided, on 2026-11-04 (the second to fourth
   [recorded on #32](https://github.com/tran4774/ranikust/issues/32#issuecomment-6626333197),
   the fifth and sixth
   [in a later comment](https://github.com/tran4774/ranikust/issues/32#issuecomment-6627795316),
@@ -183,7 +183,7 @@ The decision:
   [in a fourth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6634131493),
   and the next
   [in a fifth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6635199388);
-  on 2026-11-05 the last two
+  the last two
   [in a sixth](https://github.com/tran4774/ranikust/issues/32#issuecomment-6639451756)):
   - after the host-safety review of the pull request that closes #32, to
     refuse a binary bound read-write from outside the container:
@@ -244,9 +244,10 @@ The decision:
     writable-mount checks, and the guidance asks for a binary with a
     single link: "fuse-overlayfs tính là overlay (khuyến nghị)";
   - on 2026-11-05, to widen the residual risk accepted above, still in
-    general terms, to a writable mount of another file system that the
-    container's mount table shows without placing the binary on it, the
-    guidance unchanged: "Ghi rộng ra, vẫn chung chung (khuyến nghị)";
+    general terms, to a writable view of the binary through a writable
+    mount of another file system that the container's mount table shows
+    without placing the binary on it, the guidance unchanged: "Ghi rộng
+    ra, vẫn chung chung (khuyến nghị)";
   - on 2026-11-05, to record here that the cases ranikust cannot tell are
     refused (fail closed), and that the mount points are reached through
     `RootPath` by `statx` only, never opened: "Ghi vào ADR-0101 trên nhánh
@@ -291,10 +292,11 @@ The decision:
   `target/release/ranikust` is a hard link of its copy in `deps/`
   [measured], so the operator mounts a copy (`cp`, `install`).
 - Bad, because the check sees only the container's own mount table: a
-  writable view of the binary that this table does not show, or a writable
-  mount of another file system that it shows without placing the binary on
-  it, is not detected, a residual risk the maintainer accepted. The
-  operator mounts the binary from a path that no writable mount shares.
+  writable view of the binary that this table does not show, or one
+  through a writable mount of another file system that it shows without
+  placing the binary on it, is not detected, a residual risk the
+  maintainer accepted. The operator mounts the binary from a path that no
+  writable mount shares.
 - Neutral, because file capabilities and set-user-ID bits of the installed
   file do not carry over to the copy. ranikust uses neither.
 - Neutral, because under an emulator (qemu-user, Rosetta) the process that
@@ -408,9 +410,10 @@ The decision:
   the binary's own name removed while it runs, a link left elsewhere: it
   failed with the stale name placed),
   `a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached` (a name
-  too long, or a path `RootPath` refuses, at a mount point or at the
-  binary's name, keeps its errno unless a writable bind of the binary is
-  found),
+  too long keeps its errno and a path `RootPath` refuses is `EIO`, at a
+  mount point or at the binary's name, unless a writable bind of the
+  binary is found; a name that leads to the binary on another mount
+  places nothing),
   `a_binary_in_a_root_that_is_not_an_overlay_is_weighed` (an overlay root
   with other links builds and reads no mount table; another root with
   other links, none, or reached by a writable mount is refused, one

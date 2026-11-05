@@ -1055,6 +1055,8 @@ fn a_failed_lookup_keeps_its_errno_unless_the_binary_is_reached() {
     let mut refused = line_at(u64::MAX - 2, &up, false);
     refused.fs_root = PathBuf::from("/refused");
     assert_eq!(check(&[&own, &refused], &file), Err(Errno::IO));
+    assert_eq!(check(&[&own], &up), Err(Errno::IO));
+    assert_eq!(check(&[&own, &bind], &up), Ok(Some(true)));
     // Its root holds the path the own mount would give the binary.
     let tree = line_at(u64::MAX - 3, &dir.path().join("missing"), false);
     assert_eq!(check(&[&own, &tree], &file), Ok(None));

@@ -197,8 +197,9 @@ What a change here must keep, with where it lives:
   component; a file root by its inode. Mount points and the binary's name
   are reached from `/` through `RootPath` by `statx` only, never opened;
   the binary's own name counts only while it still leads to the binary on
-  its mount. What cannot be told is `Unplaced` (fail closed), a call that
-  fails otherwise `Unknown`.
+  its mount. What cannot be told is `Unplaced`, a call that fails
+  otherwise `Unknown` (both refused: fail closed), unless a writable mount
+  was found to reach the binary (`Exposed`).
 - **`Direct`:** no namespace, mount or capability change on `/`; the command
   gets its own session, whose process group is killed with `SIGKILL` once it
   exits (waited with `WNOWAIT`). Details in the design doc's variants table.

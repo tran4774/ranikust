@@ -552,8 +552,8 @@ fn reached_writable(
     placed.then_some(false)
 }
 
-// The calls of the seal fail with an errno; `EIO` only stands in for an
-// error that has none.
+// Syscalls fail with an errno; `EIO` stands in for an `rnk-rootfs` error
+// that has none.
 fn errno_of(e: &io::Error) -> Errno {
     Errno::from_io_error(e).unwrap_or(Errno::IO)
 }
