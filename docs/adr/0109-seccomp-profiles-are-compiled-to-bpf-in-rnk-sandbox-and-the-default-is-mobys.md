@@ -134,15 +134,15 @@ after the host-safety review of that order:
   after it see a refusal, never a success that did not happen. A filter
   around ranikust, which the operator's runtime installs, may still fake
   one; ranikust does not control it.
-- **Nor can it answer with one of the kernel's own codes** (the
-  maintainer, 2026-11-05, after the host-safety review of the errno rule:
-  "Sửa luôn, coi là phần của quyết định (khuyến nghị)", fix it now, as part
-  of the decision, as recommended). An errno from 512 to 530, the
-  `ERESTART*` codes and the others `include/linux/errno.h` keeps for the
-  kernel, in a rule's `errnoRet` or the `defaultErrnoRet`, refuses the
-  profile (exit 2) as errno 0 does, checked on the same value: on 516
-  (`ERESTART_RESTARTBLOCK`) the kernel may run its restart block instead of
-  returning the refusal, and that can succeed.
+- **Nor can it answer with one of the kernel's own codes** (the maintainer,
+  2026-11-05, after the host-safety review of the errno rule: "Sửa luôn, coi
+  là phần của quyết định (khuyến nghị)", fix it now, as part of the decision,
+  as recommended). An errno from 512 to 530, the `ERESTART*` codes and their
+  neighbours in the kernel's `include/linux/errno.h`, in a rule's `errnoRet`
+  or the `defaultErrnoRet`, refuses the profile (exit 2) as errno 0 does,
+  checked on the same value: on 516 (`ERESTART_RESTARTBLOCK`) the kernel may
+  run its restart block instead of returning the refusal, and that can
+  succeed.
 - **After a refused keyring join, the child looks for ranikust's session
   keyring before the profile** ("Thăm dò keyring (khuyến nghị)", probe the
   keyring, as recommended), with

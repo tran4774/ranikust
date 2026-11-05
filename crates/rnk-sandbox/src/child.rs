@@ -516,8 +516,9 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     }
     // Every step that keeps the `RUN` in and need not follow its profile
     // comes before it: the profile is the operator's, and may refuse any
-    // call with any errno, one the child takes for "unsupported" included
-    // (errno 0, a faked success, is refused when it compiles; ADR-0109).
+    // call with any errno `--seccomp` accepts, one the child takes for
+    // "unsupported" included (errno 0, a faked success, and 512 to 530 are
+    // refused when it compiles; ADR-0109).
     // After it come the capability cut, since the install needs
     // `CAP_SYS_ADMIN`, and the init's and the command's own steps, which
     // only a filter around ranikust could fake (threat model, section 6).
@@ -1948,10 +1949,12 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// Limits, known and accepted: the last fallback stops at 2^20, so a
 /// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
 /// stay open where neither `close_range` (Linux 5.9) nor a readable
-/// `/proc/self/fd` is there; and a filter around ranikust that answers
+/// `/proc/self/fd` is there; a filter around ranikust that answers
 /// `close_range` with success without running it goes unnoticed, as no
 /// call here checks that the descriptors are gone (a `RUN`'s profile
-/// cannot answer so, ADR-0109).
+/// cannot answer so, ADR-0109); and in the init, a profile that refuses
+/// `close_range` and `close` keeps `close_listed` passing again, as it
+/// counts attempts, not successes (threat model, section 6).
 fn close_all_except(keep: &[RawFd]) {
     let mut ok = true;
     let mut next: u32 = 0;
@@ -2667,8 +2670,7 @@ mod tests {
             .unwrap();
             let parent = ParentCheck {
                 stat: stat.as_raw_fd(),
-                // SAFETY: a plain syscall without arguments.
-                parent: unsafe { libc::getppid() },
+                parent: i32::try_from(std::os::unix::process::parent_id()).unwrap(),
             };
             let (go, _go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
             let eintr = |name: &str| {
@@ -2739,9 +2741,9 @@ mod tests {
         }
 
         /// A `waitpid` of the init's answered with 0 or `EINTR` ends the
-        /// init (125) instead of waiting on in a loop, though its command
-        /// has exited (7) and waits to be reaped: unfiltered, the init
-        /// reaps it and gives its status. The alarm stops a loop.
+        /// init (125) instead of waiting on in a loop, with a command
+        /// (exit 7) still to reap: unfiltered, the init reaps it and gives
+        /// its status. The alarm stops a loop.
         #[test]
         fn a_waitpid_answered_with_0_or_eintr_ends_the_init() {
             let init_under = |rule: &str| {

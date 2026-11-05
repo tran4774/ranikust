@@ -112,15 +112,16 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   `syscalls[N]`; ADR-0109), a filter longer than the kernel's 4096
   instructions, and anything malformed; a file that is not a regular file
   or is over 1 MiB.
-- The profile is the operator's and may refuse any call with any errno, so
-  every step that need not follow it comes before it, in the order of
-  step 4. After it come the `capset` to the default sets, since the install
-  needs `CAP_SYS_ADMIN` without `no_new_privs`, so that a setuid binary of
-  the `RUN` keeps working, and the init's and the command's own steps
-  (step 5 on). A filter around ranikust may still fake a success; the
-  child checks what it can (the init's fork, an `execve` or `execveat` back
-  without an error and a blocking `waitpid` back with no child fail the
-  `RUN`, and a read goes into a value set beforehand), and the rest is in the
+- The profile is the operator's and may refuse any call with any errno
+  `--seccomp` accepts, so every step that need not follow it comes before
+  it, in the order of step 4. After it come the `capset` to the default
+  sets, since the install needs `CAP_SYS_ADMIN` without `no_new_privs`, so
+  that a setuid binary of the `RUN` keeps working, and the init's and the
+  command's own steps (step 5 on). A filter around ranikust may still fake a
+  success; the child checks what it can (the init's fork, an `execve` or
+  `execveat` back without an error and a blocking `waitpid` back with no
+  child fail the `RUN`, and a read goes into a value set beforehand), and
+  the rest is in the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.
