@@ -198,7 +198,10 @@ impl Step {
             Step::Session => "start a new session",
             Step::ReadonlyPath => "make a /proc path read-only",
             Step::MaskPath => "mask a /proc or /sys path",
-            Step::SessionKeyring => "join a new session keyring",
+            Step::SessionKeyring => {
+                "join a new session keyring (where an LSM refuses it, RUN needs a seccomp \
+                 profile that refuses keyctl, add_key and request_key, as --seccomp=default does)"
+            }
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",
             Step::JoinNetwork => "join the network namespace",
@@ -432,8 +435,9 @@ mod tests {
         assert!(text.contains("not permitted"), "{text}");
     }
 
-    /// A filter that fails to install is named, and the profile's failure
-    /// says how to run without it.
+    /// A filter that fails to install is named, the profile's failure says
+    /// how to run without it, and a refused keyring join which profile lets
+    /// the `RUN` go on.
     #[test]
     fn a_failed_filter_install_names_the_filter() {
         let text = |step| {
@@ -449,5 +453,7 @@ mod tests {
         let network = text(Step::NetworkFilter);
         assert!(network.contains("network.none-userns"), "{network}");
         assert!(!network.contains("--seccomp=unconfined"), "{network}");
+        let keyring = text(Step::SessionKeyring);
+        assert!(keyring.contains("--seccomp=default"), "{keyring}");
     }
 }
