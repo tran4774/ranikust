@@ -89,5 +89,5 @@ non-blocker comes on top of that, in full):
 6. Questions for the maintainer, each one line.
 
 Never put the details of an unfixed weakness anywhere but the report: no
-commit message, doc, comment or issue explains it, and a test of it is
-worded generically.
+commit message, doc, comment or issue explains it, and a test of it comes
+only with its fix, worded generically.

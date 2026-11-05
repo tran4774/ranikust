@@ -287,7 +287,7 @@ check it in the VM or a throwaway session.
 | Decision; before a PR | `/adr`; `/sync-docs [base]` (user-invoked) |
 | Any diff; `rnk-rootfs`, `rnk-sandbox`, `rnk-layer`, `rnk-registry` | `/code-review`; `/security-review` |
 | Rust review; flag design; property tests | Trail of Bits `rust-review`, `sharp-edges`, `property-based-testing` (user scope, if installed) |
-| Milestones only | vendored `security-audit` (spawns many agents, which name no model: start them with `model: opus`, since an unnamed subagent now runs on Sonnet, ADR-0097); the run writes outside the repository, each open lead becomes a draft advisory ([Security findings](#security-findings)), then its deliverables move to `docs/security/audit/<scope>/` (see that README), and the next run reads them as prior input |
+| Milestones only | vendored `security-audit` (spawns many agents, which name no model: start them with `model: opus`, since an unnamed subagent now runs on Sonnet, ADR-0097); the run writes outside the repository and keeps its full output there as the next run's prior input; each open lead becomes a draft advisory ([Security findings](#security-findings)), and the deliverables that move to `docs/security/audit/<scope>/` (see that README) leave the open leads out |
 | End of a phase, when the maintainer asks | `refactor` skill: behaviour-preserving clean-up, one crate per branch, digests held fixed |
 
 Which model each subagent runs on and how to brief it:
@@ -311,7 +311,7 @@ agent starts at about 35k tokens. So:
   decisions already made with their dates, the ADR numbers it may use, and
   what is out of scope. It runs the `dev-loop`, its own `reviewer` rounds
   and `just check`, commits without pushing and hands back at most 40
-  lines. A hand-back whose last reviewer round did not finish gets one
+  lines (plus any Low or Medium security non-blocker, in full). A hand-back whose last reviewer round did not finish gets one
   from the main session before the push.
 - **Follow-ups within the hour go to the same agent.** `SendMessage`
   reaches a warm cache for one hour; after that, a new agent briefed with
@@ -368,17 +368,22 @@ loop itself before it hands back.
    earlier findings, to re-check only the fix commits, on the local branch.
 5. No blocker left: the main session pushes and opens the draft pull
    request with a summary of the rounds ([GitHub flow](#github-flow)); the
-   maintainer merges it.
+   maintainer merges it. A High or Critical finding in released code that
+   the branch does not touch is no blocker of the branch
+   ([Security findings](#security-findings)).
 
 A test result counts only from the harness's exit status, never from an
 agent reading a printed table: a suite that prints a verdict table must
 fail on any unexpected cell (the `secrets` suite once printed `LEAK` and
 exited 0).
 
-A security finding follows [Security findings](#security-findings). A
-finding that needs a design choice goes to the maintainer as a `question`
-issue while the implementer builds the fail-closed option as the interim.
-After three rounds still blocked, stop and report to the maintainer.
+A security finding follows [Security findings](#security-findings). Any
+other finding: high ones are fixed; cheap medium and low ones in the same
+round; costly low ones, or ones that belong to a later task, become task
+issues in the phase's milestone and do not block. A finding that needs a
+design choice goes to the maintainer as a `question` issue while the
+implementer builds the fail-closed option as the interim. After three
+rounds still blocked, stop and report to the maintainer.
 
 ## Security findings
 
@@ -393,27 +398,34 @@ section owns what happens to one
   Medium, High or Critical, from the
   [threat model](../security/threat-model.md#8-rating-findings) and a CVSS
   score where they can give one. When the two disagree the higher decides,
-  and a score of 7.0 or more is High. A High or Critical security finding
-  is always a blocker.
-- **Fixed:** every blocker, before a push and before a release. In released
-  code a High or Critical finding also gets a draft, and is fixed in its
-  temporary private fork, which the maintainer opens
+  and a score of 7.0 or more is at least High (9.0 or more is Critical). A
+  confirmed High or Critical security finding is a blocker.
+- **Fixed:** every blocker, in the loop, before a push and before a
+  release. A High or Critical finding in released code is the exception: it
+  gets a draft and is fixed in its temporary private fork, which the
+  maintainer opens and where agents work as he directs
   ([ADR-0087](../adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md), D6).
+  When a review of branch X finds one in code X does not touch, X still
+  pushes and merges, and only the next release waits for the fix.
 - **A draft advisory instead:** a Low or Medium non-blocker, including a
   residual the maintainer accepts. It is not fixed in the pull request at
   hand and holds up neither it nor a release. Later an ordinary pull
   request fixes a Low or Medium one, worded generically, its test staying;
   its diff may show the weakness before the release. A residual the
-  maintainer accepts has no fix: the threat model's
+  maintainer accepts, whatever its rating, is no blocker and has no fix: the
+  threat model's
   [section 6](../security/threat-model.md#6-accepted-risks) lists it, and
   may describe it.
 - **Audit leads.** Each open lead of a security audit is a draft with an
-  estimated severity; [`docs/security/audit/`](../security/audit/README.md)
-  carries a lead only once it is fixed, rejected or accepted.
+  estimated severity. An unvalidated lead blocks nothing, whatever the
+  estimate; it becomes a blocker only once confirmed as High or Critical.
+  [`docs/security/audit/`](../security/audit/README.md) carries a lead or a
+  confirmed finding only once it is fixed, rejected or accepted.
 - **Who files.** The agent that found it reports it to the main session (an
   `implementer` passes on its `reviewer`'s). The main session creates the
-  draft (REST `repos/{owner}/{repo}/security-advisories`, a `gh api` write,
-  so it prompts), may update its text, and does not send the finding to the
+  draft with the input or test the report gives (REST
+  `repos/{owner}/{repo}/security-advisories`, a `gh api` write, so it
+  prompts), may update its text, and does not send the finding to the
   implementer.
 - **Never public.** No detail of an unfixed weakness in an issue, pull
   request, comment, commit or doc, apart from the fix pull request of a Low
