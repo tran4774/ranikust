@@ -71,7 +71,7 @@ A table: attack, T-id, tier, test name, result (`held` / **broken** /
 where you can; the rating is in `docs/agents/workflow.md#security-findings`),
 input, what happened, why it matters. A High or Critical finding is a
 `blocker` only when the branch introduces it or its diff changes a line of
-the file the weakness is in; otherwise it is a `non-blocker`, marked
+a file the weakness is in; otherwise it is a `non-blocker`, marked
 "holds the next release". Give a security non-blocker, and a blocker the
 private fork fixes, in full: the main session files an advisory from it.
 Then what you did not try.

@@ -222,8 +222,11 @@ run reports what it found.
    pushes.
 2. **Merge** (the maintainer), once CI and the T2 tests are green; the
    `main` ruleset accepts changes only through a pull request whose gates,
-   `CI result` and `T2 result`, passed on a full run. What holds a release
-   back, and what does not, is in
+   `CI result` and `T2 result`, passed on a full run. The exception is a
+   private fork's fix for a security advisory, which the maintainer merges
+   from the advisory without CI or the ruleset; an agent's checks before
+   the merge and the full CI on `main` after it stand in (`ADR-0111`). What
+   holds a release back, and what does not, is in
    [Security findings](docs/agents/workflow.md#security-findings).
 3. **Tag** (the maintainer only: the `release tags` ruleset lets only the
    maintainer create, move or delete `v*` tags): tag the merge commit and

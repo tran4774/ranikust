@@ -24,8 +24,11 @@ releases go out as fast as possible, and to move the reports kept on the
 machine there too. Follow-up questions the same day settled what counts as
 small, when an advisory is published, how a Low or Medium draft is fixed,
 where an open audit lead goes and when it blocks, which rating wins, what
-a High or Critical finding does to a reviewed branch that touches its code
-and to one that does not, and where an accepted residual is recorded.
+a High or Critical finding does to a reviewed branch that touches it and
+to one that does not, what "touches" means, what happens to a draft whose
+weakness no release contained, how a private fork's fix is verified, who
+adds collaborators to an advisory, and where an accepted residual is
+recorded.
 
 ## Considered Options
 
@@ -43,8 +46,7 @@ A security finding rated Low or Medium that is not a blocker, and a
 residual the maintainer accepts whatever its rating, is filed as a draft
 repository security advisory (GHSA); it is not fixed in the pull request at
 hand and does not block a release, while a blocker is fixed first. The
-procedure is [workflow.md, Security findings](../agents/workflow.md#security-findings);
-this ADR owns the rules.
+procedure is [workflow.md, Security findings](../agents/workflow.md#security-findings).
 
 - **Rating.** Each finding has a verdict (blocker or non-blocker) and a
   severity, Low, Medium, High or Critical, from the threat model's
@@ -54,7 +56,7 @@ this ADR owns the rules.
   version is pinned.
 - **Blocker.** A High or Critical finding is a blocker of the branch under
   review when the branch introduces it or touches it: its diff changes a
-  line of the file the weakness is in. Otherwise it is a non-blocker of the
+  line of a file the weakness is in. Otherwise it is a non-blocker of the
   branch, marked "holds the next release": the branch pushes and merges,
   and only the next release waits for the fix. An audit lead is no blocker
   until it is confirmed as High or Critical.
@@ -89,8 +91,9 @@ this ADR owns the rules.
 - **Who may do what.** Agents create a draft advisory and update its text
   without asking, as ADR-0093 lets them open `task`, `question` and `bug`
   issues. The maintainer alone changes its state (publish, close,
-  withdraw), requests a CVE, opens its temporary private fork and adds a
-  collaborator to it, since that widens who sees unfixed details. A draft
+  withdraw), requests a CVE, opens its temporary private fork, merges a
+  private fork's change and adds a collaborator to the advisory, since that
+  widens who sees unfixed details. A draft
   stays a draft until a release that contains its fix is out; an agent then
   prepares its text and the maintainer publishes it. One whose weakness no
   release ever contained is closed, not published, once the fix is on
@@ -161,18 +164,23 @@ No experiment; the maintainer's decision and answers, each given on
 - A High or Critical finding in released code that X touches: "X chờ bản
   sửa từ fork (khuyến nghị)" (X waits for the fix from the fork, as
   recommended). X does not push until the private fork's fix is merged into
-  `main`, then pushes, after merging `main` into it (our addition: the
-  repository never force-pushes); until then its review and notes keep the
+  `main`, then pushes, after merging `main` into it (the agents' addition:
+  the repository never force-pushes); until then its review and notes keep the
   finding out of anything public.
-- A Critical finding in a weakness on `main` in no release yet that X
-  touches: "X tự sửa trong vòng review" (X fixes it itself in its review
-  loop). The maintainer overruled our first reading, that X waits for the
-  fork's fix. A High finding in the same case is covered by this answer
+- A Critical weakness already on `main` in no release yet that X touches:
+  "X tự sửa trong vòng review" (X fixes it itself in its review loop). The
+  maintainer overruled the agents' first reading, that X waits for the
+  fork's fix. A High one in the same case is covered by this answer
   together with the one on High findings in that code, which accepts a
   public diff.
+- Whether a High or Critical weakness already on `main` in no release yet
+  that X touches also gets a draft and holds the next release: "Không, chỉ
+  là blocker của X" (No, it is only X's blocker). No draft, and the release
+  does not wait for it.
 - What "touches" means: "Cùng file (khuyến nghị)" (the same file, as
-  recommended). X touches a finding when its diff changes any line of the
-  file the weakness is in.
+  recommended). X touches a finding when its diff changes any line of a
+  file the weakness is in; for a weakness that spans two files, that is the
+  natural reading of "the same file".
 - A draft whose weakness no release ever contained, for example one fixed
   before the next release: "Đóng nháp, không publish (khuyến nghị)" (close
   the draft, do not publish, as recommended). The maintainer closes it once

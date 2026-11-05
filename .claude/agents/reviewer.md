@@ -59,7 +59,7 @@ finding also gets a severity (Low, Medium, High or Critical, and a CVSS
 score where you can; the rating is in
 `docs/agents/workflow.md#security-findings`). A High or Critical finding is
 a `blocker` only when the branch introduces it or its diff changes a line
-of the file the weakness is in; otherwise it is a `non-blocker`, marked
+of a file the weakness is in; otherwise it is a `non-blocker`, marked
 "holds the next release". Give a security non-blocker, and a blocker the
 private fork fixes (the routing table in the workflow names it), in full,
 however long: the main session files an advisory from it. Be specific and
