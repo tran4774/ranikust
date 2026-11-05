@@ -280,9 +280,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   reached, what cannot be told, the bound counted in threads; `walk`'s
   on fake threads: a later thread reached, threads passed over or gone, a
   process whose threads may not be listed; the real probe on each of
-  ranikust's own threads and a missing pid, and on its `/proc/self` as
-  one process, with the step a failure names; escaped names, a process
-  named by its pid alone).
+  ranikust's own threads and a missing pid; one thread, or the process
+  as one, on its `/proc/self` and on a fake directory: the step a failure
+  names, a thread gone or out of reach; escaped names, a process named by
+  its pid alone).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`

@@ -574,9 +574,10 @@ The decision:
   `every_thread_of_a_process_is_probed_within_the_bound` (the real probe
   on ranikust's own process, with a second thread: each thread probed and
   counted, a missing process gone),
-  `a_process_probed_as_one_is_told_through_its_own_entries` (a process
-  probed as one through its own `/proc/self`, and the step a failure
-  names), `a_process_name_is_trimmed_and_escaped`,
+  `a_process_probed_as_one_is_told_through_its_own_entries` (one thread,
+  or the process as one, probed on ranikust's own `/proc/self` and on a
+  fake directory: the step a failure names, a thread gone or out of
+  reach), `a_process_name_is_trimmed_and_escaped`,
   `a_process_is_named_by_its_pid_and_its_name_when_read` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   (messages and guidance). T1 `pid-peers` (rootless podman 5.7.0, Linux
