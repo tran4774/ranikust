@@ -71,12 +71,10 @@ subgraph or the code points. Open `ARCHITECTURE.md` or other sections of
 ## Report
 
 Numbered findings, most severe first: `blocker` or `non-blocker`, severity
-(`critical`, `high`, `medium`, `low`, rated with section 8 of the threat
-model, and a CVSS 3.1 vector where you can), `path:line`, the attack or
-failure scenario in one or two sentences, and the fix. A `high` or
-`critical` finding is fixed whatever its verdict. A `medium` or `low`
-non-blocker is not fixed in this branch: the main session files it as a
-draft security advisory (ADR-0111), so give it in full here and nowhere
-else. Say explicitly which checklist items you verified as fine and which
-you could not check from the code alone (for example, races that need a
-test on a real kernel).
+(`critical`, `high`, `medium`, `low`, and a CVSS score where you can; the
+rating is in `docs/agents/workflow.md#security-findings`), `path:line`, the
+attack or failure scenario in one or two sentences, and the fix. Give a
+`medium` or `low` non-blocker in full, however long: the main session files
+an advisory from it. Say explicitly which checklist items you verified as
+fine and which you could not check from the code alone (for example, races
+that need a test on a real kernel).
