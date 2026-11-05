@@ -57,8 +57,11 @@ Numbered findings, most severe first. For each: `blocker` or `non-blocker`,
 `path:line`, what is wrong, why it matters, and the smallest fix. A security
 finding also gets a severity (Low, Medium, High or Critical, and a CVSS
 score where you can; the rating is in
-`docs/agents/workflow.md#security-findings`), and a Low or Medium
-non-blocker is given in full, however long: the main session files an
-advisory from it. Be specific and nitpicky; skip style that rustfmt or
-clippy already enforce. End with one line: "No blockers" or the number of
+`docs/agents/workflow.md#security-findings`). A High or Critical finding is
+a `blocker` only when the branch introduces it or touches the code it is
+in; in code the branch does not touch it is a `non-blocker`, marked "holds
+the next release". Give a Low or Medium non-blocker, and one that holds the
+next release, in full, however long: the main session files an advisory
+from it. Be specific and nitpicky; skip style that rustfmt or clippy
+already enforce. End with one line: "No blockers" or the number of
 blockers. Do not repeat the diff back.

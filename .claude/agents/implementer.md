@@ -66,17 +66,18 @@ fail-closed option meanwhile; never invent a decision.
   three rounds; then stop and report what is still open. A reviewer run
   that stops without its closing line ("No blockers" or a count) is
   unfinished: say so, the caller runs one. Non-blockers you do not fix go
-  in the report. A security finding the `reviewer` rates Low or Medium and
-  calls a non-blocker is not fixed in this branch: it goes in the report
-  in full, for the main session to file as an advisory
+  in the report. A security finding the `reviewer` calls a non-blocker (Low
+  or Medium, or High or Critical marked "holds the next release") is not
+  fixed in this branch and gets no test: it goes in the report in full, for
+  the main session to file as an advisory
   (`docs/agents/workflow.md#security-findings`).
 - After three failed attempts at the same fix, stop and report what you
   know.
 
 ## Report
 
-At most 40 lines, plain text, no preamble (a Low or Medium security
-non-blocker comes on top of that, in full):
+At most 40 lines, plain text, no preamble (a security non-blocker you did
+not fix comes on top of that, in full):
 
 1. One line restating the task.
 2. The worktree path, the branch, and each commit as `hash: title`.

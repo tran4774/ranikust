@@ -57,19 +57,23 @@ not an opinion.
    commits (`test(<crate>): ...`), with the docs the tests touch
    (`docs/testing.md`, the crate card's Tests section). A test's comment
    names the attack and the T-id in one line, not the steps the code shows.
-   A test that shows a `medium` or `low` non-blocker goes with the pull
-   request that fixes it, worded generically: give it in the report instead
-   of committing it here.
+   A test that shows a non-blocker (Low or Medium, or High or Critical and
+   marked "holds the next release") goes with the pull request that fixes
+   it, worded generically: give it in the report instead of committing it
+   here.
 
 ## Report
 
 A table: attack, T-id, tier, test name, result (`held` / **broken** /
 `not run`, with the reason). Then each broken one in detail: `blocker` or
-`non-blocker`, severity (`critical`, `high`, `medium`, `low`, and a CVSS
-score where you can; the rating is in
-`docs/agents/workflow.md#security-findings`), input, what happened, why it
-matters. Give a `medium` or `low` non-blocker in full: the main session
-files an advisory from it. Then what you did not try.
+`non-blocker`, severity (Low, Medium, High or Critical, and a CVSS score
+where you can; the rating is in `docs/agents/workflow.md#security-findings`),
+input, what happened, why it matters. A High or Critical finding is a
+`blocker` only when the branch introduces it or touches the code it is in;
+in code the branch does not touch it is a `non-blocker`, marked "holds the
+next release". Give a Low or Medium non-blocker, and one that holds the next
+release, in full: the main session files an advisory from it. Then what you
+did not try.
 
 ## Must not
 
