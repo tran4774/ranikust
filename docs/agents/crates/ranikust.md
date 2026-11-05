@@ -109,8 +109,11 @@ Each step before the next; design in
 2. The Linux 5.8 check (`rnk_rootfs::probe_support`, ADR-0028), skipped by
    `version`. Then, for `build` only, `rnk_sandbox::run_from_sealed_copy`
    (ADR-0101) runs the process again from a sealed copy of the binary,
-   which starts over at step 0; the copy's run logs the way at debug after
-   step 3, or a warning when no way worked (the build goes on).
+   which starts over at step 0, asking for the walk of the writable mounts
+   that may reach the binary only when `container::detect` finds a
+   container (kaniko mode on `/` alone reads it); the copy's run logs the
+   way at debug after step 3, or a warning when no way worked (the build
+   goes on).
    `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd, `seal-none` both
    ways.
 3. `--metrics-file` refused in the build context or through a symlink
@@ -143,9 +146,11 @@ Each step before the next; design in
    read-write too, another hard link; in a root that is not an overlay
    (overlayfs or fuse-overlayfs), a binary in the root too), or one whose
    mount cannot be told (`refuse_writable_binary` on `Sealing::binary()`,
-   ADR-0101: qemu-user, a memfd, a mount table that does not place it, a
-   writable directory whose name was removed, a writable mount that cannot
-   be reached at its mount point, or a failed call, each with its own
+   ADR-0101: qemu-user, a memfd, a mount table that does not place it or
+   changed during the walk, a writable directory whose name was removed, a
+   writable mount that is covered or cannot be reached at its mount point,
+   a binary not weighed because no container was found at the start
+   (`NotWeighed`), or a failed call, each with its own
    guidance; a link of it bound read-write, even a removed one, is a
    reach); then the warnings for
    secret-looking build arguments and file secrets.
