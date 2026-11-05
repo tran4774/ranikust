@@ -5,22 +5,25 @@ Each milestone security audit (the vendored `security-audit` skill, see
 here, one directory per audit, named after the phases or the scope it covers.
 The run itself writes outside the repository (agent prompts, per-agent
 results, the coordinator's tools). Once its validators pass, only the
-deliverables below move here, on a `docs/` branch. Every file carries a lead
-only once it is fixed, rejected or accepted; until then the lead is a draft
-security advisory ([Security findings](../../agents/workflow.md#security-findings)).
+deliverables below move here, on a `docs/` branch, with the open leads left
+out: a file carries a lead or a confirmed finding only once it is fixed,
+rejected or accepted, and until then it is a draft security advisory
+([Security findings](../../agents/workflow.md#security-findings)). The run's
+full output stays outside the repository.
 
 | File | Contents |
 |---|---|
 | `REPORT.md` | Scope, execution policy, posture, the prioritised leads, rejected candidates, coverage, maintainer decisions, hardening notes |
-| `NEEDS-VALIDATION.md` | Each lead the run left unresolved, with its trace, evidence, blockers and the exact VM (T2) or T2c plan |
+| `NEEDS-VALIDATION.md` | The leads the run left unresolved that are now fixed, rejected or accepted, with their trace, evidence, blockers and the exact VM (T2) or T2c plan |
 | `FINDINGS-DETAIL.md` | Reproduction detail for confirmed medium and higher findings |
-| `findings.json` | Every final record (confirmed, needs_validation, rejected), valid against the skill's `report-schema.json` |
+| `findings.json` | Every final record (confirmed, needs_validation, rejected) that is fixed, rejected or accepted, valid against the skill's `report-schema.json` |
 | `coverage-ledger.json` | Every coverage unit with its owner, reviewed paths, checks and hardening notes |
 | `run-metadata.json` | Source ref, profile, scope, execution policy, run status |
 | `architecture.md` | The architecture summary every agent of the run received |
 
-A later run reads the previous `findings.json` and `coverage-ledger.json` as
-prior-run input, as the skill describes.
+A later run reads the previous run's full output, kept outside the
+repository, as prior-run input, as the skill describes: a committed
+`findings.json` without the open leads would drop them.
 
 ## Audits
 
@@ -28,9 +31,9 @@ prior-run input, as the skill describes.
 |---|---|---|---|
 | [`phase-1-2/`](phase-1-2/REPORT.md) | `ed718fb` (end of Phase 2) | deep, whole workspace and `.claude/`, source-only | 0 confirmed, 28 needs_validation, 11 rejected; lead 1 is a possible Full-sandbox escape through inherited descriptors (runc CVE-2024-21626 pattern) |
 
-Leads are unconfirmed until their VM or T2c plan has run. While a lead is
-open it is a draft security advisory with an estimated severity, and its
-details stay out of this directory
+Leads are unconfirmed until their VM or T2c plan has run. While a lead or a
+confirmed finding is open it is a draft security advisory, with an estimated
+severity for a lead, and its details stay out of this directory
 ([Security findings](../../agents/workflow.md#security-findings)). The
 phase-1-2 audit, public before that rule, stays as it is.
 

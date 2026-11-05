@@ -34,10 +34,10 @@ a disclosure date with the reporter, and publish a GitHub security advisory
 with the fix. The default embargo is 90 days.
 
 A Low or Medium finding the project makes itself, in its reviews and
-audits, and does not fix before it merges is tracked as a draft advisory and
-published after the release that fixes it. A residual the maintainer accepts
-has no fix release; the [threat model](docs/security/threat-model.md#6-accepted-risks)
-documents it
+audits, and does not fix before the change that carries it merges is tracked
+as a draft advisory and published after the release that fixes it. A
+residual the maintainer accepts has no fix release; the
+[threat model](docs/security/threat-model.md#6-accepted-risks) documents it
 ([workflow](docs/agents/workflow.md#security-findings),
 [ADR-0111](docs/adr/0111-a-low-or-medium-security-finding-is-a-draft-advisory-that-does-not-block-a-release.md)).
 
