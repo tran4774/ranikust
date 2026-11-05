@@ -224,6 +224,7 @@ V13)
   esac
   hit=
   seen=0
+  checked=0
   for p in $pids; do
     for t in "/proc/$p" "/proc/$p/task/"*; do
       [ -d "$t" ] || continue
@@ -235,7 +236,7 @@ V13)
       "$e" version >/dev/null 2>&1 && hit="$hit run:$e"
     done
     # EFAULT from an unmapped address means the access check passed;
-    # ESRCH only that the process exited after it was listed.
+    # ESRCH that the process has exited (gone, or a zombie): no check ran.
     # shellcheck disable=SC2086
     r=$(perl -e '
       my ($ptrace, $pvw, $pid) = map { 0 + $_ } @ARGV;
@@ -244,15 +245,19 @@ V13)
       my $local = pack("QQ", unpack("Q", pack("p", $buf)), 1);
       my $remote = pack("QQ", 0x1000, 1);
       my $r = syscall($pvw, $pid, $local, 1, $remote, 1, 0);
+      my $gone = $r < 0 && $!{ESRCH};
       print "process_vm_writev:", $r >= 0 ? "wrote" : 0 + $!, " "
-        if $r >= 0 || !($!{EPERM} || $!{ESRCH});
-    ' $nr "$p" 2>&1)
+        if $r >= 0 || !($!{EPERM} || $gone);
+      exit($gone ? 3 : 0);
+    ' $nr "$p" 2>&1) && checked=$((checked + 1))
     [ -z "$r" ] || hit="$hit $p:$r"
   done
   if [ -n "$hit" ]; then
     out V13 LEAK "$hit"
+  elif [ "$checked" -eq 0 ]; then
+    out V13 INVALID "no access check reached: every ranikust process had exited"
   else
-    out V13 blocked "$seen threads, yama $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none)"
+    out V13 blocked "$seen threads, $checked processes checked, yama $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none)"
   fi
   ;;
 *) echo "usage: $0 seed|unseed|spawn|swap|V1..V13" >&2 ;;
