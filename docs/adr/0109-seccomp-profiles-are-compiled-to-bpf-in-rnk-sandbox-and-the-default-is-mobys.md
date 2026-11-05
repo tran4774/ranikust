@@ -55,11 +55,11 @@ Docker's, as recommended; "Đồng ý tất cả (khuyến nghị)", agree to al
 recommended).
 
 - **No new dependency** for the filter, and no `no_new_privs`: the profile is
-  installed in the `RUN`'s child where ADR-0033's filter is, after the mounts
-  and before the capability drop, while the child still holds
-  `CAP_SYS_ADMIN`.
-- **ADR-0033's filter stays** and is installed on top of the profile, under
-  `--seccomp=unconfined` too.
+  installed in the `RUN`'s child after the mounts and before the `capset` to
+  Docker's default capabilities, while the child still holds
+  `CAP_SYS_ADMIN` (the order is below).
+- **ADR-0033's filter stays**, under `--seccomp=unconfined` too, and is
+  installed before the profile (below).
 - **`default` is one more profile:** the embedded `default.json` goes through
   the same parser and compiler as `--seccomp=<file>`, with a `NOTICE` entry.
 - **A syscall name the architecture does not know** is skipped under
@@ -91,10 +91,39 @@ for what the implementation raised:
   join it ("Ghi vào ADR-0109 (khuyến nghị)", record it in ADR-0109, as
   recommended).
 
+Answered by the maintainer on 2026-11-05 as well, on
+[#82](https://github.com/tran4774/ranikust/issues/82#issuecomment-6649627040),
+for what the host-safety review raised: a profile is the operator's and may
+answer any call with any errno, 0 (a faked success) included, so it must
+not be able to change what the set-up does.
+
+- **Every set-up step that need not come after the profile comes before
+  it** ("Đưa các bước bảo mật lên trước (khuyến nghị)", move the security
+  steps first, as recommended). The child joins the `RUN`'s session keyring,
+  drops the bounding set, clears the ambient and inheritable sets, makes the
+  init not dumpable and starts its session, then installs ADR-0033's filter
+  and the profile on top of it. Only the `capset` to the default sets comes
+  after the profile, since the install needs `CAP_SYS_ADMIN`, and the init's
+  and the command's own steps, which fail the `RUN` when a call is refused.
+  A call both filters refuse now gets the profile's errno; what is refused
+  stays the same. An `EINVAL` from a bounding-set drop ends the list only
+  when `caps::last_cap()` could not read the kernel's and assumed 63;
+  otherwise it fails the `RUN`.
+- **An `EACCES` on the keyring join fails the `RUN` when its profile lets
+  `keyctl`, `add_key` or `request_key` run** ("Lỗi khi hồ sơ cho phép keyctl
+  (khuyến nghị)", fail when the profile allows `keyctl`, as recommended);
+  under a profile that refuses all three, as `default` does, it is ignored
+  as before.
+- A failed install names the filter (the profile or ADR-0033's) and points
+  to `--seccomp=unconfined`.
+
 ### Consequences
 
 - Good, because the install stays under ranikust's control: setuid programs
-  keep working, ADR-0033's filter stacks as before, and nothing new is linked.
+  keep working, ADR-0033's filter stacks under the profile, and nothing new
+  is linked.
+- Good, because a profile, whatever it answers, cannot undo the bounding
+  set, the session, the keyring or ADR-0033's filter.
 - Good, because `default` is what `docker build` and BuildKit apply, and a
   user's Docker profile file works unchanged within the limits above.
 - Bad, because the compiler is security-critical code of ranikust's own (64-bit
@@ -118,7 +147,9 @@ for what the implementation raised:
   every `RUN` (ADR-0103's Evidence); the profile is an allowlist whose default
   action is `SCMP_ACT_ERRNO`.
 - **[external]** `seccomp(2)`: installing a filter without `no_new_privs`
-  needs `CAP_SYS_ADMIN` in the caller's user namespace.
+  needs `CAP_SYS_ADMIN` in the caller's user namespace; with several
+  filters, every one runs, newest first, and the first-seen action of
+  highest precedence wins, with its errno.
 
 ## More Information
 

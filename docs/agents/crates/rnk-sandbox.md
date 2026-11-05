@@ -172,17 +172,27 @@ What a change here must keep, with where it lives:
   only (`seccomp/syscalls.rs`, a table of `libc`'s `SYS_*` names per target,
   ADR-0009); a call the profile allows that `libc` does not name gets
   `ENOSYS`, and the T0 test `calls_the_default_allows_but_libc_does_not_name_are_pinned`
-  lists them per target. After every mount and before the capability drop,
-  the full sandbox's child joins the `RUN`'s new session keyring (the
-  command, PID 2, inherits it), then installs the profile, then ADR-0033's
-  filter when it joined a held network namespace, without `no_new_privs`.
-  `Direct` gets no filter and joins its keyring after its capability drop,
-  before `setsid`. The default profile refuses `keyctl`, `add_key` and
+  lists them per target. A profile may fake any call's result, so after
+  every mount the full sandbox's child first makes every step it could
+  fake: it joins the `RUN`'s new session keyring (the command, PID 2,
+  inherits it), drops the bounding set, clears the ambient and inheritable
+  sets, makes the init not dumpable and gives it a session. Then it installs
+  ADR-0033's filter when it joined a held network namespace, the profile on
+  top, both without `no_new_privs`, and only then sets the effective and
+  permitted sets. A failed install is `Step::Seccomp`, whose message points
+  to `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct`
+  gets no filter and joins its keyring after its capability drop, before
+  `setsid`. The default profile refuses `keyctl`, `add_key` and
   `request_key`; root's user and persistent keyrings stay reachable under
   `--seccomp=unconfined`, a profile file that allows them, and in `Direct`.
+  A join refused with `EACCES` (an LSM) fails the `RUN` unless its profile
+  refuses all three calls (`SeccompProfile::refuses_keyrings`), in `Direct`
+  and in the probe.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
-  inheritable empty. Then `setsid`, `setgroups`, `setresgid`, `setresuid`;
+  inheritable empty. The drops go up to the kernel's last capability; an
+  `EINVAL` ends them only where `caps::last_cap()` could not read it and
+  assumed 63. Then `setsid`, `setgroups`, `setresgid`, `setresuid`;
   `WORKDIR` is resolved in the root without magic links, entered with
   `fchdir`, and `getcwd` must show it below the root (runc, CVE-2024-21626).
 - **Only stdio crosses `execve`** (T7): every other descriptor becomes
@@ -258,8 +268,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
-  aarch64, `includes`/`excludes`, refused profiles) and installed in forked
-  children (`seccomp::profile::tests::kernel`, skipped under qemu-user).
+  aarch64, `includes`/`excludes`, refused profiles, which ones refuse every
+  keyring call). The `tests::kernel` modules, skipped under qemu-user,
+  install filters in forked children: `seccomp::profile`'s (compiled
+  profiles), `caps`'s (an `EINVAL` from a bounding drop) and `child`'s (an
+  `EACCES` on the keyring join).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
@@ -280,7 +293,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
   delays, threat model section 6; `a_running_binary_cannot_be_opened_for_writing`;
   `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
-  profile that refuses the keyring join; each `RUN` in a keyring of its own),
+  profile that refuses the keyring join; each `RUN` in a keyring of its own;
+  `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
+  `setsid`, `seccomp` or `capset` with 0 or `EINVAL` leave the bounding set,
+  the session, ADR-0033's filter and the capability sets as they are;
+  `an_lsm_refusing_the_keyring_join_fails_a_run_that_could_reach_keyrings`),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):
