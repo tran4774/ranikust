@@ -229,10 +229,11 @@ ignores.
   refspec), `--mirror` and every tag push; `gh release
   create`/`delete`/`edit`/`upload`, `gh issue delete`, `gh repo
   delete`/`rename`/`archive`/`deploy-key` (by their `gh` spelling); a `gh
-  api` with `-X`/`--method` `DELETE`, a GraphQL `delete…` mutation, a `gh
-  api` write to `releases` and any `gh api` naming `refs/tags`
-  (`ADR-0112`; they refuse a few reads too, and the other `gh api` forms of
-  the commands above still run); whatever prints or hands out the
+  api` with `-X`/`--method` `DELETE`, a GraphQL `delete…`, `updateRef` or
+  `createRef` mutation, a `gh api` write to `releases` or to `refs/heads`
+  and any `gh api` naming `refs/tags` (`ADR-0112`: the spellings its
+  patterns list; a few reads are refused too, and the `gh api` forms of `gh
+  repo rename`/`archive`/`deploy-key` still run); whatever prints or hands out the
   `gh` token, and reading `~/.config/gh/`, `~/.docker/config.json`, the
   Podman `auth.json` files and `~/.ssh` (with `rg` too), since they would
   land in the transcript; executing `tests/vm/runner.sh` (reading it stays
@@ -252,16 +253,16 @@ ignores.
   such as a commit status or a sub-issue…).
 - **The rule alone, no pattern (and no prompt under `bypassPermissions`):**
   what the right-hand column above names: `gh pr ready` and `merge`, a push
-  to `main`, creating or pushing a tag, `gh repo
+  to `main`, creating a tag (pushing one is denied), `gh repo
   edit`/`secret`/`variable`/`ruleset`, and a `gh api` write that does one of
-  these (a merge, a tag, a repository setting, a ruleset, an environment;
+  these (a merge, a repository setting, a ruleset, an environment;
   `ADR-0112`). The agent asks the maintainer in the conversation; GitHub's
   `main` ruleset, the `release tags` ruleset and the `release`
-  environment's reviewer do not stop the maintainer's account. The rule alone also covers
-  replying to or closing other people's issues and pull requests (`gh issue
-  comment`/`close`, `gh pr comment`/`close` look the same for anyone's);
-  which issues an agent opens; when an agent adds `ci:full` (`ADR-0095`:
-  GitHub cannot tell who labelled); the allowed read-only `gh` commands
+  environment's reviewer do not stop the maintainer's account. The rule
+  alone also covers replying to or closing other people's issues and pull
+  requests (`gh issue comment`/`close`, `gh pr comment`/`close` look the
+  same for anyone's); which issues an agent opens; when an agent adds
+  `ci:full` (`ADR-0095`: GitHub cannot tell who labelled); the allowed read-only `gh` commands
   taking a URL or `-R`, which can read another repository or another host;
   and any command wrapped in another (`bash -c`, a script, an alias) or
   spelled differently (`--'config'`, `git -C . fetch <url>`), which no
