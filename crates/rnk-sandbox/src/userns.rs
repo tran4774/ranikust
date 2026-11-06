@@ -292,6 +292,16 @@ impl UsernsReport {
         }
     }
 
+    /// The kernel filesystems a new instance of which was refused and an
+    /// rbind worked: those [`crate::probe_with_fallbacks`] may bind.
+    #[must_use]
+    pub fn fallbacks(&self) -> crate::Fallbacks {
+        crate::Fallbacks {
+            proc: matches!(self.proc, MountResult::Rbind { .. }),
+            sysfs: matches!(self.sysfs, MountResult::Rbind { .. }),
+        }
+    }
+
     /// Runs `f(path)` as root of a new user and mount namespace with the map
     /// this probe got, in a forked child. `None` when no map worked; `Err` with
     /// why `f` did not run or finish ([`Error::NotSingleThreaded`], a
@@ -641,6 +651,42 @@ fn map_lines(map: &str) -> Option<Vec<[u32; 3]>> {
             }
         })
         .collect()
+}
+
+/// What a `RUN` may ask of the user namespace this process is in, from its
+/// `/proc/self` files. A file that cannot be read counts as the initial
+/// namespace's: the step that needs it then fails the `RUN`, never is
+/// skipped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OwnNamespace {
+    /// `setgroups(2)` is allowed: `/proc/self/setgroups` is not `deny`.
+    pub(crate) setgroups: bool,
+    /// gid 5 (`tty`), which `devpts` is mounted with, is mapped.
+    pub(crate) tty_gid: bool,
+}
+
+impl OwnNamespace {
+    /// Reads this process's files.
+    pub(crate) fn read() -> Self {
+        let read = |name| std::fs::read_to_string(name).ok();
+        Self::parse(
+            read("/proc/self/setgroups").as_deref(),
+            read("/proc/self/gid_map").as_deref(),
+        )
+    }
+
+    fn parse(setgroups: Option<&str>, gid_map: Option<&str>) -> Self {
+        const TTY: u32 = 5;
+        let tty_gid = gid_map.and_then(map_lines).is_none_or(|lines| {
+            lines
+                .iter()
+                .any(|&[inside, _, count]| TTY.checked_sub(inside).is_some_and(|d| d < count))
+        });
+        Self {
+            setgroups: setgroups.is_none_or(|s| s.trim_end() != "deny"),
+            tty_gid,
+        }
+    }
 }
 
 /// The smallest id other than 0 a map's text gives the namespace.

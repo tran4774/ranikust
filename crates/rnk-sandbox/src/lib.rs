@@ -82,7 +82,7 @@ mod userns;
 
 pub use child::RootEntry;
 pub use error::{Error, Result, Step};
-pub use probe::{Caps, probe};
+pub use probe::{Caps, Fallbacks, KernelFs, probe, probe_with_fallbacks};
 pub use seal::{BinaryMount, SealedCopy, Sealing, run_from_sealed_copy};
 pub use seccomp::SeccompProfile;
 pub use setup::{enter_build_namespace, enter_build_user_namespace, trim_to_run_capabilities};

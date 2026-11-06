@@ -36,13 +36,14 @@ use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::fd::fd_above_stdio;
 use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
-use crate::probe::Caps;
+use crate::probe::{Caps, KernelFs};
 use crate::relay::Relay;
 use crate::seccomp::{self, Program, SeccompProfile};
 use crate::spec::{
     DEFAULT_HOSTNAME, Isolation, MountKind, Network, RootId, RunSpec, SecretFile, Stdio, root_id,
 };
 use crate::sweep;
+use crate::userns::OwnNamespace;
 
 /// Runs `RUN` commands.
 ///
@@ -156,6 +157,9 @@ impl Sandbox {
 
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
         let mut runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
+        if let Some(c) = caps {
+            runner = runner.with_kernel_fs(c.proc, c.sysfs);
+        }
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
             tracing::info!(
@@ -693,6 +697,10 @@ pub(crate) struct Runner {
     seccomp: Option<SeccompProfile>,
     /// The probe's runner ([`Runner::for_probe`]).
     probe: bool,
+    /// How a full-sandbox `RUN` gets `proc` and `sysfs` ([`Caps`]).
+    kernel_fs: (KernelFs, KernelFs),
+    /// What the user namespace this process is in allows a `RUN`.
+    own_ns: OwnNamespace,
 }
 
 /// Refuses a `root_dir` that is not the path the kernel gives its
@@ -752,6 +760,8 @@ impl Runner {
             cgroups: None,
             seccomp: None,
             probe: false,
+            kernel_fs: (KernelFs::Fresh, KernelFs::Fresh),
+            own_ns: OwnNamespace::read(),
         })
     }
 
@@ -773,6 +783,8 @@ impl Runner {
             cgroups: None,
             seccomp: None,
             probe: false,
+            kernel_fs: (KernelFs::Fresh, KernelFs::Fresh),
+            own_ns: OwnNamespace::read(),
         }
     }
 
@@ -789,6 +801,13 @@ impl Runner {
     /// that follow, under their own profile (ADR-0109).
     pub(crate) fn for_probe(mut self) -> Self {
         self.probe = true;
+        self
+    }
+
+    /// Gives full-sandbox `RUN`s `proc` and `sysfs` as `proc` and `sysfs`
+    /// say, as the probe found them ([`Caps`]).
+    pub(crate) fn with_kernel_fs(mut self, proc: KernelFs, sysfs: KernelFs) -> Self {
+        self.kernel_fs = (proc, sysfs);
         self
     }
 
@@ -1030,7 +1049,7 @@ impl Runner {
             };
         }
         match place(&mut journal, spec).and_then(|files| {
-            let mounts = plan::mount_plan(spec, &files);
+            let mounts = plan::mount_plan(spec, &files, self.kernel_fs.0, self.kernel_fs.1);
             self.job(
                 spec,
                 &user,
@@ -1208,6 +1227,11 @@ impl Runner {
             secrets,
             dev_remount,
             dev_pipes: plan::dev_pipes(spec),
+            devpts: if self.own_ns.tty_gid {
+                plan::DEVPTS
+            } else {
+                plan::DEVPTS_NO_TTY_GID
+            },
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
             loopback,
@@ -1226,6 +1250,7 @@ impl Runner {
                 .copied()
                 .map(Gid::from_raw)
                 .collect(),
+            set_groups: self.own_ns.setgroups,
             workdir: cstring(&spec.workdir)?,
             chroot,
             // Checked after the bind of the full sandbox's root.
@@ -1563,11 +1588,13 @@ fn hostname(spec: &RunSpec) -> &str {
 
 fn child_mount(op: MountOp) -> Result<ChildMount> {
     Ok(match op {
-        MountOp::Proc { target } => ChildMount::Proc {
+        MountOp::Proc { target, how } => ChildMount::Proc {
             target: cstring(&target)?,
+            rbind: how == KernelFs::Rbind,
         },
-        MountOp::Sysfs { target } => ChildMount::Sysfs {
+        MountOp::Sysfs { target, how } => ChildMount::Sysfs {
             target: cstring(&target)?,
+            rbind: how == KernelFs::Rbind,
         },
         MountOp::Dev { target } => ChildMount::Dev {
             target: cstring(&target)?,

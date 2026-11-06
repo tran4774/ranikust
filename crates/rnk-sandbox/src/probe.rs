@@ -1,5 +1,6 @@
 //! The sandbox's probe: performs the real per-`RUN` sequence once, in an
-//! empty root, and reports how a `RUN` can enter its root here.
+//! empty root, and reports how a `RUN` can enter its root and get its
+//! `proc` and `sysfs` here.
 //!
 //! The probe's command does not exist, so a child that fails at
 //! [`Step::Exec`] with `ENOENT` went through every step before it: the
@@ -27,6 +28,36 @@ pub struct Caps {
     /// How a `RUN` enters its root: `pivot_root`, or `MS_MOVE` where seccomp
     /// blocks it.
     pub root_entry: RootEntry,
+    /// How a `RUN` gets its `/proc`.
+    pub proc: KernelFs,
+    /// How a `RUN` gets its read-only `/sys`.
+    pub sysfs: KernelFs,
+}
+
+/// How a `RUN` gets `proc` or `sysfs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KernelFs {
+    /// A new instance; for `proc`, that of the `RUN`'s own PID namespace.
+    Fresh,
+    /// A recursive bind of the one ranikust sees, each of its mounts made
+    /// `nosuid`, `nodev` and `noexec` (and read-only for `sysfs`), where a
+    /// user namespace may not mount a new one. With `proc`, a `RUN` sees
+    /// the processes of the PID namespace ranikust runs in.
+    Rbind,
+}
+
+/// The kernel filesystems [`probe_with_fallbacks`] may bind where a new
+/// instance is refused: those the user-namespace probe bound after a new
+/// one was refused ([`crate::UsernsReport::fallbacks`]). The default
+/// allows none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Fallbacks {
+    /// An rbind of `/proc`.
+    pub proc: bool,
+    /// A read-only rbind of `/sys`.
+    pub sysfs: bool,
 }
 
 /// The command the probe tries to execute. It does not exist in the probe's
@@ -51,12 +82,26 @@ const PROBE_ROOT_PREFIX: &str = "probe-";
 /// [`Error::Setup`] with the step and errno that failed, or a host-side
 /// error.
 pub fn probe(dir: &Path) -> Result<Caps> {
+    probe_with_fallbacks(dir, Fallbacks::default())
+}
+
+/// [`probe`] in the build's user namespace: where mounting a new `proc` or
+/// `sysfs` is refused with `EPERM` and `allowed` names it, the sequence is
+/// tried again with an rbind of it ([`KernelFs::Rbind`]). A new instance
+/// is always tried first, so a `RUN` never gets an rbind where a new one
+/// mounts; the choice holds for every `RUN` of the sandbox started with
+/// these [`Caps`]. An rbind of `/proc` is logged as a warning, once.
+///
+/// # Errors
+///
+/// As [`probe`].
+pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
     let runner = Runner::new(dir, None)?;
     journal::replay(runner.runs_dir(), runner.state_dir(), None)?;
     remove_stale_roots(dir);
     let root_dir = create_root(dir)?;
     let parent = ParentPid::new()?;
-    let result = attempts(dir, &root_dir, parent);
+    let result = attempts(dir, &root_dir, parent, allowed);
     // Empty again: the journal removed the stubs.
     if let Err(e) = fs::remove_dir(&root_dir) {
         tracing::warn!("rnk-sandbox: cannot remove {}: {e}", root_dir.display());
@@ -64,29 +109,83 @@ pub fn probe(dir: &Path) -> Result<Caps> {
     result
 }
 
-fn attempts(dir: &Path, root_dir: &Path, parent: ParentPid) -> Result<Caps> {
-    let mut last = None;
-    for root_entry in [RootEntry::PivotRoot, RootEntry::MoveMount] {
-        if root_entry == RootEntry::MoveMount && slash_is_mount_root()? != Some(true) {
-            // The moved root would sit on a plain directory, which `..`
-            // climbs out of, or nobody knows: no fallback.
-            break;
-        }
+fn attempts(dir: &Path, root_dir: &Path, parent: ParentPid, allowed: Fallbacks) -> Result<Caps> {
+    let mut caps = Caps {
+        root_entry: RootEntry::PivotRoot,
+        proc: KernelFs::Fresh,
+        sysfs: KernelFs::Fresh,
+    };
+    loop {
         let span = tracing::debug_span!("rnk_sandbox.probe", ok = Empty);
-        let runner = Runner::new(dir, Some(root_entry))?.for_probe();
+        let runner = Runner::new(dir, Some(caps.root_entry))?
+            .with_kernel_fs(caps.proc, caps.sysfs)
+            .for_probe();
         let spec = RunSpec::new(root_dir, vec![PROBE_PROGRAM.into()]);
         let outcome =
             span.in_scope(|| reached_exec(runner.run(spec, None, |job| clone_child(job, parent))));
         span.record("ok", outcome.is_ok());
-        match outcome {
-            Ok(()) => return Ok(Caps { root_entry }),
-            // Docker's seccomp profile: try `MS_MOVE`. Any other errno
-            // (`EINVAL` when `/` is not a mount point) is final.
-            Err(e) if is_seccomp_refusal(&e) => last = Some(e),
-            Err(e) => return Err(e),
+        let e = match outcome {
+            Ok(()) => {
+                log_rbinds(caps);
+                return Ok(caps);
+            }
+            Err(e) => e,
+        };
+        let Some(next) = next_attempt(caps, allowed, &e) else {
+            return Err(e);
+        };
+        if next.root_entry == RootEntry::MoveMount && slash_is_mount_root()? != Some(true) {
+            // The moved root would sit on a plain directory, which `..`
+            // climbs out of, or nobody knows: no fallback.
+            return Err(e);
         }
+        tracing::debug!("rnk-sandbox: probe: {e}; trying {next:?}");
+        caps = next;
     }
-    Err(last.unwrap_or(Error::Privilege("the RUN sandbox")))
+}
+
+/// The attempt after `caps` failed with `e`, if any: a new `proc` or
+/// `sysfs` refused with `EPERM` that `allowed` lets be bound gets an
+/// rbind; `pivot_root` refused with `EPERM`, as Docker's seccomp profile
+/// does, `MS_MOVE`. Anything else is final, `pivot_root`'s `EINVAL`
+/// where `/` is not a mount point included.
+fn next_attempt(caps: Caps, allowed: Fallbacks, e: &Error) -> Option<Caps> {
+    let Error::Setup { step, source } = e else {
+        return None;
+    };
+    let eperm = source.raw_os_error() == Some(libc::EPERM);
+    match step {
+        Step::MountProc if eperm && allowed.proc && caps.proc == KernelFs::Fresh => Some(Caps {
+            proc: KernelFs::Rbind,
+            ..caps
+        }),
+        Step::MountSys if eperm && allowed.sysfs && caps.sysfs == KernelFs::Fresh => Some(Caps {
+            sysfs: KernelFs::Rbind,
+            ..caps
+        }),
+        Step::PivotRoot if is_seccomp_refusal(e) && caps.root_entry == RootEntry::PivotRoot => {
+            Some(Caps {
+                root_entry: RootEntry::MoveMount,
+                ..caps
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The lines, once per probe, of the rbinds it chose.
+fn log_rbinds(caps: Caps) {
+    if caps.proc == KernelFs::Rbind {
+        tracing::warn!(
+            "rnk-sandbox: a new proc is refused here, so each RUN gets an rbind of /proc \
+             and sees the processes ranikust sees"
+        );
+    }
+    if caps.sysfs == KernelFs::Rbind {
+        tracing::info!(
+            "rnk-sandbox: a new sysfs is refused here, so each RUN gets a read-only rbind of /sys"
+        );
+    }
 }
 
 /// `pivot_root` refused with `EPERM`, as a seccomp filter does.
@@ -215,6 +314,57 @@ mod tests {
         assert!(is_seccomp_refusal(&setup(Step::PivotRoot, libc::EPERM)));
         assert!(!is_seccomp_refusal(&setup(Step::PivotRoot, libc::EINVAL)));
         assert!(!is_seccomp_refusal(&setup(Step::MountProc, libc::EPERM)));
+    }
+
+    #[test]
+    fn a_kernel_fs_is_bound_only_when_allowed_and_a_new_one_is_refused() {
+        let setup = |step, errno| Error::Setup {
+            step,
+            source: io::Error::from_raw_os_error(errno),
+        };
+        let fresh = Caps {
+            root_entry: RootEntry::PivotRoot,
+            proc: KernelFs::Fresh,
+            sysfs: KernelFs::Fresh,
+        };
+        let both = Fallbacks {
+            proc: true,
+            sysfs: true,
+        };
+        let proc_eperm = setup(Step::MountProc, libc::EPERM);
+        // `probe`: nothing allowed, a refused mount is final.
+        assert_eq!(next_attempt(fresh, Fallbacks::default(), &proc_eperm), None);
+        let rbind = next_attempt(fresh, both, &proc_eperm).unwrap();
+        assert_eq!(rbind.proc, KernelFs::Rbind);
+        assert_eq!(rbind.sysfs, KernelFs::Fresh);
+        // Tried once: the rbind refused too is final.
+        assert_eq!(next_attempt(rbind, both, &proc_eperm), None);
+        // Another errno is not the user namespace's refusal.
+        let proc_einval = setup(Step::MountProc, libc::EINVAL);
+        assert_eq!(next_attempt(fresh, both, &proc_einval), None);
+        let only_proc = Fallbacks {
+            proc: true,
+            sysfs: false,
+        };
+        let sys_eperm = setup(Step::MountSys, libc::EPERM);
+        assert_eq!(next_attempt(rbind, only_proc, &sys_eperm), None);
+        let rbinds = next_attempt(rbind, both, &sys_eperm).unwrap();
+        assert_eq!(
+            (rbinds.proc, rbinds.sysfs),
+            (KernelFs::Rbind, KernelFs::Rbind)
+        );
+        // `MS_MOVE` keeps the kernel filesystems chosen, and is tried once.
+        let pivot = setup(Step::PivotRoot, libc::EPERM);
+        let moved = next_attempt(rbinds, both, &pivot).unwrap();
+        assert_eq!(
+            moved,
+            Caps {
+                root_entry: RootEntry::MoveMount,
+                ..rbinds
+            }
+        );
+        assert_eq!(next_attempt(moved, both, &pivot), None);
+        assert_eq!(next_attempt(fresh, both, &Error::Privilege("x")), None);
     }
 
     #[test]

@@ -231,7 +231,7 @@ for v in "${VARIANTS[@]}"; do
       "$IMAGE" /smoke-build --image "$IMAGE" --out /out --tag "$tag" "${runs[@]}" |
       sudo tee "$dir/log"
   fi
-  grep -q "^probe: Caps { root_entry: $entry }" "$dir/log" ||
+  grep -q "^probe: Caps { root_entry: $entry, proc: Fresh, sysfs: Fresh }" "$dir/log" ||
     { echo "error: $name: expected root entry $entry" >&2; exit 1; }
   sudo bash -c "$(declare -f smoke_check_no_stub_leak); smoke_check_no_stub_leak '$dir/out'"
   sudo tar -C "$dir/out" -cf "$dir/oci.tar" .

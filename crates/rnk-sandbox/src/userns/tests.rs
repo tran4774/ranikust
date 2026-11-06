@@ -174,6 +174,34 @@ fn a_map_fails_where_it_was_written() {
 }
 
 #[test]
+fn the_own_namespace_allows_setgroups_and_maps_tty_from_its_files() {
+    let own = |setgroups, gid_map| OwnNamespace::parse(setgroups, gid_map);
+    let initial = OwnNamespace {
+        setgroups: true,
+        tty_gid: true,
+    };
+    assert_eq!(
+        own(Some("allow\n"), Some("         0          0 4294967295\n")),
+        initial
+    );
+    // One id written by this process: `setgroups` denied, gid 5 unmapped.
+    assert_eq!(
+        own(Some("deny\n"), Some("0 1000 1\n")),
+        OwnNamespace {
+            setgroups: false,
+            tty_gid: false
+        }
+    );
+    // `newgidmap`'s ranges: 5 is the fifth subordinate id.
+    assert!(own(Some("allow\n"), Some("0 1000 1\n1 100000 65536\n")).tty_gid);
+    assert!(own(None, Some("5 100 1\n")).tty_gid);
+    assert!(!own(None, Some("0 100 5\n6 200 10\n")).tty_gid);
+    // Unreadable or unexpected: the steps run, and fail if they must.
+    assert_eq!(own(None, None), initial);
+    assert_eq!(own(Some("other"), Some("0 x 1\n")), initial);
+}
+
+#[test]
 fn each_kernel_filesystem_is_new_else_an_rbind() {
     let a = assemble(&ranges(), &all_steps(&[MKNOD]), Some(Ok(())), None);
     assert_eq!(a.map, StepResult::Ok);
@@ -275,6 +303,22 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
         "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; unshare(CLONE_NEWNS): ok; \
          proc: rbind of /proc (mount proc: EPERM); sysfs: rbind of /sys (mount sysfs: EPERM); \
          mknod: EPERM"
+    );
+    let both = crate::Fallbacks {
+        proc: true,
+        sysfs: true,
+    };
+    assert_eq!(r.fallbacks(), both);
+    let sysfs = passing(ranges(), &[SYSFS]).fallbacks();
+    assert_eq!((sysfs.proc, sysfs.sysfs), (false, true));
+    // Nothing worked: nothing to fall back to.
+    assert_eq!(
+        passing(ranges(), &[PROC, PROC_RBIND, SYSFS, SYSFS_RBIND]).fallbacks(),
+        crate::Fallbacks::default()
+    );
+    assert_eq!(
+        passing(ranges(), &[]).fallbacks(),
+        crate::Fallbacks::default()
     );
     assert_eq!(passing(ranges(), &[CHOWN]).stop(), Some("chown"));
     assert_eq!(passing(ranges(), &[NEWNS]).stop(), Some("mount namespace"));

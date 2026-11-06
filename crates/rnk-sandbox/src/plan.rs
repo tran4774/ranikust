@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use rustix::fs::StatVfsMountFlags;
 use rustix::mount::MountFlags;
 
+use crate::probe::KernelFs;
 use crate::spec::{DEFAULT_PATH, MountKind, Network, RunSpec};
 
 /// Where `proc` is mounted.
@@ -94,6 +95,9 @@ pub(crate) const MASKED_PATHS: [&CStr; 12] = [
 pub(crate) const DEV_TMPFS: &CStr = c"mode=755,size=65536k";
 /// Options of `/dev/pts`: a private instance, as Docker's.
 pub(crate) const DEVPTS: &CStr = c"newinstance,ptmxmode=0666,mode=0620,gid=5";
+/// [`DEVPTS`] where gid 5 (`tty`) is not mapped, which `devpts` refuses
+/// (`EINVAL`): new terminals get the opener's group, as runc's.
+pub(crate) const DEVPTS_NO_TTY_GID: &CStr = c"newinstance,ptmxmode=0666,mode=0620";
 /// Options of `/dev/shm`, as Docker's.
 pub(crate) const SHM: &CStr = c"mode=1777,size=65536k";
 
@@ -120,10 +124,10 @@ impl EtcFiles {
 /// One mount of the per-`RUN` sequence. Targets are paths inside the root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MountOp {
-    /// A new `proc`.
-    Proc { target: PathBuf },
-    /// A read-only `sysfs`.
-    Sysfs { target: PathBuf },
+    /// `proc`: a new one, or an rbind of `/proc`.
+    Proc { target: PathBuf, how: KernelFs },
+    /// A read-only `sysfs`: a new one, or an rbind of `/sys`.
+    Sysfs { target: PathBuf, how: KernelFs },
     /// A tmpfs on `/dev` with nodes, `devpts`, `shm` and symlinks.
     Dev { target: PathBuf },
     /// A writable copy of a file of ranikust's, bound read-write.
@@ -142,8 +146,8 @@ impl MountOp {
     #[cfg(test)]
     pub(crate) fn target(&self) -> &Path {
         match self {
-            MountOp::Proc { target }
-            | MountOp::Sysfs { target }
+            MountOp::Proc { target, .. }
+            | MountOp::Sysfs { target, .. }
             | MountOp::Dev { target }
             | MountOp::File { target, .. }
             | MountOp::Bind { target, .. } => target,
@@ -190,13 +194,23 @@ pub(crate) fn dev_pipes(spec: &RunSpec) -> bool {
 }
 
 /// The mounts of a `RUN`, in the order of `design/sandbox.md`: `proc`,
-/// `sysfs`, `/dev`, the three `/etc` files, then `RUN --mount`.
-pub(crate) fn mount_plan(spec: &RunSpec, files: &EtcFiles) -> Vec<MountOp> {
+/// `sysfs`, `/dev`, the three `/etc` files, then `RUN --mount`. `proc` and
+/// `sysfs` are made as the probe chose ([`crate::Caps`]).
+pub(crate) fn mount_plan(
+    spec: &RunSpec,
+    files: &EtcFiles,
+    proc: KernelFs,
+    sysfs: KernelFs,
+) -> Vec<MountOp> {
     let mut plan = vec![
         MountOp::Proc {
             target: PROC.into(),
+            how: proc,
         },
-        MountOp::Sysfs { target: SYS.into() },
+        MountOp::Sysfs {
+            target: SYS.into(),
+            how: sysfs,
+        },
         MountOp::Dev { target: DEV.into() },
         MountOp::File {
             source: files.resolv_conf.clone(),
@@ -331,7 +345,20 @@ mod tests {
     #[test]
     fn mounts_follow_the_design_order() {
         let files = EtcFiles::in_dir(Path::new("/state/sandbox/runs/1"));
-        let plan = mount_plan(&spec(), &files);
+        let plan = mount_plan(&spec(), &files, KernelFs::Rbind, KernelFs::Fresh);
+        assert_eq!(
+            plan[..2],
+            [
+                MountOp::Proc {
+                    target: PROC.into(),
+                    how: KernelFs::Rbind
+                },
+                MountOp::Sysfs {
+                    target: SYS.into(),
+                    how: KernelFs::Fresh
+                }
+            ]
+        );
         let targets: Vec<_> = plan.iter().map(MountOp::target).collect();
         assert_eq!(
             targets,
