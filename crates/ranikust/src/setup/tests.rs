@@ -459,9 +459,9 @@ fn a_second_build_on_slash_is_refused_by_the_lock() {
 #[test]
 fn the_user_namespace_line_says_whether_the_path_passes_and_where_it_stops() {
     let steps = "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok";
-    let ok = Some(Ok(mount_api_name(MountApi::LowerdirPlus).to_owned()));
+    let ok = Some(Ok(Ok(mount_api_name(MountApi::LowerdirPlus).to_owned())));
     assert_eq!(
-        userns_summary(None, steps, ok.clone(), Some("0")),
+        userns_summary(None, steps, ok.clone(), "0"),
         (
             true,
             "passes; unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; overlay: ok, \
@@ -469,7 +469,7 @@ fn the_user_namespace_line_says_whether_the_path_passes_and_where_it_stops() {
                 .to_owned()
         )
     );
-    let (passes, line) = userns_summary(Some("unshare"), steps, None, None);
+    let (passes, line) = userns_summary(Some("unshare"), steps, None, "absent");
     assert!(!passes);
     assert!(line.starts_with("stops at unshare; "), "{line}");
     assert!(
@@ -478,16 +478,25 @@ fn the_user_namespace_line_says_whether_the_path_passes_and_where_it_stops() {
         ),
         "{line}"
     );
-    let refused = Some(Err("mount: EINVAL".to_owned()));
-    let (passes, line) = userns_summary(None, steps, refused, Some("1"));
+    let refused = Some(Ok(Err("mount: EINVAL".to_owned())));
+    let (passes, line) = userns_summary(None, steps, refused, "1");
     assert!(!passes);
     assert!(line.starts_with("stops at overlay; "), "{line}");
     assert!(
         line.contains("; overlay: refused: mount: EINVAL; "),
         "{line}"
     );
+    // A probe that could not run is not a refusal.
+    let host = Some(Err("fork the probe's child: EAGAIN".to_owned()));
+    let (passes, line) = userns_summary(None, steps, host, "1");
+    assert!(!passes);
+    assert!(line.starts_with("overlay not probed; "), "{line}");
+    assert!(
+        line.contains("; overlay: could not run: fork the probe's child: EAGAIN; "),
+        "{line}"
+    );
     // The steps decide first.
-    let (passes, line) = userns_summary(Some("chown"), steps, ok, Some("1"));
+    let (passes, line) = userns_summary(Some("chown"), steps, ok, "1");
     assert!(!passes);
     assert!(line.starts_with("stops at chown; "), "{line}");
 }

@@ -222,6 +222,10 @@ pub(crate) fn set_up(
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
     let store = open_store(state_dir, state_dir)?;
+    // Before the overlay probe: a thread it joined may still be counted.
+    if userns_probe {
+        report_user_namespace(&store);
+    }
     let sandbox_dir = state_dir.join("sandbox");
     let outcome = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
@@ -234,9 +238,6 @@ pub(crate) fn set_up(
         Outcome::OverlayRoot { sandbox, overlay }
     };
     tracing::info!("ranikust: {outcome}");
-    if userns_probe {
-        report_user_namespace(&store);
-    }
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
         kind: Kind::Other,
@@ -475,13 +476,14 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
     }
 }
 
-/// Step 2 of the probe order, reported only (#74): whether a `RUN` could
+/// Step 2 of the probe order, reported only: whether a `RUN` could
 /// run in a user namespace here (`rnk_sandbox::probe_user_namespace`), and
 /// an overlay mount in it (`rnk_snapshot::probe`), tried in a directory of
 /// this build on the state directory's filesystem (where it mounts is
 /// \[open: #4], interim (a)). Logs one line; nothing here refuses or
 /// changes the outcome. Root only: another user never reaches a set-up.
-/// Call while single-threaded, before the spawner starts.
+/// Call while single-threaded, before the spawner starts and before
+/// `probe_overlay`, whose joined thread may still be counted.
 fn report_user_namespace(store: &Store) {
     let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
     let _entered = span.enter();
@@ -544,14 +546,16 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> Result<(bool, String), S
         }
         None => None,
     };
-    let apparmor = std::fs::read_to_string(APPARMOR_USERNS)
-        .ok()
-        .map(|v| v.trim().to_owned());
+    let apparmor = match std::fs::read_to_string(APPARMOR_USERNS) {
+        Ok(v) => v.trim().to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
+        Err(e) => format!("unreadable: {e}"),
+    };
     Ok(userns_summary(
         report.stop(),
         &report.to_string(),
         overlay,
-        apparmor.as_deref(),
+        &apparmor,
     ))
 }
 
@@ -559,27 +563,32 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> Result<(bool, String), S
 /// capabilities (24.04 sets it).
 const APPARMOR_USERNS: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
 
+/// The overlay probe in the user namespace: `None` without a map, `Err`
+/// when it could not run, else its own result (the mount API's name).
+type OverlayInNamespace = Option<Result<Result<String, String>, String>>;
+
 /// The user namespace probe's line: whether the path passes (every step a
 /// `RUN` needs, then overlay), where it stops, each step, the overlay and
 /// the AppArmor switch.
 fn userns_summary(
     stop: Option<&str>,
     steps: &str,
-    overlay: Option<Result<String, String>>,
-    apparmor: Option<&str>,
+    overlay: OverlayInNamespace,
+    apparmor: &str,
 ) -> (bool, String) {
     let (overlay_ok, overlay) = match overlay {
-        Some(Ok(api)) => (true, format!("ok, {api}")),
-        Some(Err(e)) => (false, format!("refused: {e}")),
-        None => (false, "not run (no id map)".to_owned()),
+        Some(Ok(Ok(api))) => (Some(true), format!("ok, {api}")),
+        Some(Ok(Err(e))) => (Some(false), format!("refused: {e}")),
+        Some(Err(e)) => (None, format!("could not run: {e}")),
+        None => (None, "not run (no id map)".to_owned()),
     };
-    let verdict = match stop {
-        Some(step) => format!("stops at {step}"),
-        None if overlay_ok => "passes".to_owned(),
-        None => "stops at overlay".to_owned(),
+    let verdict = match (stop, overlay_ok) {
+        (Some(step), _) => format!("stops at {step}"),
+        (None, Some(true)) => "passes".to_owned(),
+        (None, Some(false)) => "stops at overlay".to_owned(),
+        (None, None) => "overlay not probed".to_owned(),
     };
-    let passes = stop.is_none() && overlay_ok;
-    let apparmor = apparmor.unwrap_or("absent");
+    let passes = stop.is_none() && overlay_ok == Some(true);
     (
         passes,
         format!(

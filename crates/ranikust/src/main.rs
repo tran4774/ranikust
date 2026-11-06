@@ -495,7 +495,7 @@ fn build(
             kaniko(
                 &config,
                 &seccomp,
-                "--mode=kaniko",
+                KanikoBy::Flag,
                 can_mount,
                 runtime,
                 metrics_file,
@@ -572,7 +572,7 @@ fn build(
                             kaniko(
                                 &config,
                                 &seccomp,
-                                AUTO,
+                                KanikoBy::Auto,
                                 true,
                                 runtime,
                                 metrics_file,
@@ -589,7 +589,7 @@ fn build(
                     kaniko(
                         &config,
                         &seccomp,
-                        AUTO,
+                        KanikoBy::Auto,
                         false,
                         runtime,
                         metrics_file,
@@ -603,9 +603,23 @@ fn build(
     }
 }
 
-/// How `--mode=auto` names itself in messages, and tells [`kaniko`] it
-/// was picked.
-const AUTO: &str = "--mode=auto";
+/// How [`kaniko`] was reached: `--mode=kaniko`, or picked by
+/// `--mode=auto`, which also runs the user-namespace probe, reported only.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KanikoBy {
+    Flag,
+    Auto,
+}
+
+impl KanikoBy {
+    /// The flag, for messages.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Flag => "--mode=kaniko",
+            Self::Auto => "--mode=auto",
+        }
+    }
+}
 
 /// The kaniko-mode flags in overlay mode: refused where they would change
 /// the image, else a warning each (ADR-0040).
@@ -689,13 +703,14 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 fn kaniko(
     config: &BuildConfig,
     seccomp: &Seccomp,
-    how: &str,
+    by: KanikoBy,
     can_mount: bool,
     runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
     binary: Option<BinaryMount>,
     started_in: rustix::io::Result<exposure::MountNamespace>,
 ) -> Result<(), Failure> {
+    let how = by.flag();
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(Failure::error(format!(
@@ -748,8 +763,7 @@ fn kaniko(
     } else {
         None
     };
-    // `--mode=auto` also probes the user namespace, reported only (#74).
-    let userns_probe = how == AUTO;
+    let userns_probe = by == KanikoBy::Auto;
     let setup = tracing::debug_span!("ranikust.setup")
         .in_scope(|| {
             setup::set_up_kaniko(
