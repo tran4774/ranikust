@@ -716,6 +716,8 @@ fn step_two(h: &Path) {
     fs::write(h.join("srv/new"), b"two").unwrap();
     fs::write(h.join("opt/app/bin/run"), b"run v2").unwrap();
     fs::remove_file(h.join("link")).unwrap();
+    // What the cached layer brought, deleted: the new baseline holds it.
+    fs::remove_file(h.join("opt/app/current")).unwrap();
 }
 
 /// One stage runs `step_one` and exports its layer (gzip); another, on the
@@ -886,6 +888,41 @@ fn a_layer_is_applied_only_to_a_closed_usable_root() {
     assert!(matches!(r.apply_layer(&layer), Err(Error::State(_))));
     assert!(!f.root.join("a").exists());
     r.release().unwrap();
+}
+
+/// On the shared root a refused layer changes nothing, not even the view of
+/// a kept stage the holder's next step reads; the holder's applied layer
+/// ends it, as an instruction does.
+#[test]
+fn shared_root_a_refused_layer_leaves_the_views_of_kept_stages() {
+    let f = Shared::new(true);
+    let layer = blob(
+        &f.snap,
+        &f.blobs(),
+        "l",
+        &Tar::new().file("a", b"a").bytes(),
+    );
+    let mut kept = f.snap.prepare(Base::Scratch).unwrap();
+    kept.begin_layer().unwrap();
+    fs::write(f.root.join("k"), b"kept").unwrap();
+    drop(kept.end_layer().unwrap());
+    kept.keep(&Keep::All).unwrap();
+    let mut now = f.snap.prepare(Base::Scratch).unwrap();
+    let state = || fs::read_dir(f.root.join("state")).unwrap().count();
+    let before = state();
+    let names = kept.view().unwrap().read_names("").unwrap();
+    assert!(names.iter().any(|n| n == "k"), "{names:?}");
+    let with_view = state();
+    assert!(
+        with_view > before,
+        "the view is a directory of the state directory"
+    );
+    assert!(matches!(kept.apply_layer(&layer), Err(Error::State(_))));
+    assert_eq!(state(), with_view, "the refused layer removed no view");
+    now.apply_layer(&layer).unwrap();
+    assert_eq!(state(), before, "the applied layer ends the view");
+    now.release().unwrap();
+    kept.release().unwrap();
 }
 
 /// A per-stage layer that fails once it may have reached the root (a wrong
@@ -1236,9 +1273,10 @@ fn hostile_on_slash() -> Vec<u8> {
 }
 
 /// Kaniko mode on `/` (the root at `host`, which holds `vol/`, a mount in
-/// `mounts`): a hostile cached layer, streamed as from a registry cache
-/// (ADR-0116), writes nothing into the state directory, `/proc`, an ignored
-/// path, a volume or the marker of `/`, and the walk after it reports
+/// `mounts`): a hostile cached layer, streamed as from a registry cache,
+/// writes nothing into the state directory, `/proc`, an ignored path, a
+/// volume or the marker of `/`, links nothing of them into the root, and
+/// the walk after it reports
 /// nothing; a layer whose names climb out of the root is refused, breaks
 /// the root and reaches nothing.
 fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
@@ -1264,6 +1302,10 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     for p in ["proc/planted", "proc/self/planted"] {
         assert!(!host.join(p).exists(), "{p}");
     }
+    assert!(
+        fs::symlink_metadata(host.join("hl-state")).is_err(),
+        "a hardlink into the state directory"
+    );
     root.begin_layer().unwrap();
     let d = root.end_layer().unwrap();
     assert!(d.diff().is_empty(), "{:?}", changes(d.diff()));

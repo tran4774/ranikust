@@ -985,8 +985,8 @@ fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
 /// with everything that can fail before an entry reaches the root done. On
 /// `/`, which nothing empties, a streamed layer is first spooled and
 /// verified ([`Spooled::of`]): nothing unverified reaches the root.
-/// Elsewhere it is extracted as it arrives ([`extract_blob`]): the root is
-/// emptied after a failure.
+/// Elsewhere it is extracted as it arrives: after a failure the root is
+/// emptied (a base layer) or broken (a cached layer).
 fn open_for_root(shared: &Shared, layer: &KanikoLayer) -> Result<Box<dyn std::io::Read + Send>> {
     if shared.is_slash() && matches!(layer.source, LayerSource::Stream(_)) {
         let store = shared.tar_store()?.ok_or(Error::State(
@@ -1469,11 +1469,10 @@ impl KanikoRoot {
         // The step it stands for ends as an instruction does: no view of
         // another stage outlives it.
         clear_views(&shared)?;
-        let span = tracing::info_span!("rnk_snapshot.apply");
+        let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
-        hold.walked = false;
         let tar = open_for_root(&shared, layer)?;
-        hold.touched = true;
+        hold.walked = false;
         hold.broken = true;
         extract_checked(&shared.root, &shared.ignore, tar, &layer.diff_id)?;
         hold.broken = false;

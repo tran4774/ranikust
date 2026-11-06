@@ -447,10 +447,10 @@ impl KanikoStage {
             return Err(Error::State("a layer is open"));
         }
         self.usable()?;
-        let span = tracing::info_span!("rnk_snapshot.apply");
+        let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
-        self.walked = false;
         let tar = layer.open()?;
+        self.walked = false;
         self.broken = true;
         extract_checked(&self.root, &self.shared.ignore, tar, layer.diff_id())?;
         self.broken = false;

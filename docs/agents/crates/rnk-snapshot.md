@@ -256,8 +256,8 @@ that found a bug stay as its regression test.
   (`mknod`): a device node swapped in during the walk is never opened
   (`src/kaniko/walk/tests.rs`), a child never gets the device nodes a
   parent made nor a hand-over gives them (`src/kaniko/stages/tests.rs`), and
-  a cached layer with foreign owners and device nodes gives the root its base
-  layer gives (`tests/apply.rs`).
+  a cached layer with foreign owners and device nodes gives the root the same
+  layer gives as a base layer (`tests/apply.rs`).
 - **T2** (VM; `just test-vm unit`): the reference before a merge touching
   overlay mounts or deletion; kaniko mode on `/`, flattened content against
   kaniko, BuildKit and the other mode; a hostile cached layer on the `/` of a
@@ -271,9 +271,10 @@ that found a bug stay as its regression test.
 
 Rows: [design/metrics.md](../../design/metrics.md#rnk-snapshot).
 
-- Spans: `prepare` (`layers`), `apply` (a cached layer), `mount`, `umount`, `empty`, `keep` (`paths`; 0
-  for the whole root), `hand_over` (inside `prepare` with `handed_over =
-  true`, `rnk_rootfs.prune` in it), `release`, `probe`; records `diff`
+- Spans: `prepare` (`layers`), `apply` (a cached layer), `mount`, `umount`,
+  `empty`, `keep` (`paths`; 0 for the whole root), `hand_over` (inside
+  `prepare` with `handed_over = true`, `rnk_rootfs.prune` in it),
+  `release`, `probe`; records `diff`
   (`files_added`, `whiteouts`, `bytes`, ...), `walk` (`entries`,
   `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads`),
   `baseline` (`entries`), `export` (`entries`, `bytes_read`).
