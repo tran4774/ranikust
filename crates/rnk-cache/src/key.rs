@@ -227,12 +227,12 @@ pub enum TimePolicy {
 mod tests {
     use super::*;
 
-    /// The tag of a key paired with any encoding, which only this module
-    /// can build: `golden.rs` reaches tags through `next_entry`, whose key
-    /// already depends on the time policy, so this pins the tag hash
-    /// alone. A change here bumps `KEY_VERSION`.
+    /// One key's tag under three encodings, two of which its inputs were
+    /// not made for: only this module can pair them, since `golden.rs`
+    /// reaches tags through `next_entry`, whose key already depends on the
+    /// time policy. A change here bumps `KEY_VERSION`.
     #[test]
-    fn the_tag_hash_is_pinned_for_any_key_and_encoding() {
+    fn one_keys_tag_is_pinned_under_three_encodings() {
         // `golden.rs`'s "step with every input" key, made with kept times.
         let hex = "a949f4ffdf8c45cdd972d636face070a22bc8e7090b6d40f0cf971a06fdee1bf";
         let mut hash = [0_u8; 32];

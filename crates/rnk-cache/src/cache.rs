@@ -60,8 +60,8 @@ pub enum Miss {
 ///
 /// Its tag proves nothing: the caller checks the blob against [`blob`]'s
 /// digest and size and its tar against [`diff_id`] as it checks a base
-/// layer's, and extracts it under the same rules (invariant 2 of #123). A
-/// blob found bad is a miss the caller warns about, never a failed build
+/// layer's, and extracts it under the same rules (invariant 2 of #123); a
+/// blob those rules refuse is found bad too. A blob found bad is a miss the caller warns about, never a failed build
 /// (ADR-0113, ADR-0123), outside ADR-0123's open cases (\[open: #171],
 /// \[open: #172]).
 ///

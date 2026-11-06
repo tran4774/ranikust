@@ -178,7 +178,7 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 
 - **Design:** [`design/cache-and-store.md#cache-keys`](../../design/cache-and-store.md#cache-keys), [`#cache-entries`](../../design/cache-and-store.md#cache-entries), [`#ownership`](../../design/cache-and-store.md#ownership); [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export) (`--cache` makes a layer needed); [threat model T11, T13, T25 to T29](../../security/threat-model.md#5-threats-and-mitigations)
 - **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (the fields, SHA-256, the tag and its encoding), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (`COPY --from=<stage>`; lookahead and skipping cached stages, not built yet), [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md) (a hit that fails after its extraction began makes its stage start again once with no cache; an entry rejected at lookup is a miss with a warning, not a restart; planned, #130), [ADR-0124](../../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md) (a `--chown` owner is keyed as written; the key plan, #126), [ADR-0125](../../adr/0125-cache-copy-layers-covers-copy-and-a-local-add.md) (`--cache-copy-layers` covers `COPY` and an `ADD` from local sources; planned, #131), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (crate edges), [ADR-0116](../../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md) (registry or layout, no layout on `/`; the layout cache and the flags not built yet), [ADR-0057](../../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) (dropped cache mounts), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
-- **Open:** [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
+- **Open:** [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries), [#171](https://github.com/tran4774/ranikust/issues/171) and [#172](https://github.com/tran4774/ranikust/issues/172) (ADR-0123's open restart cases)
 - **Evidence:** none measured: workload W2 (cold, warm, partial cache) was never run; mode independence is argued in [survey 06](../../research/survey/06-overlay-and-parallelism.md) §6.
 - **kaniko** (compare, do not copy): `kaniko@44aa7ddc0`
   `pkg/executor/build.go:322` `populateCompositeKey` (sorts the environment
@@ -199,8 +199,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   compression and its level (`a_key_ignores_the_compression_and_its_level`),
   and that an entry names the encoding its inputs were made for.
   `golden.rs` also pins the encoding annotation, `src/key.rs` the tag hash
-  of one key under encodings its inputs were not made for (which only that
-  module can pair), and `src/entry.rs` what a push writes (a manifest and
+  of one key under three encodings, two of which its inputs were not made
+  for (only that module can pair them), and `src/entry.rs` what a push writes (a manifest and
   config in canonical bytes, the layer type per compression);
   `src/error.rs` checks excerpts and that a refusal names an
   empty media type in words. `tests/registry/` runs `RegistryCache` against

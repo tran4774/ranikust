@@ -176,8 +176,8 @@ while writing, for overlay mode and kaniko mode on a host
 ([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)). A cache
 hit needs no local blob either: the cached layer is mounted or streamed from
 the cache repository, as a base layer is. On `/` the state never outlives the
-process (ADR-0051). A bad hit costs a miss and a restart of its stage with no
-cache, not a failed build (see
+process (ADR-0051). A bad hit costs a miss with a warning and, once its
+extraction began, a restart of its stage with no cache, not a failed build (see
 [Credentials and failures](#credentials-and-failures)).
 
 ## Measurements
