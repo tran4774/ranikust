@@ -218,6 +218,7 @@ No span per HTTP request or body chunk.
 | Span | Fields | Why |
 |---|---|---|
 | `rnk_snapshot.prepare` | `layers` | A stage root: overlay mount over the store, or, in kaniko mode, emptying the root and extracting the base (extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`); the baseline walk is its own `rnk_snapshot.walk`. |
+| `rnk_snapshot.apply` | | Kaniko mode: a cached layer applied to an open stage root instead of running its step ([cache hit](kaniko-mode.md#a-cache-hit)); the extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`, as a base layer's. |
 | `rnk_snapshot.empty` | | Kaniko mode: the shared root emptied (before a base, on release, at the end of the build), `rnk_rootfs.delete` inside. |
 | `rnk_snapshot.keep` | `paths` | Kaniko mode: what later stages read of a finished stage copied into the keep area before the root is reused; `paths` the entries kept, 0 for the whole root; `rnk_rootfs.copy` inside. |
 | `rnk_snapshot.hand_over` | | Kaniko mode off `/`: a stage's directory handed to the only stage that reads it (ADR-0062), inside that stage's `rnk_snapshot.prepare` (`handed_over = true`); `rnk_rootfs.prune` inside, then the move (ADR-0061). |

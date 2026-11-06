@@ -751,6 +751,42 @@ JDK from apt, apk or dnf, TypeScript 7 (`tsgo`), binaries calling `current_exe`
 at start and scripts using `<(...)`, `/dev/fd`, `ps` or `/proc/<pid>` need
 sequential mode.
 
+## A cache hit
+
+With `--cache` (Phase 4, [#128](https://github.com/tran4774/ranikust/issues/128)),
+a step whose layer the cache holds is not run: the layer is applied to the
+open stage root instead, `KanikoRoot::apply_layer` on the shared root and
+`KanikoStage::apply_layer` per stage. The layer is made by `base_layer` or
+`streamed_layer`, as a base layer is.
+
+- **Extracted as a base layer.** A cached layer is content anyone who can
+  push to the cache wrote, and its tag proves nothing. It goes through
+  `rnk_rootfs::extract_live` with the stage's ignore list: ignored paths, the
+  state directory and mounts are never written, through a symlink either;
+  whiteouts and opaque directories are applied, never over an ignored path;
+  device nodes and FIFOs are left out (ADR-0041); a name or hardlink target
+  whose `..` climbs out is refused; the diff ID is checked at the end. On `/`
+  a streamed layer is spooled and verified before its first entry reaches
+  `/` ([streaming](streaming.md#credentials-and-failures)); per stage it is
+  extracted as it arrives (ADR-0055). The rules a user namespace adds to base
+  layers (ADR-0098's owner scan, ADR-0106's device nodes) hold for it too.
+- **The walk catches up lazily.** Applying a layer drops the walk's record of
+  the root; the next `begin_layer` of a stage whose layers are needed takes a
+  new baseline (`forget`, then a full walk), so the next diff holds only that
+  step's changes. A run of hits costs no walk; since a stage uses its hits
+  only up to its first miss, it takes one baseline, as a cold build does.
+- **No step goes on from a half-applied layer.** A failure before the first
+  entry can reach the root (the source refuses the request; on `/`, the
+  spool's check) leaves the root as it was, usable. A later one leaves it
+  broken: no layer, applied layer, view, keep or child stage (`FROM`,
+  squashed or handed over) goes on from it, so no later layer is computed
+  over part of a cached one. The shared root is usable again once a new base
+  empties it; a stage directory is deleted by its `release`.
+- **Refused, nothing changed:** a layer open, a root not held (shared root)
+  or handed over (per stage).
+- Span `rnk_snapshot.apply`, the extraction's `rnk_layer.decode` and
+  `rnk_rootfs.extract` inside.
+
 ## Lazy snapshots
 
 A stage whose layers are not needed is not snapshotted at all: no baseline
