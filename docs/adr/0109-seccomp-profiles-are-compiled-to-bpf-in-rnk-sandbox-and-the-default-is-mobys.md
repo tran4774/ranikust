@@ -233,9 +233,9 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   [#103](https://github.com/tran4774/ranikust/issues/103): a profile that
   refuses `exit` and `exit_group` leaves the `RUN`'s shell retrying its
   exit, and a profile with a refusing default action and no rules does the
-  same to ranikust's own child before `exec`, each with one process at about
-  one CPU 30 s on; a `SIGTERM` then cancels the build in 0.1 s ("build
-  cancelled", exit code 1).
+  same to ranikust's own child before `exec`, each with one process using
+  99.9 % of a CPU 30 s after the build started; a `SIGTERM` then cancels the
+  build in 0.1 s ("build cancelled", exit code 1).
 
 ## More Information
 
