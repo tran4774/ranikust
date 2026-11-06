@@ -92,7 +92,7 @@ tests are listed there):
 | `--skip-push-permission-check` (`:372`), `--preserve-context` (`:375`) | accepted: ranikust never checks push permission ahead, and never changes or deletes the context |
 | `--use-new-run`, `--cleanup`, `--pre-cleanup`, `--image-fs-extract-retry`, `--force-build-metadata`, `--skip-unused-stages`, `--compressed-caching=false`, `--no-push-cache` | refused with the reason: they change nothing in ranikust, and no flag is ignored (ADR-0049) |
 | `--context-sub-path` (`:339`) | kaniko joins it onto a `dir://` or fetched context (`root.go:599-631`, `buildcontext/dir.go:25`) and ignores it for a plain path; ranikust drops `dir://` and applies it to fetched contexts only, and refuses it with a local context, exit 2 (ADR-0053, ADR-0054) |
-| `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4 |
+| `--cache-ttl`, `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (true) | refused until Phase 4; `--cache-copy-layers` will cover `COPY` and a local `ADD` (ADR-0125, [below](#behaviour-to-match)) |
 | `--single-snapshot` | refused for good in every mode, whatever its value, before the arguments are parsed (exit 2, ADR-0065): one walk at the end saves about 1 s per 250k-file build of 10 steps and gives up the per-step layers a cached rebuild reuses |
 | `--materialize` | refused until Phase 4's layer cache gives it a meaning, as `--cache` (ADR-0064) |
 | `--ignore-var-run` (`ADR-0038`), `--whitelist-var-run` | refused, exit 2: kaniko mode ignores `/var/run` only where it is a mount point, as every mount point, so the flag changes nothing (ADR-0052 D4, ADR-0049) |
@@ -182,6 +182,15 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
   `pkg/executor/composite_cache.go:35`). ranikust has its own versioned,
   mode-independent key and neither reads nor writes kaniko's cache
   (`ADR-0005`); migrating users start cold.
+- **`--cache-copy-layers` and `ADD`.** kaniko's README describes the flag for
+  `COPY` only (`README.md:667-672,785-787`), but its code caches an `ADD` under
+  it too (`pkg/commands/commands.go:94`, `pkg/commands/add.go:290-292`, since
+  `742e75b1e`). Planned, Phase 4 (ADR-0125,
+  [#131](https://github.com/tran4774/ranikust/issues/131)): ranikust follows the
+  code for an `ADD` from local sources, as BuildKit caches both. What remains
+  different: kaniko also caches `ADD <url>` and an archive `ADD` under a key that
+  leaves out their content (`pkg/commands/add.go:361-366`); ranikust supports
+  neither before Phase 5.
 - **`RUN`.** kaniko runs on `/` with `Setpgid`, a process-wide `PATH`
   (`pkg/commands/run.go:320-339`) and host user lookup; cache mounts swap
   directories (`pkg/commands/run.go:104`, `:563`). ranikust sandboxes `RUN`

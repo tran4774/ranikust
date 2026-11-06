@@ -7,9 +7,9 @@
 //!   its flags; the `ARG`s declared and the environment in effect; `USER`,
 //!   `WORKDIR` and `SHELL`; its heredocs' bodies, as BuildKit expands them;
 //! - an owner name, the `USER` that owns what a `WORKDIR` creates or a
-//!   `--chown=<user>[:<group>]`, as written, never the ids it resolves to,
-//!   in a root that does not exist before the build
-//!   ([cache-and-store](../../../docs/design/cache-and-store.md#cache-keys));
+//!   `--chown=<user>[:<group>]`, as written after expansion, never the ids
+//!   it resolves to, in a root that does not exist before the build
+//!   (ADR-0124);
 //! - a `RUN`: the network BuildKit keys (its `--network`, or `none` for one
 //!   without it under the build's `--network=none`,
 //!   `buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert.go:823`,
@@ -27,9 +27,8 @@
 //! build refuses, an expansion or a read that fails) has no key, and
 //! neither has any later step of its stage or a stage built on it or
 //! reading it: fail closed, a miss. The one exception is an `ADD` of a
-//! local archive, keyed though the build refuses it until Phase 5 (the
-//! design's cache keys say why). Which keys are looked up is the caller's
-//! choice.
+//! local archive, keyed though the build refuses it until Phase 5
+//! (ADR-0125). Which keys are looked up is the caller's choice.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
