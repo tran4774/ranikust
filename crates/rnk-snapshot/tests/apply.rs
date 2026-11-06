@@ -2,22 +2,26 @@
 //! running its step (`design/kaniko-mode.md#a-cache-hit`): per-stage
 //! directories (`KanikoStage::apply_layer`) and the shared root
 //! (`KanikoRoot::apply_layer`), also as on `/`, in temporary directories
-//! (T0); foreign owners and device nodes as root (T2c); a hostile layer on
+//! (T0), with the red team of what a `RUN` left in the root before the
+//! layer; foreign owners and device nodes as root (T2c); a hostile layer on
 //! the `/` of a default Docker container (T2).
 //!
 //! A cached layer is image content anyone who can push to the cache
 //! repository wrote: it is extracted under every rule of a base layer, and
 //! the walk that follows reports only what the next step changes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Read as _, Write as _};
+use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use rnk_layer::{Compression, EncodeOptions};
 use rnk_oci::Digest;
@@ -1397,6 +1401,749 @@ fn red_team_a_hostile_cached_layer_on_slash_touches_no_ignored_path() {
     assert_eq!(around, ["root"], "nothing beside the root");
 }
 
+// Red team: what a `RUN` left in the root before a cached layer lands on it.
+
+/// How long an apply of these small layers may take before it counts as
+/// blocked.
+const DEADLINE: Duration = Duration::from_secs(30);
+
+/// Runs `f`, an apply. A watchdog waits [`DEADLINE`], then opens each FIFO
+/// of `fifos` for reading and writing, which ends an open or a read
+/// blocked on one: the test fails instead of hanging.
+fn within_deadline<T>(fifos: &[PathBuf], f: impl FnOnce() -> T) -> T {
+    let (done, wait) = mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        let dog = s.spawn(move || {
+            if wait.recv_timeout(DEADLINE) != Err(mpsc::RecvTimeoutError::Timeout) {
+                return false;
+            }
+            let nonblock = i32::try_from(rustix::fs::OFlags::NONBLOCK.bits()).unwrap();
+            for p in fifos {
+                drop(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .custom_flags(nonblock)
+                        .open(p),
+                );
+            }
+            true
+        });
+        let out = f();
+        drop(done);
+        assert!(!dog.join().unwrap(), "blocked for over {DEADLINE:?}");
+        out
+    })
+}
+
+/// Files watched for being opened, read or written (inotify). An `O_PATH`
+/// descriptor, which runs no driver's `open`, is not reported (Linux 6.5).
+struct Opens {
+    fd: OwnedFd,
+    names: HashMap<i32, PathBuf>,
+}
+
+impl Opens {
+    fn new() -> Self {
+        use rustix::fs::inotify::{CreateFlags, init};
+        Self {
+            fd: init(CreateFlags::NONBLOCK | CreateFlags::CLOEXEC).unwrap(),
+            names: HashMap::new(),
+        }
+    }
+
+    fn watch(&mut self, p: &Path) {
+        use rustix::fs::inotify::{WatchFlags as W, add_watch};
+        let what = W::OPEN | W::ACCESS | W::MODIFY | W::CLOSE | W::DONT_FOLLOW;
+        let wd = add_watch(&self.fd, p, what).unwrap();
+        self.names.insert(wd, p.to_owned());
+    }
+
+    /// Fails with what was opened, read or written since the last call.
+    fn none_since(&self, what: &str) {
+        use rustix::fs::inotify::{ReadFlags as R, Reader};
+        let any = R::OPEN | R::ACCESS | R::MODIFY | R::CLOSE_WRITE | R::CLOSE_NOWRITE;
+        let mut buf = [MaybeUninit::uninit(); 4096];
+        let mut events = Reader::new(&self.fd, &mut buf);
+        let mut seen = Vec::new();
+        loop {
+            match events.next() {
+                Ok(e) if e.events().intersects(any) => {
+                    seen.push((self.names.get(&e.wd()).cloned(), e.events()));
+                }
+                Ok(_) => {}
+                Err(rustix::io::Errno::AGAIN) => break,
+                Err(e) => panic!("inotify: {e}"),
+            }
+        }
+        assert!(seen.is_empty(), "{what} opened a planted node: {seen:?}");
+    }
+}
+
+/// A special file a `RUN` makes with `mknod`: a FIFO as any user (T0), a
+/// device node as root (T2c).
+#[derive(Clone, Copy, Debug)]
+enum Node {
+    Fifo,
+    Char(u32, u32),
+    Block(u32, u32),
+}
+
+impl Node {
+    /// Makes it at `p`, watched by `opens`; a FIFO is added to `fifos`.
+    fn plant(self, p: PathBuf, opens: &mut Opens, fifos: &mut Vec<PathBuf>) {
+        use rustix::fs::{FileType as F, Mode, makedev};
+        let (kind, dev) = match self {
+            Self::Fifo => (F::Fifo, 0),
+            Self::Char(major, minor) => (F::CharacterDevice, makedev(major, minor)),
+            Self::Block(major, minor) => (F::BlockDevice, makedev(major, minor)),
+        };
+        rustix::fs::mknodat(rustix::fs::CWD, &p, kind, Mode::from_raw_mode(0o666), dev).unwrap();
+        opens.watch(&p);
+        if matches!(self, Self::Fifo) {
+            fifos.push(p);
+        }
+    }
+}
+
+/// Special files of `nodes` a `RUN` left where a cached layer then writes:
+/// at names it writes as a file and as a directory, at a hardlink's target
+/// and a whiteout's, in a directory it replaces with a file and in one it
+/// makes opaque. Neither the walk of that `RUN`, nor the layer, nor the
+/// walk after it opens, reads or writes one, and nothing blocks; a layer
+/// that names one as a directory fails, and breaks the root.
+fn planted_nodes_are_never_opened<S>(
+    snap: &S,
+    blobs: &Path,
+    top: &Path,
+    nodes: &[Node],
+    host: impl Fn(&S::Root) -> PathBuf,
+) where
+    S: Snapshotter<Layer = KanikoLayer>,
+    S::Root: Applies,
+{
+    let mut opens = Opens::new();
+    let mut fifos = Vec::new();
+    let mut root = snap.prepare(Base::Scratch).unwrap();
+    root.set_layers_needed(true);
+    let h = inside(top, host(&root));
+    let mut layer = Tar::new();
+    root.begin_layer().unwrap();
+    for (i, &node) in nodes.iter().enumerate() {
+        fs::create_dir(h.join(format!("dir-{i}"))).unwrap();
+        fs::create_dir(h.join(format!("opq-{i}"))).unwrap();
+        for name in ["as-file", "as-dir", "hl-target", "whited", "dir", "opq"] {
+            let at = match name {
+                "dir" | "opq" => format!("{name}-{i}/node"),
+                _ => format!("{name}-{i}"),
+            };
+            node.plant(h.join(at), &mut opens, &mut fifos);
+        }
+        layer
+            .file(&format!("as-file-{i}"), b"file")
+            .dir(&format!("as-dir-{i}"), 0o755)
+            .file(&format!("as-dir-{i}/child"), b"child")
+            .hardlink(&format!("hl-{i}"), &format!("hl-target-{i}"))
+            .file(&format!(".wh.whited-{i}"), b"")
+            .file(&format!("dir-{i}"), b"now a file")
+            .dir(&format!("opq-{i}"), 0o755)
+            .file(&format!("opq-{i}/.wh..wh..opq"), b"")
+            .file(&format!("opq-{i}/new"), b"new");
+    }
+    drop(root.end_layer().unwrap());
+    opens.none_since("the walk of the RUN that planted them");
+
+    let over = blob(snap, blobs, "over-nodes", &layer.bytes());
+    within_deadline(&fifos, || root.apply(&over)).unwrap();
+    opens.none_since("the cached layer");
+    let read = |n: String| fs::read(h.join(n)).unwrap();
+    let ino = |n: String| fs::symlink_metadata(h.join(n)).unwrap().ino();
+    for i in 0..nodes.len() {
+        assert_eq!(read(format!("as-file-{i}")), b"file");
+        assert_eq!(read(format!("as-dir-{i}/child")), b"child");
+        assert_eq!(read(format!("dir-{i}")), b"now a file");
+        assert_eq!(ino(format!("hl-{i}")), ino(format!("hl-target-{i}")));
+        assert!(fs::symlink_metadata(h.join(format!("whited-{i}"))).is_err());
+        let names: Vec<_> = fs::read_dir(h.join(format!("opq-{i}")))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["new"]);
+    }
+    root.begin_layer().unwrap();
+    let d = root.end_layer().unwrap();
+    assert!(
+        S::Root::walked(&d).is_empty(),
+        "{:?}",
+        changes(S::Root::walked(&d))
+    );
+    drop(d);
+    opens.none_since("the walk after the layer");
+    root.release().unwrap();
+
+    for (i, &node) in nodes.iter().enumerate() {
+        let mut root = snap.prepare(Base::Scratch).unwrap();
+        let h = inside(top, host(&root));
+        root.begin_layer().unwrap();
+        node.plant(h.join("parent"), &mut opens, &mut fifos);
+        drop(root.end_layer().unwrap());
+        let below = Tar::new().file("parent/x", b"x").bytes();
+        let below = blob(snap, blobs, &format!("below-{i}"), &below);
+        let r = within_deadline(&fifos, || root.apply(&below));
+        assert!(r.is_err(), "{node:?} as a parent directory");
+        assert!(
+            matches!(root.begin_layer(), Err(Error::State(_))),
+            "{node:?} as a parent directory: the root is broken"
+        );
+        opens.none_since(&format!("{node:?} as a parent directory"));
+        root.release().unwrap();
+    }
+}
+
+/// Red team (T18, ADR-0041): FIFOs a `RUN` planted where a cached layer
+/// writes are never opened or blocked on, per stage and on the shared root.
+#[test]
+fn red_team_fifos_a_run_planted_are_never_opened_by_a_cached_layer() {
+    let f = Stages::new();
+    planted_nodes_are_never_opened(&f.snap, &f.blobs(), &f.top, &[Node::Fifo], |r| {
+        r.mount_point().to_owned()
+    });
+    for slash in [false, true] {
+        let f = Shared::new(slash);
+        let root = f.root.clone();
+        planted_nodes_are_never_opened(&f.snap, &f.blobs(), &f.top, &[Node::Fifo], |_| {
+            root.clone()
+        });
+    }
+}
+
+/// `..` from the root at `h` up to `top`, as the host resolves it.
+fn up_to(top: &Path, h: &Path) -> String {
+    "../".repeat(h.strip_prefix(top).unwrap().components().count())
+}
+
+/// The ways a link in the root at `h` names `outside`, beside the root
+/// below `top`: its absolute host path, and `..` from the root. Each with
+/// the link's target and the directory it names inside the root: the host
+/// path below the root, and `outside` in the root, where `..` stops.
+fn ways_out(top: &Path, h: &Path) -> [(&'static str, String, PathBuf); 2] {
+    let abs = top.join("outside");
+    let in_root = h.join(abs.strip_prefix("/").unwrap());
+    [
+        ("abs", abs.display().to_string(), in_root),
+        (
+            "rel",
+            format!("{}outside", up_to(top, h)),
+            h.join("outside"),
+        ),
+    ]
+}
+
+/// `outside` below `top`, with `secret`, `doomed` and `sub/inner`, its
+/// modes and times set.
+fn make_outside(top: &Path) -> PathBuf {
+    let o = top.join("outside");
+    fs::create_dir_all(o.join("sub")).unwrap();
+    for (name, body) in [
+        ("secret", "SECRET"),
+        ("doomed", "DOOMED"),
+        ("sub/inner", "INNER"),
+    ] {
+        fs::write(o.join(name), body).unwrap();
+    }
+    fs::set_permissions(o.join("secret"), fs::Permissions::from_mode(0o640)).unwrap();
+    fs::set_permissions(&o, fs::Permissions::from_mode(0o750)).unwrap();
+    for p in ["sub/inner", "secret", "doomed", "sub", "."] {
+        set_times(&o.join(p), 1_234_567);
+    }
+    o
+}
+
+/// One entry of [`tree`]: path, inode, type and mode, mtime, and content
+/// or link target.
+type Seen = (PathBuf, u64, u32, i64, Vec<u8>);
+
+/// `dir` and every entry below it, as [`Seen`]: what anything that reached
+/// it would change.
+fn tree(dir: &Path) -> Vec<Seen> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_owned()];
+    while let Some(p) = stack.pop() {
+        let md = fs::symlink_metadata(&p).unwrap();
+        let body = if md.is_dir() {
+            for e in fs::read_dir(&p).unwrap() {
+                stack.push(e.unwrap().path());
+            }
+            Vec::new()
+        } else if md.file_type().is_symlink() {
+            fs::read_link(&p).unwrap().as_os_str().as_bytes().to_vec()
+        } else {
+            fs::read(&p).unwrap()
+        };
+        out.push((p, md.ino(), md.mode(), md.mtime(), body));
+    }
+    out.sort();
+    out
+}
+
+/// Every entry below `top` but the root at `h` and the blobs: path, inode,
+/// type and mode, and size.
+fn beside(top: &Path, h: &Path) -> Vec<(PathBuf, u64, u32, u64)> {
+    let mut v = Vec::new();
+    let mut stack = vec![top.to_owned()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p == h || p == top.join("blobs") {
+                continue;
+            }
+            let md = fs::symlink_metadata(&p).unwrap();
+            if md.is_dir() {
+                stack.push(p.clone());
+            }
+            v.push((p, md.ino(), md.mode(), md.len()));
+        }
+    }
+    v.sort();
+    v
+}
+
+/// `secret`, `doomed` and `sub/inner` in `dir`, a decoy for `outside`
+/// inside the root.
+fn decoy(dir: &Path) {
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    for name in ["secret", "doomed", "sub/inner"] {
+        fs::write(dir.join(name), b"DECOY").unwrap();
+    }
+}
+
+/// What a `RUN` leaves in the root at `h` to lead a later layer out: for
+/// each way out, symlinks to `outside` and to its `secret` at each name the
+/// layer uses; a hardlink to `secret`; a symlink loop; directories holding
+/// symlinks out. With `decoys`, a decoy stands where each way out leads
+/// inside the root.
+fn plant_links(top: &Path, h: &Path, decoys: bool) {
+    use std::os::unix::fs::symlink;
+    for d in ["holder", "opq"] {
+        fs::create_dir(h.join(d)).unwrap();
+    }
+    for (way, target, in_root) in ways_out(top, h) {
+        for name in [
+            "as-dir",
+            "parent",
+            "hl-parent",
+            "wh-parent",
+            "opq",
+            "whited",
+        ] {
+            symlink(&target, h.join(format!("{way}-{name}"))).unwrap();
+        }
+        for name in ["as-file", "hl-target"] {
+            symlink(format!("{target}/secret"), h.join(format!("{way}-{name}"))).unwrap();
+        }
+        for d in ["holder", "opq"] {
+            symlink(&target, h.join(d).join(way)).unwrap();
+        }
+        if decoys {
+            decoy(&in_root);
+        }
+    }
+    fs::hard_link(top.join("outside/secret"), h.join("hl-out")).unwrap();
+    symlink("loop-b", h.join("loop-a")).unwrap();
+    symlink("loop-a", h.join("loop-b")).unwrap();
+}
+
+/// A layer that uses every link [`plant_links`] left: writes over them as a
+/// file and as a directory, writes and links through them, links them,
+/// whites out through them and them, empties the directories holding
+/// links out.
+fn through_links() -> Vec<u8> {
+    let mut t = Tar::new();
+    for way in ["abs", "rel"] {
+        t.file_mode(&format!("{way}-as-file"), b"EVIL", 0o4755)
+            .dir(&format!("{way}-as-dir"), 0o777)
+            .file(&format!("{way}-as-dir/planted"), b"EVIL")
+            .file(&format!("{way}-parent/planted"), b"EVIL")
+            .hardlink(&format!("{way}-hl"), &format!("{way}-hl-parent/secret"))
+            .hardlink(&format!("{way}-hl-sym"), &format!("{way}-hl-target"))
+            .file(&format!("{way}-wh-parent/.wh.doomed"), b"")
+            .file(&format!(".wh.{way}-whited"), b"");
+    }
+    t.file_mode("hl-out", b"EVIL", 0o4755)
+        .file(".wh.holder", b"")
+        .dir("opq", 0o755)
+        .file("opq/.wh..wh..opq", b"")
+        .file("loop-a", b"no loop");
+    t.bytes()
+}
+
+/// Links a `RUN` left in the root lead a cached layer nowhere outside it:
+/// symlinks are followed only inside the root (onto decoys), a symlink or a
+/// hardlink the layer writes over is replaced, never written through, and
+/// deletions never follow a link. Without decoys, each use on a root of its
+/// own is refused or applied inside the root, a loop included, without
+/// blocking; a refusal breaks the root.
+fn planted_links_never_lead_out<S>(
+    snap: &S,
+    blobs: &Path,
+    top: &Path,
+    host: impl Fn(&S::Root) -> PathBuf,
+) where
+    S: Snapshotter<Layer = KanikoLayer>,
+    S::Root: Applies,
+{
+    let outside = make_outside(top);
+    let seen = tree(&outside);
+    let mut root = snap.prepare(Base::Scratch).unwrap();
+    root.set_layers_needed(true);
+    let h = inside(top, host(&root));
+    root.begin_layer().unwrap();
+    plant_links(top, &h, true);
+    drop(root.end_layer().unwrap());
+    let around = beside(top, &h);
+    let layer = blob(snap, blobs, "through-links", &through_links());
+    within_deadline(&[], || root.apply(&layer)).unwrap();
+    assert_eq!(tree(&outside), seen, "outside the root");
+    assert_eq!(beside(top, &h), around, "beside the root");
+    let md = |p: &str| fs::symlink_metadata(h.join(p)).unwrap();
+    for (way, _, decoy) in ways_out(top, &h) {
+        let at = |n: &str| format!("{way}-{n}");
+        assert!(md(&at("as-file")).is_file(), "{way}");
+        assert_eq!(fs::read(h.join(at("as-file"))).unwrap(), b"EVIL");
+        assert!(md(&at("as-dir")).is_dir(), "{way}");
+        assert_eq!(fs::read(h.join(at("as-dir/planted"))).unwrap(), b"EVIL");
+        assert_eq!(fs::read(decoy.join("planted")).unwrap(), b"EVIL", "{way}");
+        assert_eq!(
+            md(&at("hl")).ino(),
+            fs::metadata(decoy.join("secret")).unwrap().ino(),
+            "{way}: linked to the decoy"
+        );
+        assert!(md(&at("hl-sym")).file_type().is_symlink(), "{way}");
+        assert!(fs::symlink_metadata(decoy.join("doomed")).is_err(), "{way}");
+        assert!(fs::symlink_metadata(h.join(at("whited"))).is_err(), "{way}");
+    }
+    assert_eq!(fs::read(h.join("hl-out")).unwrap(), b"EVIL");
+    assert!(fs::symlink_metadata(h.join("holder")).is_err());
+    assert_eq!(fs::read_dir(h.join("opq")).unwrap().count(), 0);
+    assert_eq!(fs::read(h.join("loop-a")).unwrap(), b"no loop");
+    root.begin_layer().unwrap();
+    let d = root.end_layer().unwrap();
+    assert!(
+        S::Root::walked(&d).is_empty(),
+        "{:?}",
+        changes(S::Root::walked(&d))
+    );
+    drop(d);
+    root.release().unwrap();
+
+    let mut uses = Vec::new();
+    for way in ["abs", "rel"] {
+        let t = |p: &str| format!("{way}-{p}");
+        uses.extend([
+            (
+                t("parent"),
+                Tar::new().file(&t("parent/planted"), b"E").bytes(),
+            ),
+            (
+                t("hl"),
+                Tar::new().hardlink("hl", &t("hl-parent/secret")).bytes(),
+            ),
+            (
+                t("wh"),
+                Tar::new().file(&t("wh-parent/.wh.doomed"), b"").bytes(),
+            ),
+            (
+                t("opq"),
+                Tar::new().file(&t("opq/.wh..wh..opq"), b"").bytes(),
+            ),
+            (t("opq-dir"), {
+                let mut opq = Tar::new();
+                opq.dir(&t("opq"), 0o777).file(&t("opq/.wh..wh..opq"), b"");
+                opq.bytes()
+            }),
+        ]);
+    }
+    uses.extend([
+        (
+            "loop-parent".to_owned(),
+            Tar::new().file("loop-a/x", b"E").bytes(),
+        ),
+        (
+            "loop-hl".to_owned(),
+            Tar::new().hardlink("hl", "loop-a/x").bytes(),
+        ),
+        (
+            "loop-wh".to_owned(),
+            Tar::new().file("loop-a/.wh.x", b"").bytes(),
+        ),
+        (
+            "loop-opq".to_owned(),
+            Tar::new().file("loop-a/.wh..wh..opq", b"").bytes(),
+        ),
+    ]);
+    for (name, tar) in uses {
+        let mut root = snap.prepare(Base::Scratch).unwrap();
+        let h = inside(top, host(&root));
+        root.begin_layer().unwrap();
+        plant_links(top, &h, false);
+        drop(root.end_layer().unwrap());
+        let around = beside(top, &h);
+        let layer = blob(snap, blobs, &name, &tar);
+        let r = within_deadline(&[], || root.apply(&layer));
+        assert_eq!(tree(&outside), seen, "{name}: outside the root");
+        assert_eq!(beside(top, &h), around, "{name}: beside the root");
+        if r.is_err() {
+            assert!(
+                matches!(root.begin_layer(), Err(Error::State(_))),
+                "{name}: the root is broken"
+            );
+        }
+        root.release().unwrap();
+    }
+    assert_eq!(tree(&outside), seen, "outside the root, the roots released");
+}
+
+/// Red team (T1, T2): symlinks, a hardlink and a loop a `RUN` planted lead
+/// a cached layer nowhere outside a stage root.
+#[test]
+fn red_team_links_a_run_planted_never_lead_a_cached_layer_out() {
+    let f = Stages::new();
+    planted_links_never_lead_out(&f.snap, &f.blobs(), &f.top, |r| r.mount_point().to_owned());
+    for slash in [false, true] {
+        let f = Shared::new(slash);
+        let root = f.root.clone();
+        planted_links_never_lead_out(&f.snap, &f.blobs(), &f.top, |_| root.clone());
+        let seen = tree(&f.top.join("outside"));
+        f.snap.finish().unwrap();
+        assert_eq!(tree(&f.top.join("outside")), seen, "emptied at the end");
+    }
+}
+
+/// A process a `RUN` left behind swaps `race`, a directory of the root,
+/// with `swap`, a symlink out of it (by each way out in turn), over and
+/// over, while a cached layer links below `race`, whites out in it, makes
+/// it opaque, fills it and sets its mode and times; decoys stand where the
+/// ways out lead inside the root. A long layer first, then short ones,
+/// which may end before a swap breaks them, so the modes and times set at
+/// the end race too. Nothing outside the root changes, whatever the
+/// outcome; a failure breaks the root. Returns the swaps made and the
+/// short applies that succeeded.
+fn a_swapped_directory_keeps_the_layer_in<S>(
+    snap: &S,
+    blobs: &Path,
+    top: &Path,
+    host: impl Fn(&S::Root) -> PathBuf,
+) -> (u64, usize)
+where
+    S: Snapshotter<Layer = KanikoLayer>,
+    S::Root: Applies,
+{
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    let outside = make_outside(top);
+    let seen = tree(&outside);
+    let mut t = Tar::new();
+    t.hardlink("hl-old", "race/old")
+        .file("race/.wh.doomed", b"")
+        .dir("race", 0o777)
+        .file("race/.wh..wh..opq", b"");
+    for i in 0..1500 {
+        t.file(&format!("race/f{i}"), b"EVIL");
+        if i % 100 == 0 {
+            t.dir(&format!("race/d{i}"), 0o777)
+                .file(&format!("race/d{i}/g"), b"EVIL");
+        }
+    }
+    let long = t.bytes();
+    let short = Tar::new()
+        .dir("race", 0o777)
+        .file("race/f", b"EVIL")
+        .bytes();
+    let (mut swaps, mut done) = (0, 0);
+    for round in 0..66 {
+        let tar = if round < 6 { &long } else { &short };
+        let mut root = snap.prepare(Base::Scratch).unwrap();
+        root.set_layers_needed(true);
+        let h = inside(top, host(&root));
+        let ways = ways_out(top, &h);
+        root.begin_layer().unwrap();
+        for (_, _, in_root) in &ways {
+            decoy(in_root);
+            fs::write(in_root.join("old"), b"DECOY").unwrap();
+        }
+        fs::create_dir(h.join("race")).unwrap();
+        for n in ["old", "doomed"] {
+            fs::write(h.join("race").join(n), b"RUN").unwrap();
+        }
+        std::os::unix::fs::symlink(&ways[round % 2].1, h.join("swap")).unwrap();
+        drop(root.end_layer().unwrap());
+        let layer = blob(snap, blobs, &format!("race-{round}"), tar);
+        let (race, swap) = (h.join("race"), h.join("swap"));
+        let stop = AtomicBool::new(false);
+        let (r, n) = std::thread::scope(|s| {
+            let racer = s.spawn(|| {
+                let mut n = 0_u64;
+                while !stop.load(Ordering::Relaxed) {
+                    if renameat_with(CWD, &race, CWD, &swap, RenameFlags::EXCHANGE).is_ok() {
+                        n += 1;
+                    }
+                }
+                n
+            });
+            let r = within_deadline(&[], || root.apply(&layer));
+            stop.store(true, Ordering::Relaxed);
+            (r, racer.join().unwrap())
+        });
+        swaps += n;
+        assert_eq!(tree(&outside), seen, "round {round}: outside the root");
+        if r.is_err() {
+            assert!(
+                matches!(root.begin_layer(), Err(Error::State(_))),
+                "round {round}: the root is broken"
+            );
+        } else if round >= 6 {
+            done += 1;
+        }
+        root.release().unwrap();
+    }
+    assert!(swaps > 0, "the racer never swapped");
+    (swaps, done)
+}
+
+/// Red team (T3): a directory swapped for a symlink out of the root while a
+/// cached layer lands in it keeps the layer in the root, per stage and on
+/// the shared root.
+#[test]
+fn red_team_a_directory_swapped_for_a_link_out_keeps_a_cached_layer_in() {
+    let f = Stages::new();
+    let per_stage = a_swapped_directory_keeps_the_layer_in(&f.snap, &f.blobs(), &f.top, |r| {
+        r.mount_point().to_owned()
+    });
+    println!("per stage: {per_stage:?} (swaps, short applies done)");
+    for slash in [false, true] {
+        let f = Shared::new(slash);
+        let root = f.root.clone();
+        let shared =
+            a_swapped_directory_keeps_the_layer_in(&f.snap, &f.blobs(), &f.top, |_| root.clone());
+        println!("shared root, slash {slash}: {shared:?} (swaps, short applies done)");
+    }
+}
+
+/// A tar with `first`, an extension header of `size` bytes, then `after`.
+fn oversized_header(size: usize) -> Vec<u8> {
+    let mut t = Tar::new();
+    t.file("first", b"1")
+        .entry(
+            "pax",
+            EntryType::XHeader,
+            "",
+            &vec![b'a'; size],
+            0o644,
+            (0, 0),
+        )
+        .file("after", b"2");
+    t.bytes()
+}
+
+/// Red team (T15, ADR-0079): a cached layer whose tar declares an extension
+/// header over the `tar-header` limit is refused at that header, as a base
+/// layer is, and breaks the root its first entry reached: per stage from
+/// the store, and on `/` streamed (verified first).
+#[test]
+fn red_team_an_oversized_tar_header_in_a_cached_layer_breaks_the_root() {
+    let tar = oversized_header(2 << 20);
+    let gz = gzip(&tar);
+    let is_limit =
+        |e: &Error| matches!(e, Error::Rootfs(rnk_rootfs::Error::ExtensionHeader { .. }));
+
+    let f = Stages::new();
+    let path = f.blobs().join("header.gz");
+    fs::write(&path, &gz).unwrap();
+    let layer = f.snap.base_layer(&diff_id(&tar), &path, &[]).unwrap();
+    let mut s = f.snap.prepare(Base::Scratch).unwrap();
+    let e = s.apply_layer(&layer).unwrap_err();
+    assert!(is_limit(&e), "{e:?}");
+    assert!(s.mount_point().join("first").exists());
+    assert!(!s.mount_point().join("after").exists());
+    assert!(matches!(s.begin_layer(), Err(Error::State(_))));
+    s.release().unwrap();
+
+    let f = Shared::new(true);
+    let mut r = f.snap.prepare(Base::Scratch).unwrap();
+    let e = r
+        .apply_layer(&streamed(&f.snap, &tar, &Source::new(gz)))
+        .unwrap_err();
+    assert!(is_limit(&e), "{e:?}");
+    assert!(!f.root.join("after").exists());
+    assert!(matches!(r.begin_layer(), Err(Error::State(_))));
+    r.release().unwrap();
+}
+
+/// Red team (T1, T15): on `/`, a hostile cached layer from the store whose
+/// diff ID is wrong (a blob's is checked at its end) and one streamed but
+/// cut off by an oversized header both fail once entries may have landed:
+/// neither touches an ignored path, each leaves `/` broken, and a new base
+/// empties `/` of the first, the ignore list kept.
+#[test]
+fn red_team_a_bad_cached_layer_on_slash_touches_no_ignored_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let top = fs::canonicalize(tmp.path()).unwrap();
+    let host = top.join("root");
+    fs::create_dir_all(host.join("vol")).unwrap();
+    fs::create_dir_all(host.join("proc/self")).unwrap();
+    fs::create_dir_all(host.join("ignored")).unwrap();
+    fs::write(host.join("vol/canary"), b"VOLUME").unwrap();
+    fs::write(host.join("ignored/canary"), b"IGNORED").unwrap();
+    let mountinfo = format!(
+        "1 0 0:1 / / rw - overlay overlay rw\n\
+         2 1 0:3 /vol {} rw - ext4 /dev/x rw\n",
+        host.join("vol").display()
+    );
+    let mounts = parse_mountinfo(mountinfo.as_bytes()).unwrap();
+    let (kaniko, _store) = build_on_slash(&host, &mounts);
+    fs::write(host.join(STATE).join("canary"), b"STATE").unwrap();
+    let mut root = kaniko.prepare(Base::Scratch).unwrap();
+    root.set_layers_needed(true);
+    let before = protected(&host);
+
+    let tar = hostile_on_slash();
+    let path = top.join("hostile.gz");
+    fs::write(&path, gzip(&tar)).unwrap();
+    let wrong = kaniko
+        .base_layer(&Digest::from_sha256_bytes(&[0; 32]), &path, &[])
+        .unwrap();
+    assert!(matches!(
+        root.apply_layer(&wrong),
+        Err(Error::DiffIdMismatch { .. })
+    ));
+    assert_eq!(protected(&host), before, "after the wrong diff ID");
+    assert!(matches!(root.begin_layer(), Err(Error::State(_))));
+    assert!(matches!(root.keep(&Keep::All), Err(Error::State(_))));
+    root.release().unwrap();
+
+    let mut root = kaniko.prepare(Base::Scratch).unwrap();
+    assert!(!host.join("fine").exists(), "emptied by the new base");
+    assert_eq!(protected(&host), before, "after the new base");
+    let cut = oversized_header(2 << 20);
+    let e = root
+        .apply_layer(&streamed(&kaniko, &cut, &Source::new(gzip(&cut))))
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::ExtensionHeader { .. })),
+        "{e:?}"
+    );
+    assert_eq!(protected(&host), before, "after the oversized header");
+    assert!(matches!(root.begin_layer(), Err(Error::State(_))));
+    root.release().unwrap();
+    assert!(!kaniko.finish().unwrap(), "/ is left as it is");
+    assert_eq!(fs::read_dir(host.join("proc/self")).unwrap().count(), 0);
+    let mut around: Vec<_> = fs::read_dir(&top)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    around.sort();
+    assert_eq!(around, ["hostile.gz", "root"], "nothing beside the root");
+}
+
 // Root: foreign owners and device nodes (T2c), a default container's `/` (T2).
 
 /// A cached layer as root, with foreign owners, a setuid file and device
@@ -1466,6 +2213,31 @@ fn a_cached_layer_with_foreign_owners_and_device_nodes_applies_as_a_base_layer()
     let f = Shared::new(false);
     let root = f.root.clone();
     owners_and_nodes_as_a_base_layer(&f.snap, &f.blobs(), &f.top, |_| root.clone());
+}
+
+/// Red team (T18): device nodes a `RUN` planted with `mknod` (`CAP_MKNOD`
+/// is a Docker default) where a cached layer writes are never opened, per
+/// stage and on the shared root: `null`, `zero`, a loop block device and a
+/// FIFO.
+#[test]
+#[ignore = "T2c: default: device nodes a RUN planted with mknod where a cached layer writes"]
+fn red_team_device_nodes_a_run_planted_are_never_opened_by_a_cached_layer() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let nodes = [
+        Node::Char(1, 3),
+        Node::Char(1, 5),
+        Node::Block(7, 0),
+        Node::Fifo,
+    ];
+    let f = Stages::new();
+    planted_nodes_are_never_opened(&f.snap, &f.blobs(), &f.top, &nodes, |r| {
+        r.mount_point().to_owned()
+    });
+    for slash in [false, true] {
+        let f = Shared::new(slash);
+        let root = f.root.clone();
+        planted_nodes_are_never_opened(&f.snap, &f.blobs(), &f.top, &nodes, |_| root.clone());
+    }
 }
 
 /// The environment variable that tells the inner test it was started by

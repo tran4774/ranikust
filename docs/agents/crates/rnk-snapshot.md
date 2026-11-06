@@ -250,7 +250,15 @@ that found a bug stay as its regression test.
   nodes and FIFOs left out; refusals; a failure before the first entry leaves
   the root usable, a later one breaks it; hostile layers (`..`, links to a
   sibling stage, `/`, `/proc`, the state directory, an ignored path or a
-  volume, whiteouts of them) reach nothing outside the root.
+  volume, whiteouts of them) reach nothing outside the root. Red team of
+  what a `RUN` left before the layer: FIFOs at names it writes as a file, a
+  directory, a parent, a hardlink's or a whiteout's target are never opened
+  or blocked on; symlinks out (absolute or by `..`), a hardlink to a file
+  outside and a loop are followed only inside the root, replaced rather than
+  written through, never followed by a deletion; a directory swapped for a
+  symlink out while the layer lands keeps it in the root (T3); an oversized
+  tar header is refused and breaks the root; a bad blob on `/` touches no
+  ignored path.
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
 - **T2c** (rootful Docker, `just test-container unit-c`;
@@ -261,9 +269,10 @@ that found a bug stay as its regression test.
   nor a hand-over (`src/kaniko/stages/tests.rs`). Profile `default`
   (`mknod`): a device node swapped in during the walk is never opened
   (`src/kaniko/walk/tests.rs`), a child never gets the device nodes a
-  parent made nor a hand-over gives them (`src/kaniko/stages/tests.rs`), and
-  a cached layer with foreign owners and device nodes gives the root what the
-  same layer gives as a base layer (`tests/apply.rs`).
+  parent made nor a hand-over gives them (`src/kaniko/stages/tests.rs`), a
+  cached layer with foreign owners and device nodes gives the root what the
+  same layer gives as a base layer, and device nodes a `RUN` planted where a
+  cached layer writes are never opened (`tests/apply.rs`).
 - **T2** (VM; `just test-vm unit`): the reference before a merge touching
   overlay mounts or deletion; kaniko mode on `/`, flattened content against
   kaniko, BuildKit and the other mode; a hostile cached layer on the `/` of a
