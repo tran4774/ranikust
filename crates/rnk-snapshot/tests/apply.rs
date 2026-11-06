@@ -1116,6 +1116,108 @@ fn a_layer_that_fails_before_its_first_entry_leaves_the_root_usable() {
     r.release().unwrap();
 }
 
+/// Layers whose digest and diff ID are right but whose tar has, after a good
+/// first entry, a header every extraction refuses on its own, and whether it
+/// is the `tar-header` limit (`--limit`) that refuses it.
+fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
+    let first = || {
+        let mut t = Tar::new();
+        t.file("first", b"1");
+        t
+    };
+    let entry = |kind, data: &[u8]| {
+        first()
+            .entry("x", kind, "", data, 0o644, (0, 0))
+            .file("after", b"2")
+            .bytes()
+    };
+    let mut summed = first().file("summed", b"").bytes();
+    // A name byte of the second header: its checksum no longer matches.
+    summed[1024] ^= 1;
+    vec![
+        (
+            "a name out of the root",
+            first().file("../out", b"x").bytes(),
+            false,
+        ),
+        (
+            "a GNU sparse entry",
+            entry(EntryType::GNUSparse, b"x"),
+            false,
+        ),
+        (
+            "an unknown entry type",
+            entry(EntryType::new(b'Q'), b""),
+            false,
+        ),
+        (
+            "a hardlink to itself",
+            first().hardlink("self", "self").bytes(),
+            false,
+        ),
+        (
+            "a whiteout naming nothing",
+            first().file("d/.wh.", b"").bytes(),
+            false,
+        ),
+        (
+            "a malformed PAX time",
+            entry(EntryType::XHeader, b"12 mtime=1x\n"),
+            false,
+        ),
+        ("a broken checksum", summed, false),
+        (
+            "a GNU long name over the limit",
+            entry(EntryType::GNULongName, &vec![b'n'; (1 << 20) + 1]),
+            true,
+        ),
+    ]
+}
+
+/// On `/` a streamed layer's tar headers are checked in the pass that
+/// verifies its digest and diff ID (ADR-0123): one with a header every
+/// extraction refuses, or one over the `tar-header` limit, fails before its
+/// first entry reaches `/`, which is left as it was and usable. Control: the
+/// same layer from the store, which is never spooled, reaches `/` before
+/// its bad header and breaks it.
+#[test]
+fn on_slash_a_streamed_layer_with_a_bad_tar_header_changes_nothing() {
+    let good = Tar::new().file("good", b"g").bytes();
+    for (what, tar, limit) in bad_headers() {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let source = Source::new(gzip(&tar));
+        let e = r
+            .apply_layer(&streamed(&f.snap, &tar, &source))
+            .unwrap_err();
+        assert!(matches!(e, Error::Rootfs(_)), "{what}: {e:?}");
+        assert_eq!(
+            limit,
+            matches!(e, Error::Rootfs(rnk_rootfs::Error::ExtensionHeader { .. })),
+            "{what}: {e:?}"
+        );
+        assert_eq!(source.opens(), 1, "{what}");
+        assert!(!f.root.join("first").exists(), "{what}: / changed");
+        r.begin_layer().unwrap();
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        r.apply_layer(&streamed(&f.snap, &good, &Source::new(gzip(&good))))
+            .unwrap();
+        assert!(f.root.join("good").exists(), "{what}");
+        r.release().unwrap();
+
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        let stored = blob(&f.snap, &f.blobs(), "stored", &tar);
+        assert!(r.apply_layer(&stored).is_err(), "{what}: the control");
+        assert!(f.root.join("first").exists(), "{what}: the control");
+        assert!(
+            matches!(r.begin_layer(), Err(Error::State(_))),
+            "{what}: the control breaks /"
+        );
+        r.release().unwrap();
+    }
+}
+
 // Hostile cached layers.
 
 /// What a hostile cached layer aims at in a per-stage root: links into
@@ -1367,7 +1469,9 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     assert!(r.is_err(), "a name climbing out of the root is refused");
     assert!(!host.join("escape").exists());
     assert!(!host.join("after").exists());
-    assert!(matches!(root.begin_layer(), Err(Error::State(_))));
+    // Refused by its header in the spool pass, before `/` changed (ADR-0123).
+    root.begin_layer().unwrap();
+    assert!(root.end_layer().unwrap().diff().is_empty());
     assert_eq!(
         protected(host),
         before,
@@ -2061,10 +2165,11 @@ fn oversized_header(size: usize) -> Vec<u8> {
 
 /// Red team (T15, ADR-0079): a cached layer whose tar declares an extension
 /// header over the `tar-header` limit is refused at that header, as a base
-/// layer is, and breaks the root its first entry reached: per stage from
-/// the store, and on `/` streamed (verified first).
+/// layer is. Per stage from the store, it breaks the root its first entry
+/// reached; on `/` streamed, the spool pass refuses it before `/` changes
+/// (ADR-0123).
 #[test]
-fn red_team_an_oversized_tar_header_in_a_cached_layer_breaks_the_root() {
+fn red_team_an_oversized_tar_header_in_a_cached_layer_is_refused_at_that_header() {
     let tar = oversized_header(2 << 20);
     let gz = gzip(&tar);
     let is_limit =
@@ -2084,20 +2189,24 @@ fn red_team_an_oversized_tar_header_in_a_cached_layer_breaks_the_root() {
 
     let f = Shared::new(true);
     let mut r = f.snap.prepare(Base::Scratch).unwrap();
+    r.set_layers_needed(true);
     let e = r
         .apply_layer(&streamed(&f.snap, &tar, &Source::new(gz)))
         .unwrap_err();
     assert!(is_limit(&e), "{e:?}");
-    assert!(!f.root.join("after").exists());
-    assert!(matches!(r.begin_layer(), Err(Error::State(_))));
+    assert!(!f.root.join("first").exists());
+    r.begin_layer().unwrap();
+    assert!(r.end_layer().unwrap().diff().is_empty());
     r.release().unwrap();
 }
 
 /// Red team (T1, T15): on `/`, a hostile cached layer from the store whose
-/// diff ID is wrong (a blob's is checked at its end) and one streamed but
-/// cut off by an oversized header both fail once entries may have landed:
-/// neither touches an ignored path, each leaves `/` broken, and a new base
-/// empties `/` of the first, the ignore list kept.
+/// diff ID is wrong (a blob's is checked at its end) and one streamed whose
+/// last entry the root refuses (a hardlink to nothing) both fail once
+/// entries may have landed: neither touches an ignored path, each leaves `/`
+/// broken, and a new base empties `/` of the first, the ignore list kept.
+/// One streamed with an oversized header is refused before `/` changes
+/// (ADR-0123).
 #[test]
 fn red_team_a_bad_cached_layer_on_slash_touches_no_ignored_path() {
     let tmp = tempfile::tempdir().unwrap();
@@ -2147,6 +2256,19 @@ fn red_team_a_bad_cached_layer_on_slash_touches_no_ignored_path() {
         "{e:?}"
     );
     assert_eq!(protected(&host), before, "after the oversized header");
+    assert!(!host.join("first").exists(), "refused before / changed");
+    let mut dangling = tar.clone();
+    dangling.truncate(dangling.len() - 1024);
+    dangling.extend(Tar::new().hardlink("dangling", "missing").bytes());
+    let e = root
+        .apply_layer(&streamed(&kaniko, &dangling, &Source::new(gzip(&dangling))))
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+        "{e:?}"
+    );
+    assert_eq!(fs::read(host.join("fine")).unwrap(), b"applied");
+    assert_eq!(protected(&host), before, "after the hardlink to nothing");
     assert!(matches!(root.begin_layer(), Err(Error::State(_))));
     root.release().unwrap();
     assert!(!kaniko.finish().unwrap(), "/ is left as it is");

@@ -1002,8 +1002,9 @@ fn open_for_root(shared: &Shared, layer: &KanikoLayer) -> Result<Box<dyn std::io
 }
 
 /// A base layer in an anonymous file of the store, as its compressed blob,
-/// its compressed digest and diff ID verified (ADR-0055 amendment) before
-/// anything of it is extracted. The spool is the compressed blob, capped
+/// its compressed digest and diff ID verified (ADR-0055 amendment) and its
+/// tar headers checked (ADR-0123) before anything of it is extracted. The
+/// spool is the compressed blob, capped
 /// by the descriptor's size: disk, or memory under the `memfd` fallback,
 /// holds no more than the download. The file's space goes with it.
 #[derive(Debug)]
@@ -1020,8 +1021,10 @@ enum SpooledBlob {
 impl Spooled {
     /// Spools `layer` when it is streamed. One read of the body writes the
     /// compressed bytes into an anonymous file of `store` and decompresses
-    /// them to compute the diff ID, which nothing else sees; the body is
-    /// read to its end, where its source checks the size and the
+    /// them once, which nothing else sees: to check the tar headers as the
+    /// extraction frames and refuses them, the `tar-header` limit included
+    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID; the body
+    /// is read to its end, where its source checks the size and the
     /// compressed digest. A blob already on disk is kept as it is.
     fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
@@ -1040,7 +1043,11 @@ impl Spooled {
             copy,
             ended: Arc::clone(&ended),
         };
-        let actual = Digest::from_sha256_bytes(rnk_layer::Decoder::new(body)?.finish()?.as_bytes());
+        let mut decoder = rnk_layer::Decoder::new(body)?;
+        // The same decompression reads the headers as the extraction will
+        // (ADR-0123), then the rest for the diff ID.
+        rnk_rootfs::check_headers(&mut decoder)?;
+        let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
         // The source verifies the digest only at the end of its body.
         if !ended.load(Ordering::Relaxed) {
             return Err(Error::State(
@@ -1446,8 +1453,9 @@ impl KanikoRoot {
     /// Applies `layer`, the cached layer of the stage's next step, instead
     /// of running the step (`design/kaniko-mode.md#a-cache-hit`): extracted
     /// into the root as a base layer is, with the build's ignore list and
-    /// its diff ID checked; on `/` a streamed layer is verified before any
-    /// entry reaches the root. The walker's record is then stale: the next
+    /// its diff ID checked; on `/` a streamed layer is verified, its tar
+    /// headers included, before any entry reaches the root. The walker's
+    /// record is then stale: the next
     /// layer of a stage whose layers are needed starts from a new baseline,
     /// so its diff holds only its own step's changes.
     ///
@@ -1460,7 +1468,8 @@ impl KanikoRoot {
     /// [`Error::State`], with nothing changed, while a layer is open, when
     /// the stage no longer holds the root, or when an earlier layer broke
     /// it. A failure before any entry can reach the root (the source
-    /// refused, on `/` the layer's check) leaves the root as it was. Any
+    /// refused; on `/`, a streamed layer's digest, diff ID or tar headers)
+    /// leaves the root as it was. Any
     /// later failure breaks the root: until it is emptied, no layer, view,
     /// keep or child stage goes on from it.
     pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
