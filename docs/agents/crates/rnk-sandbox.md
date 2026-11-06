@@ -92,7 +92,7 @@ pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
 pub fn probe_user_namespace(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, left empty
-pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f) -> Option<Result<Result<String, String>>>: f as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
+pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
 pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
 pub struct IdRange { pub start: u32, pub count: u32 }
@@ -367,26 +367,28 @@ What a change here must keep, with where it lives:
   single-threaded caller, before any credential is read; right after the
   fork the child closes every descriptor but stdio and those it uses (the
   pipes, the probe's directory, the `chown` target), then makes system
-  calls only, then `_exit`. `in_namespace`'s closure may allocate (it
+  calls only, then `_exit`. `in_namespace`'s function may allocate (it
   checks for one thread first) and runs with an empty panic hook and, on
   its thread, no `tracing` subscriber: the inherited ones write ranikust's
-  metrics report and log (a thread the closure starts must not log). Each
+  metrics report and log (a thread the function starts must not log). Each
   child is killed at its deadline (10 s, the closure 60 s) and reaped
   within 2 s (one that closed its report but is not reaped then is killed,
   and given 2 s more); its namespaces and mounts go with it. One still
   there after is `Error::ProbeChildLeft`: the probe's directory stays, and
   `ranikust` leaves its own too, until the end of the build removes them.
   `newuidmap` and `newgidmap` each get 10 s, then are killed and given 2 s
-  to be reaped (not after `ECHILD`); a child waits for them past its own
-  deadline. Its mount namespace makes `/` a
-  recursive slave before any mount. The files the steps need are made by
-  the caller in the probe's directory through `RootPath` and removed
-  before it returns. `newuidmap` is looked for in `/usr/bin` and `/bin`
-  only, run with an empty environment. A child of a user other than root
-  is dumpable only around its map write, which the kernel's owner check of
-  `/proc/<pid>/uid_map` needs: made dumpable after `unshare`, not dumpable
-  again right after the map, before `chown`. `ranikust` probes as root,
-  whose children never change it.
+  to be reaped; one whose wait fails is too, except after `ECHILD`. The
+  child waits for them, so an attempt can run past its 10 s: it is then
+  killed as soon as they are done, reaped, and reported as killed after
+  10 s. Its mount namespace makes `/` a recursive slave before any mount.
+  The files the steps need are made by the caller in the probe's
+  directory through `RootPath` and removed before it returns. `newuidmap`
+  is looked for in `/usr/bin` and `/bin` only, run with an empty
+  environment. A child of a user other than root is dumpable only around
+  its map write, which the kernel's owner check of `/proc/<pid>/uid_map`
+  needs: made dumpable after `unshare`, not dumpable again right after the
+  map, before `chown`. `ranikust` probes as root, whose children never
+  change it.
 
 ## Refs
 
