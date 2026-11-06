@@ -353,10 +353,11 @@ impl fmt::Display for UsernsReport {
 
 /// Probes the user-namespace steps in `dir`, an empty directory the caller
 /// made for it on the state directory's filesystem, held from where it was
-/// made; what this makes there is removed before it returns. Root gets a map of every id it has
-/// ([`IdMap::Ranges`]), else one id; another user gets `newuidmap` with
-/// `subordinate`, else one id. Each map is one attempt, in its own child,
-/// until one works or `unshare` itself is refused.
+/// made; what this makes there is removed before it returns. Root gets a
+/// map of every id it has ([`IdMap::Ranges`]), else one id; another user
+/// gets `newuidmap` with `subordinate`, else one id. Each map is one
+/// attempt, in its own child, until one works or `unshare` itself is
+/// refused.
 ///
 /// Call in the single-threaded start-up window, before any credential is
 /// read: each child is a copy of this process's memory. Reported only:
