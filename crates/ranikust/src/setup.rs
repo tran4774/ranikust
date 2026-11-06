@@ -196,7 +196,8 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// network.none-userns` (ADR-0033); `seccomp` the profile of every `RUN`
 /// (ADR-0109); `userns_probe` (`--mode=auto`) adds the user namespace
 /// probe, reported only, and is cleared once the set-up reaches the probe,
-/// whatever follows.
+/// whatever follows; `refuse_overlay`, the test hook's `overlay-refused`,
+/// takes the overlay probe, once it passed, as refused by the kernel.
 ///
 /// # Errors
 ///
@@ -206,6 +207,7 @@ pub(crate) fn set_up(
     userns_network: bool,
     seccomp: &Seccomp,
     userns_probe: &mut bool,
+    refuse_overlay: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
@@ -233,7 +235,13 @@ pub(crate) fn set_up(
         let _entered = span.enter();
         let sandbox = rnk_sandbox::probe(&sandbox_dir);
         span.record("steps", 1_u64);
-        let overlay = probe_overlay(store.build_dir(), euid);
+        let overlay = probe_overlay(store.build_dir(), euid).and_then(|caps| {
+            if refuse_overlay {
+                Err(overlay_refusal(&FAULT_OVERLAY_REFUSED, euid))
+            } else {
+                Ok(caps)
+            }
+        });
         span.record("steps", 2_u64);
         let (sandbox, overlay) = pick(sandbox, overlay, euid)?;
         Outcome::OverlayRoot { sandbox, overlay }
@@ -631,6 +639,11 @@ fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal> {
         })?;
     rnk_snapshot::probe(&dir).map_err(|e| overlay_refusal(&e, euid))
 }
+
+/// What the test hook's `overlay-refused` makes of a passed overlay probe:
+/// a refusal of the kind the kernel's gives.
+const FAULT_OVERLAY_REFUSED: SnapshotError =
+    SnapshotError::ProbeCheck("refused by RANIKUST_DEBUG_FAULT=overlay-refused");
 
 /// The refusal for a failed overlay probe. Where the kernel refused the
 /// mount (an upper directory on overlayfs or NFS, overlay nested too deep,

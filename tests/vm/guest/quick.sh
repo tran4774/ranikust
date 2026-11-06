@@ -186,6 +186,32 @@ auto_routes_to_stages() {
   echo "auto: a state directory on overlayfs built in kaniko mode with a directory per stage"
 }
 
+# `--mode=auto` where the kernel refuses the overlay probe only after the
+# set-up ran the user namespace probe (as on NFS; here the test hook
+# `RANIKUST_DEBUG_FAULT=overlay-refused`): kaniko mode with a directory per
+# stage must not probe again, so the build logs one probe line.
+auto_overlay_refused_after_probe() {
+  local ctx="$W/refused-ctx" log rc=0
+  sudo mkdir -p "$ctx"
+  printf 'FROM scratch\nCOPY f /f\n' | sudo tee "$ctx/Dockerfile" >/dev/null
+  echo routed | sudo tee "$ctx/f" >/dev/null
+  log="$(sudo env RANIKUST_DEBUG_FAULT=overlay-refused "$RNK" --context "$ctx" \
+    --state-dir "$W/refused-state" --no-push 2>&1)" || rc=$?
+  if [ "$rc" != 0 ] ||
+    ! grep -q 'kaniko mode with a directory per stage, because overlay mode cannot run here' <<<"$log" ||
+    ! grep -q 'refused by RANIKUST_DEBUG_FAULT=overlay-refused' <<<"$log"; then
+    echo "error: --mode=auto with the overlay probe refused: exit $rc" >&2
+    echo "$log" >&2
+    return 1
+  fi
+  if [ "$(grep -c 'user namespace probe (reported only)' <<<"$log")" != 1 ]; then
+    echo "error: --mode=auto with the overlay probe refused: not one user namespace probe line" >&2
+    echo "$log" >&2
+    return 1
+  fi
+  echo "auto: the overlay probe refused after the user namespace probe: kaniko mode with a directory per stage, one probe line"
+}
+
 # Red team of `--mode=auto`'s routing (criterion 8, ADR-0054, ADR-0059,
 # T4): the checks every attack ends with. No mount is left below $1, no
 # ranikust process runs, and no build directory outlives the build in the
@@ -544,6 +570,7 @@ if [ "${RANIKUST_QUICK_MODE:-}" = kaniko ] &&
   adr0054_refusals || rc=1
   binary_mounts_on_slash || rc=1
   auto_routes_to_stages || rc=1
+  auto_overlay_refused_after_probe || rc=1
   rt_container_env_on_a_host || rc=1
   rt_auto_ignore_path || rc=1
   rt_auto_on_ramfs || rc=1

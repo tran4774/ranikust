@@ -56,6 +56,11 @@ fn a_refused_overlay_mount_routes_root_to_kaniko_stages_but_a_host_error_does_no
     };
     assert_eq!(overlay_refusal(&host, 0).guidance, "");
     assert_eq!(overlay_refusal(&host, 0).kind, Kind::Other);
+
+    // The test hook's refusal routes as the kernel's.
+    let r = overlay_refusal(&FAULT_OVERLAY_REFUSED, 0);
+    assert_eq!(r.kind, Kind::OverlayUnusable);
+    assert_eq!(route(&r, false), Route::KanikoStages);
 }
 
 /// A probe mount that never reached the kernel (its thread could not start,

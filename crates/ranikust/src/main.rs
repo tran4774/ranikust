@@ -68,9 +68,11 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Hidden test hook. `panic` panics and aborts and `error` fails with exit
 /// code 1, after metrics are set up; `kernel-missing`, `kernel-blocked` and
 /// `kernel-hidden` make the kernel check fail; `seal-tmpfile` skips the
-/// memfd way of sealing the binary and `seal-none` both ways (ADR-0101). It
-/// lets the tests run the real binary through these paths, including a
-/// release build, where `panic = "abort"`.
+/// memfd way of sealing the binary and `seal-none` both ways (ADR-0101);
+/// `overlay-refused` takes overlay mode's probe, once it passed, as refused
+/// by the kernel, as on NFS ([`setup::set_up`]). It lets the tests run the
+/// real binary through these paths, including a release build, where
+/// `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
@@ -450,16 +452,19 @@ fn run(
             Ok(())
         }
         Command::Build(args) => tracing::debug_span!("ranikust.build")
-            .in_scope(|| build(args, telemetry, metrics_file, binary)),
+            .in_scope(|| build(args, telemetry, metrics_file, binary, fault)),
     }
 }
 
+/// `fault` is the test hook's value ([`DEBUG_FAULT_ENV`]).
 fn build(
     args: &BuildArgs,
     telemetry: &Telemetry,
     metrics_file: Option<&Path>,
     binary: Option<BinaryMount>,
+    fault: Option<&str>,
 ) -> Result<(), Failure> {
+    let refuse_overlay = fault == Some("overlay-refused");
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
     let seccomp = config::read_seccomp(config.seccomp.as_ref())
         .map_err(|invalid| Failure::usage(invalid.0))?;
@@ -511,7 +516,7 @@ fn build(
             let span = tracing::debug_span!("ranikust.setup");
             span.in_scope(setup::enter_namespace)
                 .map_err(Failure::refused)?;
-            overlay(&config, &seccomp, &span)
+            overlay(&config, &seccomp, &span, refuse_overlay)
         }
         // Whether root may mount decides, before anything is written
         // (ADR-0040).
@@ -536,6 +541,7 @@ fn build(
                             config.allow_network_none_userns,
                             &seccomp,
                             &mut userns_probe,
+                            refuse_overlay,
                         )
                     }) {
                         Ok(setup) => {
@@ -641,8 +647,13 @@ fn overlay_flags(args: &BuildArgs) -> Result<(), Failure> {
 }
 
 /// Overlay mode, once the namespace is entered: the rest of the set-up,
-/// then the build.
-fn overlay(config: &BuildConfig, seccomp: &Seccomp, span: &tracing::Span) -> Result<(), Failure> {
+/// then the build. `refuse_overlay` is the test hook's `overlay-refused`.
+fn overlay(
+    config: &BuildConfig,
+    seccomp: &Seccomp,
+    span: &tracing::Span,
+    refuse_overlay: bool,
+) -> Result<(), Failure> {
     let setup = span
         .in_scope(|| {
             setup::set_up(
@@ -650,6 +661,7 @@ fn overlay(config: &BuildConfig, seccomp: &Seccomp, span: &tracing::Span) -> Res
                 config.allow_network_none_userns,
                 seccomp,
                 &mut false,
+                refuse_overlay,
             )
         })
         .map_err(Failure::refused)?;
