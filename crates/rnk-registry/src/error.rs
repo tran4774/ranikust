@@ -62,6 +62,10 @@ pub enum Error {
         /// from the status and codes, never from `message`, which holds only
         /// an excerpt of what the registry said.
         refused: bool,
+        /// Whether the registry answered a manifest or blob `GET` with 404:
+        /// it holds no such manifest, blob or repository. Decided from the
+        /// status only; never retried.
+        not_found: bool,
     },
 
     /// Received content does not match the digest it was asked for.
@@ -143,6 +147,18 @@ impl Error {
         self
     }
 
+    /// Whether the registry answered 404 to a manifest or blob `GET`: it
+    /// holds no such manifest, blob or repository.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Registry {
+                not_found: true,
+                ..
+            }
+        )
+    }
+
     /// Whether the failed operation may succeed if repeated.
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -221,6 +237,7 @@ impl Op<'_> {
             message,
             retryable,
             refused,
+            not_found: false,
         }
     }
 }
@@ -233,11 +250,15 @@ pub(crate) fn retryable_status(code: u16) -> bool {
 
 impl Op<'_> {
     /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
-    /// refusal whatever its body said.
+    /// refusal whatever its body said, and a 404 is "not found".
     pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
         let mut e = self.error(err);
-        if let Error::Registry { refused, .. } = &mut e {
+        if let Error::Registry {
+            refused, not_found, ..
+        } = &mut e
+        {
             *refused |= refusal_status(status);
+            *not_found = status == 404;
         }
         e
     }
@@ -262,6 +283,7 @@ pub(crate) fn idle_error(ctx: &Op<'_>, idle: Option<std::time::Duration>) -> Err
         ),
         retryable: true,
         refused: false,
+        not_found: false,
     }
 }
 

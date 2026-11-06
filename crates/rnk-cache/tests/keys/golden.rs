@@ -2,8 +2,8 @@
 //! or a tag hashes, or how, fails here.
 
 use rnk_cache::{
-    CacheKey, CopyFrom, Encoding, File, FileKind, KEY_VERSION, KeyInputs, Mount, Network, Sharing,
-    TimePolicy,
+    CacheKey, CopyFrom, Encoding, EntryId, File, FileKind, KEY_VERSION, KeyInputs, Mount, Network,
+    Sharing, TimePolicy,
 };
 use rnk_oci::{Compression, Digest, Platform};
 
@@ -141,11 +141,12 @@ fn copy_keys() {
 fn tags() {
     let key = full().key(&root());
     let tag = |compression, level, times| {
-        key.tag(&Encoding {
+        let encoding = Encoding {
             compression,
             level,
             times,
-        })
+        };
+        EntryId::new(key, encoding).tag()
     };
     golden(
         "gzip tag",
@@ -167,6 +168,41 @@ fn tags() {
             },
         ),
         "rnk-v1-0e97749319b93b0a381b183a5c5676d710398d8919c49641b38d0d913dd8ab5d",
+    );
+}
+
+/// The encoding as a cache entry's annotation names it: pushed entries
+/// stop being hits if this changes.
+#[test]
+fn encoding_annotations() {
+    let annotation = |compression, level, times| {
+        Encoding {
+            compression,
+            level,
+            times,
+        }
+        .to_string()
+    };
+    golden(
+        "gzip",
+        &annotation(Compression::Gzip, 6, TimePolicy::Kept),
+        "gzip;level=6;times=kept",
+    );
+    golden(
+        "zstd reproducible",
+        &annotation(Compression::Zstd, 3, TimePolicy::Clamped { epoch: 0 }),
+        "zstd;level=3;times=clamped;epoch=0",
+    );
+    golden(
+        "uncompressed",
+        &annotation(
+            Compression::Uncompressed,
+            0,
+            TimePolicy::Clamped {
+                epoch: -1_700_000_000,
+            },
+        ),
+        "uncompressed;times=clamped;epoch=-1700000000",
     );
 }
 

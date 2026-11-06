@@ -149,6 +149,7 @@ mod tests {
             message: "HTTP 503".to_owned(),
             retryable: true,
             refused: false,
+            not_found: false,
         }
     }
 

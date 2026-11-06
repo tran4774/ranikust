@@ -7,8 +7,8 @@ use proptest::collection::vec;
 use proptest::option;
 use proptest::prelude::*;
 use rnk_cache::{
-    CacheKey, ContentHasher, CopyFrom, Encoding, File, FileKind, KeyInputs, Mount, Network,
-    Sharing, TimePolicy,
+    CacheKey, ContentHasher, CopyFrom, Encoding, EntryId, File, FileKind, KeyInputs, Mount,
+    Network, Sharing, TimePolicy,
 };
 use rnk_oci::{Compression, Platform};
 
@@ -508,7 +508,7 @@ fn every_field_of_an_encoding_changes_the_tag() {
                         level,
                         times,
                     };
-                    let tag = k.tag(&encoding);
+                    let tag = EntryId::new(k, encoding).tag();
                     if let Some(other) = seen.insert(tag, (k, encoding)) {
                         panic!("{k:?} {encoding:?} and {other:?} give one tag");
                     }
@@ -583,22 +583,19 @@ fn a_key_ignores_the_compression_and_its_level() {
 #[test]
 fn an_uncompressed_tag_ignores_the_level() {
     let tag = |level| {
-        root().tag(&Encoding {
+        let encoding = Encoding {
             compression: Compression::Uncompressed,
             level,
             times: TimePolicy::Kept,
-        })
+        };
+        EntryId::new(root(), encoding).tag()
     };
     assert_eq!(tag(0), tag(6));
 }
 
 #[test]
 fn a_tag_is_an_oci_tag_naming_the_version() {
-    let tag = root().tag(&Encoding {
-        compression: Compression::Gzip,
-        level: 6,
-        times: TimePolicy::Kept,
-    });
+    let tag = EntryId::new(root(), encoding(None)).tag();
     let hex = tag.strip_prefix("rnk-v1-").expect("the rnk-v1- prefix");
     assert_eq!(hex.len(), 64, "{tag}");
     assert!(

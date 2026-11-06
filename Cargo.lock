@@ -1276,10 +1276,20 @@ dependencies = [
 name = "rnk-cache"
 version = "0.0.1"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "proptest",
  "rnk-metrics",
  "rnk-oci",
+ "rnk-registry",
+ "serde_json",
  "sha2",
+ "thiserror",
+ "tokio",
  "tracing",
 ]
 

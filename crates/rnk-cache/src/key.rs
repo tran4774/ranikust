@@ -90,21 +90,61 @@ impl CacheKey {
     pub fn hash(&self) -> &[u8; 32] {
         &self.hash
     }
+}
 
-    /// The tag this step's layer is looked up and pushed under when encoded
-    /// as `encoding`: `rnk-v<version>-<hex>`, where `<hex>` is the SHA-256
-    /// of the key and the encoding, so a hit was encoded with this build's
-    /// settings (ADR-0113).
+impl fmt::Debug for CacheKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hex = Digest::from_sha256_bytes(&self.hash);
+        write!(f, "CacheKey(v{}:{})", self.version, hex.encoded())
+    }
+}
+
+/// What a cache entry is looked up and pushed by: a step's key and the
+/// encoding of its layer, together, so that the tag, the annotations a
+/// lookup checks and the layer it accepts all name one encoding
+/// ([ADR-0113]).
+///
+/// [ADR-0113]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EntryId {
+    key: CacheKey,
+    encoding: Encoding,
+}
+
+impl EntryId {
+    /// The entry of `key`'s layer encoded as `encoding`: the encoding the
+    /// step's [`KeyInputs::new`] was given.
     #[must_use]
-    pub fn tag(&self, encoding: &Encoding) -> String {
+    pub fn new(key: CacheKey, encoding: Encoding) -> Self {
+        Self { key, encoding }
+    }
+
+    /// The step's key.
+    #[must_use]
+    pub fn key(&self) -> &CacheKey {
+        &self.key
+    }
+
+    /// The layer's encoding.
+    #[must_use]
+    pub fn encoding(&self) -> &Encoding {
+        &self.encoding
+    }
+
+    /// The tag the entry is looked up and pushed under:
+    /// `rnk-v<version>-<hex>`, where `<hex>` is the SHA-256 of the key and
+    /// the encoding, so a hit was encoded with this build's settings.
+    #[must_use]
+    pub fn tag(&self) -> String {
+        let Self { key, encoding } = self;
         let Encoding {
             compression,
             level,
             times,
         } = *encoding;
         let mut c = Canonical::new("rnk-cache tag");
-        c.u32(self.version);
-        c.hash(&self.hash);
+        c.u32(key.version);
+        c.hash(&key.hash);
         match compression {
             // The encoder ignores the level of a plain tar.
             Compression::Uncompressed => c.str("uncompressed"),
@@ -125,14 +165,7 @@ impl CacheKey {
             }
         }
         let hex = Digest::from_sha256_bytes(&c.finish());
-        format!("rnk-v{}-{}", self.version, hex.encoded())
-    }
-}
-
-impl fmt::Debug for CacheKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex = Digest::from_sha256_bytes(&self.hash);
-        write!(f, "CacheKey(v{}:{})", self.version, hex.encoded())
+        format!("rnk-v{}-{}", key.version, hex.encoded())
     }
 }
 
@@ -147,6 +180,23 @@ pub struct Encoding {
     pub level: i32,
     /// The mtimes in the layer's headers.
     pub times: TimePolicy,
+}
+
+/// The form a cache entry's annotation names the encoding in:
+/// `gzip;level=6;times=kept`, `zstd;level=3;times=clamped;epoch=0`,
+/// `uncompressed;times=kept` (no level, which a plain tar ignores).
+impl fmt::Display for Encoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.compression {
+            Compression::Uncompressed => f.write_str("uncompressed")?,
+            Compression::Gzip => write!(f, "gzip;level={}", self.level)?,
+            Compression::Zstd => write!(f, "zstd;level={}", self.level)?,
+        }
+        match self.times {
+            TimePolicy::Kept => f.write_str(";times=kept"),
+            TimePolicy::Clamped { epoch } => write!(f, ";times=clamped;epoch={epoch}"),
+        }
+    }
 }
 
 /// The mtimes a layer's headers carry.

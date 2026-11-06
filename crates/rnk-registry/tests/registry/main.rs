@@ -547,6 +547,53 @@ async fn transient_failures_are_retried() {
     assert_eq!(registry.count("GET /v2/app/manifests/"), before + 1);
 }
 
+/// `find_manifest`: a manifest, `None` for a 404 of an unknown tag or
+/// repository after one request, and an error for any other failure.
+#[tokio::test]
+async fn find_manifest_is_none_only_for_a_404() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let image = add_image(&registry, "app", "v1", b"layer".to_vec());
+    let client = client(&registry, Credentials::none());
+
+    let found = client
+        .find_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap()
+        .expect("the manifest");
+    assert_eq!(found.bytes().as_ref(), image.manifest.as_slice());
+
+    for missing in ["app:v2", "other:v1"] {
+        let before = registry.count("GET /v2/");
+        let none = client
+            .find_manifest(&reference(&registry, missing))
+            .await
+            .unwrap();
+        assert!(none.is_none(), "{missing}");
+        assert_eq!(registry.count("GET /v2/"), before + 1, "{missing}");
+    }
+
+    // A 500 is retried, then an error, never `None`.
+    registry.state().faults.push(Fault {
+        method: Method::GET,
+        path_contains: "/manifests/".to_owned(),
+        status: 500,
+        remaining: 3,
+    });
+    let err = client
+        .find_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap_err();
+    assert!(!err.is_not_found(), "{err}");
+    assert!(err.to_string().contains("500"), "{err}");
+    // A 404 on a blob is "not found" too.
+    let blob = descriptor(MediaType::OCI_LAYER_GZIP, b"absent");
+    let err = client
+        .pull_blob(&reference(&registry, "app"), &blob, &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(err.is_not_found(), "{err}");
+}
+
 /// kaniko's `--image-download-retry`: an outer loop around the image
 /// manifest fetch, each round with the default policy inside, so never
 /// fewer attempts than without it; any error is retried, as kaniko's
