@@ -873,10 +873,8 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args
     if signal != libc::SIGKILL {
         fail_init(Errno::INVAL);
     }
-    match parent_alive(parent) {
-        Ok(true) => {}
-        Ok(false) => fail_init(Errno::SRCH),
-        Err(e) => fail_init(e),
+    if let Err(e) = check_parent(parent) {
+        fail_init(e);
     }
 }
 
@@ -889,18 +887,20 @@ fn kill_and_fail(err: RawFd, command: libc::pid_t, step: Step, e: Errno) -> ! {
     fail(err, step, e)
 }
 
-/// Whether the process that cloned this one is still its parent, from the
-/// outer `stat` file [`ParentCheck`] holds. A failed read is its errno,
-/// never a parent gone: a filter may refuse it. A line that does not parse
-/// (a read faked with no bytes) is `EINVAL`, as for [`arm_death_signal`].
-fn parent_alive(parent: ParentCheck) -> Result<bool, Errno> {
+/// Checks that the process that cloned this one is still its parent, from
+/// the outer `stat` file [`ParentCheck`] holds: another parent is `ESRCH`.
+/// A failed read is its errno, never a parent gone: a filter may refuse it.
+/// A line that does not parse (a read faked with no bytes) is `EINVAL`, as
+/// for [`arm_death_signal`].
+fn check_parent(parent: ParentCheck) -> Result<(), Errno> {
     // SAFETY: `stat` is open in this process until it is closed below.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 256];
     // One read: an `EINTR` comes only from a filter (`wait_for_go`).
     let len = rustix::io::pread(stat, &mut buf, 0)?;
     match buf.get(..len).and_then(stat_pid_and_ppid) {
-        Some((_, ppid)) => Ok(ppid == parent.parent),
+        Some((_, ppid)) if ppid == parent.parent => Ok(()),
+        Some(_) => Err(Errno::SRCH),
         None => Err(Errno::INVAL),
     }
 }
@@ -2944,12 +2944,10 @@ mod tests {
             assert_eq!(alive(&eintr("pread64")), init(libc::EINTR), "parent check");
         }
 
-        /// The init's parent check as `init_keep_nothing` makes it.
+        /// The init's parent check, failing as `init_keep_nothing` does.
         fn parent_check_as_the_init(err: RawFd, parent: ParentCheck) {
-            match parent_alive(parent) {
-                Ok(true) => {}
-                Ok(false) => fail(err, Step::Init, Errno::SRCH),
-                Err(e) => fail(err, Step::Init, e),
+            if let Err(e) = check_parent(parent) {
+                fail(err, Step::Init, e);
             }
         }
 

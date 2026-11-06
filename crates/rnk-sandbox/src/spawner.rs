@@ -1917,30 +1917,60 @@ fn execute(
     if cancelled {
         return Err(Error::Cancelled);
     }
-    let failure = failure?;
-    // The init's signal is no status of the command's, which may not have
-    // run. It comes before the child's record, which may only follow from
-    // it: the init's end ends the go pipe, which a command still waiting
-    // reports (`Step::Init`, `EPIPE`).
-    if let Some(signal) = init_killed_by {
-        return Err(Error::SetupKilled {
-            signal,
-            seccomp: profile && signal == libc::SIGSYS,
-        });
-    }
     // `Setup` and `Exec` come from the child before `execve` and are
     // returned only here, after the tree is reaped and swept (`killed?`):
     // `Error::ran_no_command` relies on it (ADR-0056). Keep it so.
-    match failure {
-        None => Ok((status, usage)),
-        Some((Step::Exec, errno)) => Err(Error::Exec {
-            program: program.to_owned(),
-            source: io::Error::from_raw_os_error(errno),
-        }),
-        Some((step, errno)) => Err(Error::Setup {
-            step,
-            source: io::Error::from_raw_os_error(errno),
-        }),
+    ending(status, init_killed_by, failure?, profile, program).map(|s| (s, usage))
+}
+
+/// How a reaped `RUN` that was not cancelled ended: its status, the
+/// failure the child recorded before `execve`, or, where a signal killed the
+/// full sandbox's init before it wrote the command's status
+/// (`init_killed_by`), [`Error::SetupKilled`], which names a profile behind
+/// a `SIGSYS`. Where there are both, the more precise one is returned and the
+/// other logged.
+fn ending(
+    status: ExitStatus,
+    init_killed_by: Option<i32>,
+    failure: Option<(Step, i32)>,
+    profile: bool,
+    program: &str,
+) -> Result<ExitStatus> {
+    let killed = |signal| Error::SetupKilled {
+        signal,
+        seccomp: profile && signal == libc::SIGSYS,
+    };
+    match (failure, init_killed_by) {
+        (None, None) => Ok(status),
+        (None, Some(signal)) => Err(killed(signal)),
+        // The init's end ends the go pipe (`EPIPE`) and makes the command,
+        // if it has not checked its parent yet, an orphan (`EPROTO`): a
+        // record of `Step::Init` may only follow from it.
+        (Some((Step::Init, errno)), Some(signal)) => {
+            tracing::debug!(
+                errno,
+                signal,
+                "rnk-sandbox: a RUN's set-up failure record, its init killed after it"
+            );
+            Err(killed(signal))
+        }
+        (Some((step, errno)), signal) => {
+            if let Some(signal) = signal {
+                tracing::debug!(
+                    %step,
+                    signal,
+                    "rnk-sandbox: a RUN's init killed after its set-up failed"
+                );
+            }
+            let source = io::Error::from_raw_os_error(errno);
+            Err(match step {
+                Step::Exec => Error::Exec {
+                    program: program.to_owned(),
+                    source,
+                },
+                step => Error::Setup { step, source },
+            })
+        }
     }
 }
 
@@ -2275,6 +2305,57 @@ mod tests {
         rustix::io::write(&w, &rec[..3]).unwrap();
         drop(w);
         assert!(read_failure(&r).is_err());
+    }
+
+    /// A `RUN`'s end: its status, or the child's record from before
+    /// `execve`; an init a signal killed before it wrote the command's
+    /// status is `SetupKilled`, naming the profile only for `SIGSYS` under
+    /// one. It wins over a record of `Step::Init`, which its end may cause,
+    /// and loses to any other, which is more precise.
+    #[test]
+    fn a_runs_end_is_its_status_its_record_or_its_killed_set_up() {
+        let status = ExitStatus::from_raw(3 << 8);
+        let end = |killed, failure, profile| ending(status, killed, failure, profile, "prog");
+        assert_eq!(end(None, None, true).unwrap().code(), Some(3));
+        let sigsys = Some(libc::SIGSYS);
+        for (killed, failure, profile, seccomp) in [
+            (sigsys, None, true, true),
+            (sigsys, None, false, false),
+            (Some(libc::SIGKILL), None, true, false),
+            (sigsys, Some((Step::Init, libc::EPIPE)), true, true),
+            (sigsys, Some((Step::Init, libc::EPROTO)), true, true),
+        ] {
+            let r = end(killed, failure, profile);
+            assert!(
+                matches!(r, Err(Error::SetupKilled { signal, seccomp: s })
+                    if Some(signal) == killed && s == seccomp),
+                "{killed:?} {failure:?} {profile}: {r:?}"
+            );
+        }
+        for killed in [None, sigsys] {
+            let r = end(killed, Some((Step::Seccomp, libc::EINVAL)), true);
+            assert!(
+                matches!(&r, Err(Error::Setup { step: Step::Seccomp, source })
+                    if source.raw_os_error() == Some(libc::EINVAL)),
+                "{killed:?}: {r:?}"
+            );
+            let r = end(killed, Some((Step::Exec, libc::ENOENT)), true);
+            assert!(
+                matches!(&r, Err(Error::Exec { program, .. }) if program == "prog"),
+                "{killed:?}: {r:?}"
+            );
+        }
+        let r = end(None, Some((Step::Init, libc::EPIPE)), true);
+        assert!(
+            matches!(
+                r,
+                Err(Error::Setup {
+                    step: Step::Init,
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
     }
 
     /// The init's status record: none (it died or failed before writing),

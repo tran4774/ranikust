@@ -823,7 +823,10 @@ fn names_read_as_a_list_of_strings() {
             r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":{names},"action":"SCMP_ACT_ERRNO","errnoRet":1}}]}}"#
         )
     };
-    for names in [r#"["getppid","getpid"]"#, r#"["getppid","getpid"]"#] {
+    for names in [
+        r#"["getppid","getpid"]"#,
+        r#"["\u0067etppid","get\u0070id"]"#,
+    ] {
         let p = compiled(&with(names));
         assert_eq!(verdict(&p, libc::SYS_getppid, a0(0)), errno(1), "{names}");
         assert_eq!(verdict(&p, libc::SYS_getpid, a0(0)), errno(1), "{names}");

@@ -93,7 +93,7 @@ fn refused_at(json: &str) -> usize {
 /// 149,700 times, each copy 37 instructions (six masked conditions of six,
 /// then the action), is refused with the length the whole program would
 /// have, holding under 8 MiB (each name costs a few words while the profile
-/// is read). It held 355 MB when the whole program was built first.
+/// is read).
 #[test]
 fn a_profile_far_past_the_kernel_limit_is_refused_in_bounded_memory() {
     const NAMES: usize = 149_700;
