@@ -1236,11 +1236,11 @@ fn holds(op: &str, arg: u64, v: u64, two: u64) -> bool {
     }
 }
 
-/// The verdict ADR-0109 and sandbox.md give, read from the profile alone:
-/// another architecture or an x32 number gets `EPERM`; a number `libc`
-/// does not name gets the default where it lets calls run, else `ENOSYS`;
-/// a named one gets the strictest rule matching it (the profile's first
-/// among equals), else the default.
+/// The verdict sandbox.md gives, read from the profile alone: another
+/// architecture or an x32 number gets `EPERM`; a number `libc` does not
+/// name gets the default where it lets calls run, else `ENOSYS`; a named
+/// one gets the strictest rule matching it, the first in the profile of
+/// two refusals with different errnos, else the default.
 fn reference(rules: &[RefRule], default: u32, arch: u32, nr: u32, args: [u64; 6]) -> u32 {
     let eperm = errno(libc::EPERM);
     if arch != AUDIT_ARCH {
@@ -1341,8 +1341,9 @@ fn random_action(rng: &mut Rng, action: &str, errno_ret: &str) -> (String, u32) 
     }
 }
 
-/// A random profile of rules on [`POOL`], `exit` and `exit_group` allowed
-/// first: its JSON, its rules and its default's return value.
+/// A random profile of rules on [`POOL`]: its JSON, its rules and its
+/// default's return value. `exit` and `exit_group` are allowed first, so
+/// that the forked child can exit (#103).
 fn random_profile(rng: &mut Rng) -> (String, Vec<RefRule>, u32) {
     let (default_json, default) = random_action(rng, "defaultAction", "defaultErrnoRet");
     let mut json = vec![r#"{"names":["exit","exit_group"],"action":"SCMP_ACT_ALLOW"}"#.to_owned()];
@@ -1516,7 +1517,9 @@ fn a_key_given_twice_is_refused() {
 }
 
 /// Deep nesting, a megabyte of it, and anything around one profile are
-/// refused without a stack overflow.
+/// refused without a stack overflow. Every field is typed and an unknown
+/// one is refused, so each deep case ends at its first levels today: they
+/// guard against a future untyped field.
 #[test]
 fn nesting_and_bytes_around_a_profile_are_refused() {
     let deep = 1 << 20;
@@ -1567,10 +1570,16 @@ fn numbers_in_other_forms_are_refused() {
         )
     };
     let arg = |field: &str, v: &str| {
-        let (index, value) = if field == "index" { (v, "0") } else { ("0", v) };
+        let (index, value, two) = match field {
+            "index" => (v, "0", "0"),
+            "value" => ("0", v, "0"),
+            "valueTwo" => ("0", "0", v),
+            other => panic!("{other}"),
+        };
         format!(
             r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["socket"],
-            "action":"SCMP_ACT_ERRNO","args":[{{"index":{index},"value":{value},"op":"SCMP_CMP_EQ"}}]}}]}}"#
+            "action":"SCMP_ACT_ERRNO","args":[{{"index":{index},"value":{value},
+            "valueTwo":{two},"op":"SCMP_CMP_EQ"}}]}}]}}"#
         )
     };
     let odd = [
@@ -1591,13 +1600,22 @@ fn numbers_in_other_forms_are_refused() {
         "[]",
         "{}",
     ];
+    // The control: a plain number is read in each of those places.
+    for json in [
+        errno_rule("1"),
+        arg("index", "1"),
+        arg("value", "1"),
+        arg("valueTwo", "1"),
+    ] {
+        SeccompProfile::from_json(json.as_bytes()).unwrap();
+    }
     for v in odd {
         for json in [
             errno_rule(v),
             format!(r#"{{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":{v}}}"#),
             arg("value", v),
             arg("index", v),
-            arg("valueTwo", v).replace(r#""value":"#, r#""valueTwo":0,"value":"#),
+            arg("valueTwo", v),
         ] {
             refused_live(json.as_bytes());
         }
@@ -1668,10 +1686,16 @@ fn profile_of_length(want: usize) -> Option<(String, Program)> {
                 r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{}]}}"#,
                 rules.join(",")
             );
-            match compile(json.as_bytes(), &cx((6, 8))) {
+            let len = match compile(json.as_bytes(), &cx((6, 8))) {
                 Ok(p) if p.program.insns.len() == want => return Some((json, p.program)),
-                Ok(p) if p.program.insns.len() < want => lo = mid,
-                Ok(_) | Err(_) => hi = mid - 1,
+                Ok(p) => p.program.insns.len(),
+                Err(Error::SeccompProfile(m)) if m.contains("more than the kernel's") => usize::MAX,
+                Err(e) => panic!("{e}"),
+            };
+            if len < want {
+                lo = mid;
+            } else {
+                hi = mid - 1;
             }
         }
     }
@@ -1947,7 +1971,14 @@ mod kernel {
         assert!(pid >= 0);
         if pid == 0 {
             // SAFETY: as above.
-            unsafe { libc::_exit(check()) };
+            unsafe {
+                // A SIGSEGV of `int 0x80` without i386 emulation dumps no
+                // core.
+                if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
+                    libc::_exit(200);
+                }
+                libc::_exit(check());
+            }
         }
         let mut status = 0;
         // SAFETY: reaping the child forked above.
@@ -1957,12 +1988,19 @@ mod kernel {
 
     /// An i386 system call through `int 0x80`: its result, `-errno` on a
     /// failure.
+    ///
+    /// # Safety
+    ///
+    /// The kernel runs the call if no filter stops it, reading any pointer
+    /// argument as an i386 address. The caller must be a forked child and
+    /// pass a call that, if it runs, changes nothing outside that child.
     #[cfg(target_arch = "x86_64")]
-    fn int80(nr: u32, a: u32, b: u32, c: u32) -> i32 {
+    unsafe fn int80(nr: u32, a: u32, b: u32, c: u32) -> i32 {
         let ret: u32;
         // SAFETY: `int 0x80` with the i386 ABI's registers; `rbx`, which
         // inline assembly cannot name, is swapped in and back, and the
         // registers a 64-bit kernel may clobber on that path are marked.
+        // The call itself is the caller's to make safe.
         unsafe {
             std::arch::asm!(
                 "xchg {a:r}, rbx",
@@ -1984,7 +2022,8 @@ mod kernel {
     /// i386 calls and their first two arguments: `getpid`;
     /// `personality(ADDR_NO_RANDOMIZE)`; `unshare(CLONE_NEWUSER)`;
     /// `keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING)`;
-    /// `socket(AF_INET, SOCK_DGRAM)`.
+    /// `socket(AF_INET, SOCK_DGRAM)`. The numbers are literal because
+    /// `libc` has no i386 table on x86_64.
     #[cfg(target_arch = "x86_64")]
     const I386: [(u32, u32, u32); 5] = [
         (20, 0, 0),
@@ -1998,12 +2037,23 @@ mod kernel {
     /// under one that refuses only the native `keyctl`: `getpid`, which
     /// nothing refuses natively, gets `EPERM` there, where the control
     /// without a filter gets its pid (i386) or `ENOSYS` (no x32 kernel).
+    /// A kernel without i386 emulation faults on `int 0x80` in the
+    /// control: the i386 checks are then skipped, with a message.
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn other_abis_reach_no_call() {
         let x32 = libc::c_long::from(super::super::super::X32_SYSCALL_BIT);
-        let control = unfiltered(|| i32::from(int80(20, 0, 0, 0) <= 0));
-        let i386 = libc::WIFEXITED(control) && libc::WEXITSTATUS(control) == 0;
+        let control = unfiltered(|| {
+            // SAFETY: an i386 `getpid`, which reads no argument, in a
+            // forked child.
+            i32::from(unsafe { int80(20, 0, 0, 0) } <= 0)
+        });
+        let i386 = !(libc::WIFSIGNALED(control) && libc::WTERMSIG(control) == libc::SIGSEGV);
+        if i386 {
+            exited_ok(control);
+        } else {
+            eprintln!("skipped: no i386 emulation in this kernel, the int 0x80 checks");
+        }
         exited_ok(unfiltered(|| {
             // SAFETY: an x32 `getpid`, which reads no argument.
             let r = unsafe { libc::syscall(x32 | libc::SYS_getpid) };
@@ -2019,19 +2069,26 @@ mod kernel {
         ] {
             let status = under(&p, || {
                 for (i, (n, a, b)) in (1..).zip(I386) {
-                    if i386 && int80(n, a, b, 0) != -libc::EPERM {
+                    // SAFETY: in this forked child, each call of `I386`
+                    // changes at most the child if it runs: a pid read,
+                    // its own personality or user namespace, a keyring
+                    // lookup that creates nothing, a socket its exit closes.
+                    if i386 && unsafe { int80(n, a, b, 0) } != -libc::EPERM {
                         return i;
                     }
                 }
                 let x32_calls = [libc::SYS_getpid, libc::SYS_keyctl, libc::SYS_unshare];
                 for (i, n) in (10..).zip(x32_calls) {
-                    // SAFETY: refused by the filter before the kernel runs it.
+                    // SAFETY: harmless if they run: an x32 `getpid`, a
+                    // `keyctl` lookup of the session keyring with create 0,
+                    // `unshare(0)`.
                     let r = unsafe { libc::syscall(x32 | n, 0, -3, 0) };
                     if !refused(r, libc::EPERM) {
                         return i;
                     }
                 }
-                // SAFETY: as above.
+                // SAFETY: -1 numbers no call; the kernel would answer
+                // `ENOSYS`.
                 if !refused(unsafe { libc::syscall(-1) }, libc::EPERM) {
                     return 20;
                 }
@@ -2042,6 +2099,5 @@ mod kernel {
                 "{name}: {status:#x}, i386 checked: {i386}"
             );
         }
-        assert!(i386, "no i386 emulation: the int 0x80 checks did not run");
     }
 }
