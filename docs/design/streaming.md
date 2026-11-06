@@ -145,6 +145,13 @@ layers uploading or waiting to is bounded by twice `--jobs`.
   body (a 503, a reset connection) is retried, since nothing was read yet. The
   pull of manifests and configs, and the uploads from files, keep their
   retries.
+  - **A cache hit is the exception**
+    ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md);
+    decided, planned in [#130](https://github.com/tran4774/ranikust/issues/130),
+    not built yet). A connection dropped in the middle of one is retried within
+    the registry client's retry rules, resuming where it can. If it still fails,
+    the entry is a miss and the stage starts again with no cache. A cache failure
+    never changes the exit status.
 - **Nothing falls back** to keeping a whole layer in memory.
 
 ## Outputs and reproducibility
@@ -166,7 +173,9 @@ while writing, for overlay mode and kaniko mode on a host
 ([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)). A cache
 hit needs no local blob either: the cached layer is mounted or streamed from
 the cache repository, as a base layer is. On `/` the state never outlives the
-process (ADR-0051).
+process (ADR-0051). A hit that fails does not fail the build: the stage starts
+again with no cache (see
+[Credentials and failures](#credentials-and-failures)).
 
 ## Measurements
 

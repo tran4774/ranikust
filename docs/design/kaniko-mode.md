@@ -784,12 +784,15 @@ layer is.
   broken: no layer, applied layer, view, keep or child stage (`FROM`,
   squashed or handed over) goes on from it, so no later layer is computed
   over part of a cached one. A broken stage directory is only released, and
-  the builder runs the stage again from its base, the bad entry a miss
-  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
-  whose open points include how often and from which base;
-  [#130](https://github.com/tran4774/ranikust/issues/130)). On `/`, what
-  the builder does once a hit has broken the root is not decided
-  [open: #167]; the root is usable again once a new base empties it.
+  the builder runs the stage again from its base
+  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
+  On `/` it does the same: the new base empties `/`, as between stages, and the
+  root is usable again then. The restart happens at most once, with no cache at
+  all, and rebuilds its base from the layers of its chain when the parent's
+  directory is gone
+  ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+  decided; the builder's part is planned in
+  [#130](https://github.com/tran4774/ranikust/issues/130), not built).
 - **Refused, nothing changed:** a layer open, a root not held (shared root)
   or handed over (per stage).
 - Span `rnk_snapshot.apply`, the extraction's `rnk_layer.decode` and

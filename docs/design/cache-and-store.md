@@ -230,14 +230,25 @@ layout. A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
 
-In kaniko mode with a directory per stage, a hit streams into the stage root,
-and a blob found bad after extraction began makes the stage start again from its
-base without that entry; on `/` a hit is verified before extraction
-([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
-how often a stage may restart is decided before
-[#130](https://github.com/tran4774/ranikust/issues/130)). What a hit on `/`
-does when it fails after its first entry reached `/` is not decided
-[open: #167].
+A hit that fails never fails the build
+([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+decided and planned in [#130](https://github.com/tran4774/ranikust/issues/130)
+and [#132](https://github.com/tran4774/ranikust/issues/132), not built yet). In
+kaniko mode with a directory per stage a hit streams into the stage root; on `/`
+it is verified before extraction. A blob found bad at any point, on `/` even
+after its first entry reached `/`, makes the stage start again from its base
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
+at most once and with no cache at all: every step runs, and its layers are pushed
+under their keys, replacing the bad entries.
+
+- With the parent's directory handed over or released early, the restart rebuilds
+  its base by extracting the layers of its chain by digest, from the store, else
+  from the registry that holds them.
+- A connection dropped in the middle of a hit is retried within the registry
+  client's retry rules, then the entry is a miss.
+- A bad blob found while pushing the layers of a skipped, fully cached stage
+  makes it stop being skipped: it is built with no cache, and its manifest is
+  pushed last. A blob mounted across repositories is not read.
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
