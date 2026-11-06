@@ -18,6 +18,11 @@ source tests/smoke/cases.bash
 BASE="${RANIKUST_SMOKE_REGISTRY:-docker.io}/library/alpine:3.20"
 ENGINE=podman
 CASES_OUT="$TARGET/smoke/cases"
+# A copy with one link: cargo's release binary is a hard link of its deps/
+# copy, and kaniko mode on `/` refuses a binary with other links (ADR-0101).
+mkdir -p "$CASES_OUT/.bin"
+install -m 0755 "$RNK" "$CASES_OUT/.bin/ranikust"
+RNK="$CASES_OUT/.bin/ranikust"
 # One state directory for every case: its store keeps the pulled base
 # layers, and the `run` case's cache mount outlives a build. Kept for the
 # next run.
@@ -62,6 +67,8 @@ rnk_run() {
     --oci-layout-path "$IN/out/oci" --tar-path "$IN/out/image.tar" \
     --secret "id=tok,src=$IN/secret" "$@"
 }
+
+rnk_ctx() { echo "$IN/ctx"; }
 
 # rnk_run_twice CTX OUT ARGS...: kaniko mode only, two builds one after the
 # other in one container, as two CI steps would run (ADR-0052, D1); the

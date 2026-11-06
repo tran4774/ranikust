@@ -142,20 +142,39 @@ netns_checks() {
   sudo cp "$HOME/rnk/guest/netns-check.py" "$d/ctx/check.py"
   printf 'FROM %s\nRUN apk add --no-cache shadow\nCOPY check.py /check.py\nRUN --network=none python3 /check.py\nRUN --network=none useradd -m tester && id tester\n' "$IMAGE" |
     sudo tee "$d/ctx/Dockerfile" >/dev/null
-  rc=0
-  # shellcheck disable=SC2046
-  log="$(sudo docker run --rm $(docker_args sysadmin) -v "$RNK:/ranikust:ro" \
-    -v "$d/ctx:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" \
-    "$IMAGE" /ranikust --context /ctx --no-push --state-dir /tmp/w \
-    --allow network.none-userns 2>&1)" || rc=$?
-  echo "$log" | sudo tee "$d/allowed.log" >/dev/null
-  if [ "$rc" != 0 ] || ! grep -q '^netns checks: ok' <<<"$log"; then
-    echo "error: sysadmin: the user-namespace RUN checks failed ($rc):" >&2
-    echo "$log" >&2
-    exit 1
-  fi
+  # ADR-0033's filter stacks on Docker's default profile (ADR-0109), and
+  # stays without it: the checks pass both ways, one filter apart.
+  local seccomp n default_n=
+  for seccomp in default unconfined; do
+    local flag=()
+    [ "$seccomp" = unconfined ] && flag=(--seccomp=unconfined)
+    rc=0
+    # shellcheck disable=SC2046
+    log="$(sudo docker run --rm $(docker_args sysadmin) -v "$RNK:/ranikust:ro" \
+      -v "$d/ctx:/ctx:ro" -v "$d/w:/tmp/w" -v "$d/out:/out" \
+      "$IMAGE" /ranikust --context /ctx --no-push --state-dir /tmp/w \
+      --allow network.none-userns ${flag[@]+"${flag[@]}"} 2>&1)" || rc=$?
+    echo "$log" | sudo tee "$d/allowed-$seccomp.log" >/dev/null
+    if [ "$rc" != 0 ] || ! grep -q '^netns checks: ok' <<<"$log"; then
+      echo "error: sysadmin: the user-namespace RUN checks failed, $seccomp profile ($rc):" >&2
+      echo "$log" >&2
+      exit 1
+    fi
+    n="$(sed -n 's/^seccomp filters: \([0-9]*\)$/\1/p' <<<"$log" | head -1)"
+    if [ -z "$n" ]; then
+      echo "error: sysadmin: no seccomp filter count, $seccomp profile:" >&2
+      echo "$log" >&2
+      exit 1
+    fi
+    if [ "$seccomp" = default ]; then
+      default_n="$n"
+    elif [ "$n" != "$((default_n - 1))" ]; then
+      echo "error: sysadmin: $n seccomp filters with --seccomp=unconfined, $default_n without: want one fewer" >&2
+      exit 1
+    fi
+  done
   grep -E '^NS_GET_USERNS ' <<<"$log" || true
-  echo "sysadmin: with --allow network.none-userns, loopback is up, the filter refuses what it closes, and useradd works"
+  echo "sysadmin: with --allow network.none-userns, loopback is up, the filter refuses what it closes over the default profile ($default_n filters) and without it, and useradd works"
 }
 
 trap 'sudo rm -f "$MARKER"' EXIT
@@ -293,6 +312,73 @@ EOF
     ! pgrep -x ranikust-init >/dev/null ||
       { echo "error: the RUN's init outlived ranikust" >&2; exit 1; }
     echo "host: a RUN that cleared its death signal dies with ranikust (SIGKILL)"
+    # ADR-0101: a build runs from a sealed copy of its binary, which every
+    # process it forks shares: a sealed memfd (overlay mode, and kaniko
+    # mode with a directory per stage), the O_TMPFILE copy when the memfd
+    # is skipped. While the RUN waits, root on the host may write neither
+    # ranikust's nor its init's /proc/<pid>/exe (guest/sealed-exe.py): the
+    # memfd's open or its seal refuses, the O_TMPFILE copy's open (ETXTBSY,
+    # its only guard). The RUN cannot even open its init's: the init is not
+    # dumpable (ADR-0051), the barrier before the seal; the RUN reports the
+    # errno. The RUN still gets the core-file limit ranikust started with.
+    s="$W/host/sealed"
+    sudo mkdir -m 700 -p "$s/ctx"
+    sudo tee "$s/ctx/Dockerfile" >/dev/null <<DOCKERFILE
+FROM $IMAGE
+RUN <<PY
+#!/usr/local/bin/python3
+import ctypes, errno, os, resource, signal, sys
+ctypes.CDLL(None).prctl(15, b"rnksealed", 0, 0, 0)
+core = resource.getrlimit(resource.RLIMIT_CORE)[0]
+if core != 1048576:
+    sys.exit(f"RUN: RLIMIT_CORE is {core}, want 1048576")
+for flags in (os.O_WRONLY, os.O_RDWR):
+    try:
+        os.close(os.open("/proc/1/exe", flags))
+    except OSError as e:
+        print(f"RUN: its init's /proc/1/exe for writing: {errno.errorcode[e.errno]}", flush=True)
+    else:
+        sys.exit("RUN: opened its init's /proc/1/exe for writing")
+signal.signal(signal.SIGUSR1, lambda *a: sys.exit(0))
+signal.alarm(120)
+signal.pause()
+PY
+DOCKERFILE
+    for variant in overlay:memfd kaniko:memfd seal-tmpfile:tmpfile; do
+      how="${variant%%:*}" way="${variant#*:}"
+      args=(--context "$s/ctx" --no-push --state-dir "$s/w-$how" --log-format=text -v debug)
+      fault=()
+      case "$how" in
+        kaniko) args+=(--mode=kaniko) ;;
+        seal-tmpfile) fault=(RANIKUST_DEBUG_FAULT=seal-tmpfile) ;;
+      esac
+      slog="$(mktemp)"
+      sudo env "${fault[@]}" prlimit --core=1048576:unlimited "$RNK" "${args[@]}" >"$slog" 2>&1 &
+      # Kept now: the process substitution below changes $!.
+      build=$!
+      for _ in $(seq 120); do pgrep -x rnksealed >/dev/null && break; sleep 1; done
+      pgrep -x rnksealed >/dev/null || {
+        echo "error: sealed ($how): the RUN never started" >&2; cat "$slog" >&2
+        sudo pkill -KILL -x ranikust; exit 1
+      }
+      mapfile -t pids < <(pgrep -x ranikust; pgrep -x ranikust-init)
+      [ "${#pids[@]}" = 2 ] || {
+        echo "error: sealed ($how): want one ranikust and one init, found ${pids[*]}" >&2
+        sudo pkill -KILL -x ranikust; exit 1
+      }
+      sudo python3 -I guest/sealed-exe.py "$way" "$RNK" "${pids[@]}" ||
+        { sudo pkill -KILL -x ranikust; exit 1; }
+      sudo pkill -USR1 -x rnksealed
+      wait "$build" || { echo "error: sealed ($how): the build failed" >&2; cat "$slog" >&2; exit 1; }
+      # The first way tried, so none passed over.
+      grep -qE "msg=\"running from a sealed copy of the binary \(ADR-0101\)\".* way=$way\$" "$slog" &&
+        ! grep -q "passed_over=" "$slog" ||
+        { echo "error: sealed ($how): no $way copy in the log" >&2; cat "$slog" >&2; exit 1; }
+      [ "$(grep -c "^RUN: its init" "$slog")" = 2 ] ||
+        { echo "error: sealed ($how): the RUN did not report both opens" >&2; cat "$slog" >&2; exit 1; }
+      grep "^RUN: its init" "$slog" | sed "s/^/host: $how: /"
+      echo "host: $how builds from a sealed $way copy no one may write"
+    done
   fi
   echo "$name: ok"
 done

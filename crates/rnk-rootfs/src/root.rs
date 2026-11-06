@@ -417,7 +417,7 @@ impl RootPath {
     }
 
     /// Pins the entry `p` with an `O_PATH | O_NOFOLLOW` descriptor, reached
-    /// with no symlink in any component and without leaving the root's own
+    /// with no symlink in a parent and without leaving the root's own
     /// mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`), and `statx`s it on
     /// that descriptor. For a physical path, such as one the kaniko-mode
     /// walk saw: every later read goes through the pinned inode, so a
@@ -426,9 +426,10 @@ impl RootPath {
     /// # Errors
     ///
     /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `EXDEV` for a
-    /// parent on another mount, `ENOENT` when `p` is gone.
+    /// parent on another mount, `ENOENT` when `p` is gone;
+    /// [`Error::InvalidPath`] for a path with a `..`.
     pub fn pin(&self, p: impl AsRef<Path>) -> Result<Pinned> {
-        let p = p.as_ref();
+        let p = path::physical(p.as_ref())?;
         let resolve = IN_ROOT
             .union(ResolveFlags::NO_SYMLINKS)
             .union(ResolveFlags::NO_XDEV);
@@ -485,6 +486,47 @@ impl RootPath {
             Target::Root => meta::statx_at(self.fd(), OsStr::new(""), p),
             Target::Entry { parent, name } => {
                 let pfd = self.resolve_dir(&parent)?;
+                meta::statx_at(pfd.as_fd(), name, p)
+            }
+        }
+    }
+
+    /// [`RootPath::statx`] of a physical path, as the kernel prints one (a
+    /// mount point in `/proc/self/mountinfo`, a `readlink` of
+    /// `/proc/self/fd/<n>`): reached with no symlink in a parent
+    /// (`RESOLVE_NO_SYMLINKS`), across mounts unless the root stays on its
+    /// own, the last name not followed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] with `ELOOP` for a symlink in a parent, `EXDEV` for a
+    /// parent on another mount when the root stays on its own
+    /// (`stay_on_mount`), `ENOENT` when `p` or a parent is missing;
+    /// [`Error::InvalidPath`] for a path with a `..`;
+    /// [`Error::Unsupported`] without `openat2`.
+    pub fn statx_physical(&self, p: impl AsRef<Path>) -> Result<Stat> {
+        let p = path::physical(p.as_ref())?;
+        match path::target(p)? {
+            Target::Root => meta::statx_at(self.fd(), OsStr::new(""), p),
+            Target::Entry { parent, name } => {
+                let mut resolve = IN_ROOT.union(ResolveFlags::NO_SYMLINKS);
+                if self.stay {
+                    resolve |= ResolveFlags::NO_XDEV;
+                }
+                let pfd = openat2_retry(
+                    self.fd(),
+                    path::relative(&parent).as_os_str(),
+                    OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                    Mode::empty(),
+                    resolve,
+                )
+                .map_err(|e| match e {
+                    Errno::NOSYS => Error::Unsupported {
+                        feature: "openat2",
+                        source: e.into(),
+                    },
+                    e => io_err("open", &parent, e),
+                })?;
                 meta::statx_at(pfd.as_fd(), name, p)
             }
         }

@@ -21,8 +21,8 @@ use rustix::io::Errno;
 
 use crate::child::{
     ChildArgs, ChildFds, ChildStdio, ExecPtrs, ParentCheck, arm_death_signal, check,
-    close_inherited, default_signals, drop_capabilities, early_stdio, fail, switch_user_and_exec,
-    trim_capabilities,
+    close_inherited, default_signals, drop_capabilities, early_stdio, fail, join_session_keyring,
+    switch_user_and_exec, trim_capabilities,
 };
 use crate::error::Step;
 
@@ -86,6 +86,9 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         // still go to Docker's defaults, which needs no privilege.
         trim_capabilities(fds.err_w, args);
     }
+    // Still as root: the keyring counts against root's key quota, and the
+    // command keeps possessing it after the switch.
+    join_session_keyring(fds.err_w, args.keyring);
     // `setsid` there also makes the process group the parent kills once the
     // command exits, as kaniko does.
     switch_user_and_exec(fds.err_w, Some(parent), args, ptrs)

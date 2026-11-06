@@ -33,11 +33,15 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
 - **`RUN` sandbox.** A `RUN` gets its own mount, process, hostname and IPC
   namespaces (and a cgroup namespace where it gets cgroups, see
   [Where to run it](where-to-run.md#cgroups-of-run-commands)), the stage's
-  root as its `/`, and the capabilities Docker gives a container by default:
-  about the isolation of `docker build` ([ADR-0003]).
+  root as its `/`, and the capabilities and the seccomp profile Docker gives a
+  container by default: about the isolation of `docker build` ([ADR-0003];
+  `--seccomp` changes the profile, [ADR-0109]).
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
-  `--network=none` ([ADR-0031]).
+  `--network=none` ([ADR-0031]). ranikust itself runs from a copy of its
+  binary that no `RUN` can write, sealed in memory where the kernel allows
+  it, else an unnamed file in `TMPDIR`; without either it builds on from
+  the installed binary with a warning ([ADR-0101]).
 - **Network.** `RUN` uses the network ranikust has, as kaniko's does
   ([ADR-0010]). It reaches services on the host and the cloud metadata service
   (`169.254.169.254`), which gives out the machine's or pod's cloud
@@ -140,7 +144,11 @@ container was killed (ranikust not its first process), later builds there keep
 this state in memory and cannot `COPY --from` an earlier stage or an image:
 restart the container, or run ranikust as the container's first process
 ([ADR-0066]). On a volume (below) the state stays on disk even then, but
-`COPY --from` still fails.
+`COPY --from` still fails. ranikust runs from a sealed copy of its own binary
+in memory, as large as the binary, so no `RUN` can change the code it runs
+([ADR-0101]); if the kernel refuses that copy (`vm.memfd_noexec=2`), it makes
+an unnamed one in `TMPDIR` where that file system allows it (a container's
+overlayfs `/tmp` may not), else builds on with a warning.
 
 **What ranikust cannot hide** (it warns about each):
 
@@ -167,9 +175,42 @@ not a read-only mount (Docker's `systempaths=unconfined`, Kubernetes'
 `procMount: Unmasked`): a `RUN` there would see the host's devices and could
 write `kernel/core_pattern`, which runs a program as the host's root. Use
 overlay mode there (`--mode=overlay`, or `--mode=auto`, with a volume at
-`/var/lib/ranikust`) ([ADR-0054]). Devices you give the container with
-`--device` stay reachable by a `RUN`: ranikust cannot tell them from the
-container's own, so pass only what the build needs.
+`/var/lib/ranikust`) ([ADR-0054]). It also refuses its own binary when a
+writable mount other than the container's root reaches it, since a `RUN` could
+then alter it: a bind without `:ro` or a volume without `readOnly: true`, a
+directory holding it mounted read-write too, a link of it bound read-write
+(even one whose name was removed), or another hard link of the file.
+Mount a copy with one link read-only, outside any tree mounted read-write
+([ADR-0101], [Installation](install.md#use-it-in-a-container)). On a container
+root that is not an overlay (overlayfs or fuse-overlayfs), such as Docker's
+btrfs, zfs or vfs drivers, containerd's native snapshotter or the directory
+roots of podman `--rootfs`, systemd-nspawn or LXC, a binary in that root gets
+the same checks. It refuses too when it cannot tell which mount its binary is
+on, as under an emulator such as qemu-user or when started from a memfd: run
+ranikust natively, from a regular file. When `/proc/self/mountinfo` does not
+place the binary or changes while it is read, or a writable directory beside
+it was removed at its source, or a writable mount beside it is hidden by
+another mount, run it from a file that stays in place, or build it into an
+image run on an overlayfs root, where the binary's check reads no mount table;
+for a table that changed, start the build again once no mount changes while it
+starts. ranikust looks for those mounts only when it finds itself in a
+container; if it did not when it started but does later, it refuses: start the
+build again.
+When the measurement fails, mount `/proc` so that `/proc/self/exe` and
+`/proc/self/mountinfo` can be read, and let the seccomp profile allow
+`fstatfs`, `openat2` and `statx` (ranikust looks up the binary's name and the
+writable mount points of its file system with `openat2` and `statx`).
+A `RUN` shares the container's PID namespace, so where another container
+shares it too (Kubernetes `shareProcessNamespace: true` or `hostPID: true`,
+Docker or podman `--pid container:<name>` or `--pid=host`), a `RUN` could
+reach that container's files through `/proc`. ranikust refuses to build when,
+as it starts, it can open a process of another mount namespace there, or
+cannot tell (an error, or more than 32768 threads). It counts only the
+processes it can open then, so give the build container a PID namespace of
+its own even where ranikust does not refuse to build ([ADR-0101]).
+Devices you give the container with `--device` stay reachable by a `RUN`:
+ranikust cannot tell them from the container's own, so pass only what the
+build needs.
 
 **A volume as state directory.** A volume at `/var/lib/ranikust` works, one
 per container.
@@ -267,3 +308,5 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
+[ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
+[ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md

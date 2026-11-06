@@ -92,7 +92,7 @@ impl KanikoStages { pub fn new(store: &Store, ignore: IgnoreList, walk: WalkOpti
 
 pub struct IgnoreSpec<'a> { pub root: &'a Path, pub state_dir: Option<&'a Path>, pub ignore_paths: &'a [PathBuf] }
 pub fn ignore_list(spec: &IgnoreSpec<'_>, mounts: &[MountInfo]) -> Result<rnk_rootfs::IgnoreList>;
-pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // MountInfo has device (major:minor) and fs_root for the state-dir check
+pub fn read_mountinfo() -> Result<Vec<MountInfo>>; pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>>; // rnk_rootfs's parser and MountInfo, re-exported; device (major:minor) and fs_root for the state-dir check
 
 pub struct Walker;                                 // owns a rayon pool: create after the set-up (ADR-0039)
 impl Walker {

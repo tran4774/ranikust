@@ -22,6 +22,8 @@
 #       with --cap-add SYS_PTRACE too
 #   V12 a --secret file a RUN swapped for a symlink to /proc/self/comm: a
 #       later RUN still gets the bytes read at start-up (ADR-0078)
+#   V13 the sealed copy of ranikust's binary (ADR-0101): /proc/<ranikust>/exe
+#       of every thread, ptrace and process_vm_writev, with Yama's scope 0
 #
 # Scenarios: `pid1` (ranikust is the container's PID 1), `ptrace` (the same
 # with --cap-add SYS_PTRACE: the RUN must not get it), `shell` (started by
@@ -49,6 +51,13 @@ W=/var/tmp/rnk-secrets
 AUTH='{"auths":{"registry.invalid":{"auth":"dXNlcjp0b2stUk5LLTQyNDI="}}}'
 
 sudo rm -rf "$W" && sudo mkdir -m 755 "$W" "$W/ctx"
+# V13: Yama's scope 0, as on many container hosts, so that only ranikust's
+# own guards stop a RUN's ptrace; set back when the suite ends.
+yama="$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || true)"
+if [ -n "$yama" ]; then
+  sudo sysctl -qw kernel.yama.ptrace_scope=0
+  trap 'sudo sysctl -qw kernel.yama.ptrace_scope="$yama"' EXIT
+fi
 rm -rf "$OUT" && mkdir -p "$OUT"
 sudo cp guest/secrets/attack.sh "$W/ctx/attack.sh"
 sudo tee "$W/ctx/Dockerfile" >/dev/null <<EOF
@@ -57,7 +66,7 @@ ARG NPM_TOKEN
 COPY attack.sh /attack.sh
 RUN bash /attack.sh seed
 RUN bash /attack.sh unseed
-RUN for v in V1 V2 V3 V4 V6 V7 V8 V9 V10 V11; do bash /attack.sh \$v; done
+RUN for v in V1 V2 V3 V4 V6 V7 V8 V9 V10 V11 V13; do bash /attack.sh \$v; done
 RUN bash /attack.sh swap
 RUN --mount=type=secret,id=s,env=S bash /attack.sh V12
 RUN bash /attack.sh spawn
@@ -117,7 +126,7 @@ expect() {
 }
 
 status=0
-VECTORS=(V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12)
+VECTORS=(V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12 V13)
 {
   printf '%-8s' scenario
   printf ' %-8s' "${VECTORS[@]}"

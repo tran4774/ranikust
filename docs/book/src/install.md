@@ -60,10 +60,30 @@ sudo ranikust --context=. --destination=registry.example.com/team/app:1.0
 
 ## Use it in a container
 
-Bind-mount the binary at `/ranikust/bin/ranikust`. In kaniko mode, which a
-default Docker container or Kubernetes pod gets, ranikust builds on the
+Bind-mount the binary at `/ranikust/bin/ranikust`, read-only. In kaniko mode,
+which a default Docker container or Kubernetes pod gets, ranikust builds on the
 container's own `/` and keeps everything under `/ranikust` out of the image, as
-kaniko does with `/kaniko`. Put the build context there too, read-only:
+kaniko does with `/kaniko`. There the binary must not be reachable through a
+writable mount other than the container's root, since a `RUN` is root on that
+`/`. ranikust refuses one bound read-write (Docker binds read-write unless told
+`:ro`; in Kubernetes set `readOnly: true` on its `volumeMount`), one inside a
+directory that is also mounted read-write (put it outside that tree, or mount
+the tree read-only too), a file whose other link is bound read-write, even
+one whose name was removed since (bind no link of it read-write), and a file
+with other hard links (mount a copy: cargo's release binaries, such as
+`target/release/ranikust`, are links of their copies in `deps/`). A binary in
+the container's own root needs no such mount. On a root that is not an
+overlay (overlayfs, as Docker's and containerd's default storage gives, or
+fuse-overlayfs, as rootless podman's can), such as
+[Docker's btrfs, zfs or vfs drivers or a directory root](how-it-builds.md#on-a-containers-),
+it too must have one link (leave it no hard-link alias) and no other writable
+mount may reach it. Give the container a PID namespace of its own: no
+`shareProcessNamespace: true` or `hostPID: true` on its Kubernetes pod, no
+`--pid container:<name>` or `--pid=host`. ranikust refuses to build where, as
+it starts, it can open a process of another container or of the host through
+`/proc`, since a `RUN` could reach that process's files. It counts only the
+processes it can open then, so follow that rule even where ranikust builds.
+Put the build context under `/ranikust` too, read-only:
 
 ```sh
 docker run --rm \

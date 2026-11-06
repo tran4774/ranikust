@@ -10,6 +10,8 @@
 #                            `--secret id=tok,src=<SMOKE_CASE_SECRET in a
 #                            file>` and a workdir shared by every case; prints
 #                            the build's log and returns its exit code
+#   rnk_ctx CTX              print the path at which rnk_run's ranikust
+#                            reads the context directory CTX
 #   ENGINE                   `podman` or `sudo docker`: loads and runs images
 #   BASE                     the alpine image the cases build FROM
 #   CASES_OUT                a directory for the outputs

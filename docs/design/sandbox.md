@@ -6,7 +6,8 @@ mounting is possible. Without mounts, kaniko mode runs the `RUN` directly
 (`Isolation::Direct`).
 
 Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
-[ADR-0010](../adr/0010-run-network-host-or-none.md).
+[ADR-0010](../adr/0010-run-network-host-or-none.md),
+[ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md).
 
 ## Invariants
 
@@ -24,6 +25,74 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 
 ## Process set-up, once per build
 
+0. **A sealed copy of the binary**
+   ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
+   `seal.rs`): right after the flags and the kernel check, a build runs
+   again from a copy of its binary no `RUN` can write, as runc does (the
+   first two copies of runc 1.2.0's `CloneBinary`; runc tries a read-only
+   overlay first, which ranikust does not, ADR-0101), so every process it
+   forks, the `RUN` child until `execve` and the init, has that copy as
+   `/proc/self/exe`, in every mode. The ways, in order:
+   - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
+     copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
+     refuses it. It costs the binary's size in memory;
+   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), never made directly
+     on FUSE (the check reads `TMPDIR`'s own file system type, so an
+     overlay over FUSE passes it), `O_EXCL` so it never gets a name, run
+     from a read-only descriptor. No seal: only `ETXTBSY` guards it while
+     it runs. Some file systems refuse `O_TMPFILE` (a container's
+     overlayfs `/tmp` on Ubuntu's Linux 6.8).
+
+   First, the mount of the binary as installed is measured against `/`'s
+   (`statx` `STATX_MNT_ID`, `statvfs` `ST_RDONLY`: `BinaryMount`; a mount
+   id of 0, which qemu-user's `statx` gives for every file and the kernel
+   for a memfd, is `NoMountId`; a fallback through `/proc/self/fdinfo` is
+   [#95](https://github.com/tran4774/ranikust/issues/95)). On another
+   read-only mount, and on a root that is not an overlay (`copies_up`:
+   overlayfs by `fstatfs` magic, or FUSE whose own mountinfo line has the
+   type `fuse.fuse-overlayfs`; `verdict`), a file with other hard links is
+   `Linked`, and one that another writable mount of the same `major:minor`
+   in `/proc/self/mountinfo` reaches is `Exposed` (`reached_writable`): a
+   directory root that contains the file's path in its file system
+   (compared by component), or a file root that is the binary's inode
+   whatever its name (mount points and the binary's name reached from `/`
+   through `RootPath::statx_physical`, never opened, with no symlink on
+   the way, each mount point checked to be its mount's root by its id and
+   `STATX_ATTR_MOUNT_ROOT`; a mount another one covers, at its mount point
+   or above it and not one it lies on, told from the table alone and not
+   looked up; `//deleted` is read as a mark, `MountInfo::root_deleted`).
+   The table is read again once the walk is done: one that changed
+   meanwhile (mount ids are reused) places nothing. A table that cannot be
+   parsed or that changed, that does not place the file (its own name
+   removed among them) or does not type a FUSE root (`root_type`), a
+   writable directory of its file system whose name was removed, a
+   writable mount of it that is covered or whose mount point leads
+   nowhere, to another mount or inside its mount, or a file with no link
+   left, is `Unplaced`; a lookup of the binary's name or of a mount point
+   that fails otherwise (`openat2`, `statx`; an error with no errno as
+   `EIO`) is `Unknown` unless a writable mount was found to reach the
+   binary (`Exposed`), and a table that cannot be read, the first time or
+   once the walk is done, is `Unknown` whatever the walk found. Only
+   kaniko mode on a container's `/` uses the answer, so `ranikust` asks
+   for the walk only where that mode may follow (`may_be_kaniko_on_slash`,
+   before the copy: as root, without `--mode=overlay`, where
+   `container::detect` finds a container, ADR-0048): a host build looks up
+   no mount point, and a binary the walk would weigh is `NotWeighed`,
+   refused should kaniko mode on `/` follow all the same.
+   The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
+   close-on-exec descriptor, with the same arguments, environment and
+   descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file
+   limit ranikust started with (`forbid_core_dumps` records it again). A copy
+   that needs an interpreter (binfmt_misc, with or without `O`; a `#!` line)
+   is refused before the exec (`ENOENT`), and the next way is tried. The
+   copy's run makes no copy, checks `/proc/self/exe` (the memfd's seals,
+   or no link), takes its name from `argv[0]` again and logs at debug the
+   way, the binary's mount and why each way before it failed. When no way
+   works, or the check fails, the build goes on with a warning, the
+   binary's mount then measured on the file it runs from. `ranikust`
+   refuses kaniko mode on `/` with the binary on a writable mount other
+   than `/`'s, reached by one, or on one it cannot tell
+   ([kaniko mode](kaniko-mode.md#invariants)).
 1. While the process is still **single-threaded** (before tokio or rayon
    start), `unshare(CLONE_NEWNS)` and make `/` a slave mount
    (`--make-rslave`). From then on every build mount disappears with the
@@ -76,12 +145,61 @@ network namespace. The first such `RUN` probes once
   is reaped. The child is cloned without `CLONE_NEWNET` and joins it with
   `setns` as its first step, before any mount, so `sysfs` shows it.
 - The child stays in the build's user namespace, but as root it holds every
-  capability in the helper's. So after every mount and before the capability
-  drop it installs a seccomp filter (`seccomp.rs`) that refuses what that
-  would open: `setns`, new user namespaces, `io_uring`, the netfilter, IPVS and
-  IPsec interfaces, all netlink but route, sock_diag, audit and uevent, and
-  `clone3`. The exact list and the residual risk (every other interface
-  `CAP_NET_ADMIN` opens, rtnetlink first) are in the ADR.
+  capability in the helper's. So after every mount it installs a seccomp
+  filter (`seccomp.rs`), before the `RUN`'s profile, which goes on top and
+  so cannot fake its install, and under `--seccomp=unconfined` too, that
+  refuses what that would open: `setns`, new user namespaces, `io_uring`,
+  the netfilter, IPVS and IPsec interfaces, all netlink but route,
+  sock_diag, audit and uevent, and `clone3`. The exact list and the
+  residual risk (every other interface `CAP_NET_ADMIN` opens, rtnetlink
+  first) are in the ADR.
+
+**Seccomp profile**
+([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md),
+[ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)):
+every full-sandbox `RUN` runs under Docker's default profile (moby/profiles
+seccomp v0.2.4's `default.json`, embedded verbatim), with or without
+`--seccomp=default`; `--seccomp=unconfined` turns it off (what that opens:
+[threat model](../security/threat-model.md#6-accepted-risks)), and
+`--seccomp=<file>` puts a profile in Docker's JSON format in its place.
+
+- `seccomp/profile.rs` compiles it to one classic BPF filter before the
+  set-up, for the native architecture, the running kernel (`minKernel`) and
+  the `RUN`'s capabilities, Docker's 14 (`includes.caps`), as moby's
+  `setupSeccomp` reads a profile. Arguments compare as 64-bit values, each
+  rule keeps its action, and where several match one call the strictest
+  wins; of two refusals with different errnos, the first in the profile.
+- A name the architecture does not know is skipped under `SCMP_ACT_ALLOW`, as
+  runc does, and refuses the profile under any other action. Under a default
+  action that refuses, a number `libc` does not name gets `ENOSYS`, so that C
+  libraries fall back. A call of another architecture (i386 or x32 on x86_64,
+  arm on aarch64) gets `EPERM`.
+- Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
+  `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
+  `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success) or from
+  512 up, where the kernel keeps its own codes (on 516 it may run its restart
+  block instead of returning the refusal), either named in the message as
+  `syscalls[N]` or `defaultErrnoRet`, two conditions on one argument in a
+  rule, a rule without names (the message names the rule, `syscalls[N]`;
+  ADR-0109), a filter longer than the kernel's 4096 instructions, and anything
+  malformed; a file that is not a regular file or is over 1 MiB.
+- The limits of a profile's rules are in the
+  [threat model](../security/threat-model.md#6-accepted-risks).
+- The profile is the operator's and may refuse any call with any errno
+  `--seccomp` accepts, so every step that need not follow it comes before
+  it, in the order of step 4. After it come the `capset` to the default
+  sets, since the install needs `CAP_SYS_ADMIN` without `no_new_privs`, so
+  that a setuid binary of the `RUN` keeps working, and the init's and the
+  command's own steps (step 5 on). A filter around ranikust may still fake a
+  success; the child checks what it can (the init's fork, an `execve` or
+  `execveat` back without an error and a blocking `waitpid` back with no
+  child fail the `RUN`, and a read goes into a value set beforehand), and
+  the rest is in the
+  [threat model](../security/threat-model.md#6-accepted-risks). A failed
+  install names the filter: the profile's points to `--seccomp=unconfined`,
+  ADR-0033's to `--allow network.none-userns`.
+- A `Direct` `RUN` gets none: in kaniko mode on `/` the container's own
+  profile applies, and `--seccomp` is refused (exit 2).
 
 The steps, in order:
 
@@ -206,35 +324,53 @@ The steps, in order:
       (see [Variants](#variants-by-environment)).
 4. `sethostname` to the fixed `ranikust`, whatever the environment (so a `RUN`
    that records its host name gives the same bytes on every host); a seccomp
-   refusal is ignored.
+   refusal is ignored. Then the full sandbox's child, in this order, joins
+   the `RUN`'s new session keyring (step 6), drops the bounding set and
+   clears the ambient and inheritable sets (step 5), sets itself not dumpable
+   and starts a session of its own (the init's, step 5), sets the umask to
+   022, installs ADR-0033's filter and the seccomp profile on top of it
+   ([above](#per-run-sequence)), and only then sets the effective and
+   permitted sets (step 5).
 5. **Drop capabilities**, for **every** `USER`: reduce the **bounding** set to
    Docker's 14 default capabilities, clear the ambient set, keep the defaults
    in the effective and permitted sets and leave the inheritable set empty, as
    Docker since 20.10.14. A non-root user has no effective capabilities but a
-   full bounding set, which a setuid binary in the image would regain. Where
-   the `RUN` has cgroups of its own, the full sandbox's child also keeps
-   `CAP_SYS_ADMIN`, already out of the bounding set, in the effective and
-   permitted sets: the init drops it with every other capability, and the
-   command makes its cgroup namespace with it and drops it, both before the
-   go ([`RUN` cgroups](#run-cgroups)).
+   full bounding set, which a setuid binary in the image would regain. The
+   drops go up to the kernel's last capability; an `EINVAL` ends them only
+   where it could not be read and 63 was assumed. Where the `RUN` has cgroups
+   of its own, the full sandbox's child also keeps `CAP_SYS_ADMIN`, already
+   out of the bounding set, in the effective and permitted sets: the init
+   drops it with every other capability, and the command makes its cgroup
+   namespace with it and drops it, both before the go
+   ([`RUN` cgroups](#run-cgroups)).
 
    Then the full sandbox's child becomes the `RUN`'s **init**
    ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)):
-   - It sets itself not dumpable, zeroes its copy of the argument and
-     environment strings ranikust started with (`/proc/self/stat` fields 48 to
-     51, refused as `Step::Init` if zero; `/proc/1/cmdline` has no ptrace
-     check), starts a session of its own and forks. The new process, PID 2,
-     joins its cgroup and makes its cgroup namespace where the `RUN` has
-     cgroups ([`RUN` cgroups](#run-cgroups)), waits on a close-on-exec go
-     pipe, then runs steps 6 to 8 and becomes the command.
+   - Not dumpable and in a session of its own since step 4, it zeroes its
+     copy of the argument and environment strings ranikust started with
+     (`/proc/self/stat` fields 48 to 51, refused as `Step::Init` if zero;
+     `/proc/1/cmdline` has no ptrace check) and forks. The new process, PID 2,
+     checks that its parent is PID 1 (a fork a filter around ranikust faked
+     fails as `Step::Init` with `EPROTO`), joins its cgroup and makes its
+     cgroup namespace where the `RUN` has cgroups
+     ([`RUN` cgroups](#run-cgroups)), waits on a close-on-exec go pipe, then
+     runs steps 6 to 8 and becomes the command.
    - The init keeps the death signal of step 1, drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
      and the go pipe's, the latter last: that lets the command go on (a failure
-     before kills the command unrun and is reported as `Step::Init`).
+     before kills the command unrun and is reported as `Step::Init`, unless
+     a filter around ranikust fakes the command's read of that pipe).
+   - A read after the profile answered with `EINTR` (the argument areas',
+     the parent check's, the go pipe's) fails the `RUN` as `Step::Init`
+     instead of reading again: with no handler, the kernel restarts a read
+     a signal interrupts, so only a filter answers so, and it could
+     forever.
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
-     the command's wait status on the status pipe, and exits.
+     the command's wait status on the status pipe, and exits; a `waitpid`
+     back with no child (0, or an error, `EINTR` included: with no handler,
+     the kernel restarts one a signal interrupts) ends it with 125.
    - Every child of ranikust resets every signal disposition to the default
      first, so the init has no handler and the kernel drops every signal a
      process of the namespace sends it. A `RUN` cannot signal, stop, trace or
@@ -245,10 +381,21 @@ The steps, in order:
    - `Direct` has no init: its child runs steps 6 to 8 itself.
 6. `setsid`: no controlling terminal, so a `RUN` cannot read the operator's
    keys or push input into the operator's shell (`TIOCSTI`); stdin is
-   `/dev/null` unless the caller says otherwise, as under Docker. Then a new
-   anonymous session keyring, so ranikust's keys stay out of reach (root's user
-   keyring stays reachable until a seccomp profile applies, planned for Phase 3,
-   [below](#hardening-planned-for-phase-3)).
+   `/dev/null` unless the caller says otherwise, as under Docker. The command
+   runs in a new anonymous session keyring, so ranikust's keys stay out of
+   reach: in the full sandbox the child joins it before the profile (step 4),
+   which refuses `keyctl` (runc's order; ADR-0109 refines ADR-0080 there),
+   and the command inherits it; in `Direct` the child joins it before
+   `setsid`. Root's user keyring stays reachable under
+   `--seccomp=unconfined` and in `Direct`; the default profile refuses
+   `keyctl`, `add_key` and `request_key`. After a refused join, whatever the
+   errno, the full sandbox's child looks ranikust's session keyring up,
+   still before the profile (`KEYCTL_GET_KEYRING_ID`): found, it fails a
+   `RUN` whose profile lets one of those three calls run, as
+   `Step::KeyringRefused`; where the lookup is refused too, as under
+   Docker's default profile around ranikust, which refuses `keyctl` whole,
+   the `RUN` goes on. In `Direct` a join refused with `EPERM`, `ENOSYS`
+   or `EACCES` is ignored (ADR-0109).
 7. `setgroups`, `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs`
    looked up in the root's `/etc/passwd` and `/etc/group` before the fork
    [inferred]. A numeric uid with no passwd entry gets gid 0, as in Docker. A
@@ -271,11 +418,9 @@ The steps, in order:
      host); `execve`. The check covers the candidate's path only: the kernel
      opens a `#!` script's interpreter itself, so a `#!/proc/self/exe` line, or
      a symlink swapped in after the check, still runs ranikust's binary in the
-     sandbox, which then refuses its arguments (threat-model section 6).
-     [ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)
-     has the full sandbox bind the binary read-only over itself (not built yet,
-     [#32](https://github.com/tran4774/ranikust/issues/32)); `Direct` on `/`
-     keeps these barriers.
+     sandbox, which then refuses its arguments (threat-model section 6). That
+     binary is the sealed copy of the process set-up (step 0), so the `RUN`
+     cannot write it, in the full sandbox and in `Direct` alike.
 
 Between `clone` and `execve` the child of a multi-threaded process only makes
 system calls on arguments built before the clone: no allocation, no lock. A
@@ -499,17 +644,27 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Differences from Docker
 
-- A default `RUN` has no seccomp filter today; a default profile is planned for
-  Phase 3 ([below](#hardening-planned-for-phase-3)). The one filter that exists
-  is the `--network=none` one of ADR-0033. A default `RUN` here can open
-  `AF_VSOCK` and `AF_ALG` sockets, make a user namespace where the host lets a
-  process without `CAP_SYS_ADMIN` do so, and (as root) use root's user and
-  persistent keyrings. The only evidence for what a Docker-style profile
-  refuses is the moby/profiles default profile as BuildKit `cd8ee24` vendors it
-  (`vendor/github.com/moby/profiles/seccomp/default_linux.go`) **[external]**:
-  it leaves out `AF_VSOCK` and `AF_ALG`, in a recent change, and allows a new
-  user namespace only with `CAP_SYS_ADMIN`. See the accepted risks of the
-  [threat model](../security/threat-model.md#6-accepted-risks).
+- The default profile is Docker's ([above](#per-run-sequence)), compiled by
+  ranikust's own code, which differs from runc's libseccomp:
+  - Only the native architecture: Docker also compiles a profile's calls for
+    i386 and x32 on x86_64 (arm on aarch64), which get `EPERM` here, so a
+    32-bit program in a `RUN` needs `--seccomp=unconfined` (ADR-0109).
+  - Only the calls `libc` names: one it does not (`cachestat`, `futex_wait`,
+    `statmount`, `uretprobe`, and `fchmodat2` on aarch64) gets `ENOSYS`
+    where Docker allows it, until `libc` numbers it (ADR-0109). The C
+    libraries fall back from most; the known exceptions follow.
+  - `uretprobe` is made by the kernel's return-probe trampoline, not a C
+    library (x86_64, Linux 6.11 and later): a uretprobe a host tool sets on
+    a `RUN`'s process can crash it where the kernel's seccomp does not let
+    that call through.
+  - A ranikust built for `aarch64-unknown-linux-gnu` (not a release target)
+    has no number for `renameat` and `sync_file_range` either. The C
+    libraries implement `rename(3)` with `renameat` there, so `rename`
+    fails in every `RUN` of such a build.
+  - A profile that asks for what ranikust does not support is refused, never
+    weakened: two conditions on one argument (runc ORs them), a rule
+    without names (Docker skips it), and a field Docker's format does not
+    have (Docker ignores it).
 - A `RUN` gets stdout and stderr as pipes of its own, owned by its user and
   copied by a thread to ranikust's streams, never ranikust's own descriptors:
   runc instead gives the container's own streams to the container's user.
@@ -528,14 +683,8 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
 
 ## Hardening planned for Phase 3
 
-Neither exists yet (ADR-0003).
+Not built yet (ADR-0003).
 
-- A default seccomp profile, and `--seccomp=default|unconfined|<file>` to change
-  it; profiles are generated per architecture. Decided
-  ([ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md)):
-  the default profile applies without the flag wherever the full sandbox runs,
-  `unconfined` turns it off, and in kaniko mode on `/` the flag is refused (the
-  container's own profile applies).
 - `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
   unprivileged uid on the host. Every parent directory of the state directory
   must be traversable by the mapped uid. Decided
@@ -567,9 +716,9 @@ Neither exists yet (ADR-0003).
 
 ## Open questions
 
-None. What Q-032 asked to verify is tracked as tasks: `--seccomp`
+None. What Q-032 asked to verify is built or tracked as tasks: `--seccomp`
 ([#82](https://github.com/tran4774/ranikust/issues/82),
-[ADR-0103](../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md))
+[ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md))
 and `--userns` ([#83](https://github.com/tran4774/ranikust/issues/83),
 [ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md))
 in Phase 3; the bind targets against changes during set-up

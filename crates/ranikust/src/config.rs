@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use clap::ValueEnum;
 use serde_json::{Value, json};
 
-use crate::cli::BuildArgs;
+use crate::cli::{BuildArgs, SeccompArg};
 
 /// The snapshot mode to use (ADR-0002, ADR-0023).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -189,6 +189,8 @@ pub(crate) struct BuildConfig {
     pub(crate) allow_network_host: bool,
     /// `--allow network.none-userns` (ADR-0033).
     pub(crate) allow_network_none_userns: bool,
+    /// `--seccomp`, its file not read yet ([`read_seccomp`]).
+    pub(crate) seccomp: Option<SeccompArg>,
     /// `--limit`s over the defaults (ADR-0079).
     pub(crate) limits: crate::limits::Limits,
     /// The compression level, kaniko's range mapped to the encoder's;
@@ -445,6 +447,7 @@ impl BuildConfig {
             allow_network_none_userns: args
                 .allow
                 .contains(&crate::cli::Entitlement::NetworkNoneUserns),
+            seccomp: args.seccomp.clone(),
             limits: crate::limits::Limits::from_args(&args.limits),
             compression_level,
             image_format: args.image_format,
@@ -495,6 +498,118 @@ impl BuildConfig {
             "targets": self.targets.len(),
         })
     }
+}
+
+/// The largest `--seccomp` file read; Docker's own profile is 14 KiB.
+const MAX_SECCOMP_FILE: u64 = 1 << 20;
+
+/// `--seccomp` with its file read (ADR-0109): what every full-sandbox
+/// `RUN` runs under.
+#[derive(Clone, Debug)]
+pub(crate) enum Seccomp {
+    /// No `--seccomp`: the sandbox's own default, Docker's profile.
+    Unset,
+    /// `--seccomp=unconfined`.
+    Unconfined,
+    /// `--seccomp=default` or a file, compiled.
+    Profile(rnk_sandbox::SeccompProfile),
+}
+
+impl Seccomp {
+    /// Gives `sandbox` the profile asked for, before its first `RUN`.
+    pub(crate) fn apply(&self, sandbox: &mut rnk_sandbox::Sandbox) {
+        match self {
+            Self::Unset => {}
+            Self::Unconfined => sandbox.set_seccomp(None),
+            Self::Profile(profile) => sandbox.set_seccomp(Some(profile.clone())),
+        }
+    }
+}
+
+/// Reads and compiles `--seccomp` before any set-up, so that a profile that
+/// cannot be used is refused before the build starts.
+///
+/// # Errors
+///
+/// [`Invalid`] for a file that cannot be opened, is not a regular file, is
+/// larger than [`MAX_SECCOMP_FILE`] or is not a profile ranikust can
+/// compile.
+pub(crate) fn read_seccomp(arg: Option<&SeccompArg>) -> Result<Seccomp, Invalid> {
+    let compiled = match arg {
+        None => return Ok(Seccomp::Unset),
+        Some(SeccompArg::Unconfined) => return Ok(Seccomp::Unconfined),
+        Some(SeccompArg::Default) => rnk_sandbox::SeccompProfile::docker_default()
+            .map_err(|e| Invalid(format!("--seccomp=default: {e}")))?,
+        Some(SeccompArg::File(path)) => {
+            let json = read_seccomp_file(path)?;
+            rnk_sandbox::SeccompProfile::from_json(&json)
+                .map_err(|e| Invalid(format!("--seccomp={}: {e}", path.display())))?
+        }
+    };
+    Ok(Seccomp::Profile(compiled))
+}
+
+/// The bytes of a `--seccomp` file: a regular file, at most
+/// [`MAX_SECCOMP_FILE`]. The path is pinned with `O_PATH` and checked on
+/// that descriptor before anything opens it, then reopened through this
+/// thread's `/proc/thread-self/fd` (as the stub journals are): a device
+/// node named there is never opened, which could act on the device
+/// (`/dev/watchdog` arms on open), nor a FIFO.
+fn read_seccomp_file(path: &Path) -> Result<Vec<u8>, Invalid> {
+    use std::io::Read as _;
+
+    use rustix::fs::{FileType, Mode, OFlags};
+    let shown = path.display();
+    let cannot_open = |e| Invalid(format!("--seccomp={shown}: cannot open the file: {e}"));
+    let pinned = rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+        .map_err(cannot_open)?;
+    let st = rustix::fs::fstat(&pinned)
+        .map_err(|e| Invalid(format!("--seccomp={shown}: cannot stat the file: {e}")))?;
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+        return Err(Invalid(format!("--seccomp={shown}: not a regular file")));
+    }
+    let no_proc = |e| {
+        Invalid(format!(
+            "--seccomp={shown}: cannot open /proc/thread-self/fd to reopen the file: {e}"
+        ))
+    };
+    let proc = rustix::fs::open(
+        "/proc/thread-self/fd",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(no_proc)?;
+    if rustix::fs::fstatfs(&proc).map_err(no_proc)?.f_type != rustix::fs::PROC_SUPER_MAGIC {
+        return Err(Invalid(format!(
+            "--seccomp={shown}: cannot open the file: /proc/thread-self/fd is not on procfs"
+        )));
+    }
+    let num = std::os::fd::AsRawFd::as_raw_fd(&pinned).to_string();
+    let fd = rustix::fs::openat(
+        &proc,
+        num.as_str(),
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(cannot_open)?;
+    let too_large = || {
+        Invalid(format!(
+            "--seccomp={shown}: larger than {MAX_SECCOMP_FILE} bytes"
+        ))
+    };
+    if u64::try_from(st.st_size).unwrap_or(u64::MAX) > MAX_SECCOMP_FILE {
+        return Err(too_large());
+    }
+    let mut json = Vec::new();
+    // One byte past the bound tells a file that grew since the `fstat`.
+    std::fs::File::from(fd)
+        .take(MAX_SECCOMP_FILE + 1)
+        .read_to_end(&mut json)
+        .map_err(|e| Invalid(format!("--seccomp={shown}: cannot read the file: {e}")))?;
+    if u64::try_from(json.len()).unwrap_or(u64::MAX) > MAX_SECCOMP_FILE {
+        return Err(too_large());
+    }
+    Ok(json)
 }
 
 /// What overlay mode makes of the kaniko-mode flags given in `args`
