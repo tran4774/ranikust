@@ -314,10 +314,15 @@ fn a_broken_user_namespace_never_falls_back() {
             assert_eq!(route(&refusal, in_container), Route::Refuse);
         }
     }
+    // An error not known to leave the process unchanged counts as broken.
+    let refusal = userns_refusal(SandboxError::Privilege("a user namespace"), USER);
+    assert_eq!(refusal.kind, Kind::Broken);
     // Not entered: the process is unchanged, the refusal of the usual kind.
     let refusal = userns_refusal(SandboxError::NoUserNamespace { tried: Vec::new() }, USER);
     assert_eq!(refusal.kind, Kind::Other);
     assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
+    let refusal = userns_refusal(SandboxError::NotSingleThreaded { threads: 2 }, USER);
+    assert_eq!(refusal.kind, Kind::Other);
 }
 
 /// A fresh temp dir no one else may write, whatever the umask.

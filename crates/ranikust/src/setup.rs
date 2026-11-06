@@ -254,12 +254,16 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
 }
 
 /// The refusal for [`rnk_sandbox::enter_build_user_namespace`]'s error
-/// `e`, for the effective uid `euid`.
+/// `e`, for the effective uid `euid`: [`Kind::Broken`] unless `e` is one
+/// that function documents as leaving the process unchanged.
 fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
     Refusal {
         kind: match e {
-            SandboxError::UserNamespaceBroken(_) => Kind::Broken,
-            _ => Kind::Other,
+            SandboxError::NotSingleThreaded { .. }
+            | SandboxError::InPlainChroot
+            | SandboxError::NoUserNamespace { .. }
+            | SandboxError::Sys { .. } => Kind::Other,
+            _ => Kind::Broken,
         },
         guidance: if euid != 0 && matches!(e, SandboxError::NoUserNamespace { .. }) {
             NO_USER_NAMESPACE
