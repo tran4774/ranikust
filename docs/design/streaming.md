@@ -118,17 +118,18 @@ layers uploading or waiting to is bounded by twice `--jobs`.
   - On `/`, which nothing empties (ADR-0052 D1), none of its entries ever
     reaches the root. Each streamed layer's compressed blob is first spooled
     into a disk-backed anonymous file of the store (ADR-0056), capped by its
-    descriptor's size, while one decompression of the same bytes computes the
-    diff ID; the size and compressed digest are checked at the end of the body.
+    descriptor's size, while one decompression of the same bytes reads the tar
+    headers as the extraction will, refusing what it would refuse from a header
+    alone and what is over `--limit` (`rnk_rootfs::check_headers`, ADR-0123), and
+    computes the diff ID; the size and compressed digest are checked at the end
+    of the body.
     Only then is the spool decompressed a second time into the root (the diff
     ID checked again), on a thread of its own up to 5 MiB ahead of the
     extraction's writes. Decompressing twice costs CPU but keeps the spool to
     the download's size, and keeps the rule that nothing unverified reaches `/`
-    even when the publisher's diff ID is wrong. For a cache hit the same pass
-    will also check the tar headers and `--limit`
-    ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
-    [#174](https://github.com/tran4774/ranikust/issues/174); not built), so such
-    a hit is a miss before `/` changes.
+    even when the publisher's diff ID is wrong. A cache hit refused by that pass
+    is a miss before `/` changes
+    ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md)).
   - On `/`, the spool goes with the last stage or `COPY --from` image the
     build announced on its layer
     ([ADR-0081](../adr/0081-a-streamed-layer-on-slash-is-verified-once-per-build.md)):

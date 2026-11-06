@@ -242,9 +242,8 @@ registry is not decided [open: #171], nor are five more cases of the restart
 
 - In kaniko mode with a directory per stage a hit streams into the stage root; on
   `/` it is spooled and verified before extraction. A hit found bad before its
-  extraction began (the source refused it; on `/`, the spool pass, which will also
-  check the tar headers and `--limit`,
-  [#174](https://github.com/tran4774/ranikust/issues/174)) is a plain miss. One
+  extraction began (the source refused it; on `/`, the spool pass, which also
+  checks the tar headers and `--limit`) is a plain miss. One
   found bad after extraction began (on `/`, only a failure while writing) makes
   the stage start again from its base
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
