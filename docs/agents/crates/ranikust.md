@@ -158,9 +158,10 @@ Each step before the next; design in
    on `exposure::scan_peers`, ADR-0101: once as it starts, each thread of
    `/proc/<pid>/task` through one descriptor of `/proc/<pid>`, the process
    as one where its threads may not be listed; ranikust's own namespaces
-   are the one `build` read before `setup::enter_namespace` and the one it
-   is in; it counts only what it opens then (`EACCES`/`EPERM`: not
-   opened), gone skipped (an `ns/mnt` denied once its `ns` is gone too),
+   are the one `build` opens before `setup::enter_namespace`, held open
+   until the scan returns, and the one it is in; it counts only what it
+   opens then (`EACCES`/`EPERM`: not opened), gone skipped (an `ns/mnt`
+   denied once its `ns` is gone too),
    any other error (with its step) or more than `PEER_SCAN_LIMIT` threads
    refused, each with its own guidance); then the warnings for
    secret-looking build arguments and file secrets.
@@ -284,8 +285,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ranikust's own threads and a missing pid; one thread, or the process
   as one, on its `/proc/self`, either of its two namespaces its own, and
   on a fake directory: the step a failure names, a thread gone or out of
-  reach; a denied `ns/mnt` gone only with its `ns`; escaped names, a
-  process named by its pid alone; the credential warning's text).
+  reach; a denied `ns/mnt` gone only with its `ns`; the handle on a
+  namespace, an open close-on-exec descriptor of its nsfs file; escaped
+  names, a process named by its pid alone; the credential warning's
+  text).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`
@@ -326,7 +329,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   once ranikust started); `pid-peers` the test of `refuse_reachable_peers`
   (`--pid container:<peer>`: a root peer refused before any `RUN`, a peer
   of another user and no peer build; `half_entered`: a set-up that failed
-  after its `unshare` builds).
+  after its `unshare` builds with no peer and still refuses a root peer,
+  ranikust started from `sh` or exec'd).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

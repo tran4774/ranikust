@@ -157,14 +157,14 @@ the scheduler runs one stage at a time) or a private directory per stage
     build. A thread counts only when ranikust opens it and its root
     (`EACCES` and `EPERM` mean not opened); one gone is skipped, and any
     other error or more than 32768 threads refuse too, each with its own
-    guidance. Its own mount namespaces are the one it started in, read
-    before the set-up, and the one it is in when it looks (a set-up that
-    failed after its `unshare` left it in a copy of its own). A
-    `--pid=host` container is refused by the same rule when a process of
-    the host or of another container is in reach. It counts only the
-    processes it can open as it starts, a residual risk accepted in
-    ADR-0101; its mitigation is a PID namespace of the build container's
-    own.
+    guidance. Its own mount namespaces are the one it started in, opened
+    before the set-up and held open until the scan ends, and the one it is
+    in when it looks (a set-up that failed after its `unshare` left it in
+    a copy of its own). A `--pid=host` container is refused by the same
+    rule when a process of the host or of another container is in reach.
+    It counts only the processes it can open as it starts, a residual risk
+    accepted in ADR-0101; its mitigation is a PID namespace of the build
+    container's own.
   - **No process outlives its `RUN`.** ranikust is a child subreaper. After
     each `RUN` it kills everything that became its child during the `RUN`, and
     their descendants, through a pidfd after checking the parent and start time

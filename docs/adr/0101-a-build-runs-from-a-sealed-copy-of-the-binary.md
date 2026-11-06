@@ -317,9 +317,10 @@ The decision:
   (fail closed), each with its own message and guidance. A `--pid=host`
   container is refused by the same rule when ranikust reaches a process of
   the host or of another container. ranikust's own mount namespaces are
-  the one it started in, read before the set-up, and the one it is in when
-  it looks: a set-up that failed after its `unshare` left it in a copy no
-  other process is in. The scan counts only the processes ranikust can
+  the one it started in, opened before the set-up and held open until the
+  scan ends, and the one it is in when it looks: a set-up that failed
+  after its `unshare` left it in a copy no other process is in. The scan
+  counts only the processes ranikust can
   open as it starts, an accepted residual risk with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
@@ -576,6 +577,9 @@ The decision:
   `ns/mnt` denied while its `ns` is there),
   `a_denied_ns_mnt_is_a_thread_gone_only_once_its_ns_is_gone`,
   `ranikusts_own_namespaces_are_the_one_it_started_in_and_the_one_it_is_in`,
+  `a_mount_namespace_is_held_by_an_open_descriptor_of_its_own_file` (an
+  open, close-on-exec descriptor of the namespace's nsfs file, whose
+  device and inode the handle names),
   `a_process_name_is_trimmed_and_escaped`,
   `a_process_is_named_by_its_pid_and_its_name_when_read` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
@@ -587,11 +591,15 @@ The decision:
   uid 1000, which ranikust's probe meets with `EACCES`, and no peer build
   [measured]. The same case under rootful Docker (T2, the VM's quick
   suite, Linux 6.8, Docker 29.1.3, AppArmor enabled) gives the same
-  outcome [measured]. Its step `half_entered` (T1): a container given
+  outcome [measured]. Its steps `half_entered` (T1): a container given
   `CAP_SYS_ADMIN` whose seccomp profile refuses `mount`, where the set-up
-  fails after its `unshare`, builds; with the scan reading only the
-  namespace ranikust is in, it was refused for the container's `sh`
-  [measured].
+  fails after its `unshare`, builds with no peer; with the scan reading
+  only the namespace ranikust is in, it was refused for the container's
+  `sh` [measured]. With a root peer that has a writable bind of its own,
+  it is refused before any `RUN`, ranikust started from `sh` (before the
+  state directory exists) or exec'd, the only process of the namespace it
+  started in [measured]. These steps pass under rootful Docker in the VM's
+  quick suite too (Linux 6.8, Docker 29.1.3, AppArmor enabled) [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its
