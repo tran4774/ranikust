@@ -496,7 +496,7 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
     // Only a child not reaped yet: a reaped one's number may be another
     // process's.
     let after = matches!(left, Ok(None)).then(|| {
-        // A refused kill shows as `after` still `None`.
+        // A refused kill leaves the second `reap`'s result `None`.
         let _ = rustix::process::kill_process(pid, Signal::KILL);
         reap(pid, true, Duration::from_secs(10))
     });

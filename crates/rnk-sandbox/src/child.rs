@@ -397,8 +397,9 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         join_cgroup(err, fd);
     }
     // SAFETY: this function's contract: the child of a `clone` without
-    // `CLONE_VM`, which ends with `_exit` or `execve` and uses the kept
-    // descriptors through their raw numbers only.
+    // `CLONE_VM`, which ends with `_exit` or `execve` and uses or drops no
+    // owner of a descriptor this closes; owners made later of kept
+    // descriptors (`join_cgroup`'s) are fine.
     unsafe { close_inherited(args, fds, parent) };
     early_stdio(err, &args.stdio, parent);
     // First, so that `sysfs` below is mounted for this namespace.
@@ -2046,7 +2047,8 @@ unsafe fn close_all_but(keep: RawFd) {
 /// # Safety
 ///
 /// As [`close_all_except`]: in the child, right after the clone, which then
-/// uses no descriptor of ranikust's but those kept, through no owner.
+/// uses or drops no owner of a descriptor this closes; owners made later of
+/// kept descriptors (`join_cgroup`'s) are fine.
 pub(crate) unsafe fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentCheck) {
     let [s0, s1, s2] = args.stdio.map(|s| match s {
         ChildStdio::Fd(fd) => fd,
