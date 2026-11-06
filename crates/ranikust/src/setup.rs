@@ -195,7 +195,8 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// again when the spawner starts. `userns_network` is `--allow
 /// network.none-userns` (ADR-0033); `seccomp` the profile of every `RUN`
 /// (ADR-0109); `userns_probe` (`--mode=auto`) adds the user namespace
-/// probe, reported only, and is cleared once it ran, refused or not.
+/// probe, reported only, and is cleared once the set-up reaches the probe,
+/// whatever follows.
 ///
 /// # Errors
 ///

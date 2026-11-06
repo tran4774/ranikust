@@ -613,7 +613,7 @@ fn build(
 /// How [`kaniko`] was reached: `--mode=kaniko`, or picked by
 /// `--mode=auto`, which also runs the user-namespace probe, reported only,
 /// unless overlay mode's set-up ran it before it was refused.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum KanikoBy {
     Flag,
     Auto,
@@ -697,8 +697,10 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 /// directory, `<state>/builds/<id>/stages/<n>/rootfs`, scheduled as
 /// overlay mode's stages (`#per-stage-directories`, ADR-0059). Then
 /// `RLIMIT_NOFILE` is raised (the original kept for `RUN`), the state
-/// directory and store set up, and the ignore list built. `seccomp` is the
-/// profile of a full-sandbox `RUN`; `can_mount` is whether the build's
+/// directory and store set up, and the ignore list built. `by` names the
+/// flag in messages and says whether the user-namespace probe runs here
+/// ([`KanikoBy`]); `seccomp` is the profile of a full-sandbox `RUN`;
+/// `can_mount` is whether the build's
 /// mount namespace could be entered; `runtime` is what
 /// [`container::detect`] found, read once by the caller; `binary` where the
 /// binary ranikust started from lies; `started_in` the mount namespace
@@ -772,7 +774,10 @@ fn kaniko(
     } else {
         None
     };
-    let userns_probe = by == KanikoBy::Auto;
+    let userns_probe = match by {
+        KanikoBy::Auto => true,
+        KanikoBy::Flag | KanikoBy::AutoProbed => false,
+    };
     let setup = tracing::debug_span!("ranikust.setup")
         .in_scope(|| {
             setup::set_up_kaniko(
