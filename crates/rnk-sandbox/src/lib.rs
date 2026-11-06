@@ -31,9 +31,10 @@
 //!
 //! While the process is single-threaded: [`run_from_sealed_copy`] first,
 //! which runs the process again from the copy, then
-//! [`enter_build_namespace`], then, in `--mode=auto`,
-//! [`probe_user_namespace`] (before the overlay probe, whose joined thread
-//! may still be counted), then [`probe`]. Then [`Sandbox::start`], which
+//! [`enter_build_namespace`], then [`probe`]; `--mode=auto` also calls
+//! [`probe_user_namespace`], in overlay mode before the probes (the overlay
+//! probe's joined thread may still be counted), in kaniko mode after them.
+//! Then [`Sandbox::start`], which
 //! replays the stub journals of dead builds and starts the spawner thread,
 //! and [`Sandbox::run`] per `RUN`.
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only

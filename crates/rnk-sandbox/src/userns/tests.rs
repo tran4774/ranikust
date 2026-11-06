@@ -396,6 +396,29 @@ fn a_result_is_cut_at_its_limit_on_a_character_boundary() {
     assert_eq!(frame.len(), 5 + RESULT_LIMIT - 1);
 }
 
+/// With a map but other threads, the closure is not run, and that is not
+/// its own refusal: refused before any fork.
+#[test]
+fn a_closure_is_not_run_beside_other_threads() {
+    let plan = ranges();
+    let a = assemble(&plan, &all_steps(&[]), Some(Ok(())), None);
+    let r = report_of(vec![(IdMap::Ranges, StepResult::Ok)], Some((plan, a)));
+    assert_eq!(r.map(), Some(IdMap::Ranges));
+    // A thread that lives until the check is done, whatever the harness
+    // does with threads: no child is forked.
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let spare = std::thread::spawn(move || {
+        let _ = wait.recv();
+    });
+    let ran = r.in_namespace(|| Ok("ran".to_owned()));
+    drop(done);
+    spare.join().unwrap();
+    match ran {
+        Some(Err(e)) => assert!(e.contains("thread"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A failure part-way through making the probe's files leaves the
 /// directory as it was given: here a `sys` already there.
 #[test]
@@ -553,7 +576,8 @@ fn as_user(uid: u32, gid: u32, f: impl FnOnce() -> String) -> String {
 }
 
 /// As the user who ran sudo (the VM's `rnk`, the runner's `runner`): with
-/// one id, then with `newuidmap` and the user's ranges where both exist.
+/// one id, then with `newuidmap` and the user's ranges (both harnesses
+/// install `uidmap`; `useradd` gives the user subordinate ids).
 /// Where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu
 /// 24.04), the M3 measurements: one id stops at the `uid_map` write, the
 /// ranges at `chown`; elsewhere (22.04) both pass.

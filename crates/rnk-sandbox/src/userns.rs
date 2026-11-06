@@ -289,9 +289,9 @@ impl UsernsReport {
     /// Runs `f` as root of a new user and mount namespace with the map this
     /// probe got, in a forked child. `None` when no map worked; `Err` with
     /// why `f` did not run or finish (other threads, a host-side error, the
-    /// namespace refused this time, the deadline, the child's death); else
-    /// what `f` returned, a panic as `Err("panicked")`. Like the steps,
-    /// whatever `f` mounts goes with the child.
+    /// namespace refused this time, the deadline, the child's death, a
+    /// panic); else what `f` returned. Like the steps, whatever `f` mounts
+    /// goes with the child.
     ///
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate.
@@ -735,8 +735,8 @@ struct Supervised {
 /// ([`READY`]), reads its report until it closes it or `deadline` passes,
 /// kills it then, and reaps it.
 ///
-/// `child` runs in the forked process and must end it with `_exit`; it may
-/// allocate only when this process is single-threaded.
+/// `child` runs in the forked process, which ends with `_exit` when it
+/// returns; it may allocate only when this process is single-threaded.
 fn supervise(
     plan: &Plan,
     user: bool,
@@ -764,12 +764,9 @@ fn supervise(
     if pid == 0 {
         // This process's ends only: with its own copy of the go pipe's write
         // end, a child would never read the end of a map this process
-        // failed to write. The child never drops these copies.
-        // SAFETY: plain `close` of descriptors this child inherited.
-        unsafe {
-            libc::close(go_w.as_raw_fd());
-            libc::close(report_r.as_raw_fd());
-        }
+        // failed to write.
+        drop(go_w);
+        drop(report_r);
         child(&args);
         // SAFETY: `_exit` ends this process at once, after `child` if it
         // returns.
@@ -1347,7 +1344,12 @@ fn run_closure(
     .map_err(|e| e.to_string())?;
     if let Some((status, text)) = run.records.payload {
         let text = String::from_utf8_lossy(&text).into_owned();
-        return Ok(if status == 0 { Ok(text) } else { Err(text) });
+        // A panic did not finish `f`, as under `panic = "abort"`.
+        return match status {
+            0 => Ok(Ok(text)),
+            1 => Ok(Err(text)),
+            _ => Err(text),
+        };
     }
     // No result: the child died, or a step before `f` was refused this
     // time.
