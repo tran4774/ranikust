@@ -237,29 +237,34 @@ A bad cache entry costs a miss and a restart, not a failed build
 decided and planned in [#130](https://github.com/tran4774/ranikust/issues/130)
 and [#132](https://github.com/tran4774/ranikust/issues/132), not built yet).
 What a restart does when a layer of its chain is held by neither the store nor a
-registry is not decided [open: #171], nor are four more cases of the restart
+registry is not decided [open: #171], nor are five more cases of the restart
 [open: #172].
 
 - In kaniko mode with a directory per stage a hit streams into the stage root; on
   `/` it is spooled and verified before extraction. A hit found bad before its
-  first entry reached the root is a plain miss. One found bad after extraction
-  began (on `/`, only a failure while writing: the spool pass also checks the tar
-  headers and `--limit`) makes the stage start again from its base
+  extraction began (the source refused it; on `/`, the spool pass, which will also
+  check the tar headers and `--limit`,
+  [#174](https://github.com/tran4774/ranikust/issues/174)) is a plain miss. One
+  found bad after extraction began (on `/`, only a failure while writing) makes
+  the stage start again from its base
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
   at most once and with no cache at all: every step runs, and its layers are
-  pushed under their keys.
+  pushed under their keys as a cold build pushes them, only the steps the cache
+  flags cache.
 - A restart always rebuilds its base by extracting the layers of its chain by
   digest, from the store, else from the registry that holds them, whether or not
   the parent's directory is still there.
 - A connection dropped after the first byte of a hit is re-requested from the
-  offset with a Range request, about 3 attempts without progress; then the entry
-  is a miss and the stage starts again. On `/`, a drop during the spool is a
-  plain miss.
+  offset with a Range request, about 3 attempts without progress, and the answer
+  must be a 206 starting at the offset; then the entry is a miss and the stage
+  starts again. On `/`, a resume that still fails during the spool is a plain
+  miss. That count does not bound a connection that drops every few bytes; the
+  overall pull deadline is [#28](https://github.com/tran4774/ranikust/issues/28).
 - A bad blob found while pushing the layers of a skipped, fully cached stage
-  makes it stop being skipped: it is built with no cache. A blob mounted across
-  repositories
+  makes it stop being skipped: it is built with no cache, its layers pushed as
+  above. A blob mounted across repositories
   ([ADR-0055](../adr/0055-stream-layers-keep-nothing-proportional-to-the-image.md))
-  is not read.
+  is not read: it is trusted by its digest and its entry's diff ID.
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences

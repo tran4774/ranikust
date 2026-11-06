@@ -126,8 +126,9 @@ layers uploading or waiting to is bounded by twice `--jobs`.
     the download's size, and keeps the rule that nothing unverified reaches `/`
     even when the publisher's diff ID is wrong. For a cache hit the same pass
     will also check the tar headers and `--limit`
-    ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md);
-    not built), so such a hit is a miss before `/` changes.
+    ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+    [#174](https://github.com/tran4774/ranikust/issues/174); not built), so such
+    a hit is a miss before `/` changes.
   - On `/`, the spool goes with the last stage or `COPY --from` image the
     build announced on its layer
     ([ADR-0081](../adr/0081-a-streamed-layer-on-slash-is-verified-once-per-build.md)):
@@ -148,17 +149,12 @@ layers uploading or waiting to is bounded by twice `--jobs`.
   body (a 503, a reset connection) is retried, since nothing was read yet. The
   pull of manifests and configs, and the uploads from files, keep their
   retries.
-  - **A cache hit is the exception**
-    ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md);
+  - **A cache hit is the exception**: a connection dropped after the first byte
+    is resumed with a Range request, and a hit that still fails is a miss, not a
+    failed build ([cache keys](cache-and-store.md#cache-keys),
+    [ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md);
     decided, planned in [#130](https://github.com/tran4774/ranikust/issues/130),
-    not built yet). A connection dropped after the first byte of one is
-    re-requested from the offset with a Range request, about 3 attempts without
-    progress (new work in `rnk-registry`). If it still fails, the entry is a miss
-    and the stage starts again with no cache. On `/`, a drop during the spool is a
-    plain miss before `/` changes. A cache failure does not change the exit
-    status, apart from the cases ADR-0123 leaves open
-    ([#171](https://github.com/tran4774/ranikust/issues/171),
-    [#172](https://github.com/tran4774/ranikust/issues/172)).
+    not built yet).
 - **Nothing falls back** to keeping a whole layer in memory.
 
 ## Outputs and reproducibility

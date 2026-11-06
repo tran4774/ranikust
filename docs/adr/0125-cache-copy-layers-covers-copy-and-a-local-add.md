@@ -20,8 +20,9 @@ the flag for `COPY` only, but its code caches an `ADD` under the flag too, so th
 only conflict is kaniko's README against its code. Whether ranikust caches an
 `ADD` under the flag was not decided: the keys of
 [ADR-0113](0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)
-already cover the files an `ADD` from the build context reads, and `ADD <url>`
-and other remote sources get their keys with Phase 5.
+already cover the files an `ADD` from the build context reads (as they cover
+every file a step reads), and `ADD <url>` and other remote sources get their keys
+with Phase 5.
 
 ## Considered Options
 
@@ -35,8 +36,11 @@ and other remote sources get their keys with Phase 5.
 ## Decision Outcome
 
 With `--cache-copy-layers`, an `ADD` from local sources is cached as a `COPY` is,
-by the same key fields, lookup and push; `ADD <url>`, remote sources and an `ADD`
-of a local archive come with Phase 5, whose features give them their keys.
+by the same key fields, lookup and push. `ADD <url>` and remote sources come with
+Phase 5, whose features give them their keys; an archive `ADD` from the context
+is refused until Phase 5, and its key is the archive file's, as ADR-0113 keys
+every file a step reads
+([#126](https://github.com/tran4774/ranikust/issues/126)).
 
 The maintainer's answer (2026-11-07: "Cache cả COPY và ADD (khuyến nghị)", "Cache
 both COPY and ADD (recommended)") stood for the first option.
@@ -46,12 +50,11 @@ both COPY and ADD (recommended)") stood for the first option.
   `COPY` alike. ADR-0011 is kept: the flag keeps its name and its meaning, and
   the image is the same either way; only the hits differ.
 - **The difference that remains.** kaniko also caches `ADD <url>` and the `ADD`
-  of a local archive, under a key that ignores their content. ranikust does not
-  support them before Phase 5 (the book's
-  [status](../book/src/status.md#what-is-not-built-yet)), and ADR-0113 leaves
-  their keys open. What an archive `ADD` is keyed by is
-  [#126](https://github.com/tran4774/ranikust/issues/126)'s choice: its key plan
-  keys it as one file, the archive.
+  of a local archive, under a key that ignores their content. ranikust supports
+  neither before Phase 5 (the book's
+  [status](../book/src/status.md#what-is-not-built-yet)). ADR-0113 leaves open
+  only the keys of `ADD <url>` and other remote sources; an archive from the
+  context is one file read, so its key is that file's.
 
 ### Consequences
 
