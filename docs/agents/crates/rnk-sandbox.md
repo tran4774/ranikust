@@ -376,8 +376,9 @@ What a change here must keep, with where it lives:
   and given 2 s more); its namespaces and mounts go with it. One still
   there after is `Error::ProbeChildLeft`: the probe's directory stays, and
   `ranikust` leaves its own too, until the end of the build removes them.
-  `newuidmap` is killed and given 2 s to be reaped at its deadline or on a
-  failed wait (not after `ECHILD`). Its mount namespace makes `/` a
+  `newuidmap` and `newgidmap` each get 10 s, then are killed and given 2 s
+  to be reaped (not after `ECHILD`); a child waits for them past its own
+  deadline. Its mount namespace makes `/` a
   recursive slave before any mount. The files the steps need are made by
   the caller in the probe's directory through `RootPath` and removed
   before it returns. `newuidmap` is looked for in `/usr/bin` and `/bin`
@@ -493,7 +494,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   through the parent's panic hook, and a log line of the closure not
   through its subscriber; a child holding only stdio and its own
   descriptors; a child reaped within its grace, else killed, else reported
-  left.
+  left; a tool reaped elsewhere (`ECHILD`) not killed.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
