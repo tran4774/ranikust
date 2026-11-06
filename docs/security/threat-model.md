@@ -217,13 +217,13 @@ These follow from decisions and are documented to users rather than fixed:
   ([ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)):
   moby/profiles seccomp v0.2.4's, as BuildKit `cd8ee24` vendors it
   (`vendor/github.com/moby/profiles/seccomp/default.json`) **[external]**.
-  It leaves `AF_ALG` and `AF_VSOCK` out of the socket domains it allows,
-  in a recent change (its comment on `AF_VSOCK` mentions Linux 7.0), allows
+  It leaves `AF_ALG` and `AF_VSOCK` out of the socket domains it allows, in a
+  recent change (its comment on `AF_VSOCK` mentions Linux 7.0), allows
   `unshare` and `clone` with `CLONE_NEWUSER` only with `CAP_SYS_ADMIN`, and
-  refuses the keyring calls. Whether the Docker release you run has the same
-  profile is not checked here. ranikust compiles it with its own code, so the
-  filter is only as right as that compiler, which T0 tests check against a
-  table of moby's profile and in forked children.
+  refuses `keyctl`, `add_key` and `request_key`. Whether the Docker release
+  you run has the same profile is not checked here. ranikust compiles it with
+  its own code, so the filter is only as right as that compiler, which T0
+  tests check against a table of moby's profile and in forked children.
 - A `RUN`'s seccomp profile cannot fake a success: `--seccomp` refuses an
   `SCMP_ACT_ERRNO` whose errno would be 0 or from 512 up (the kernel's own
   codes); it refuses `SCMP_ACT_TRACE` and `SCMP_ACT_NOTIFY`; and
@@ -237,12 +237,13 @@ These follow from decisions and are documented to users rather than fixed:
   trust the answer, such as the capability cut, the command's session and
   `USER` switch and the `PATH` search. Docker's default profile fakes no
   call.
-- A `RUN`'s profile that refuses `close` hangs that `RUN` until the build is
-  cancelled, a limit of reliability, not of security: the go pipe that
-  starts the command stays open. If it refuses `close_range` too, the init
-  first busy-loops, holding up to ranikust's soft `RLIMIT_NOFILE` in
-  descriptors, with work that grows with the square of that limit, then
-  waits. Docker's default profile allows `close`.
+- A `RUN`'s profile that refuses `close` with an errno hangs that `RUN`
+  until the build is cancelled, a limit of reliability, not of security:
+  the go pipe that starts the command stays open. If it refuses
+  `close_range` too, the init first busy-loops, holding up to ranikust's
+  own soft `RLIMIT_NOFILE` (its hard limit in kaniko mode) in descriptors,
+  with work that grows with the square of that limit, then waits. Docker's
+  default profile allows `close`.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

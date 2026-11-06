@@ -2612,10 +2612,10 @@ mod tests {
         /// A refused keyring join (ADR-0109), by an LSM or a filter around
         /// ranikust: in the full sandbox it fails the `RUN` while the
         /// session keyring can still be looked up, whatever the errno,
-        /// unless the profile refuses every keyring call. Where a filter
-        /// refuses the lookup too, as Docker's default does around
-        /// ranikust by refusing `keyctl` whole, the `RUN` goes on, as
-        /// before. `Direct` decides by the errno.
+        /// unless the profile refuses `keyctl`, `add_key` and
+        /// `request_key`. Where a filter refuses the lookup too, as
+        /// Docker's default does around ranikust by refusing `keyctl`
+        /// whole, the `RUN` goes on. `Direct` decides by the errno.
         #[test]
         fn a_refused_keyring_join_fails_while_the_session_keyring_is_found() {
             use KeyringJoin::{Direct, Optional, Required};

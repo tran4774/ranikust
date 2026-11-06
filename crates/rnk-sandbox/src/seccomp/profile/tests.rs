@@ -610,7 +610,7 @@ fn malformed_or_unsupported_profiles_are_refused() {
         ),
         (
             rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":65536}"#),
-            "syscalls[0]: errno 65536 is above 4095",
+            "syscalls[0]: errnoRet 65536 is above 4095",
         ),
         (
             rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":-1}"#),
@@ -622,7 +622,7 @@ fn malformed_or_unsupported_profiles_are_refused() {
         ),
         (
             r#"{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":65536}"#.to_owned(),
-            "defaultAction: errno 65536 is above 4095",
+            "defaultErrnoRet: 65536 is above 4095",
         ),
         (rule(r#"{"names":["getppid"],"action":"SCMP_ACT_ALLOW","extra":1}"#), "unknown field"),
         (
@@ -654,6 +654,34 @@ fn malformed_or_unsupported_profiles_are_refused() {
     ] {
         let m = refusal(&json);
         assert!(m.contains(says), "{json}: {m}");
+    }
+}
+
+/// Every errno a profile may not give, 0, from 512 up or above 4095, is
+/// refused in one form: the field, the value, why, and what to give instead
+/// (ADR-0109).
+#[test]
+fn errno_refusals_name_the_field_and_ask_for_1_to_511() {
+    let refused = (512..=600).chain([0, 4095, 4096, 65536, 1 << 32, u64::MAX]);
+    for e in refused {
+        let cases = [
+            (
+                format!(
+                    r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["getppid"],
+                    "action":"SCMP_ACT_ERRNO","errnoRet":{e}}}]}}"#
+                ),
+                format!("syscalls[0]: errnoRet {e} "),
+            ),
+            (
+                format!(r#"{{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":{e}}}"#),
+                format!("defaultErrnoRet: {e} "),
+            ),
+        ];
+        for (json, field) in cases {
+            let m = refusal(&json);
+            assert!(m.starts_with(&field), "{m}");
+            assert!(m.ends_with("; give an errno from 1 to 511"), "{m}");
+        }
     }
 }
 
@@ -731,7 +759,7 @@ fn calls_the_default_allows_but_libc_does_not_name_are_pinned() {
     let cx = cx((6, 8));
     let mut unnamed = Vec::new();
     for r in p.syscalls.iter().flatten() {
-        let (_, names) = rule(r, "rule").unwrap();
+        let (_, names) = rule(r, "rule", &cx).unwrap();
         if cx.keeps(r).unwrap() {
             unnamed.extend(names.into_iter().filter(|n| syscalls::number(n).is_none()));
         }

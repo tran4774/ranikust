@@ -43,7 +43,7 @@ use crate::error::{Error, Result};
 const DOCKER_DEFAULT: &[u8] = include_bytes!("default.json");
 
 /// The kernel caps an errno at `MAX_ERRNO`.
-const MAX_ERRNO: u32 = 4095;
+const MAX_ERRNO: u64 = 4095;
 
 /// The first of the kernel's own codes (`ERESTARTSYS`), past the errnos a
 /// call returns to user space; a profile's errno stays below it.
@@ -362,24 +362,19 @@ impl Action {
     }
 }
 
-fn action(name: &str, errno: Option<u64>, what: &str) -> Result<Action> {
+/// The action `name`; for `SCMP_ACT_ERRNO`, `errno` is checked and a
+/// refusal names it after `field` (`defaultErrnoRet:` or `syscalls[N]:
+/// errnoRet`).
+fn action(name: &str, errno: Option<u64>, what: &str, field: &str, cx: &Context) -> Result<Action> {
     let act = match name {
         "SCMP_ACT_KILL" | "SCMP_ACT_KILL_THREAD" => Action::KillThread,
         "SCMP_ACT_KILL_PROCESS" => Action::KillProcess,
         "SCMP_ACT_TRAP" => Action::Trap,
         "SCMP_ACT_ERRNO" => {
-            return match errno {
-                None => Ok(Action::Errno(libc::EPERM.unsigned_abs())),
-                Some(e) => u32::try_from(e)
-                    .ok()
-                    .filter(|&e| e <= MAX_ERRNO)
-                    .map(Action::Errno)
-                    .ok_or_else(|| {
-                        bad(format!(
-                            "{what}: errno {e} is above {MAX_ERRNO}; {GIVE_ERRNO}"
-                        ))
-                    }),
-            };
+            let e = errno.unwrap_or(u64::from(libc::EPERM.unsigned_abs()));
+            return profile_errno(e, cx)
+                .map(Action::Errno)
+                .map_err(|why| bad(format!("{field} {e} {why}; {GIVE_ERRNO}")));
         }
         "SCMP_ACT_LOG" => Action::Log,
         "SCMP_ACT_ALLOW" => Action::Allow,
@@ -459,7 +454,7 @@ fn cond(a: &ArgJson, what: &str) -> Result<Cond> {
 
 /// The rule and the names it applies to, checked whatever `includes` and
 /// `excludes` say, so that a profile is valid or not on every machine.
-fn rule(r: &RuleJson, what: &str) -> Result<(Rule, Vec<String>)> {
+fn rule(r: &RuleJson, what: &str, cx: &Context) -> Result<(Rule, Vec<String>)> {
     let names = match (&r.name, &r.names) {
         (Some(_), Some(_)) => {
             return Err(bad(format!("{what}: both name and names")));
@@ -471,7 +466,13 @@ fn rule(r: &RuleJson, what: &str) -> Result<(Rule, Vec<String>)> {
     if names.is_empty() {
         return Err(bad(format!("{what}: names no system call")));
     }
-    let action = action(&r.action, r.errno_ret, what)?;
+    let action = action(
+        &r.action,
+        r.errno_ret,
+        what,
+        &format!("{what}: errnoRet"),
+        cx,
+    )?;
     let conds = r
         .args
         .iter()
@@ -508,26 +509,22 @@ fn refused_always(rules: &[Rule], default: Action) -> bool {
         || (!default.runs() && !rules.iter().any(|r| r.action.runs()))
 }
 
-/// Why a profile may not answer with `act`'s errno, if it may not
-/// (ADR-0109): 0 fakes a success the set-up after the profile would trust,
-/// and from 512 (`ERESTARTSYS`) up the kernel keeps its own codes, which
-/// are no answer: on 516 (`ERESTART_RESTARTBLOCK`) it may run its restart
-/// block instead, which can succeed, and a later kernel may add more.
-fn errno_refused(act: Action, cx: &Context) -> Option<String> {
-    match act {
-        Action::Errno(0) if !cx.fakes() => Some(format!(
-            "0 would fake the success of the calls it refuses; {GIVE_ERRNO}"
-        )),
-        Action::Errno(e) if e >= FIRST_KERNEL_ERRNO => Some(format!(
-            "{e} is from 512 up, where the kernel keeps its own codes (on 516 \
-             it may run its restart block instead of refusing); {GIVE_ERRNO}"
-        )),
-        Action::Errno(_)
-        | Action::KillProcess
-        | Action::KillThread
-        | Action::Trap
-        | Action::Log
-        | Action::Allow => None,
+/// The errno `e` as a profile wrote it, or why it may not give it
+/// (ADR-0109): 0 fakes a success the set-up after the profile would trust;
+/// from 512 (`ERESTARTSYS`) up the kernel keeps its own codes, which are no
+/// answer: on 516 (`ERESTART_RESTARTBLOCK`) it may run its restart block
+/// instead, which can succeed, and a later kernel may add more; above 4095
+/// is past the kernel's largest errno.
+fn profile_errno(e: u64, cx: &Context) -> std::result::Result<u32, &'static str> {
+    match u32::try_from(e) {
+        Ok(0) if cx.fakes() => Ok(0),
+        Ok(0) => Err("would fake the success of the calls it refuses"),
+        Ok(e @ 1..FIRST_KERNEL_ERRNO) => Ok(e),
+        Ok(_) if e <= MAX_ERRNO => Err(
+            "is from 512 up, where the kernel keeps its own codes (on 516 it may \
+             run its restart block instead of refusing)",
+        ),
+        Ok(_) | Err(_) => Err("is above 4095, the kernel's largest errno"),
     }
 }
 
@@ -539,10 +536,9 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
             .ok_or_else(|| bad("defaultAction is missing"))?,
         p.default_errno_ret,
         "defaultAction",
+        "defaultErrnoRet:",
+        cx,
     )?;
-    if let Some(why) = errno_refused(default, cx) {
-        return Err(bad(format!("defaultErrnoRet: {why}")));
-    }
     if p.architectures.as_ref().is_some_and(|a| !a.is_empty())
         && p.arch_map.as_ref().is_some_and(|m| !m.is_empty())
     {
@@ -572,10 +568,7 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
     let mut calls: BTreeMap<u32, Vec<Rule>> = BTreeMap::new();
     for (i, r) in p.syscalls.iter().flatten().enumerate() {
         let what = format!("syscalls[{i}]");
-        let (rule, names) = rule(r, &what)?;
-        if let Some(why) = errno_refused(rule.action, cx) {
-            return Err(bad(format!("{what}: errnoRet {why}")));
-        }
+        let (rule, names) = rule(r, &what, cx)?;
         if !cx.keeps(r)? {
             continue;
         }

@@ -768,7 +768,7 @@ impl Runner {
     }
 
     /// The probe's runner: its command does not exist, so nothing it starts
-    /// runs, and a refused keyring join is left to the `RUN`s
+    /// executes, and a refused keyring join is left to the `RUN`s
     /// that follow, under their own profile (ADR-0109).
     pub(crate) fn for_probe(mut self) -> Self {
         self.probe = true;
@@ -1126,7 +1126,7 @@ impl Runner {
         };
         // A refused join fails a full-sandbox `RUN` (not the probe's) while
         // ranikust's session keyring is found and the `RUN`'s profile lets
-        // a keyring call run (ADR-0109).
+        // `keyctl`, `add_key` or `request_key` run (ADR-0109).
         let keyring = match spec.isolation {
             Isolation::Full
                 if self.probe || profile.is_some_and(SeccompProfile::refuses_keyrings) =>
@@ -3624,12 +3624,13 @@ mod tests {
 
     /// T2 (ADR-0109): a refused join of the session keyring, by an LSM or
     /// a filter around ranikust (filters on this thread stand in for both),
-    /// fails a `RUN` whose profile lets a keyring call run (unconfined, or a
-    /// file that allows `keyctl`) while ranikust's session keyring can still
-    /// be looked up, whatever the errno. Under a profile that refuses every
-    /// keyring call, Docker's default or a file refusing them, the `RUN`
-    /// runs. Under a filter that refuses `keyctl` whole, as Docker's default
-    /// around ranikust does, the lookup is refused too and every `RUN` runs.
+    /// fails a `RUN` whose profile lets `keyctl`, `add_key` or `request_key` run
+    /// (unconfined, or a file that allows `keyctl`) while ranikust's session
+    /// keyring can still be looked up, whatever the errno. Under a profile
+    /// that refuses all three, Docker's default or a file refusing them, the
+    /// `RUN` runs. Under a filter that refuses `keyctl` whole, as Docker's
+    /// default around ranikust does, the lookup is refused too and every
+    /// `RUN` runs.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl() {

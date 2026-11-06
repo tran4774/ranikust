@@ -80,7 +80,8 @@ pub enum Step {
     /// Joining a new session keyring (`Direct`).
     SessionKeyring,
     /// The same join refused while ranikust's session keyring can still be
-    /// looked up and the `RUN`'s profile lets a keyring call run (ADR-0109).
+    /// looked up and the `RUN`'s profile lets `keyctl`, `add_key` or
+    /// `request_key` run (ADR-0109).
     KeyringRefused,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
     Secret,

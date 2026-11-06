@@ -285,19 +285,19 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
   aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno from
-  512 to 600, 4095 and above included, which ones refuse every keyring call);
-  `errno_0_reads_as_eproto`. The `tests::kernel` modules, skipped under
-  qemu-user, install filters in forked children: `seccomp::profile`'s
-  (compiled profiles), `caps`'s (an `EINVAL` from a bounding drop) and
-  `child`'s (a refused keyring join with the session keyring found or not,
-  each `KeyringJoin`; an `execve` or `execveat` back without an error; a
-  `waitpid` back with 0 or `EINTR` with a command still to reap;
-  an `EINTR` on the reads after the profile, the parent check's against an
-  unfiltered control; a refused `umask` after the profile; a faked `setsid`,
-  `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the last two on a
-  stack filled beforehand, which shows an unwritten buffer in a debug build
-  only; these test the helpers, not their call sites, whose `/proc/self/fd`
-  opening overwrites that stack).
+  512 to 600, 4095 and above included, which ones refuse `keyctl`, `add_key`
+  and `request_key`); `errno_0_reads_as_eproto`. The `tests::kernel` modules,
+  skipped under qemu-user, install filters in forked children:
+  `seccomp::profile`'s (compiled profiles), `caps`'s (an `EINVAL` from a
+  bounding drop) and `child`'s (a refused keyring join with the session
+  keyring found or not, each `KeyringJoin`; an `execve` or `execveat` back
+  without an error; a `waitpid` back with 0 or `EINTR` with a command still to
+  reap; an `EINTR` on the reads after the profile, the parent check's against
+  an unfiltered control; a refused `umask` after the profile; a faked
+  `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the last two
+  on a stack filled beforehand, which shows an unwritten buffer in a debug
+  build only; these test the helpers, not their call sites, whose
+  `/proc/self/fd` opening overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
@@ -328,10 +328,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ranikust's, and a faked fork of the init fails the `RUN`;
   `a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl`: under
   filters on the test thread, while the keyring can be looked up, a join
-  refused with `EPERM` fails `unconfined`, not `default`, and one refused
-  with `EACCES` fails `unconfined` and a file allowing `keyctl`, not
-  `default` or a profile refusing the keyring calls; with `keyctl` refused
-  whole, `unconfined` and that file run, as under Docker),
+  refused with `EPERM` fails `unconfined`, not `default`, and one refused with
+  `EACCES` fails `unconfined` and a file allowing `keyctl`, not `default` or a
+  profile refusing `keyctl`, `add_key` and `request_key`; with `keyctl`
+  refused whole, `unconfined` and that file run, as under Docker),
   `a_direct_run_on_slash_keeps_only_dockers_capabilities` and
   `direct_runs_in_a_chroot_with_placed_files_as_root`.
 - **T2, VM smoke suite** (`tests/vm/guest/smoke.sh`, `just test-vm smoke`):
