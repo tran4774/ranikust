@@ -110,6 +110,43 @@ fn prepare_creates_a_private_state_directory() {
 }
 
 #[test]
+fn a_user_s_default_below_home_passes_the_same_checks() {
+    // The default of a user other than root, below a home directory of
+    // theirs; checked as whoever runs the test.
+    let euid = rustix::process::geteuid().as_raw();
+    let tmp = private_tempdir();
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+    let state = crate::config::default_state_dir(1000, Some(home.as_os_str())).unwrap();
+    assert_eq!(state, home.join(".local/share/ranikust"));
+    prepare(&state).unwrap();
+    for d in [".local", ".local/share", ".local/share/ranikust"] {
+        let st = fs::metadata(home.join(d)).unwrap();
+        assert_eq!((st.uid(), st.mode() & 0o7777), (euid, 0o700), "{d}");
+    }
+    // A home its group may write: refused, saying what to do instead.
+    let shared = tmp.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o775)).unwrap();
+    let state = crate::config::default_state_dir(1000, Some(shared.as_os_str())).unwrap();
+    let why = prepare(&state).unwrap_err().0;
+    assert!(why.contains("writable by group or others"), "{why}");
+    assert!(why.ends_with(private_state(euid)), "{why}");
+    assert!(!shared.join(".local").exists());
+}
+
+#[test]
+fn the_advice_names_the_default_of_the_effective_user() {
+    assert!(private_state(0).contains("/var/lib/ranikust"));
+    assert!(!private_state(0).contains("you"));
+    for euid in [1, 1000, u32::MAX] {
+        assert!(private_state(euid).contains("~/.local/share/ranikust"));
+        assert!(private_state(euid).contains("only you or root"));
+    }
+}
+
+#[test]
 fn prepare_refuses_without_creating_anything() {
     let tmp = private_tempdir();
     // A parent others may write: nothing is created below it.
@@ -226,7 +263,7 @@ fn the_system_directory_check_itself_refuses_them() {
         let Ok(fd) = open_dir(Path::new(sys), OFlags::RDONLY) else {
             continue;
         };
-        let Err(why) = accept_existing(&fd, Path::new(sys)) else {
+        let Err(why) = accept_existing(&fd, Path::new(sys), 0) else {
             panic!("{sys} accepted");
         };
         assert!(

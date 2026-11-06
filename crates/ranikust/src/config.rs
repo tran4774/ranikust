@@ -132,10 +132,47 @@ pub(crate) const PLATFORM: &str = "linux/amd64";
 /// were slower than 8 on every hash (ADR-0039).
 pub(crate) const SNAPSHOT_WORKERS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 
-/// The state directory without `--state-dir`, in every mode, as BuildKit's
-/// `/var/lib/buildkit` (ADR-0050). It holds the store and every build root
-/// ranikust makes; rootless mode's default comes in Phase 3.
+/// Root's state directory without `--state-dir`, in every mode, as
+/// BuildKit's `/var/lib/buildkit` (ADR-0050). It holds the store and every
+/// build root ranikust makes.
 pub(crate) const DEFAULT_STATE_DIR: &str = "/var/lib/ranikust";
+
+/// Another user's state directory without `--state-dir`, below `$HOME`,
+/// as BuildKit's rootless `~/.local/share/buildkit` (ADR-0050).
+pub(crate) const USER_STATE_DIR: &str = ".local/share/ranikust";
+
+/// The state directory without `--state-dir` for the effective user `euid`
+/// whose `$HOME` is `home`: [`DEFAULT_STATE_DIR`] for root, else
+/// [`USER_STATE_DIR`] below `home`, which must be absolute and without
+/// `..`: the state directory's checks walk it as it is (a `.` is dropped).
+///
+/// # Errors
+///
+/// [`Invalid`] for a user other than root without such a `$HOME`.
+pub(crate) fn default_state_dir(
+    euid: u32,
+    home: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, Invalid> {
+    if euid == 0 {
+        return Ok(PathBuf::from(DEFAULT_STATE_DIR));
+    }
+    let home = home.map(Path::new).filter(|h| {
+        h.is_absolute()
+            && h.components().all(|c| {
+                matches!(
+                    c,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+    });
+    match home {
+        Some(home) => Ok(home.components().collect::<PathBuf>().join(USER_STATE_DIR)),
+        None => Err(Invalid(format!(
+            "--state-dir is needed: $HOME is not an absolute path, so the default \
+             ~/{USER_STATE_DIR} of a user other than root is unknown"
+        ))),
+    }
+}
 
 /// The validated settings of `build`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,7 +214,7 @@ pub(crate) struct BuildConfig {
     /// The requested mode.
     pub(crate) mode: Mode,
     /// The state directory, absolute: `--state-dir`, else
-    /// [`DEFAULT_STATE_DIR`] (ADR-0050).
+    /// [`default_state_dir`] (ADR-0050).
     pub(crate) state_dir: PathBuf,
     /// Stages at once; `None` is the number of CPUs available (ADR-0013).
     pub(crate) jobs: Option<NonZeroUsize>,
@@ -436,10 +473,13 @@ impl BuildConfig {
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
             mode: args.mode,
-            state_dir: args
-                .state_dir
-                .as_deref()
-                .map_or_else(|| PathBuf::from(DEFAULT_STATE_DIR), absolute),
+            state_dir: match args.state_dir.as_deref() {
+                Some(dir) => absolute(dir),
+                None => default_state_dir(
+                    rustix::process::geteuid().as_raw(),
+                    std::env::var_os("HOME").as_deref(),
+                )?,
+            },
             jobs: args.jobs,
             network: args.network,
             secrets: args.secrets.iter().map(secret).collect(),

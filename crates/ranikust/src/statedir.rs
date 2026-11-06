@@ -22,9 +22,16 @@ impl fmt::Display for Refused {
     }
 }
 
-/// What a refused state directory should become.
-const PRIVATE_STATE: &str = "use the default /var/lib/ranikust, or a --state-dir below \
-     directories that only root may write (ADR-0050)";
+/// What a refused state directory should become, for the effective user.
+fn private_state(euid: u32) -> &'static str {
+    if euid == 0 {
+        "use the default /var/lib/ranikust, or a --state-dir below directories that only \
+         root may write (ADR-0050)"
+    } else {
+        "use the default ~/.local/share/ranikust, or a --state-dir below directories that \
+         only you or root may write (ADR-0050)"
+    }
+}
 
 /// Creates the state directory if missing (mode `0700`) and checks it,
 /// changing nothing in a directory that fails:
@@ -59,13 +66,13 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
     let is_state = existing == state_dir;
     let fd = open_dir(existing, OFlags::PATH)?;
     if is_state {
-        refuse_slash(&fd, state_dir)?;
+        refuse_slash(&fd, state_dir, euid)?;
     }
     check_chain(&walk(&fd, existing)?, euid, is_state)?;
     // Readable, so it can be listed and its mode set through it.
     let fd = create_missing(fd, existing, state_dir, euid)?;
-    refuse_slash(&fd, state_dir)?;
-    accept_existing(&fd, state_dir)?;
+    refuse_slash(&fd, state_dir, euid)?;
+    accept_existing(&fd, state_dir, euid)?;
     check_chain(&walk(&fd, state_dir)?, euid, true)?;
     make_private(&fd, state_dir, euid)?;
     match rustix::fs::openat(
@@ -171,13 +178,14 @@ fn create_missing(
 
 /// Refuses `fd` when it is the root directory `/`: never a state directory,
 /// whose mode would be changed.
-fn refuse_slash(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
+fn refuse_slash(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refused> {
     let me = rustix::fs::fstat(fd).map_err(|e| stat_err(state_dir, e))?;
     let slash = rustix::fs::stat("/").map_err(|e| stat_err(Path::new("/"), e))?;
     if (me.st_dev, me.st_ino) == (slash.st_dev, slash.st_ino) {
         return Err(Refused(format!(
-            "the state directory {} is /: {PRIVATE_STATE}",
-            state_dir.display()
+            "the state directory {} is /: {}",
+            state_dir.display(),
+            private_state(euid)
         )));
     }
     Ok(())
@@ -222,7 +230,7 @@ pub(crate) const SYSTEM_DIRS: [&str; 30] = [
 
 /// [`check_contents`], and for a directory without the store's marker,
 /// not one of [`SYSTEM_DIRS`].
-fn accept_existing(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
+fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refused> {
     if check_contents(fd, state_dir)? {
         return Ok(());
     }
@@ -233,8 +241,9 @@ fn accept_existing(fd: &OwnedFd, state_dir: &Path) -> Result<(), Refused> {
     match system {
         Some(sys) => Err(Refused(format!(
             "the state directory {} is the system directory {sys}: ranikust would make it \
-             mode 0700; {PRIVATE_STATE}",
-            state_dir.display()
+             mode 0700; {}",
+            state_dir.display(),
+            private_state(euid)
         ))),
         None => Ok(()),
     }
@@ -289,10 +298,11 @@ fn make_private(fd: &OwnedFd, dir: &Path, euid: u32) -> Result<(), Refused> {
     let st = rustix::fs::fstat(fd).map_err(|e| stat_err(dir, e))?;
     if st.st_uid != euid || st.st_mode & 0o022 != 0 {
         return Err(Refused(format!(
-            "unsafe state directory: {} is owned by uid {} with mode {:o}; {PRIVATE_STATE}",
+            "unsafe state directory: {} is owned by uid {} with mode {:o}; {}",
             dir.display(),
             st.st_uid,
-            st.st_mode & 0o7777
+            st.st_mode & 0o7777,
+            private_state(euid)
         )));
     }
     if st.st_mode & 0o077 == 0 {
@@ -304,9 +314,10 @@ fn make_private(fd: &OwnedFd, dir: &Path, euid: u32) -> Result<(), Refused> {
     if st.st_mode & 0o077 != 0 {
         return Err(Refused(format!(
             "{} stays mode {:o} after chmod 0700 (a filesystem that ignores modes?): the build \
-             roots would be open to other users; {PRIVATE_STATE}",
+             roots would be open to other users; {}",
             dir.display(),
-            st.st_mode & 0o7777
+            st.st_mode & 0o7777,
+            private_state(euid)
         )));
     }
     tracing::info!(
@@ -398,8 +409,9 @@ pub(crate) fn check_chain(chain: &[ChainDir], euid: u32, has_state: bool) -> Res
     let refuse = |d: &ChainDir, why: &str| {
         Refused(format!(
             "unsafe state directory: {} {why}; the build roots and the store live there, so no \
-             other user may write it or a directory above it; {PRIVATE_STATE}",
-            d.path.display()
+             other user may write it or a directory above it; {}",
+            d.path.display(),
+            private_state(euid)
         ))
     };
     for (i, d) in chain.iter().enumerate() {
