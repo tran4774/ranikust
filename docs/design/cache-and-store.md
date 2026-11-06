@@ -20,8 +20,9 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 - Two builds never download or extract the same digest at the same time.
 - A crash leaves only temporary entries and build directories, both removed
   on the next start.
-- The layer cache (Phase 4: the keys and tags are built, the rest is
-  planned), against threats T13 and T25 to T29 of the
+- The layer cache (Phase 4: the keys and tags and kaniko mode's
+  application of a hit are built, the rest is planned), against threats
+  T13 and T25 to T29 of the
   [threat model](../security/threat-model.md#5-threats-and-mitigations):
   - Keys and tags name build inputs only, never a secret's value or a
     credential, and never depend on the snapshot mode, the host, the
