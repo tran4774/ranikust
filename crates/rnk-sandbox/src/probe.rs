@@ -73,7 +73,7 @@ fn attempts(dir: &Path, root_dir: &Path, parent: ParentPid) -> Result<Caps> {
             break;
         }
         let span = tracing::debug_span!("rnk_sandbox.probe", ok = Empty);
-        let runner = Runner::new(dir, Some(root_entry))?;
+        let runner = Runner::new(dir, Some(root_entry))?.for_probe();
         let spec = RunSpec::new(root_dir, vec![PROBE_PROGRAM.into()]);
         let outcome =
             span.in_scope(|| reached_exec(runner.run(spec, None, |job| clone_child(job, parent))));

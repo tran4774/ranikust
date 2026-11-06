@@ -135,10 +135,13 @@ it), transfer blobs, decode layers, mount, or delete except through
 ### `rnk-sandbox`
 
 Isolated execution of `RUN`: namespaces, `proc`/`dev`/`sys`, `pivot_root` (or
-`MS_MOVE`), capability drop, stub mount points, `USER` resolved inside the root,
-exec. Also the probes of its own capabilities, each tried for real, and the
-sealed copy of ranikust's binary a build runs from, with the mount of the binary
-as installed, for `ranikust`'s refusal in kaniko mode on `/`
+`MS_MOVE`), capability drop, seccomp profiles (Docker's JSON format compiled to
+BPF, Docker's default embedded,
+[ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),
+stub mount points, `USER` resolved inside the root, exec. Also the probes of
+its own capabilities, each tried for real, and the sealed copy of ranikust's
+binary a build runs from, with the mount of the binary as installed, for
+`ranikust`'s refusal in kaniko mode on `/`
 ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)). In
 sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
@@ -249,10 +252,13 @@ declares none yet.
    again from a sealed copy of the binary, which starts over from the top
    ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
    `rnk-sandbox`); install the logs and
-   the opt-in metrics; validate the flags into a `BuildConfig`; try to enter a
-   private mount namespace (failing means root may not mount); check the state
-   directory; clean up the store (`rnk-store`); start the `RUN` spawner thread
-   (`rnk-sandbox`).
+   the opt-in metrics; validate the flags into a `BuildConfig`; read and
+   compile the `--seccomp` profile, after the re-exec, so never in the
+   process that makes the copy
+   ([ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md));
+   try to enter a private mount namespace (failing means root may not
+   mount); check the state directory; clean up the store (`rnk-store`);
+   start the `RUN` spawner thread (`rnk-sandbox`).
 2. **Probe** (`ranikust`, running the probes of `rnk-sandbox` and
    `rnk-snapshot` in order): choose overlay, kaniko, or refuse;
    `--mode=overlay|kaniko` skips the choice but not the checks

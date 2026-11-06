@@ -68,6 +68,8 @@ rnk_run() {
     --secret "id=tok,src=$IN/secret" "$@"
 }
 
+rnk_ctx() { echo "$IN/ctx"; }
+
 # rnk_run_twice CTX OUT ARGS...: kaniko mode only, two builds one after the
 # other in one container, as two CI steps would run (ADR-0052, D1); the
 # outputs go to OUT/1 and OUT/2; prints both logs. A case may set the

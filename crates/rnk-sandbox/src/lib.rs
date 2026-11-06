@@ -2,7 +2,9 @@
 //!
 //! Creates the namespaces, mounts `proc`, `dev` and `sys`, enters the stage
 //! rootfs with `pivot_root` (or `MS_MOVE` where seccomp blocks it), drops
-//! capabilities, manages stub mountpoints, switches to the `USER` ids that
+//! the bounding set, installs the `RUN`'s seccomp profile
+//! ([`SeccompProfile`], Docker's by default), cuts the other capability
+//! sets, manages stub mountpoints, switches to the `USER` ids that
 //! `rnk-rootfs` resolved in the rootfs, and executes the command. In sequential
 //! kaniko mode it runs `RUN` directly on `/`, like kaniko.
 //!
@@ -64,6 +66,7 @@ pub use child::RootEntry;
 pub use error::{Error, Result, Step};
 pub use probe::{Caps, probe};
 pub use seal::{BinaryMount, SealedCopy, Sealing, run_from_sealed_copy};
+pub use seccomp::SeccompProfile;
 pub use setup::{enter_build_namespace, trim_to_run_capabilities};
 pub use spawner::Sandbox;
 pub use spec::{

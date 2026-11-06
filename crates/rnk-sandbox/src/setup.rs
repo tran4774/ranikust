@@ -79,25 +79,17 @@ pub fn trim_to_run_capabilities() -> Result<()> {
     if !rustix::process::geteuid().is_root() {
         return Ok(());
     }
-    let last = caps::last_cap();
+    let kernel_last = caps::kernel_last_cap();
+    let last = caps::last_cap_of(kernel_last);
     let defaults = caps::docker_default_mask();
     let sets =
         rustix::thread::capabilities(None).map_err(|e| sys_err("read the capability sets", e))?;
     let setpcap = sets.effective.contains(CapabilitySet::SETPCAP);
     match caps::direct_caps(caps::bounding_set(last), setpcap) {
         caps::DirectCaps::Keep => {}
-        caps::DirectCaps::Drop => {
-            let (drops, len) = caps::bounding_drops(last);
-            for &cap in drops.iter().take(len) {
-                let set = CapabilitySet::from_bits_retain(1u64.checked_shl(cap).unwrap_or(0));
-                match rustix::thread::remove_capability_from_bounding_set(set) {
-                    Ok(()) => {}
-                    // Past the kernel's last capability.
-                    Err(Errno::INVAL) => break,
-                    Err(e) => return Err(sys_err("drop a capability from the bounding set", e)),
-                }
-            }
-        }
+        caps::DirectCaps::Drop => caps::BoundingDrops::new(kernel_last)
+            .drop_all()
+            .map_err(|e| sys_err("drop a capability from the bounding set", e))?,
         caps::DirectCaps::Refuse(names) => {
             return Err(Error::RunReachesState {
                 caps: names.join(", "),

@@ -28,10 +28,12 @@ use rustix::mount::{
 use rustix::process::{Gid, Signal, Uid};
 use rustix::thread::{CapabilitySet, CapabilitySets};
 
+use crate::caps::BoundingDrops;
 use crate::error::Step;
 use crate::plan::{
     DEV_NODES, DEV_NULL, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM,
 };
+use crate::seccomp::Program;
 
 /// How the child enters the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,11 +158,15 @@ pub(crate) struct ChildArgs {
     /// by a user namespace and with `lo` already up, which the child joins
     /// instead (`--network=none` without `CAP_NET_ADMIN`, ADR-0033).
     pub(crate) netns: Option<RawFd>,
-    /// The seccomp filter installed before the capability drop: with
-    /// `netns`, [`crate::seccomp::userns_network`].
-    pub(crate) seccomp: Option<Vec<libc::sock_filter>>,
-    /// Capabilities to drop from the bounding set, and how many.
-    pub(crate) drops: ([u32; 64], usize),
+    /// With `netns`, [`crate::seccomp::userns_network`]: installed first.
+    pub(crate) network_filter: Option<Program>,
+    /// The `RUN`'s profile ([`crate::SeccompProfile`]) unless unconfined:
+    /// installed on top, last of the steps that need `CAP_SYS_ADMIN`.
+    pub(crate) profile: Option<Program>,
+    /// What a refused join of the `RUN`'s session keyring does.
+    pub(crate) keyring: KeyringJoin,
+    /// Capabilities to drop from the bounding set.
+    pub(crate) drops: BoundingDrops,
     /// The capabilities kept (Docker's defaults), as a mask.
     pub(crate) keep: u64,
     pub(crate) uid: Uid,
@@ -508,13 +514,45 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     if args.loopback {
         loopback_up(err);
     }
-    // After the namespace is joined and every mount made, which the filter
-    // would refuse.
-    if let Some(f) = &args.seccomp {
-        install_filter(err, f);
+    // Every step that keeps the `RUN` in and need not follow its profile
+    // comes before it: the profile is the operator's, and may refuse any
+    // call with any errno `--seccomp` accepts, one the child takes for
+    // "unsupported" included (errno 0, a faked success, and those from 512
+    // up are refused when it compiles; ADR-0109).
+    // After it come the capability cut, since the install needs
+    // `CAP_SYS_ADMIN`, and the init's and the command's own steps, which
+    // only a filter around ranikust could fake (threat model, section 6).
+    //
+    // The keyring before the profile, which refuses `keyctl` (runc's
+    // order); the command, PID 2, inherits it. Still as root: it counts
+    // against root's key quota, and the command keeps possessing it after
+    // the switch.
+    join_session_keyring(err, args.keyring);
+    check(err, Step::BoundingSet, args.drops.drop_all());
+    clear_ambient(err);
+    clear_inheritable(err);
+    // The init's own: the command, PID 2, inherits both until its
+    // `execve`, and gets a session of its own, in which no terminal of the
+    // operator's can be its controlling one.
+    check(
+        err,
+        Step::Init,
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
+    );
+    new_session(err);
+    // Before the profile, which could refuse it: the layer must not follow ranikust's umask.
+    set_umask();
+    // After the namespace is joined and every mount made, which the filters
+    // would refuse. ADR-0033's first: the profile on top cannot fake its
+    // install, and a call both refuse gets the profile's errno.
+    if let Some(p) = &args.network_filter {
+        install_filter(err, p, Step::NetworkFilter);
+    }
+    if let Some(p) = &args.profile {
+        install_filter(err, p, Step::Seccomp);
     }
 
-    drop_capabilities(err, args);
+    set_capability_sets(err, args);
     run_init(err, parent, fds.status_w, args, ptrs)
 }
 
@@ -537,11 +575,13 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// The init then keeps only what it needs to wait: no capability, no
 /// descriptor but the status pipe's write end, no signal handler (the
 /// kernel drops every signal a process of the namespace sends to its PID 1
-/// whose disposition is the default), not dumpable, its copy of ranikust's
-/// argument and environment strings zeroed, in a session of its own so that
-/// no terminal signal reaches it. The command waits on the go pipe until
-/// the init has given all that up, so a failure of the init's own steps
-/// (`Step::Init`) always comes before the command ran. The init reaps every
+/// whose disposition is the default), its copy of ranikust's argument and
+/// environment strings zeroed; [`run`] made it not dumpable and gave it a
+/// session of its own, so that no terminal signal reaches it, before the
+/// `RUN`'s profile. The command waits on the go pipe until the init has
+/// given all that up, so a failure of the init's own steps (`Step::Init`)
+/// comes before the command ran, unless a filter around ranikust fakes the
+/// command's `read` of that pipe (threat model, section 6). The init reaps every
 /// process that reparents to it; when the command exits, it writes the
 /// command's wait status on the status pipe and exits, and the kernel kills
 /// the rest, as when the command was PID 1 itself.
@@ -552,26 +592,13 @@ fn run_init(
     args: &ChildArgs,
     ptrs: &ExecPtrs<'_>,
 ) -> ! {
-    // Before the fork, so the command inherits it until its own `execve`.
-    check(
-        err,
-        Step::Init,
-        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
-    );
     // `/proc/1/cmdline` has no ptrace check: the strings ranikust started
     // with (`--build-arg` values, `--secret` paths, the environment) must not
     // be readable there by the command.
     zero_args_and_environment(err, parent);
-    // Before the fork, so the command does not inherit it: it starts its own
-    // session and resets its own state.
-    check(err, Step::Init, rustix::process::setsid().map(drop));
     // The command blocks reading the go pipe until every write end is
     // closed: the init's goes in `close_all_except`, after its own steps.
-    let (go_r, go_w) = check(
-        err,
-        Step::Init,
-        rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC),
-    );
+    let (go_r, go_w) = init_pipe(err);
     // A plain `fork`: no `CLONE_VM`, a null stack, the child continues on a
     // copy of this stack, as the spawner's clone.
     let null: libc::c_long = 0;
@@ -592,6 +619,13 @@ fn run_init(
         fail(err, Step::Init, last_errno());
     }
     if ret == 0 {
+        // Only a real fork has the init, PID 1, for its parent: a filter
+        // around ranikust faking the `clone` (errno 0) would have the init
+        // run the command itself, and a faked `getppid` gives 0 or below.
+        // SAFETY: a plain syscall without arguments.
+        if unsafe { libc::getppid() } != 1 {
+            fail(err, Step::Init, Errno::PROTO);
+        }
         // The command: the status pipe is the init's alone.
         // SAFETY: closing a descriptor number this process holds.
         unsafe { libc::close(status_w) };
@@ -623,17 +657,34 @@ fn run_init(
     unsafe { libc::_exit(0) }
 }
 
+/// The init's go pipe, close-on-exec, through `libc` into descriptors set
+/// to -1 first: a `pipe2` faked with errno 0, as a filter around ranikust
+/// may, writes nothing, and `rustix` would read its buffer uninitialised.
+fn init_pipe(err: RawFd) -> (OwnedFd, OwnedFd) {
+    let mut fds: [libc::c_int; 2] = [-1, -1];
+    // SAFETY: `pipe2` writes at most two descriptors into `fds`.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        fail(err, Step::Init, last_errno());
+    }
+    let [r, w] = fds;
+    if r < 0 || w < 0 {
+        fail(err, Step::Init, Errno::BADF);
+    }
+    // SAFETY: both are new descriptors of this process, owned by nothing
+    // else.
+    unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) }
+}
+
 /// The command waits here until the init has closed its write end of the
-/// go pipe; any other outcome of the read fails the `RUN`.
+/// go pipe; any other outcome of the read fails the `RUN`, `EINTR`
+/// included: with no handler, the kernel restarts a read a signal
+/// interrupts, so only a filter answers so, and it could forever.
 fn wait_for_go(err: RawFd, go: &OwnedFd) {
     let mut byte = [0u8; 1];
-    loop {
-        match rustix::io::read(go, &mut byte) {
-            Ok(0) => return,
-            Ok(_) => fail(err, Step::Init, Errno::PROTO),
-            Err(Errno::INTR) => {}
-            Err(e) => fail(err, Step::Init, e),
-        }
+    match rustix::io::read(go, &mut byte) {
+        Ok(0) => {}
+        Ok(_) => fail(err, Step::Init, Errno::PROTO),
+        Err(e) => fail(err, Step::Init, e),
     }
 }
 
@@ -645,12 +696,10 @@ fn zero_args_and_environment(err: RawFd, parent: ParentCheck) {
     // SAFETY: `stat` is open in this process.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 1024];
-    let len = loop {
-        match rustix::io::pread(stat, &mut buf, 0) {
-            Ok(n) => break n,
-            Err(Errno::INTR) => {}
-            Err(e) => fail(err, Step::Init, e),
-        }
+    // One read: an `EINTR` comes only from a filter (`wait_for_go`).
+    let len = match rustix::io::pread(stat, &mut buf, 0) {
+        Ok(n) => n,
+        Err(e) => fail(err, Step::Init, e),
     };
     let Some(regions) = buf.get(..len).and_then(arg_and_env_regions) else {
         fail(err, Step::Init, Errno::INVAL)
@@ -724,10 +773,14 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t) {
         fail_init(e);
     }
     // Armed at the start; checked again, with ranikust still the parent.
-    match rustix::process::parent_process_death_signal() {
-        Ok(Some(Signal::KILL)) => {}
-        Ok(_) => fail_init(Errno::INVAL),
-        Err(e) => fail_init(e),
+    // Through `libc` into a set variable: a faked `prctl` writes nothing.
+    let mut signal: libc::c_int = 0;
+    // SAFETY: `PR_GET_PDEATHSIG` writes one `int` at the pointer.
+    if unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &raw mut signal) } < 0 {
+        fail_init(last_errno());
+    }
+    if signal != libc::SIGKILL {
+        fail_init(Errno::INVAL);
     }
     if !parent_alive(parent) {
         fail_init(Errno::SRCH);
@@ -740,12 +793,9 @@ fn parent_alive(parent: ParentCheck) -> bool {
     // SAFETY: `stat` is open in this process until it is closed below.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 256];
-    let len = loop {
-        match rustix::io::pread(stat, &mut buf, 0) {
-            Ok(n) => break n,
-            Err(Errno::INTR) => {}
-            Err(_) => return false,
-        }
+    // One read: an `EINTR` comes only from a filter (`wait_for_go`).
+    let Ok(len) = rustix::io::pread(stat, &mut buf, 0) else {
+        return false;
     };
     matches!(buf.get(..len).and_then(stat_pid_and_ppid), Some((_, ppid)) if ppid == parent.parent)
 }
@@ -812,17 +862,15 @@ pub(crate) fn default_signals() {
 /// its wait status. A tracee stop (the command may make the init its
 /// tracer with `PTRACE_TRACEME`) is never taken for an end: the init
 /// detaches, handing the stop signal on. Ends the init (status 125, nothing
-/// reported) if it has no child left without having reaped the command,
-/// which cannot happen.
+/// reported) when `waitpid` returns 0 or fails, whatever the errno, `EINTR`
+/// included: a real one cannot, with the command unreaped, no `WNOHANG` and
+/// no handler; only a filter answers so, and it could forever.
 fn reap_until(command: libc::pid_t) -> i32 {
     loop {
         let mut status: libc::c_int = 0;
         // SAFETY: `waitpid` writes the status, which lives across the call.
         let pid = unsafe { libc::waitpid(-1, &raw mut status, libc::__WALL) };
-        if pid < 0 {
-            if last_errno() == Errno::INTR {
-                continue;
-            }
+        if pid <= 0 {
             // SAFETY: `_exit` ends the process at once.
             unsafe { libc::_exit(125) }
         }
@@ -888,8 +936,9 @@ pub(crate) fn stat_pid_and_ppid(stat: &[u8]) -> Option<(i32, i32)> {
     Some((pid, parse_fd(rest.get(..end)?)?))
 }
 
-/// A new session and session keyring, `WORKDIR`, the `USER` ids, the death
-/// signal again, stdio, process state, then `execve`.
+/// A new session, `WORKDIR`, the `USER` ids, the death signal again, stdio,
+/// process state, then `execve`, in the new session keyring the caller or
+/// the init joined ([`join_session_keyring`]).
 ///
 /// `rearm` is the `Direct` child's parent check: the switch cleared the
 /// death signal, so it is armed again and the parent checked alive. The
@@ -905,10 +954,7 @@ pub(crate) fn switch_user_and_exec(
     // No controlling terminal: a `RUN` must not read the operator's keys or
     // push input into the operator's shell (`TIOCSTI`). Also a process
     // group of its own, which `Direct` kills afterwards.
-    check(err, Step::Session, rustix::process::setsid().map(drop));
-    // Still as root: the keyring counts against root's key quota, and the
-    // process keeps possessing it after the switch.
-    join_session_keyring(err);
+    new_session(err);
     // Change to WORKDIR before switching user, in case only root may
     // traverse its parents, and again after if that was refused (runc).
     let workdir = args.workdir.as_c_str();
@@ -1903,9 +1949,13 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// Limits, known and accepted: the last fallback stops at 2^20, so a
 /// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
 /// stay open where neither `close_range` (Linux 5.9) nor a readable
-/// `/proc/self/fd` is there; and a seccomp profile that answers
+/// `/proc/self/fd` is there; a filter around ranikust that answers
 /// `close_range` with success without running it goes unnoticed, as no
-/// call here checks that the descriptors are gone.
+/// call here checks that the descriptors are gone (a `RUN`'s profile
+/// cannot answer so, ADR-0109); and in the init, under a profile that
+/// refuses `close_range` and `close`, `close_listed` counts attempts, not
+/// successes, so it passes again, leaking its own directory descriptor each
+/// time, until `openat` fails at `RLIMIT_NOFILE` (threat model, section 6).
 fn close_all_except(keep: &[RawFd]) {
     let mut ok = true;
     let mut next: u32 = 0;
@@ -1924,11 +1974,7 @@ fn close_all_except(keep: &[RawFd]) {
     if ok || close_listed(keep) {
         return;
     }
-    let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
-        .maximum
-        .unwrap_or(1 << 20)
-        .min(1 << 20);
-    let limit = RawFd::try_from(limit).unwrap_or(1 << 20);
+    let limit = nofile_bound(true, 1 << 20);
     for fd in 0..=limit {
         if !keep.contains(&fd) {
             // SAFETY: closing a descriptor number; a closed one fails with
@@ -1936,6 +1982,39 @@ fn close_all_except(keep: &[RawFd]) {
             unsafe { libc::close(fd) };
         }
     }
+}
+
+/// Whether `dir` is on procfs, read through `libc` into a zeroed buffer:
+/// an `fstatfs` faked with errno 0, as a filter around ranikust may,
+/// writes nothing, which `rustix` would read uninitialised; a zero type is
+/// not procfs's.
+fn on_procfs(dir: BorrowedFd<'_>) -> bool {
+    // SAFETY: an all-zero `statfs` is a valid value of the C struct.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `fstatfs` writes one `statfs` at the pointer.
+    let r = unsafe { libc::fstatfs(dir.as_raw_fd(), &raw mut st) };
+    r == 0 && i128::from(st.f_type) == i128::from(PROC_SUPER_MAGIC)
+}
+
+/// `RLIMIT_NOFILE`'s hard (`hard`) or soft bound, at most `cap`, which also
+/// stands for an unlimited or unreadable one. Through `libc` into a value
+/// set beforehand: a `prlimit64` faked by a filter around ranikust writes
+/// nothing, which `rustix` would read uninitialised.
+fn nofile_bound(hard: bool, cap: u32) -> RawFd {
+    let cap = libc::rlim_t::from(cap);
+    let mut lim = libc::rlimit {
+        rlim_cur: cap,
+        rlim_max: cap,
+    };
+    // SAFETY: `getrlimit` writes one `rlimit` at the pointer.
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } == 0;
+    let bound = match (read, hard) {
+        (false, _) => cap,
+        (true, true) => lim.rlim_max,
+        (true, false) => lim.rlim_cur,
+    };
+    // `RLIM_INFINITY` is above any cap.
+    RawFd::try_from(bound.min(cap)).unwrap_or(RawFd::MAX)
 }
 
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
@@ -1951,9 +2030,8 @@ fn close_listed(keep: &[RawFd]) -> bool {
         ) else {
             return false;
         };
-        match rustix::fs::fstatfs(&dir) {
-            Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
-            _ => return false,
+        if !on_procfs(dir.as_fd()) {
+            return false;
         }
         let own = dir.as_raw_fd();
         let mut closed = 0;
@@ -1978,14 +2056,26 @@ fn close_listed(keep: &[RawFd]) -> bool {
     }
 }
 
-/// Installs the seccomp filter of a `RUN` that joined a held network
-/// namespace ([`crate::seccomp`]). Without `no_new_privs`: the child still
-/// has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must keep
-/// working.
-fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
+/// `setsid` through `libc`: a filter around ranikust may fake it with
+/// errno 0, so the result can be 0, which `rustix`'s `Pid` must never hold
+/// (a debug assertion, else undefined behaviour). A faked call leaves the
+/// command in its init's session, which has no controlling terminal
+/// either.
+fn new_session(err: RawFd) {
+    // SAFETY: a plain syscall without arguments.
+    if unsafe { libc::setsid() } < 0 {
+        fail(err, Step::Session, last_errno());
+    }
+}
+
+/// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]), failing
+/// as `step`, which names the filter. Without `no_new_privs`: the child
+/// still has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must
+/// keep working.
+fn install_filter(err: RawFd, p: &Program, step: Step) {
     let prog = libc::sock_fprog {
-        len: u16::try_from(filter.len()).unwrap_or(u16::MAX),
-        filter: filter.as_ptr().cast_mut(),
+        len: u16::try_from(p.insns.len()).unwrap_or(u16::MAX),
+        filter: p.insns.as_ptr().cast_mut(),
     };
     // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program, which
     // lives across the call.
@@ -1993,12 +2083,16 @@ fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
         libc::syscall(
             libc::SYS_seccomp,
             libc::SECCOMP_SET_MODE_FILTER,
-            0u32,
+            p.flags,
             &raw const prog,
         )
     };
-    if r != 0 {
-        fail(err, Step::Seccomp, last_errno());
+    // With `TSYNC`, a positive result names a thread it could not
+    // synchronise; the child has none.
+    match r {
+        0 => {}
+        r if r < 0 => fail(err, step, last_errno()),
+        _ => fail(err, step, Errno::SRCH),
     }
 }
 
@@ -2006,18 +2100,10 @@ fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
 /// permitted set to the defaults (of those the process has), inheritable
 /// empty, as Docker since 20.10.14. Root keeps the defaults through
 /// `execve`; any other user loses them at `setresuid` and can regain at
-/// most the defaults through a setuid binary or file capabilities.
+/// most the defaults through a setuid binary or file capabilities. The
+/// full sandbox's child makes the same steps around its profile ([`run`]).
 pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
-    let (drops, len) = &args.drops;
-    for &cap in drops.iter().take(*len) {
-        let set = CapabilitySet::from_bits_retain(1u64.checked_shl(cap).unwrap_or(0));
-        match rustix::thread::remove_capability_from_bounding_set(set) {
-            Ok(()) => {}
-            // Past the kernel's last capability.
-            Err(Errno::INVAL) => break,
-            Err(e) => fail(err, Step::BoundingSet, e),
-        }
-    }
+    check(err, Step::BoundingSet, args.drops.drop_all());
     trim_capabilities(err, args);
 }
 
@@ -2026,16 +2112,86 @@ pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
 /// unlike the bounding set (ADR-0051). Same rules as
 /// [`drop_capabilities`].
 pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
+    clear_ambient(err);
+    set_capability_sets(err, args);
+}
+
+fn clear_ambient(err: RawFd) {
     match rustix::thread::clear_ambient_capability_set() {
         // Kernels before 4.3 have no ambient set.
         Ok(()) | Err(Errno::INVAL) => {}
         Err(e) => fail(err, Step::AmbientSet, e),
     }
-    let current = check(
+}
+
+/// Empties the inheritable set and keeps the others as they are, so that
+/// it can come before the profile, whose install needs `CAP_SYS_ADMIN`: a
+/// root command's `execve` adds the inheritable set to the bounding set
+/// for its permitted one. The ambient set goes with it (the kernel keeps
+/// only capabilities both permitted and inheritable there).
+fn clear_inheritable(err: RawFd) {
+    let current = current_capabilities(err);
+    check(
         err,
         Step::CapabilitySets,
-        rustix::thread::capabilities(None),
+        rustix::thread::set_capabilities(
+            None,
+            CapabilitySets {
+                inheritable: CapabilitySet::empty(),
+                ..current
+            },
+        ),
     );
+}
+
+/// This thread's capability sets, read through `libc` into zeroed data: a
+/// `capget` faked with errno 0, as a filter around ranikust may, writes
+/// nothing, and `rustix` would read its buffer uninitialised. Empty sets
+/// then keep nothing, which fails safe.
+fn current_capabilities(err: RawFd) -> CapabilitySets {
+    // `struct __user_cap_header_struct` and `__user_cap_data_struct` of
+    // `linux/capability.h`, version 3: two data structs of 32 bits each.
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: libc::c_int,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const VERSION_3: u32 = 0x2008_0522;
+    let mut header = Header {
+        version: VERSION_3,
+        pid: 0,
+    };
+    let empty = Data {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    };
+    let mut data = [empty; 2];
+    // SAFETY: `capget` writes two data structs, as version 3 asks.
+    let r = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
+    if r < 0 {
+        fail(err, Step::CapabilitySets, last_errno());
+    }
+    let [low, high] = data;
+    let set = |l: u32, h: u32| CapabilitySet::from_bits_retain(u64::from(l) | u64::from(h) << 32);
+    CapabilitySets {
+        effective: set(low.effective, high.effective),
+        permitted: set(low.permitted, high.permitted),
+        inheritable: set(low.inheritable, high.inheritable),
+    }
+}
+
+/// Effective and permitted to Docker's defaults, of those the process has;
+/// inheritable empty.
+fn set_capability_sets(err: RawFd, args: &ChildArgs) {
+    let current = current_capabilities(err);
     let keep = current.permitted & CapabilitySet::from_bits_retain(args.keep);
     check(
         err,
@@ -2051,22 +2207,69 @@ pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
     );
 }
 
+/// What a refused join of the `RUN`'s session keyring does (ADR-0109).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyringJoin {
+    /// The full sandbox under a profile that lets `keyctl`, `add_key` or
+    /// `request_key` run: the `RUN` fails, as `Step::KeyringRefused`, while
+    /// the session keyring can still be looked up, whatever refused the
+    /// join and with which errno.
+    Required,
+    /// The full sandbox under a profile that refuses all three, or the
+    /// privilege probe's, whose command does not exist: the `RUN` goes on.
+    Optional,
+    /// `Direct`, under the container's profile: `ENOSYS`, `EPERM` and
+    /// `EACCES` go on, any other errno fails as `Step::SessionKeyring`.
+    Direct,
+}
+
 /// A new, empty session keyring, so that a `RUN` cannot use the keys of
-/// ranikust's session keyring (threat T11), as runc does. Where `keyctl` is
-/// missing or refused (Docker's seccomp profile), the `RUN` cannot reach
-/// any keyring either.
-fn join_session_keyring(err: RawFd) {
+/// ranikust's session keyring (threat T11), as runc does, before the
+/// `RUN`'s profile; a refused join does what `how` says.
+pub(crate) fn join_session_keyring(err: RawFd, how: KeyringJoin) {
     // `KEYCTL_JOIN_SESSION_KEYRING` from `linux/keyctl.h`, a stable ABI.
     const KEYCTL_JOIN_SESSION_KEYRING: libc::c_long = 1;
     let anonymous: libc::c_long = 0;
     // SAFETY: a plain syscall; a null name asks for an anonymous keyring.
     let r = unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_JOIN_SESSION_KEYRING, anonymous) };
-    if r < 0 {
-        let e = last_errno();
-        if !matches!(e, Errno::NOSYS | Errno::PERM | Errno::ACCESS) {
-            fail(err, Step::SessionKeyring, e);
-        }
+    if r >= 0 {
+        return;
     }
+    let e = last_errno();
+    match how {
+        KeyringJoin::Optional => {}
+        KeyringJoin::Required => {
+            if session_keyring_found() {
+                fail(err, Step::KeyringRefused, e);
+            }
+        }
+        KeyringJoin::Direct => match e {
+            Errno::NOSYS | Errno::PERM | Errno::ACCESS => {}
+            e => fail(err, Step::SessionKeyring, e),
+        },
+    }
+}
+
+/// Whether `KEYCTL_GET_KEYRING_ID` finds the session keyring, ranikust's
+/// once the join was refused; not when the lookup is refused, as under
+/// Docker's default profile around ranikust, which refuses `keyctl`
+/// whole. A success answered by a filter around ranikust counts as found.
+fn session_keyring_found() -> bool {
+    // `KEYCTL_GET_KEYRING_ID` and `KEY_SPEC_SESSION_KEYRING` from
+    // `linux/keyctl.h`; 0 asks not to create one.
+    const KEYCTL_GET_KEYRING_ID: libc::c_long = 0;
+    const KEY_SPEC_SESSION_KEYRING: libc::c_long = -3;
+    let create: libc::c_long = 0;
+    // SAFETY: a plain syscall with integer arguments.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_keyctl,
+            KEYCTL_GET_KEYRING_ID,
+            KEY_SPEC_SESSION_KEYRING,
+            create,
+        )
+    };
+    r >= 0
 }
 
 /// Right after [`close_inherited`], before anything a `RUN` can steer is
@@ -2129,11 +2332,18 @@ fn dup_to(err: RawFd, source: RawFd, target: RawFd) {
     }
 }
 
+/// The umask 022, through `libc`: after the `RUN`'s profile, which may
+/// refuse it, `rustix` would assert in a debug build that it cannot fail.
+fn set_umask() {
+    // SAFETY: `umask` only sets this process's file mode mask.
+    unsafe { libc::umask(0o022) };
+}
+
 /// The umask, signal dispositions and mask, and descriptors a container
 /// process starts with.
 fn reset_process_state() {
     // Files the command creates must not depend on ranikust's umask.
-    rustix::process::umask(Mode::from_raw_mode(0o022));
+    set_umask();
     // SAFETY: zeroed `sigaction` is `SIG_DFL` with an empty mask and no
     // flags; resetting a disposition to the default is async-signal-safe.
     // Rust's runtime ignores SIGPIPE, and ignored signals survive `execve`.
@@ -2159,11 +2369,7 @@ fn reset_process_state() {
     if r != 0 && !cloexec_listed() {
         // Linux before 5.11 without a readable `/proc/self/fd`: mark each
         // descriptor number one by one, up to a bound.
-        let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile)
-            .current
-            .unwrap_or(1 << 16)
-            .min(1 << 16);
-        let limit = RawFd::try_from(limit).unwrap_or(1 << 16);
+        let limit = nofile_bound(false, 1 << 16);
         for fd in 3..limit {
             // SAFETY: `F_GETFD`/`F_SETFD` on a descriptor number; a closed
             // one fails with EBADF and is skipped.
@@ -2191,9 +2397,8 @@ fn cloexec_listed() -> bool {
     };
     // After entering the root, `/proc` is the image's path: only the proc
     // mounted there may be trusted to list the descriptors.
-    match rustix::fs::fstatfs(&dir) {
-        Ok(st) if st.f_type == PROC_SUPER_MAGIC => {}
-        _ => return false,
+    if !on_procfs(dir.as_fd()) {
+        return false;
     }
     let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
     let mut entries = RawDir::new(&dir, &mut buf);
@@ -2256,8 +2461,13 @@ fn exec(err: RawFd, args: &ChildArgs, ptrs: &ExecPtrs<'_>) -> ! {
         }
         // SAFETY: `candidate` is NUL-terminated; `argv` and `envp` are
         // NULL-terminated arrays of pointers into `args`, which outlives the
-        // call. `execve` returns only on failure.
-        unsafe { libc::execve(candidate.as_ptr(), ptrs.argv.as_ptr(), ptrs.envp.as_ptr()) };
+        // call.
+        let r = unsafe { libc::execve(candidate.as_ptr(), ptrs.argv.as_ptr(), ptrs.envp.as_ptr()) };
+        // Back with no error is no `execve` of the kernel's: no next
+        // candidate either.
+        if r >= 0 {
+            fail(err, Step::Exec, Errno::PROTO);
+        }
         let e = last_errno();
         match e.raw_os_error() {
             libc::ENOENT | libc::ENOTDIR => {}
@@ -2305,9 +2515,8 @@ fn exec_script(err: RawFd, fd: RawFd, ptrs: &ExecPtrs<'_>) -> ! {
         fail(err, Step::Exec, last_errno());
     }
     // SAFETY: the path is an empty NUL-terminated string, `argv` and `envp`
-    // are NULL-terminated arrays of pointers into a live `ChildArgs`;
-    // `execveat` returns only on failure.
-    unsafe {
+    // are NULL-terminated arrays of pointers into a live `ChildArgs`.
+    let r = unsafe {
         libc::syscall(
             libc::SYS_execveat,
             fd,
@@ -2315,18 +2524,21 @@ fn exec_script(err: RawFd, fd: RawFd, ptrs: &ExecPtrs<'_>) -> ! {
             ptrs.argv.as_ptr(),
             ptrs.envp.as_ptr(),
             libc::AT_EMPTY_PATH,
-        );
+        )
+    };
+    // Back with no error is no `execveat` of the kernel's.
+    if r >= 0 {
+        fail(err, Step::Exec, Errno::PROTO);
     }
     fail(err, Step::Exec, last_errno())
 }
 
 fn last_errno() -> Errno {
-    // Reads `errno`; builds no heap value.
-    Errno::from_raw_os_error(
-        std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or(libc::EIO),
-    )
+    // Reads `errno`; builds no heap value. `rustix` takes 1 to 4095 only.
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(e @ 1..=4095) => Errno::from_raw_os_error(e),
+        _ => Errno::PROTO,
+    }
 }
 
 pub(crate) fn check<T>(err: RawFd, step: Step, r: rustix::io::Result<T>) -> T {
@@ -2365,6 +2577,306 @@ pub(crate) fn decode_failure(record: [u8; 8]) -> Option<(Step, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Seccomp filters run by the kernel, in a forked child.
+    mod kernel {
+        use super::*;
+
+        /// Runs `step` in a forked child under a profile that answers
+        /// `rule` (a JSON rule, or none if empty) and allows the rest;
+        /// gives the failure it recorded, if any, checking that it exited
+        /// as `fail` does.
+        fn failure_under(rule: &str, step: impl Fn(RawFd)) -> Option<(Step, i32)> {
+            let json = format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
+            let prog = crate::SeccompProfile::faking(json.as_bytes())
+                .unwrap()
+                .program;
+            let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+            let status = crate::seccomp::under_filter(&prog, || {
+                step(w.as_raw_fd());
+                0
+            });
+            drop(w);
+            let mut record = [0u8; 8];
+            let n = rustix::io::read(&r, &mut record).unwrap();
+            assert!(libc::WIFEXITED(status), "{rule}: status {status:#x}");
+            if n == 0 {
+                assert_eq!(libc::WEXITSTATUS(status), 0, "{rule}");
+                return None;
+            }
+            assert_eq!(libc::WEXITSTATUS(status), 127, "{rule}");
+            assert_eq!(n, 8, "{rule}");
+            Some(decode_failure(record).expect("a failure record"))
+        }
+
+        /// A refused keyring join (ADR-0109), by an LSM or a filter around
+        /// ranikust: in the full sandbox it fails the `RUN` while the
+        /// session keyring can still be looked up, whatever the errno,
+        /// unless the profile refuses `keyctl`, `add_key` and
+        /// `request_key`. Where a filter refuses the lookup too, as
+        /// Docker's default does around ranikust by refusing `keyctl`
+        /// whole, the `RUN` goes on. `Direct` decides by the errno.
+        #[test]
+        fn a_refused_keyring_join_fails_while_the_session_keyring_is_found() {
+            use KeyringJoin::{Direct, Optional, Required};
+            use libc::{EACCES, EINVAL, ENOSYS, EPERM};
+            // `KEYCTL_GET_KEYRING_ID` is 0, `KEYCTL_JOIN_SESSION_KEYRING` 1.
+            let on = |arg0: u32, errno: i32| {
+                format!(
+                    r#"{{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno},
+                        "args": [{{"index": 0, "value": {arg0}, "op": "SCMP_CMP_EQ"}}]}}"#
+                )
+            };
+            let whole = |errno: i32| {
+                format!(
+                    r#"{{"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                )
+            };
+            // The lookup answered as found, whatever keyrings this test has.
+            let reachable = |errno: i32| format!("{},{}", on(1, errno), on(0, 0));
+            let refused = Step::KeyringRefused;
+            for (rule, how, want) in [
+                (reachable(EACCES), Required, Some((refused, EACCES))),
+                (reachable(EPERM), Required, Some((refused, EPERM))),
+                (reachable(ENOSYS), Required, Some((refused, ENOSYS))),
+                (reachable(EACCES), Optional, None),
+                (whole(EPERM), Required, None),
+                (whole(EACCES), Required, None),
+                (
+                    format!("{},{}", on(1, EACCES), on(0, EACCES)),
+                    Required,
+                    None,
+                ),
+                (reachable(EACCES), Direct, None),
+                (whole(EPERM), Direct, None),
+                (whole(ENOSYS), Direct, None),
+                (whole(EINVAL), Direct, Some((Step::SessionKeyring, EINVAL))),
+            ] {
+                let got = failure_under(&rule, |w| join_session_keyring(w, how));
+                assert_eq!(got, want, "{rule}, {how:?}");
+            }
+        }
+
+        /// The reads after the profile take `EINTR` for a failure instead of
+        /// reading again: only a filter answers so, and it could forever.
+        /// The alarm stops a loop. The parent check reads this process's
+        /// `stat` and its real parent, so that unfiltered it holds.
+        #[test]
+        fn an_eintr_on_a_read_after_the_profile_fails_instead_of_looping() {
+            let stat = rustix::fs::open(
+                c"/proc/self/stat",
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            let parent = ParentCheck {
+                stat: stat.as_raw_fd(),
+                parent: i32::try_from(std::os::unix::process::parent_id()).unwrap(),
+            };
+            let (go, _go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+            let eintr = |name: &str| {
+                format!(
+                    r#"{{"names": ["{name}"], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}"#,
+                    libc::EINTR
+                )
+            };
+            let alarm = || {
+                // SAFETY: `alarm` only arms a timer.
+                unsafe { libc::alarm(5) };
+            };
+            let init = |e| Some((Step::Init, e));
+            let go_read = failure_under(&eintr("read"), |w| {
+                alarm();
+                wait_for_go(w, &go);
+            });
+            assert_eq!(go_read, init(libc::EINTR), "go pipe");
+            let zeroing = failure_under(&eintr("pread64"), |w| {
+                alarm();
+                zero_args_and_environment(w, parent);
+            });
+            assert_eq!(zeroing, init(libc::EINTR), "argument areas");
+            let alive = |rule: &str| {
+                failure_under(rule, |w| {
+                    alarm();
+                    if !parent_alive(parent) {
+                        fail(w, Step::Init, Errno::SRCH);
+                    }
+                })
+            };
+            assert_eq!(alive(""), None, "parent check, unfiltered");
+            assert_eq!(alive(&eintr("pread64")), init(libc::ESRCH), "parent check");
+        }
+
+        /// A `#!` heredoc's `execveat` answered with no error fails the
+        /// `RUN` with `EPROTO`, whatever `errno` held before.
+        #[test]
+        fn an_execveat_back_without_an_error_fails_the_run() {
+            let script =
+                rustix::fs::memfd_create(c"script", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+            let mut args = test_args();
+            args.script = Some(script.as_raw_fd());
+            let ptrs = ExecPtrs::new(&args);
+            let rule = r#"{"names": ["execveat"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| {
+                    // SAFETY: `errno` is this thread's own.
+                    unsafe { *libc::__errno_location() = libc::EBADF };
+                    exec(w, &args, &ptrs)
+                }),
+                Some((Step::Exec, libc::EPROTO))
+            );
+        }
+
+        /// `execve` answered with no error never runs the next candidate:
+        /// the `RUN` fails (`EPROTO`) at the first.
+        #[test]
+        fn an_execve_back_without_an_error_fails_the_run() {
+            let mut args = test_args();
+            args.candidates = vec![c"/bin/true".into(), c"/bin/false".into()];
+            let ptrs = ExecPtrs::new(&args);
+            let rule = r#"{"names": ["execve"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| exec(w, &args, &ptrs)),
+                Some((Step::Exec, libc::EPROTO))
+            );
+        }
+
+        /// A `waitpid` of the init's answered with 0 or `EINTR` ends the
+        /// init (125) instead of waiting on in a loop, with a command
+        /// (exit 7) still to reap: unfiltered, the init reaps it and gives
+        /// its status. The alarm stops a loop.
+        #[test]
+        fn a_waitpid_answered_with_0_or_eintr_ends_the_init() {
+            let init_under = |rule: &str| {
+                let json =
+                    format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
+                let prog = crate::SeccompProfile::faking(json.as_bytes())
+                    .unwrap()
+                    .program;
+                let status = crate::seccomp::under_filter(&prog, || {
+                    // SAFETY: `under_filter`'s child is single-threaded, and
+                    // the forked command only exits.
+                    let command = unsafe { libc::fork() };
+                    if command == 0 {
+                        // SAFETY: `_exit` ends the process at once.
+                        unsafe { libc::_exit(7) }
+                    }
+                    // Without a command, `ECHILD` would give 125 too.
+                    if command < 0 {
+                        return 202;
+                    }
+                    // SAFETY: `alarm` only arms a timer.
+                    unsafe { libc::alarm(5) };
+                    libc::WEXITSTATUS(reap_until(command))
+                });
+                libc::WIFEXITED(status).then_some(libc::WEXITSTATUS(status))
+            };
+            assert_eq!(init_under(""), Some(7), "unfiltered");
+            for errno in [0, libc::EINTR] {
+                let rule = format!(
+                    r#"{{"names": ["wait4", "waitid"], "action": "SCMP_ACT_ERRNO",
+                        "errnoRet": {errno}}}"#
+                );
+                assert_eq!(init_under(&rule), Some(125), "errno {errno}");
+            }
+        }
+
+        /// A `pipe2` of the init's faked with errno 0, as a filter around
+        /// ranikust may, writes no descriptor, which fails the `RUN`
+        /// instead of handing on two that were never opened.
+        #[test]
+        fn a_faked_pipe_fails_the_init() {
+            let rule = r#"{"names": ["pipe2"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| drop(init_pipe(w))),
+                Some((Step::Init, libc::EBADF))
+            );
+            assert_eq!(failure_under("", |w| drop(init_pipe(w))), None);
+        }
+
+        /// Fills the stack below its caller with procfs's magic, so that a
+        /// buffer read before anything wrote it there looks like procfs,
+        /// or like a descriptor limit below every cap. Only in a debug
+        /// build: an optimised one may inline the read into its caller's
+        /// own frame, which this does not reach.
+        #[inline(never)]
+        fn proc_magic_below() {
+            // A local, not a promoted constant: it must be on the stack.
+            let mut words = [PROC_SUPER_MAGIC; 4096];
+            std::hint::black_box(&mut words);
+        }
+
+        /// An `fstatfs` faked with errno 0, as a filter around ranikust
+        /// may, makes `/proc/self/fd` read as not procfs, so the list is
+        /// not trusted, whatever the stack held before.
+        #[test]
+        fn a_faked_fstatfs_is_not_procfs() {
+            let dir = rustix::fs::open(
+                c"/proc/self/fd",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            assert!(on_procfs(dir.as_fd()));
+            let rule = r#"{"names": ["fstatfs"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            assert_eq!(
+                failure_under(rule, |w| {
+                    proc_magic_below();
+                    if on_procfs(dir.as_fd()) {
+                        fail(w, Step::Init, Errno::PROTO);
+                    }
+                }),
+                None
+            );
+        }
+
+        /// For the descriptor-closing fallbacks, a `prlimit64` refused, or
+        /// faked with errno 0 by a filter around ranikust whatever the
+        /// stack held before, leaves the bound at its cap. `prlimit64` alone:
+        /// glibc and musl read the limit through it, and aarch64's glibc
+        /// names no `getrlimit`.
+        #[test]
+        fn a_faked_or_refused_getrlimit_leaves_the_cap() {
+            for errno in [0, libc::EPERM] {
+                let rule = format!(
+                    r#"{{"names": ["prlimit64"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                );
+                let got = failure_under(&rule, |w| {
+                    proc_magic_below();
+                    if nofile_bound(true, 1 << 20) != 1 << 20
+                        || nofile_bound(false, 1 << 16) != 1 << 16
+                    {
+                        fail(w, Step::Init, Errno::PROTO);
+                    }
+                });
+                assert_eq!(got, None, "errno {errno}");
+            }
+        }
+
+        /// The command's umask, set again after its profile, which may
+        /// refuse it: that fails nothing (022 was set before the profile).
+        /// The assertion it guards against, `rustix`'s, is in a debug
+        /// build only.
+        #[test]
+        fn a_refused_umask_after_the_profile_fails_nothing() {
+            let rule = r#"{"names": ["umask"], "action": "SCMP_ACT_ERRNO", "errnoRet": 1}"#;
+            assert_eq!(failure_under(rule, |_| reset_process_state()), None);
+        }
+
+        /// The command's `setsid` faked with errno 0, as a filter around
+        /// ranikust may (ADR-0109), fails nothing (the command stays in its
+        /// init's session) and never reaches a `Pid`; a real refusal fails
+        /// the `RUN`.
+        #[test]
+        fn a_faked_setsid_fails_nothing_and_a_refused_one_fails_the_run() {
+            for (errno, want) in [(0, None), (libc::EPERM, Some((Step::Session, libc::EPERM)))] {
+                let rule = format!(
+                    r#"{{"names": ["setsid"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                );
+                assert_eq!(failure_under(&rule, new_session), want, "errno {errno}");
+            }
+        }
+    }
 
     #[test]
     fn fd_paths() {
@@ -2483,9 +2995,9 @@ mod tests {
         assert_eq!(decode_failure([0xff; 8]), None);
     }
 
-    #[test]
-    fn exec_pointer_arrays_are_null_terminated() {
-        let args = ChildArgs {
+    /// A `ChildArgs` for tests that only read it.
+    fn test_args() -> ChildArgs {
+        ChildArgs {
             root_dir: c"/r".into(),
             root_remount: MountFlags::BIND,
             root_nodev_rec: false,
@@ -2499,8 +3011,10 @@ mod tests {
             hostname: Vec::new(),
             loopback: false,
             netns: None,
-            seccomp: None,
-            drops: ([0; 64], 0),
+            network_filter: None,
+            profile: None,
+            keyring: KeyringJoin::Required,
+            drops: BoundingDrops::NONE,
             keep: 0,
             uid: Uid::ROOT,
             gid: Gid::ROOT,
@@ -2516,7 +3030,20 @@ mod tests {
             envp: vec![c"A=1".into()],
             candidates: Vec::new(),
             script: None,
-        };
+        }
+    }
+
+    /// `errno` 0, which no failed call leaves, is no errno `rustix` takes.
+    #[test]
+    fn errno_0_reads_as_eproto() {
+        // SAFETY: this thread's own `errno`.
+        unsafe { *libc::__errno_location() = 0 };
+        assert_eq!(last_errno(), Errno::PROTO);
+    }
+
+    #[test]
+    fn exec_pointer_arrays_are_null_terminated() {
+        let args = test_args();
         let ptrs = ExecPtrs::new(&args);
         assert_eq!(ptrs.argv.len(), 3);
         assert!(ptrs.argv[2].is_null());

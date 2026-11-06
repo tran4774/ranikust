@@ -77,8 +77,12 @@ pub enum Step {
     ReadonlyPath,
     /// Masking a `/proc` or `/sys` path.
     MaskPath,
-    /// Joining a new session keyring.
+    /// Joining a new session keyring (`Direct`).
     SessionKeyring,
+    /// The same join refused while ranikust's session keyring can still be
+    /// looked up and the `RUN`'s profile lets `keyctl`, `add_key` or
+    /// `request_key` run (ADR-0109).
+    KeyringRefused,
     /// Writing and binding a `RUN --mount=type=secret` file on its tmpfs.
     Secret,
     /// Creating the network namespace of `--network=none` in the helper
@@ -86,8 +90,11 @@ pub enum Step {
     NetNamespace,
     /// Joining that network namespace.
     JoinNetwork,
-    /// Installing the seccomp filter of a `RUN` in such a namespace.
+    /// Installing the `RUN`'s seccomp profile.
     Seccomp,
+    /// Installing the seccomp filter of a `RUN` in such a namespace
+    /// (ADR-0033).
+    NetworkFilter,
     /// `chroot` into a root other than `/` (`Isolation::Direct`).
     Chroot,
     /// Giving the command the `RLIMIT_NOFILE` ranikust started with.
@@ -100,7 +107,7 @@ pub enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 41] = [
+    const ALL: [Step; 43] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -134,10 +141,12 @@ impl Step {
         Step::ReadonlyPath,
         Step::MaskPath,
         Step::SessionKeyring,
+        Step::KeyringRefused,
         Step::Secret,
         Step::NetNamespace,
         Step::JoinNetwork,
         Step::Seccomp,
+        Step::NetworkFilter,
         Step::Chroot,
         Step::FileLimit,
         Step::CoreLimit,
@@ -195,10 +204,21 @@ impl Step {
             Step::ReadonlyPath => "make a /proc path read-only",
             Step::MaskPath => "mask a /proc or /sys path",
             Step::SessionKeyring => "join a new session keyring",
+            Step::KeyringRefused => {
+                "join a new session keyring, refused while ranikust's could still be looked up \
+                 (a RUN goes on without one only under a seccomp profile that refuses keyctl, \
+                 add_key and request_key, as --seccomp=default does)"
+            }
             Step::Secret => "write and bind a secret file",
             Step::NetNamespace => "create the network namespace",
             Step::JoinNetwork => "join the network namespace",
-            Step::Seccomp => "install the seccomp filter",
+            Step::Seccomp => {
+                "install the RUN's seccomp profile (--seccomp=unconfined runs RUN without one)"
+            }
+            Step::NetworkFilter => {
+                "install the seccomp filter of RUN --network=none in a user namespace \
+                 (--allow network.none-userns, ADR-0033)"
+            }
             Step::Chroot => "chroot into the root",
             Step::FileLimit => "set RLIMIT_NOFILE",
             Step::CoreLimit => "set RLIMIT_CORE",
@@ -313,6 +333,10 @@ pub enum Error {
         /// How many were alive after the last round.
         left: usize,
     },
+    /// A seccomp profile is malformed or asks for what ranikust does not
+    /// support (ADR-0109); nothing ran.
+    #[error("seccomp profile: {0}")]
+    SeccompProfile(String),
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,
@@ -416,5 +440,29 @@ mod tests {
         let text = e.to_string();
         assert!(text.contains("pivot_root"), "{text}");
         assert!(text.contains("not permitted"), "{text}");
+    }
+
+    /// A filter that fails to install is named, the profile's failure says
+    /// how to run without it, and a keyring join an LSM refused which
+    /// profile lets the `RUN` go on; any other failed join names no flag.
+    #[test]
+    fn a_failed_filter_install_names_the_filter() {
+        let text = |step| {
+            Error::Setup {
+                step,
+                source: io::Error::from_raw_os_error(libc::EINVAL),
+            }
+            .to_string()
+        };
+        let profile = text(Step::Seccomp);
+        assert!(profile.contains("seccomp profile"), "{profile}");
+        assert!(profile.contains("--seccomp=unconfined"), "{profile}");
+        let network = text(Step::NetworkFilter);
+        assert!(network.contains("network.none-userns"), "{network}");
+        assert!(!network.contains("--seccomp=unconfined"), "{network}");
+        let refused = text(Step::KeyringRefused);
+        assert!(refused.contains("--seccomp=default"), "{refused}");
+        let keyring = text(Step::SessionKeyring);
+        assert!(!keyring.contains("--seccomp"), "{keyring}");
     }
 }

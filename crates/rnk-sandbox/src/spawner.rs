@@ -28,7 +28,7 @@ use tracing::field::Empty;
 use crate::caps;
 use crate::child::{
     self, ChildArgs, ChildFds, ChildMount, ChildSecret, ChildSecrets, ChildStdio, ExecPtrs,
-    MadeMounts, RootEntry,
+    KeyringJoin, MadeMounts, RootEntry,
 };
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
@@ -36,7 +36,7 @@ use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
 use crate::relay::Relay;
-use crate::seccomp;
+use crate::seccomp::{self, Program, SeccompProfile};
 use crate::spec::{
     DEFAULT_HOSTNAME, Isolation, MountKind, Network, RootId, RunSpec, SecretFile, Stdio, root_id,
 };
@@ -62,12 +62,15 @@ impl Sandbox {
     /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
     /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
     /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
-    /// cannot mount uses [`Sandbox::start_direct`].
+    /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
+    /// under [`SeccompProfile::docker_default`] until
+    /// [`Sandbox::set_seccomp`] says otherwise (ADR-0103).
     ///
     /// # Errors
     ///
     /// The directory cannot be created or is a symlink, a journal cannot be
-    /// listed, or the thread cannot start.
+    /// listed, the default seccomp profile cannot be compiled here
+    /// ([`Error::SeccompProfile`]), or the thread cannot start.
     pub fn start(caps: Caps, dir: &Path) -> Result<Self> {
         Self::start_inner(Some(caps), dir, None)
     }
@@ -145,7 +148,7 @@ impl Sandbox {
     }
 
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
-        let runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
+        let mut runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
             tracing::info!(
@@ -154,6 +157,8 @@ impl Sandbox {
                 replayed.journals
             );
         }
+        // After the replay, which no profile error may hold up.
+        runner.seccomp = Some(SeccompProfile::docker_default()?);
         Self::spawn_thread(runner)
     }
 
@@ -202,6 +207,15 @@ impl Sandbox {
     /// before the first `RUN`.
     pub fn allow_userns_network(&mut self) {
         self.runner.userns_network = true;
+    }
+
+    /// The seccomp profile of every later [`Isolation::Full`] `RUN`:
+    /// `None` is `--seccomp=unconfined`, which leaves ADR-0033's filter of
+    /// a `--network=none` `RUN` in a user namespace in place. A
+    /// [`Isolation::Direct`] `RUN` never gets one (ADR-0103). Call before
+    /// the first `RUN`.
+    pub fn set_seccomp(&mut self, profile: Option<SeccompProfile>) {
+        self.runner.seccomp = profile;
     }
 
     /// Every later `RUN`, of any isolation, starts with `limit` as its
@@ -640,7 +654,7 @@ pub(crate) struct Runner {
     state_dir: PathBuf,
     /// `None`: the probe failed, only [`Isolation::Direct`] runs.
     root_entry: Option<RootEntry>,
-    drops: ([u32; 64], usize),
+    drops: caps::BoundingDrops,
     next: AtomicU64,
     /// Found at the first `--network=none` `RUN`.
     net_mode: OnceLock<NetMode>,
@@ -659,6 +673,11 @@ pub(crate) struct Runner {
     /// Whether a full-sandbox child may use `open_tree` and `move_mount`;
     /// `None` probes ([`mount_api_supported`]).
     mount_api: Option<bool>,
+    /// The profile of a [`Isolation::Full`] `RUN`; `None` for the probe's
+    /// runner, [`Sandbox::start_direct`]'s and `--seccomp=unconfined`.
+    seccomp: Option<SeccompProfile>,
+    /// The probe's runner ([`Runner::for_probe`]).
+    probe: bool,
 }
 
 /// Refuses a `root_dir` that is not the path the kernel gives its
@@ -707,7 +726,7 @@ impl Runner {
             state_dir: dir.parent().unwrap_or(dir).to_path_buf(),
             runs_dir,
             root_entry,
-            drops: caps::bounding_drops(caps::last_cap()),
+            drops: caps::BoundingDrops::current(),
             next: AtomicU64::new(0),
             net_mode: OnceLock::new(),
             userns_network: false,
@@ -715,6 +734,8 @@ impl Runner {
             shared_root: None,
             direct_only: false,
             mount_api: None,
+            seccomp: None,
+            probe: false,
         })
     }
 
@@ -725,7 +746,7 @@ impl Runner {
             runs_dir: PathBuf::new(),
             state_dir: PathBuf::new(),
             root_entry: None,
-            drops: caps::bounding_drops(caps::last_cap()),
+            drops: caps::BoundingDrops::current(),
             next: AtomicU64::new(0),
             net_mode: OnceLock::new(),
             userns_network: false,
@@ -733,6 +754,8 @@ impl Runner {
             shared_root: None,
             direct_only: true,
             mount_api: None,
+            seccomp: None,
+            probe: false,
         }
     }
 
@@ -742,6 +765,14 @@ impl Runner {
 
     pub(crate) fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    /// The probe's runner: its command does not exist, so nothing it starts
+    /// executes, and a refused keyring join is left to the `RUN`s
+    /// that follow, under their own profile (ADR-0109).
+    pub(crate) fn for_probe(mut self) -> Self {
+        self.probe = true;
+        self
     }
 
     /// Makes `--network=none` use a [`NetNs`] whatever the probe would
@@ -1074,17 +1105,36 @@ impl Runner {
                 }
             }
         }
+        let profile = match spec.isolation {
+            Isolation::Full => self.seccomp.as_ref(),
+            Isolation::Direct => None,
+        };
         // A `RUN` in a user namespace's network namespace never runs
-        // without its filter.
-        let seccomp = if hold_network {
-            Some(
-                seccomp::userns_network().ok_or_else(|| Error::NoLoopbackUserns {
-                    direct: io::Error::from_raw_os_error(libc::EPERM),
-                    userns: io::Error::from_raw_os_error(libc::ENOSYS),
-                })?,
-            )
+        // without its filter, installed before the profile so that the
+        // profile cannot fake its install.
+        let network_filter = if hold_network {
+            let insns = seccomp::userns_network().ok_or_else(|| Error::NoLoopbackUserns {
+                direct: io::Error::from_raw_os_error(libc::EPERM),
+                userns: io::Error::from_raw_os_error(libc::ENOSYS),
+            })?;
+            Some(Program {
+                insns: insns.into(),
+                flags: 0,
+            })
         } else {
             None
+        };
+        // A refused join fails a full-sandbox `RUN` (not the probe's) while
+        // ranikust's session keyring is found and the `RUN`'s profile lets
+        // `keyctl`, `add_key` or `request_key` run (ADR-0109).
+        let keyring = match spec.isolation {
+            Isolation::Full
+                if self.probe || profile.is_some_and(SeccompProfile::refuses_keyrings) =>
+            {
+                KeyringJoin::Optional
+            }
+            Isolation::Full => KeyringJoin::Required,
+            Isolation::Direct => KeyringJoin::Direct,
         };
         let mount_api =
             spec.isolation == Isolation::Full && self.mount_api.unwrap_or_else(mount_api_supported);
@@ -1114,7 +1164,9 @@ impl Runner {
             loopback,
             netns: None,
             // Only with a `NetNs`; `probe_network` checked it exists.
-            seccomp,
+            network_filter,
+            profile: profile.map(|p| p.program.clone()),
+            keyring,
             drops: self.drops,
             keep: caps::docker_default_mask(),
             uid: Uid::from_raw(user.uid),
@@ -3232,6 +3284,453 @@ mod tests {
         spec.stdin = Stdio::Fd(File::open("/dev/null").unwrap().into());
         spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
         spec.stderr = Stdio::Fd(file.into());
+    }
+
+    /// `Seccomp_filters` of `/proc/self/status` (Linux 5.9): how many
+    /// filters the process runs under.
+    fn seccomp_filters(status: &str) -> Option<u32> {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("Seccomp_filters:"))
+            .and_then(|n| n.trim().parse().ok())
+    }
+
+    /// T2 (ADR-0103, ADR-0109): a full-sandbox `RUN` runs under Docker's
+    /// default profile, one filter more than ranikust, which refuses
+    /// `personality(ADDR_NO_RANDOMIZE)` (`setarch -R`);
+    /// `--seccomp=unconfined` adds none; a profile file's own rule takes
+    /// effect in its place. Each `RUN` runs in a session keyring of its own
+    /// (T11), joined before the profile: a profile that refuses the join
+    /// with an errno the child does not take for "unsupported" still lets
+    /// the `RUN` start.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_run_gets_its_seccomp_profile() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
+                .expect("Seccomp_filters in /proc/self/status");
+            let file = SeccompProfile::from_json(
+                br#"{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                    {"names": ["uname"], "action": "SCMP_ACT_ERRNO", "errnoRet": 13}]}"#,
+            )
+            .unwrap();
+            // `KEYCTL_JOIN_SESSION_KEYRING` is 1; errno 99 is not one the
+            // child takes for "unsupported".
+            let join = SeccompProfile::from_json(
+                br#"{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                    {"names": ["keyctl"], "action": "SCMP_ACT_ERRNO", "errnoRet": 99,
+                     "args": [{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}]}]}"#,
+            )
+            .unwrap();
+            // SAFETY: a plain syscall that reads no memory.
+            let ours = unsafe {
+                libc::syscall(
+                    libc::SYS_keyctl,
+                    libc::c_long::from(libc::KEYCTL_GET_KEYRING_ID),
+                    libc::c_long::from(libc::KEY_SPEC_SESSION_KEYRING),
+                    libc::c_long::from(0),
+                )
+            };
+            assert!(
+                ours > 0,
+                "the test's session keyring: {}",
+                std::io::Error::last_os_error()
+            );
+            // `keyring=-1` where the profile refuses `keyctl`.
+            let probe = format!(
+                "cat /proc/self/status; \
+                 if setarch -R true; then echo personality=ok; else echo personality=refused; fi; \
+                 if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi; \
+                 python3 -c 'import ctypes as c; print(\"keyring=%d\" % c.CDLL(None).syscall(\
+                 c.c_long({}), c.c_long({}), c.c_long({}), c.c_long(0)))'",
+                libc::SYS_keyctl,
+                libc::KEYCTL_GET_KEYRING_ID,
+                libc::KEY_SPEC_SESSION_KEYRING,
+            );
+            let mut got = Vec::new();
+            for (name, profile) in [
+                ("default", Some(SeccompProfile::docker_default().unwrap())),
+                ("unconfined", None),
+                ("file", Some(file)),
+                ("join", Some(join)),
+            ] {
+                runner.seccomp = profile;
+                let out = top.join(format!("out-{name}"));
+                let mut spec = RunSpec::new(
+                    &root,
+                    vec!["/bin/sh".into(), "-c".into(), probe.clone().into()],
+                );
+                output_to(&out, &mut spec);
+                let st = runner.run(spec, None, |job| clone_child(job, parent));
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                println!("{name}: {st:?}\n{text}");
+                got.push((name, st.map(|s| s.success()).ok(), text));
+            }
+            drop(mounts);
+            let mut keyrings = vec![ours];
+            for ((name, ok, text), (filters, personality, uname, keyctl)) in got.iter().zip([
+                (own + 1, "personality=refused", "uname=ok", false),
+                (own, "personality=ok", "uname=ok", true),
+                (own + 1, "personality=ok", "uname=refused", true),
+                (own + 1, "personality=ok", "uname=ok", true),
+            ]) {
+                assert_eq!(*ok, Some(true), "{name}: the RUN ran: {text}");
+                assert_eq!(seccomp_filters(text), Some(filters), "{name}: {text}");
+                assert!(text.contains(personality), "{name}: {personality}: {text}");
+                assert!(text.contains(uname), "{name}: {uname}: {text}");
+                let keyring: Option<i64> = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("keyring="))
+                    .and_then(|n| n.trim().parse().ok());
+                if keyctl {
+                    let k = keyring
+                        .filter(|&k| k > 0)
+                        .unwrap_or_else(|| panic!("{name}: no keyring id: {text}"));
+                    assert!(
+                        !keyrings.contains(&k),
+                        "{name}: keyring {k} not new: {text}"
+                    );
+                    keyrings.push(k);
+                } else {
+                    assert_eq!(keyring, Some(-1), "{name}: keyctl refused: {text}");
+                }
+            }
+        });
+    }
+
+    /// A profile of rules on a default that allows; errno 0 compiles, as a
+    /// filter around ranikust may answer with it, though `--seccomp` refuses
+    /// it (ADR-0109).
+    fn allow_but(rules: &str) -> SeccompProfile {
+        SeccompProfile::faking(
+            format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rules}]}}"#).as_bytes(),
+        )
+        .unwrap()
+    }
+
+    /// A rule answering `name` (with `arg0`, if given) with `errno`, 0
+    /// being a faked success.
+    fn errno_rule(name: &str, errno: i32, arg0: Option<u32>) -> String {
+        let args = arg0.map_or(String::new(), |v| {
+            format!(r#","args": [{{"index": 0, "value": {v}, "op": "SCMP_CMP_EQ"}}]"#)
+        });
+        format!(r#"{{"names": ["{name}"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}{args}}}"#)
+    }
+
+    /// The value of `key:` in a `/proc/<pid>/status` dump.
+    fn status_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))
+            .map(str::trim)
+    }
+
+    /// T2 (ADR-0109): every step that keeps a `RUN` in comes before its
+    /// profile, which may answer any call with an errno the child would
+    /// take for "unsupported" (`EINVAL`); the cases with a faked success
+    /// (errno 0), which `--seccomp` refuses, stand for a profile that could
+    /// answer so. Under such a profile the `RUN`'s bounding set is still Docker's defaults,
+    /// its inheritable and ambient sets stay empty (with ranikust holding
+    /// `CAP_SYS_ADMIN` in both, which a root `execve` would add back; the
+    /// ambient set goes with the inheritable one, so the case cannot tell
+    /// the two clears apart), its session belongs to its PID namespace, so
+    /// no terminal of the operator's is its controlling one, its init is
+    /// not dumpable (its `/proc/1/environ` stays closed to the command),
+    /// its umask is 022 whatever ranikust's is, and ADR-0033's filter is
+    /// still installed under a held network namespace: `unshare -U` is
+    /// refused, which a control without that filter shows it would not be.
+    /// A faked fork of the init fails the `RUN` before the command runs,
+    /// never leaving it as PID 1 without an init.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_profile_cannot_fake_the_steps_before_it() {
+        // `PR_SET_DUMPABLE`, `PR_CAPBSET_DROP` and `PR_CAP_AMBIENT`
+        // (`linux/prctl.h`).
+        const SET_DUMPABLE: u32 = 4;
+        const CAPBSET_DROP: u32 = 24;
+        const CAP_AMBIENT: u32 = 47;
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            runner.hold_networks();
+            let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
+                .expect("Seccomp_filters in /proc/self/status");
+            // The umask from `/proc`: the shell's `umask` would call umask(2).
+            let probe = "grep -E '^(Cap|Seccomp_filters|Umask)' /proc/self/status; \
+                 python3 -c 'import os; print(\"sid=%d\" % os.getsid(0))'; \
+                 if unshare -U true; then echo userns=ok; else echo userns=refused; fi; \
+                 if cat /proc/1/environ >/dev/null 2>&1; then echo environ=read; \
+                 else echo environ=refused; fi";
+            let defaults = format!("{:016x}", caps::docker_default_mask());
+            let cases = [
+                (
+                    "bounding, faked",
+                    errno_rule("prctl", 0, Some(CAPBSET_DROP)),
+                    Network::Host,
+                ),
+                (
+                    "bounding, EINVAL",
+                    errno_rule("prctl", libc::EINVAL, Some(CAPBSET_DROP)),
+                    Network::Host,
+                ),
+                (
+                    "setsid, faked",
+                    errno_rule("setsid", 0, None),
+                    Network::Host,
+                ),
+                (
+                    "dumpable, faked",
+                    errno_rule("prctl", 0, Some(SET_DUMPABLE)),
+                    Network::Host,
+                ),
+                ("umask, faked", errno_rule("umask", 0, None), Network::Host),
+                (
+                    "seccomp, faked, held network",
+                    errno_rule("seccomp", 0, None),
+                    Network::None,
+                ),
+                (
+                    "seccomp, faked, control",
+                    errno_rule("seccomp", 0, None),
+                    Network::Host,
+                ),
+                (
+                    "capset and ambient, faked",
+                    format!(
+                        "{},{}",
+                        errno_rule("capset", 0, None),
+                        errno_rule("prctl", 0, Some(CAP_AMBIENT))
+                    ),
+                    Network::Host,
+                ),
+            ];
+            // `clone(SIGCHLD, ...)`, the init's fork of the command, faked,
+            // and `setsid` too, which the init, a session leader already,
+            // would otherwise fail: the `RUN` fails, and the command never
+            // runs, so it writes nothing.
+            let fork = errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs()));
+            let setsid = errno_rule("setsid", 0, None);
+            runner.seccomp = Some(allow_but(&format!("{fork},{setsid}")));
+            let out = top.join("out-fork");
+            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+            output_to(&out, &mut spec);
+            let forked = runner.run(spec, None, |job| clone_child(job, parent));
+            let forked_text = fs::read_to_string(&out).unwrap();
+            println!("fork, faked: {forked:?}\n{forked_text}");
+            let mut got = Vec::new();
+            for (name, rules, network) in cases {
+                if name.starts_with("capset") {
+                    // Last: this thread keeps them. Root's `execve` adds the
+                    // inheritable set to the permitted one.
+                    let sets = rustix::thread::capabilities(None).unwrap();
+                    rustix::thread::set_capabilities(
+                        None,
+                        rustix::thread::CapabilitySets {
+                            inheritable: rustix::thread::CapabilitySet::SYS_ADMIN,
+                            ..sets
+                        },
+                    )
+                    .unwrap();
+                    rustix::thread::configure_capability_in_ambient_set(
+                        rustix::thread::CapabilitySet::SYS_ADMIN,
+                        true,
+                    )
+                    .unwrap();
+                }
+                runner.seccomp = Some(allow_but(&rules));
+                let out = top.join(format!("out-{}", got.len()));
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+                spec.network = network;
+                output_to(&out, &mut spec);
+                // This thread's own (it unshared `CLONE_FS`), and the `RUN` is cloned from it.
+                let ours = name
+                    .starts_with("umask")
+                    .then(|| rustix::process::umask(Mode::from_raw_mode(0o077)));
+                let st = runner.run(spec, None, |job| clone_child(job, parent));
+                if let Some(mask) = ours {
+                    rustix::process::umask(mask);
+                }
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                println!("{name}: {st:?}\n{text}");
+                got.push((name, st.map(|s| s.success()).ok(), text));
+            }
+            drop(mounts);
+            let mut wrong = Vec::new();
+            let parent_checked = matches!(
+                &forked,
+                Err(Error::Setup { step: Step::Init, source })
+                    if source.raw_os_error() == Some(libc::EPROTO)
+            );
+            if !parent_checked || !forked_text.is_empty() {
+                wrong.push(format!("fork, faked: {forked:?}, output {forked_text:?}"));
+            }
+            for (name, ok, text) in &got {
+                let mut want: Vec<(&str, String)> = vec![
+                    ("CapBnd", defaults.clone()),
+                    ("environ", "refused".into()),
+                    ("Umask", "0022".into()),
+                ];
+                match *name {
+                    "seccomp, faked, held network" => {
+                        want.push(("Seccomp_filters", (own + 2).to_string()));
+                        want.push(("userns", "refused".into()));
+                    }
+                    "seccomp, faked, control" => want.push(("userns", "ok".into())),
+                    "capset and ambient, faked" => {
+                        for key in ["CapInh", "CapAmb"] {
+                            want.push((key, format!("{:016x}", 0)));
+                        }
+                        for key in ["CapPrm", "CapEff"] {
+                            want.push((key, defaults.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+                if *ok != Some(true) {
+                    wrong.push(format!("{name}: the RUN did not run"));
+                }
+                for (key, value) in want {
+                    let seen = match key {
+                        "userns" | "environ" => text
+                            .lines()
+                            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+                            .map(str::trim),
+                        _ => status_value(text, key),
+                    };
+                    if seen != Some(value.as_str()) {
+                        wrong.push(format!("{name}: {key} is {seen:?}, not {value}"));
+                    }
+                }
+                // 0 when the session's leader is outside the `RUN`'s PID
+                // namespace: ranikust's session, and its terminal.
+                let sid = text.lines().find_map(|l| l.strip_prefix("sid="));
+                if !sid.is_some_and(|s| s.trim().parse::<u32>().is_ok_and(|s| s > 0)) {
+                    wrong.push(format!("{name}: session id {sid:?}"));
+                }
+            }
+            assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        });
+    }
+
+    /// T2 (ADR-0109): a refused join of the session keyring, by an LSM or
+    /// a filter around ranikust (filters on this thread stand in for both),
+    /// fails a `RUN` whose profile lets `keyctl`, `add_key` or `request_key` run
+    /// (unconfined, or a file that allows `keyctl`) while ranikust's session
+    /// keyring can still be looked up, whatever the errno. Under a profile
+    /// that refuses all three, Docker's default or a file refusing them, the
+    /// `RUN` runs. Under a filter that refuses `keyctl` whole, as Docker's
+    /// default around ranikust does, the lookup is refused too and every
+    /// `RUN` runs.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            // On this thread only, which ends with the test; as root, so
+            // without `no_new_privs`. Each stacks on the last; the newest's
+            // errno wins.
+            let around = |rules: &str| {
+                let prog = allow_but(rules).program;
+                let fprog = libc::sock_fprog {
+                    len: u16::try_from(prog.insns.len()).unwrap(),
+                    filter: prog.insns.as_ptr().cast_mut(),
+                };
+                // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the
+                // program, which lives across the call.
+                let r = unsafe {
+                    libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        0u32,
+                        &raw const fprog,
+                    )
+                };
+                assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
+            };
+            let keyrings = ["keyctl", "add_key", "request_key"]
+                .map(|n| errno_rule(n, libc::EPERM, None))
+                .join(",");
+            let default = || Some(SeccompProfile::docker_default().unwrap());
+            // `KEYCTL_JOIN_SESSION_KEYRING` is 1.
+            let join = |errno| errno_rule("keyctl", errno, Some(1));
+            let phases = [
+                (
+                    join(libc::EPERM),
+                    vec![
+                        ("join EPERM, default", default(), None),
+                        ("join EPERM, unconfined", None, Some(libc::EPERM)),
+                    ],
+                ),
+                (
+                    join(libc::EACCES),
+                    vec![
+                        ("join EACCES, default", default(), None),
+                        (
+                            "join EACCES, keyring calls refused",
+                            Some(allow_but(&keyrings)),
+                            None,
+                        ),
+                        ("join EACCES, unconfined", None, Some(libc::EACCES)),
+                        (
+                            "join EACCES, a file allowing keyctl",
+                            Some(allow_but("")),
+                            Some(libc::EACCES),
+                        ),
+                    ],
+                ),
+                (
+                    errno_rule("keyctl", libc::EPERM, None),
+                    vec![
+                        ("keyctl EPERM, unconfined", None, None),
+                        (
+                            "keyctl EPERM, a file allowing keyctl",
+                            Some(allow_but("")),
+                            None,
+                        ),
+                    ],
+                ),
+            ];
+            let mut got = Vec::new();
+            for (outer, cases) in phases {
+                around(&outer);
+                for (name, profile, fails) in cases {
+                    runner.seccomp = profile;
+                    let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
+                    let r = runner.run(spec, None, |job| clone_child(job, parent));
+                    println!("{name}: {r:?}");
+                    got.push((name, fails, r));
+                }
+            }
+            drop(mounts);
+            for (name, fails, r) in got {
+                match fails {
+                    None => assert!(matches!(&r, Ok(st) if st.success()), "{name}: {r:?}"),
+                    Some(errno) => assert!(
+                        matches!(
+                            &r,
+                            Err(Error::Setup { step: Step::KeyringRefused, source })
+                                if source.raw_os_error() == Some(errno)
+                        ),
+                        "{name}: {r:?}"
+                    ),
+                }
+            }
+        });
     }
 
     /// Red team (T2, the VM only; T1, T7): a descriptor of a directory
