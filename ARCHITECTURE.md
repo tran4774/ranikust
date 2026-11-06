@@ -206,7 +206,8 @@ the instruction, its inputs and the previous key only, and carry a format
 version. Key computation opens no file; the cache (planned) reaches an OCI
 layout only through `rnk-rootfs` and a registry only through
 `rnk-registry`. The crate never depends on `rnk-dockerfile`, `rnk-ignore`
-or `rnk-layer`, since `rnk-builder` builds the key inputs (ADR-0115).
+or `rnk-layer`, since `rnk-builder` builds the key inputs
+([ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
 
 ### `rnk-builder`
 
@@ -239,23 +240,31 @@ anything but the report, start a thread, or keep state per file.
 depend on higher ones. Besides the chain:
 
 - `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes, and
-  builds the registry client, the context and the outputs (interim,
-  `[open: #7]`). It runs `rnk-builder` for `rnk-sched` by implementing the
+  builds the registry client, the context and the outputs (its edge to
+  `rnk-registry` is settled by
+  [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
+  It runs `rnk-builder` for `rnk-sched` by implementing the
   `StageRunner` trait: `rnk-sched` does not depend on `rnk-builder`.
 - `rnk-snapshot` uses `rnk-layer` (decoder for extraction, writer for export)
-  and `rnk-store`; `rnk-cache` uses `rnk-store`; `rnk-registry` does not: it
+  and `rnk-store`; `rnk-cache` will use `rnk-store`; `rnk-registry` does not: it
   writes pulls into a sink its caller gets from `rnk-store`.
 - `rnk-sandbox` uses `rnk-rootfs` for `USER`, for the parser of
   `/proc/self/mountinfo` it shares with `rnk-snapshot`, and for `RootPath`
   to reach a writable mount's mount point from `/` (ADR-0101).
 - `rnk-context` uses `rnk-ignore` for its walk (ADR-0027), and `rnk-sched` uses
-  `rnk-dockerfile` for the stage graph: both interim, `[open: #7]`.
+  `rnk-dockerfile` for the stage graph: both settled by ADR-0115.
 - `rnk-rootfs` never depends on `rnk-layer`. `rnk-dockerfile`, `rnk-ignore` and
   `rnk-oci` stay pure data. Only `ranikust` depends on `rnk-metrics`; libraries
   reach it through `tracing` spans alone.
 
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
-declares `rnk-oci` (ADR-0115).
+declares `rnk-oci`.
+[ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
+fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`,
+`rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
+the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
+`rnk-layer`; `rnk-context` → `rnk-registry`);
+`rnk-cache` → `rnk-store` is [ADR-0021](docs/adr/0021-rnk-store-crate.md)'s.
 
 ## Data flow of a build
 
@@ -275,7 +284,9 @@ declares `rnk-oci` (ADR-0115).
 2. **Probe** (`ranikust`, running the probes of `rnk-sandbox` and
    `rnk-snapshot` in order): choose overlay, kaniko, or refuse;
    `--mode=overlay|kaniko` skips the choice but not the checks
-   ([modes-and-detection](docs/design/modes-and-detection.md)). In kaniko mode,
+   ([modes-and-detection](docs/design/modes-and-detection.md)); `--mode=auto`
+   as root also probes the user-namespace path of a `RUN` and logs it,
+   reported only (#74). In kaniko mode,
    pick the root: `/` in a container (`flock` on `/` itself), else a directory
    per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059), where root
    must be able to mount.

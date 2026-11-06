@@ -9,9 +9,11 @@
 with `pivot_root` (or `MS_MOVE`), with the capability bounding set cut to
 Docker's defaults and Docker's default seccomp profile, and probes its own
 capabilities. Never a bare `chroot` where mounting is possible; no `RUN`
-process outlives the build. User namespaces, the `proc`/`sysfs` fallbacks
-and `--userns` are Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)).
+process outlives the build. A `RUN` in a user namespace, with the
+`proc`/`sysfs` fallbacks, and `--userns` are Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)); the probe of that
+path is built, reported only
+([#74](https://github.com/tran4774/ranikust/issues/74)).
 
 ## Owns
 
@@ -26,8 +28,24 @@ and `--userns` are Phase 3
   namespace, spawner thread, stub-journal replay; and the probe of its own
   steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
   the `Full` per-`RUN` sequence in an empty root (`probe.rs`) and reports
-  only `root_entry`; the full probe and its guidance (uid map, `sysfs`, bind
-  mounts, `mknod`) are Phase 3.
+  only `root_entry`; its guidance (uid map, `sysfs`, bind mounts) is
+  Phase 3.
+- The user-namespace probe (`userns.rs`, #74), reported only: nothing
+  routes on it yet. Each step a `RUN` in a user namespace needs, in forked
+  children that leave no namespace or mount behind: `unshare(CLONE_NEWUSER)`;
+  the id map (root: its own ranges mirrored, else one id; another user:
+  `newuidmap`/`newgidmap` with the subordinate ids the caller read, else one
+  id); `chown` to a mapped id other than 0; `unshare(CLONE_NEWNS)`, a second
+  call after the map, so that the mount namespace is owned by the new user
+  namespace and a refusal names its step (with a ranged map Ubuntu 24.04
+  refuses it too, after `chown`); a new `proc` in a new PID namespace, else
+  an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
+  `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
+  closure as root of a namespace with the map that worked, for the overlay
+  probe. The `newuidmap` path has no caller but the T2 test: `ranikust`
+  probes as root only and passes no subordinate ids, and task 5
+  ([#75](https://github.com/tran4774/ranikust/issues/75)) decides where
+  the lookup lives.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`.
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
@@ -73,6 +91,14 @@ pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before sta
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
+pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
+pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
+pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
+pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
+pub struct IdRange { pub start: u32, pub count: u32 }
+pub enum StepResult { Ok, Failed(StepFailure), NotRun(&'static str) }   // #[non_exhaustive]
+pub enum MountResult { Fresh, Rbind { fresh: StepFailure }, Failed { fresh: StepFailure, rbind: Option<StepFailure> }, NotRun(&'static str) } // #[non_exhaustive]
+pub struct StepFailure { pub op: &'static str, pub errno: Option<i32>, pub detail: Option<String> }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060); RUN cgroups where delegated (ADR-0110); Full RUNs under SeccompProfile::docker_default
@@ -96,7 +122,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), .. }
+pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), SetupKilled { signal, seccomp }, InitExited { code }, .. }  // the init killed (seccomp: SIGSYS under a profile) or exited with no record before the command's status
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve (Cgroup: before the clone): no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -337,12 +363,43 @@ What a change here must keep, with where it lives:
 - **The probe** performs the real sequence in the configuration that will be
   used, never by kernel version; a command that does not exist fails at
   `execve` with `ENOENT`, which proves every step before it.
+- **The user-namespace probe** forks one child per map from a
+  single-threaded caller, before any credential is read; right after the
+  fork the child closes every descriptor but stdio and those it uses (the
+  pipes, the probe's directory, the `chown` target), then makes system
+  calls only, then `_exit`. `in_namespace`'s function may allocate (it
+  checks for one thread first) but must not fork (a process it starts
+  would outlive the child), and runs with an empty panic hook and, on its
+  thread, no `tracing` subscriber: the inherited ones write ranikust's
+  metrics report and log (a thread the function starts must carry the
+  function's empty dispatcher over, as `rnk-snapshot`'s mount thread
+  does). Each child is killed at its deadline (10 s, the closure 60 s) and
+  reaped within 2 s (one that closed its report but is not reaped then is
+  killed, and given 2 s more); its namespaces and mounts go with it. One
+  still there after is `Error::ProbeChildLeft`: the probe's files stay,
+  and `ranikust` leaves their directory, until the build's directory is
+  removed (or, with an anonymous store, the state directory emptied): at
+  the end of the run, at once when `--mode=auto` falls back to kaniko
+  mode, else at the next start (a refused set-up, a run cut short).
+  `newuidmap` and `newgidmap` each get 10 s, then are killed and given 2 s
+  to be reaped; one whose wait fails is too, except after `ECHILD`. The
+  child waits for them, so an attempt can run past its 10 s: it is then
+  killed as soon as they are done, reaped, and reported as killed after
+  10 s. Its mount namespace makes `/` a recursive slave before any mount.
+  The files the steps need are made by the caller in the probe's
+  directory through `RootPath` and removed before it returns. `newuidmap`
+  is looked for in `/usr/bin` and `/bin` only, run with an empty
+  environment. A child of a user other than root is dumpable only around
+  its map write, which the kernel's owner check of `/proc/<pid>/uid_map`
+  needs: made dumpable after `unshare`, not dumpable again right after the
+  map, before `chown`. `ranikust` probes as root, whose children never
+  change it.
 
 ## Refs
 
 - **Design:** [`design/sandbox.md`](../../design/sandbox.md) ([per-`RUN` sequence](../../design/sandbox.md#per-run-sequence), [process set-up](../../design/sandbox.md#process-set-up-once-per-build), [stub mount points](../../design/sandbox.md#stub-mount-points), [variants by environment](../../design/sandbox.md#variants-by-environment)); [`design/modes-and-detection.md#probe-order---modeauto`](../../design/modes-and-detection.md#probe-order---modeauto); [`design/kaniko-mode.md#fake-proc`](../../design/kaniko-mode.md#fake-proc) (not built); [threat model T5-T12, T17-T19, T24](../../security/threat-model.md#5-threats-and-mitigations)
 - **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`), [ADR-0101](../../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md) (the sealed copy of the binary), [ADR-0110](../../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md) (`RUN` cgroups where delegated), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: images with an owner the user namespace does not map are refused), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) (the default seccomp profile), [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (profiles compiled here, moby's default), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns` runs the whole build in a user namespace; the init's uid unmapped in rootless mode too), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested)
-- **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory), [#31](https://github.com/tran4774/ranikust/issues/31) (placed secret file whose target exists); tasks [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#83](https://github.com/tran4774/ranikust/issues/83) (`--userns`), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes)
+- **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory); tasks [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#83](https://github.com/tran4774/ranikust/issues/83) (`--userns`), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes). Decided, not built yet: [ADR-0121](../../adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md) (a placed secret file whose target exists is refused)
 - **Evidence:** [exp-02](../../research/experiments/02-run-sandbox.md) (sequence, escape, PDEATHSIG, bounding set, stubs, 1-2.5 ms), [exp-06a](../../research/experiments/06a-root-rerun.md) (real root), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (Docker probe matrix), [exp-12a](../../research/experiments/12a-fake-proc.md), [exp-14](../../research/experiments/14-real-builds-without-proc.md), [exp-15](../../research/experiments/15-java-next-concurrency.md), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (fake `/proc`, Java)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/commands/run.go:288` `runCommandInExec` (no namespaces; `:335` searches the process's `PATH`); `:356` and `:407` process-group kill (replaced by the PID namespace, kept for `Direct`); `:375` users from the process's `/etc/passwd`; `:83-135` cache mounts via `swapDir` (a bind here)
 - **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot`, `libcontainer` capabilities and `CloneBinary` (the sealed copy; `libcontainer/dmz` in v1.2.0, `libcontainer/exeseal` since v1.3.0) <https://github.com/opencontainers/runc>
@@ -386,25 +443,37 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`,
   `red_team_binds_stacked_on_the_binarys_path`), the stub journal
   (placement through symlinks, removal, parent times, replay of dead
-  journals only, a lock kept by a shared description), swaps and planted
-  records, the journal's red-team tests (a file, FIFO, socket or whiteout
-  where a directory is needed or as the target; stubs a `RUN` swaps for
-  symlinks out of the root or for nodes; planted stub records aimed
-  outside, naming `/` or ending in `..`), `Direct` children that fail
+  journals only, a lock kept by a shared description, a lookup failing
+  with `ELOOP` failing the clean-up and keeping the journal while
+  `ENOTDIR` counts as gone, the older entries undone all the same), swaps
+  and planted records, the journal's red-team tests (a file, FIFO, socket
+  or whiteout where a directory is needed or as the target; stubs a `RUN`
+  swaps for symlinks out of the root or for nodes; planted stub records
+  aimed outside, naming `/` or ending in `..`), `Direct` children that fail
   before executing, mount sources and remount flags, `Direct` refusals,
   the sealed heredoc memfd, the relay (a surviving write end, a full
   stream, a `RUN` reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
-  (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
+  (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps
+  and its count past 4096 instructions, where it keeps nothing more;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
   aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno
   from 512 to 600, 4095 and above included, which ones refuse `keyctl`,
   `add_key` and `request_key`; random profiles against a reference, x32
   numbers, keys given twice, nesting and odd bytes, numbers in other forms,
-  rules that disagree, the kernel's 4096 instructions);
-  `errno_0_reads_as_eproto`. Moby's profile's argument-rule form
+  rules that disagree, the kernel's 4096 instructions, `names` read as a
+  list of strings); a 1 MiB profile of 5.5 million instructions refused
+  within 8 MiB (`tests/seccomp_memory.rs`, a counting allocator);
+  `errno_0_reads_as_eproto`; a killed init's message, its signal and,
+  for `SIGSYS` under a profile, the profile, and an init's own exit code
+  named as the init's (`src/error.rs`); how a `RUN` ends
+  (`a_runs_end_is_its_status_its_record_or_its_inits_end` in
+  `src/spawner.rs`: its status, a failure record, a killed init winning
+  over an init's record and losing to any other, an init's own code
+  losing to every record and never passed off as the command's). Moby's
+  profile's argument-rule form
   (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
   of `clone3` and `io_uring_*`
   (`docker_default_gives_a_run_neither_clone3_nor_io_uring`). The
@@ -416,22 +485,48 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   not, each `KeyringJoin`; an `execve` or `execveat` back without an error; a
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
   the init's and the command's reads, the parent check's against an unfiltered
-  control; the command's go only on its init's go byte, never on an ended
-  pipe, another byte or a read faked with no error, and the init's go byte
+  control; the parent check's read refused or faked failing with its errno
+  or `EINVAL`, another parent with `ESRCH`; the command's go only on its
+  init's go byte, never on an ended pipe, another byte or a read faked with
+  no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; the init's closing: a refused `close` reported with its errno,
   `EBADF` and `EINTR` included (also run for the musl target), whether
   there are descriptors to close (at most the pass's listing left open) or
   only the listing; a pass that does not shrink ends it; nothing left where
-  `close_range` alone is refused; a refused `umask` after the profile; a
-  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
-  last two on a stack filled
-  beforehand, which shows an unwritten buffer in a debug build only; these
+  `close_range` alone is refused; a listing that cannot be read reported
+  with its own errno, not `close_range`'s `ENOSYS`; the best-effort closing
+  before the filters going on past a refused `close`, one descriptor
+  numbered past the hard limit closed too; a refused `umask` after the
+  profile; a faked `setsid`, `pipe2` or `fstatfs`, a faked or refused
+  `prlimit64`; the last two on a stack filled beforehand, which shows an
+  unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
   overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
+- **T0**, the user-namespace probe (`src/userns/tests.rs`): the maps
+  planned for root and for another user, the mirror of a map, the steps
+  assembled from a child's records (a refused `unshare`, each map refused,
+  a fresh kernel filesystem or its rbind, Ubuntu 24.04's ranged stop at
+  `chown`), records across split reads and the deadline, the report's line
+  and stop, a map this process fails to write ending the waiting child at
+  once, a failure part-way through making the probe's files removing what
+  it made, `in_namespace` not running its closure beside other threads, a
+  panic in the closure reported as not finishing, never as its refusal, nor
+  through the parent's panic hook, and a log line of the closure not
+  through its subscriber (in a copy of the test binary with one test
+  thread); a child holding only stdio and its own descriptors; a child
+  reaped within its grace, else killed, else reported left; a tool reaped
+  elsewhere (`ECHILD`) not killed. Its red team (`red_team_*`, as any
+  user; T22, T4, T7, T8, T9): names planted where it makes its files (a
+  symlink out, a hard link of a file outside, a FIFO; the directory itself
+  a symlink or a FIFO) never followed, opened or removed; nothing left
+  after a probe and a closure that mounts (no process, orphan included, no
+  descriptor, mount or entry); the prober killed while a child of the
+  probe runs (`SIGKILL`, `SIGINT`, `SIGINT` to its group) leaves no
+  process or mount.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
@@ -439,11 +534,21 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `nodev` root and `/dev`; read-only `/proc/sys` and `/dev/null`; masked
   kernel files; no terminal; only stdio descriptors; no stub in the
   layer); `sealed-exe`: a `RUN` reaches no thread of ranikust's or its
-  init's (ADR-0101). Not yet: the fallbacks.
+  init's (ADR-0101). `kaniko-flags` in the kaniko leg: the user-namespace
+  probe passes under rootless Podman's defaults, with an rbind of `/proc`
+  (#74); `userns-probe`, its red team at the binary's level
+  ([its steps](../../testing.md#quick-smoke-cases)). Not yet: the
+  sandbox's fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
-  (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
-  (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
+  (`src/probe.rs`);
+  `the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts`
+  (`src/userns/tests.rs`: as the user who ran sudo, one id, then
+  `newuidmap` with that user's ranges; where AppArmor restricts user
+  namespaces, Ubuntu 24.04, one id stops at the `uid_map` write and ranges
+  at `chown`, elsewhere both pass; both harnesses install `newuidmap`, and
+  the user must have subordinate ids; prints `measured:` lines);
+  `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;
@@ -455,6 +560,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   profile that refuses the keyring join, and unconfined with a held network
   (ADR-0033's filter); each `RUN` in a keyring of its own, its init under
   the same filters as its command;
+  `a_set_up_its_profile_kills_is_reported_as_killed`: a default action of
+  `SCMP_ACT_KILL_PROCESS` or `SCMP_ACT_TRAP` fails the `RUN` as
+  `Error::SetupKilled` (the init killed) by `SIGSYS` under its profile;
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
   that fails one of the init's last steps, or its closes (all, or one
   with `close_range`, refused with `EPERM` or `EBADF`), the `RUN` fails as
@@ -535,7 +643,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   hopping caught by the sweep, non-blocking flood) and `src/spawner.rs`
   (`a_cancel_kills_a_running_run`, `a_direct_run_leaves_no_process_behind`,
   `a_direct_heredoc_runs_from_an_anonymous_file`, loopback for
-  `--network=none`); in `src/journal.rs`, a block device where a directory
+  `--network=none`);
+  `the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker`
+  (`src/userns/tests.rs`, profile `default`, also in the T2 unit suite on the
+  VM: every step passes with root's own ranges on a host, `unshare` is
+  refused under Docker's defaults, and nothing is left in the probe's
+  directory); the probe's red team as root (`red_team_as_root_*`, profile
+  `sysadmin`: the T0 attacks with the whole path, `proc` and `sysfs`
+  mounts and `mknodat` reached, and the probe on a tmpfs, one that runs
+  out of inodes part-way, a read-only one and a ramfs, each leaving
+  nothing; prints `measured:` lines); in `src/journal.rs`, a block device where a directory
   is needed or as the target
   (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`).
 
@@ -544,7 +661,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - `rnk_sandbox.run` per `RUN`: `wait4` rusage (`user_ns`, `sys_ns`,
   `max_rss_kb`, faults, blocks, context switches) when the child was reaped
   after `execve`, and `failed`; `rnk_sandbox.setup` (`stubs`);
-  `rnk_sandbox.probe` (`ok`) per attempt; `rnk_sandbox.cgroups` (`layout`:
+  `rnk_sandbox.probe` (`ok`) per attempt; `rnk_sandbox.probe_userns`
+  (`ok`, `map`) per user-namespace probe; `rnk_sandbox.cgroups` (`layout`:
   `nested`, `single` or `none`) once per `Sandbox::start` that may use them
   ([rows](../../design/metrics.md#rnk-sandbox)).
 - Spans are opened on the caller's thread, so they nest in its span with no

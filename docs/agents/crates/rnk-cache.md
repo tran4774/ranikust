@@ -1,17 +1,20 @@
 # rnk-cache
 
 > **Status:** in progress · **Phase:** 4 ·
-> **Depends on:** `rnk-oci`; `rnk-registry`, `rnk-rootfs` (planned) ·
-> **Used by:** `rnk-builder` (planned, ADR-0115) ·
+> **Depends on:** `rnk-oci`; `rnk-registry`, `rnk-rootfs` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)) and
+> `rnk-store` ([ADR-0021](../../adr/0021-rnk-store-crate.md)), planned ·
+> **Used by:** `rnk-builder` (planned; its lookups started up front by
+> `rnk-sched` through `StageRunner`, [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)) ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per step and the tag its
 cached layer is looked up by; lookup and push in a registry repository or an
 OCI layout are not built yet. A key depends on the step's instruction, its
-inputs and the previous key only, never on the snapshot mode, host, time or
-thread count, and it is not compatible with kaniko's cache. Nothing calls
-the crate yet: the CLI refuses `--cache`, `--cache-repo` and the related
-flags until Phase 4 and accepts `--cache=false` (ADR-0036).
+inputs and the previous key only, never on the snapshot mode, host, the
+build's time, an mtime outside `--reproducible` or thread count, and it is
+not compatible with kaniko's cache. Nothing calls the crate yet: the CLI
+refuses `--cache`, `--cache-repo` and the related flags until Phase 4 and
+accepts `--cache=false` (ADR-0036).
 
 ## Owns
 
@@ -26,13 +29,13 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 
 - Read or write kaniko's cache or mimic its keys (ADR-0005).
 - Let a key depend on the snapshot mode, host, users, the build's time,
-  an mtime outside `--reproducible`, thread count or the order of an
-  unordered collection, or hold a secret's value.
+  an mtime outside `--reproducible` ([ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)), thread count or the
+  order of an unordered collection, or hold a secret's value.
 - Open files to compute a key: content arrives as bytes the caller read
   through `rnk-rootfs`. The layout cache reaches its directory only through
-  `rnk-rootfs`, the registry only through `rnk-registry` (ADR-0115).
+  `rnk-rootfs`, the registry only through `rnk-registry` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
 - Depend on `rnk-dockerfile`, `rnk-ignore` or `rnk-layer`: `rnk-builder`
-  builds `KeyInputs` (ADR-0115).
+  builds `KeyInputs` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
 - Transfer blobs (`rnk-registry`), encode layers (`rnk-layer`), own the local
   store (`rnk-store`) or choose what to export (`rnk-builder`).
 
@@ -73,9 +76,9 @@ pub trait LayerCache {                               // [design] RegistryCache, 
 
 ### Byte form
 
-What each hash covers is
-[cache-and-store](../../design/cache-and-store.md#cache-keys)'s; this is how
-it is written. Each hash is SHA-256 over self-delimiting fields, so two
+The fields and the form of the tag are [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s, and what each hash covers
+is [cache-and-store](../../design/cache-and-store.md#cache-keys)'s; this is
+how it is written. Each hash is SHA-256 over self-delimiting fields, so two
 different inputs never feed the same bytes:
 
 - a string or byte field: its length as a big-endian `u64`, then its bytes;
@@ -107,17 +110,19 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 - A `type=secret` mount adds its id, target, mode and owner, never its
   content (T11), whether or not the build is given the secret, as
   BuildKit; cached layers are digest-checked when read (T13).
-- Under `--reproducible` each file adds its mtime clamped to the epoch, as
-  the layer's header carries it; without it, no mtime.
+- `COPY`/`ADD` inputs are the files actually read, after `.dockerignore`;
+  under `--reproducible` each one adds its mtime clamped to the epoch, as
+  the layer's header carries it, so only the mtime of a file older than the
+  epoch counts ([ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)); without it, no mtime.
 - A tag carries the encoding, so a hit was encoded with this build's
-  settings (ADR-0113). One compressed blob serves both the image and the
+  settings ([ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)). One compressed blob serves both the image and the
   cache; pushes run asynchronously. Waiting for them before exit, as kaniko
   does, is [inferred].
 
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#cache-keys`](../../design/cache-and-store.md#cache-keys), [`#ownership`](../../design/cache-and-store.md#ownership); [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export) (`--cache` makes a layer needed); [threat model T11, T13](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), ADR-0113 (the fields, SHA-256, the tag and its encoding), ADR-0114 (`COPY --from=<stage>`), ADR-0115 (crate edges), [ADR-0057](../../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) (dropped cache mounts), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
+- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (the fields, SHA-256, the tag and its encoding), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (`COPY --from=<stage>`; lookahead and skipping cached stages, not built yet), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (crate edges), [ADR-0116](../../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md) (registry or layout, none on `/`; not built yet), [ADR-0057](../../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) (dropped cache mounts), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
 - **Open:** [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
 - **Evidence:** none measured: workload W2 (cold, warm, partial cache) was never run; mode independence is argued in [survey 06](../../research/survey/06-overlay-and-parallelism.md) §6.
 - **kaniko** (compare, do not copy): `kaniko@44aa7ddc0`

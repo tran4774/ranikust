@@ -90,7 +90,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--cache=false` | Accepted: no layer cache is what this version does. `--cache` itself comes later. |
 | `--skip-push-permission-check`, `--preserve-context` | Accepted: ranikust makes no write check before the build, and never changes or deletes the context. In kaniko mode on a container's `/`, a context inside the root is refused unless it is kept out of the layers (a volume, `/ranikust`). |
 | `--single-snapshot` | Not offered, in any mode and whatever its value: one snapshot at the end saves a few seconds at most and loses the layer per step that a cached rebuild reuses ([ADR-0065]). Drop it. |
-| `--materialize` | Refused until the layer cache, the only place it has an effect, as `--cache` ([ADR-0064]). |
+| `--materialize` | Refused until the layer cache, the only place it has an effect, as `--cache` ([ADR-0064]). With the cache (Phase 4) it is accepted in kaniko mode on a container's `/` only, as in kaniko, and refused in the other modes, whose stage roots are deleted at the end ([ADR-0114]). |
 
 ### Reading the Dockerfile
 
@@ -129,7 +129,9 @@ example `--context=$CI_PROJECT_DIR/app --digest-file=$CI_PROJECT_DIR/digest`
 
 - `--tar-path` is written to a temporary file renamed over `PATH`, which
   replaces only a regular file: a device node, FIFO, socket or symlink there is
-  refused, and so is a directory on `/proc` or `/sys`. So
+  refused, and so is a directory on `/proc` or `/sys`. (An entry another
+  writer of that directory swaps in during the write may be replaced, but is
+  never followed.) So
   `--tar-path=/dev/stdout` does not work: write the tarball to a file and
   stream that (`ranikust … --tar-path=/tmp/image.tar && cat /tmp/image.tar`).
 - The three digest files are local paths (a missing directory is made `0700`),
@@ -141,7 +143,7 @@ example `--context=$CI_PROJECT_DIR/app --digest-file=$CI_PROJECT_DIR/digest`
 
 | Flag | Meaning |
 |---|---|
-| `--mode=auto\|overlay\|kaniko` | How to snapshot: `auto` (default) probes the environment and picks the fastest mode that works: overlay mode where root may mount, kaniko mode where it may not, and, outside a container where overlayfs refuses the state directory (NFS, overlayfs), kaniko mode with a directory per stage ([How ranikust builds](how-it-builds.md)). |
+| `--mode=auto\|overlay\|kaniko` | How to snapshot: `auto` (default) probes the environment and picks the fastest mode that works: overlay mode where root may mount, kaniko mode where it may not, and, outside a container where overlayfs refuses the state directory (NFS, overlayfs), kaniko mode with a directory per stage ([How ranikust builds](how-it-builds.md)). As root it also logs whether a `RUN` could run in a user namespace here (`user namespace probe (reported only)`), for rootless overlay mode, which is not built yet. |
 | `--state-dir=DIR` | Where ranikust keeps its store and every build root it makes; kaniko's `--kaniko-dir`. Default `/var/lib/ranikust`. It must be new, empty, or a state directory ranikust made (it holds `.ranikust-state`; `/` never), owned by the user running ranikust and writable by no one else, below directories only root may write (root's sticky `/tmp` is fine); ranikust makes it mode `0700`. In a container, overlay mode needs it on a volume. In kaniko mode on a container's `/` it must be new or empty: that mode keeps nothing there between builds, refuses a state directory another build uses, and never shares one with overlay-mode builds ([ADR-0077]). There is no work-directory flag: ranikust builds on `/` in a container in kaniko mode, and everywhere else in directories it makes here ([ADR-0050]). |
 | `--jobs=N` | Stages built at once, and blobs uploaded at once. Default: the number of CPUs available. In kaniko mode on a container's `/` the stages run one at a time and only the uploads follow it. |
 | `--snapshot-workers=N` | Threads of kaniko mode's filesystem walk. Default 8, the fastest measured; ignored, with a warning, in overlay mode. |
@@ -151,7 +153,7 @@ example `--context=$CI_PROJECT_DIR/app --digest-file=$CI_PROJECT_DIR/digest`
 | `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. kaniko's and buildctl's syntax. Repeatable. Read once, at the start of the build, and kept in memory: a change to the file during the build is not seen. Kept out of every layer, the config and the logs; at most 500 KiB. In kaniko mode on a container's `/`, every `RUN` can read a file secret and copy it into the image or anywhere else, and ranikust does not stop it ([ADR-0084]); pass the secret in the environment there if no `RUN` should read it. |
 | `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
 | `--allow=network.none-userns` | Where ranikust lacks `CAP_NET_ADMIN` (a container with only `SYS_ADMIN` added), lets `RUN --network=none` get loopback through a user namespace; without it such a `RUN` is refused. A root `RUN` there holds `CAP_NET_ADMIN` over its own network namespace. A seccomp filter closes the riskiest parts (joining or creating user namespaces, `io_uring`, most netlink families, netfilter and IPsec socket options, `TCP_REPAIR`; the full list is in [ADR-0033]), but the rest of what `CAP_NET_ADMIN` allows stays open: `ip link add type <kind>` can load a kernel module on the host. |
-| `--seccomp=default\|unconfined\|FILE` | The seccomp profile every `RUN` runs under, as `docker run --security-opt seccomp=`. `default` is Docker's own (moby/profiles v0.2.4), which applies without the flag too, as under `docker build`; `unconfined` turns it off; a file is a profile in Docker's JSON format (`./default` for a file named `default`). A file that cannot be read, is not a regular file, is over 1 MiB or asks for what ranikust does not support (`SCMP_ACT_NOTIFY`, `SCMP_ACT_TRACE`, a listener, an unknown flag, two conditions on one argument, a rule with no names, an `errnoRet` or `defaultErrnoRet` of 0, which would answer a call with a success it never had, or one from 512 up, where the kernel keeps its own codes, of which 516 can turn a refusal into a success) is refused before the build starts (exit code 2). A profile that refuses `exit` and `exit_group`, or every call, with an errno leaves the build running until it is cancelled; the limits of a profile's rules are in the [threat model]. Only the native architecture's calls are allowed: a 32-bit program in a `RUN` gets `EPERM` and needs `--seccomp=unconfined`; a call too new for the table ranikust was built with gets `ENOSYS`. Where a `RUN` cannot get a session keyring of its own (an LSM or a filter around ranikust refuses it) while ranikust's own can still be looked up, a profile that lets `keyctl`, `add_key` or `request_key` run, `unconfined` included, fails the `RUN`; under Docker's default profile around ranikust, which refuses `keyctl`, the `RUN` goes on. Refused in kaniko mode on a container's `/` (exit code 2), where a `RUN` runs under the container's own profile: set that one with the container ([ADR-0109]). |
+| `--seccomp=default\|unconfined\|FILE` | The seccomp profile every `RUN` runs under, as `docker run --security-opt seccomp=`. `default` is Docker's own (moby/profiles v0.2.4), which applies without the flag too, as under `docker build`; `unconfined` turns it off; a file is a profile in Docker's JSON format (`./default` for a file named `default`). A file that cannot be read, is not a regular file, is over 1 MiB or asks for what ranikust does not support (`SCMP_ACT_NOTIFY`, `SCMP_ACT_TRACE`, a listener, an unknown flag, two conditions on one argument, a rule with no names, an `errnoRet` or `defaultErrnoRet` of 0, which would answer a call with a success it never had, or one from 512 up, where the kernel keeps its own codes, of which 516 can turn a refusal into a success) is refused before the build starts (exit code 2). A profile that refuses `exit` and `exit_group`, or every call, with an errno leaves the build running until it is cancelled; one that kills or traps a call the `RUN`'s init makes (`SCMP_ACT_KILL_PROCESS`, `SCMP_ACT_KILL_THREAD`, `SCMP_ACT_TRAP`) fails the build with "the RUN's init was killed by signal 31 (SIGSYS)", naming the profile as the likely cause, not with an exit code of the command, which may not have run; one that refuses the init's wait (`wait4`) with an errno fails it with "the RUN's init exited with code 125", the init's own code, never the command's, which may have started; one that kills or traps only a call the command makes before it starts (`setsid`, the `USER` switch) fails it as "the command returned a non-zero code: 159" (128 + `SIGSYS`), as a command killed after it started does. The limits of a profile's rules are in the [threat model]. Only the native architecture's calls are allowed: a 32-bit program in a `RUN` gets `EPERM` and needs `--seccomp=unconfined`; a call too new for the table ranikust was built with gets `ENOSYS`. Where a `RUN` cannot get a session keyring of its own (an LSM or a filter around ranikust refuses it) while ranikust's own can still be looked up, a profile that lets `keyctl`, `add_key` or `request_key` run, `unconfined` included, fails the `RUN`; under Docker's default profile around ranikust, which refuses `keyctl`, the `RUN` goes on. Refused in kaniko mode on a container's `/` (exit code 2), where a `RUN` runs under the container's own profile: set that one with the container ([ADR-0109]). |
 | `--limit=NAME=VALUE` | Changes a bound on what a registry or an image can make ranikust hold or wait for; see [Limits](#limits). Repeatable; the last of one name wins. |
 
 ### Limits
@@ -205,12 +207,16 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
   `--skip-unused-stages` (deprecated in kaniko). Drop them. `--cache=false` is
   accepted: it asks for what ranikust does.
 - **With the layer cache (Phase 4):** `--cache`, `--cache-repo`, `--cache-ttl`,
-  `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (also
-  `=false`), `--no-push-cache`.
-- **With registry mirrors, credential helpers and git contexts (Phase 5):**
-  `--git`, `--registry-mirror`, `--registry-map`, `--credential-helpers`,
+  `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (`=true`
+  only: `=false` is refused, since ranikust streams layers and spends no memory
+  to save), `--no-push-cache`.
+- **With registry mirrors, external credential helpers and git contexts
+  (Phase 5):** `--git`, `--registry-mirror`, `--registry-map`,
   `--skip-default-registry-fallback`, `--registry-client-cert`,
   `--push-ignore-immutable-tag-errors`.
+- **Backlog:** `--credential-helpers`, for built-in cloud helpers
+  ([#138](https://github.com/tran4774/ranikust/issues/138)). External
+  `docker-credential-*` helpers come in Phase 5; until then no helper runs.
 - **Not scheduled:** `--dryrun`.
 - **Not planned:** `--bucket` (`-b`), `--azure-container-registry-config` and
   kaniko's `bake`.
@@ -257,4 +263,5 @@ behaviour, which for most of them is what the flag turns on.
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
+[ADR-0114]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md
 [threat model]: https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks

@@ -2,7 +2,8 @@
 
 > **Status:** done · **Phase:** 1 · **Depends on:** nothing internal ·
 > **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder`, `ranikust`
-> (not `rnk-cache`, ADR-0115) · **Path:** `crates/rnk-layer/`
+> (`rnk-context` planned, Phase 5; not `rnk-cache`, ADR-0115) ·
+> **Path:** `crates/rnk-layer/`
 
 **TL;DR:** Entries in, deterministic tar out, through parallel gzip or zstd,
 with diff ID and digest computed while streaming; and a gzip/zstd decoder

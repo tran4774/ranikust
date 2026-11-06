@@ -358,6 +358,41 @@ pub enum Error {
     /// support (ADR-0109); nothing ran.
     #[error("seccomp profile: {0}")]
     SeccompProfile(String),
+    /// The full sandbox's init, which sets the `RUN` up and then waits for
+    /// its command, was killed by a signal before it wrote the command's
+    /// status: before or after the go byte, so the command may have run,
+    /// and how it ended is unknown. Under a seccomp profile, `SIGSYS` is
+    /// most likely the profile's kill or trap of a call the init makes.
+    #[error(
+        "RUN sandbox: the RUN's init was killed by {} before it reported the command's end, \
+         so the command may have started{}",
+        signal_text(*signal),
+        if *seccomp {
+            "; the RUN's seccomp profile is the likely cause: it kills or traps a call \
+             the init makes"
+        } else {
+            ""
+        }
+    )]
+    SetupKilled {
+        /// The signal.
+        signal: i32,
+        /// The signal is `SIGSYS` and the `RUN` had a seccomp profile.
+        seccomp: bool,
+    },
+    /// The full sandbox's init exited with a code other than 0 before it
+    /// wrote the command's status, and left no failure record: a step that
+    /// could not go on (its go byte, its wait), or a record its filters
+    /// refused. The code is the init's own; the command may have run.
+    #[error(
+        "RUN sandbox: the RUN's init exited with code {code} before it reported the \
+         command's end, so the command may have started; the code is the init's own, \
+         not the command's"
+    )]
+    InitExited {
+        /// The init's exit code.
+        code: i32,
+    },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,
@@ -379,6 +414,23 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    /// A child of the user-namespace probe was still there after
+    /// `SIGKILL` and a grace period, blocked in the kernel, where it may
+    /// still finish a call that writes: its directory is left in place,
+    /// and the caller leaves what the child may work on in place too.
+    #[error(
+        "the user namespace probe's child {pid} did not end after SIGKILL; what it \
+         works on is left in place"
+    )]
+    ProbeChildLeft {
+        /// Its process ID.
+        pid: i32,
+    },
+    /// Why [`crate::UsernsReport::in_namespace`]'s closure did not run or
+    /// finish: a step refused this time, the deadline, the child's death,
+    /// a panic.
+    #[error("{0}")]
+    ProbeClosure(String),
     /// A system call of the parent failed.
     #[error("{op}: {source}")]
     Sys {
@@ -425,6 +477,33 @@ impl Error {
 
 /// The crate's result type.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// `signal 31 (SIGSYS)`: the number, and the name of a signal that ends a
+/// process by default.
+fn signal_text(signal: i32) -> String {
+    let name = match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGILL => "SIGILL",
+        libc::SIGTRAP => "SIGTRAP",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGALRM => "SIGALRM",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGXCPU => "SIGXCPU",
+        libc::SIGXFSZ => "SIGXFSZ",
+        libc::SIGSYS => "SIGSYS",
+        _ => return format!("signal {signal}"),
+    };
+    format!("signal {signal} ({name})")
+}
 
 pub(crate) fn io_err(op: &'static str, path: impl Into<PathBuf>, source: io::Error) -> Error {
     Error::Io {
@@ -488,5 +567,59 @@ mod tests {
         assert!(refused.contains("--seccomp=default"), "{refused}");
         let keyring = text(Step::SessionKeyring);
         assert!(!keyring.contains("--seccomp"), "{keyring}");
+    }
+
+    /// An init a signal killed is named with the signal, by number and
+    /// name; the profile is named as the likely cause only for `SIGSYS`
+    /// under one. Nothing reads as the command's exit code, nor says
+    /// whether the command ran.
+    #[test]
+    fn a_killed_init_names_its_signal_and_the_likely_cause() {
+        let text = |signal, seccomp| Error::SetupKilled { signal, seccomp }.to_string();
+        let by_profile = text(libc::SIGSYS, true);
+        assert!(
+            by_profile.contains(&format!(
+                "init was killed by signal {} (SIGSYS) before it reported the command's end",
+                libc::SIGSYS
+            )),
+            "{by_profile}"
+        );
+        assert!(
+            by_profile.contains("seccomp profile is the likely cause"),
+            "{by_profile}"
+        );
+        let other = text(libc::SIGKILL, false);
+        assert!(
+            other.contains(&format!("killed by signal {} (SIGKILL)", libc::SIGKILL)),
+            "{other}"
+        );
+        assert!(!other.contains("seccomp"), "{other}");
+        let unnamed = text(libc::SIGRTMIN() + 1, false);
+        assert!(
+            unnamed.contains(&format!("killed by signal {} before", libc::SIGRTMIN() + 1)),
+            "{unnamed}"
+        );
+        for t in [by_profile, other, unnamed] {
+            assert!(!t.contains("code"), "{t}");
+            assert!(t.contains("the command may have started"), "{t}");
+        }
+        let e = Error::SetupKilled {
+            signal: libc::SIGSYS,
+            seccomp: true,
+        };
+        assert!(!e.ran_no_command(), "the command may have run");
+    }
+
+    /// An init's own exit code is named as the init's, never as the
+    /// command's, and says nothing of whether the command ran.
+    #[test]
+    fn an_inits_own_code_is_not_the_commands() {
+        let e = Error::InitExited { code: 125 };
+        let t = e.to_string();
+        assert!(t.contains("init exited with code 125"), "{t}");
+        assert!(t.contains("the command may have started"), "{t}");
+        assert!(t.contains("the code is the init's own"), "{t}");
+        assert!(!t.contains("non-zero code"), "{t}");
+        assert!(!e.ran_no_command(), "the command may have run");
     }
 }

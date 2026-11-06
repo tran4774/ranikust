@@ -132,8 +132,11 @@ the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age. Both forms open the store as a build does
 (state-directory checks, the `.ranikust-state` marker), so they refuse a
 directory ranikust did not make; they take the same locks as a build and never
-remove an entry a running build uses [inferred: the in-use tracking is not
-designed yet]. The defaults are BuildKit's tiers, aging by last
+remove an entry a running build uses (the mechanism is
+[#76](https://github.com/tran4774/ranikust/issues/76)'s, in Phase 3; decided by
+[ADR-0122](../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
+not built yet: a shared `flock` on each entry a build uses, and the entry's
+marker mtime as its last use). The defaults are BuildKit's tiers, aging by last
 use ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
 mounts and contexts after 48 h unused beyond 512 MB, anything after 60 days
 unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
@@ -143,7 +146,9 @@ unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 The keys are built in `rnk-cache`; nothing computes or looks them up during
 a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
 the inputs the step depends on, chained to the previous key (ADR-0005; the
-fields are ADR-0113's, BuildKit's):
+fields are
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
+BuildKit's):
 
 ```
 key(k) = H(version, key(k-1), instruction, inputs(k))
@@ -162,12 +167,15 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     marked as dropped where
     [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
     drops it;
-  - for `COPY` and `ADD` from the build context, each file's path relative
-    to it, content, mode, owner after `--chown`, type, link target,
-    `security.capability` and, under `--reproducible`, its mtime clamped to
-    the epoch;
+  - for `COPY` and `ADD` from the build context, each file read (after
+    `.dockerignore`): its path relative to the context, content, mode, owner
+    after `--chown`, type, link target, `security.capability` and, under
+    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
+    file older than the epoch counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
-    `COPY --from=<stage>`, the source stage's final key (ADR-0114).
+    `COPY --from=<stage>`, the source stage's final key (a forced miss when
+    that stage ran in this build,
+    [ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)).
 
   The instruction holds no heredoc body: `rnk-builder` adds each one (of a
   `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
@@ -192,12 +200,21 @@ level (none for a plain tar), and whether file times are kept or clamped to
 an epoch, with the epoch. A hit was then encoded with this build's settings,
 so under `--reproducible` a warm build gives a cold build's digests when the
 layers it reuses were cached by a build in the same mode (below); builds
-with another encoding share no entries (ADR-0113).
+with another encoding share no entries
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
+The cold, warm and partial cache scenarios of workload W2 test the keys.
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
+
+In kaniko mode with a directory per stage, a hit streams into the stage root,
+and a blob found bad after extraction began makes the stage start again from its
+base without that entry; on `/` a hit is verified before extraction
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
+how often a stage may restart is not settled, decided before
+[#130](https://github.com/tran4774/ranikust/issues/130)).
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
@@ -240,7 +257,6 @@ other and carry that mode's accepted differences
 - [Q-015](https://github.com/tran4774/ranikust/issues/1) Which digest names an extracted layer, and where do locks live?
 - [Q-016](https://github.com/tran4774/ranikust/issues/2) How is the store lock protocol proven under crashes and races?
 - [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
-- [Q-042](https://github.com/tran4774/ranikust/issues/14) How do cache lookahead and cached-stage skipping work?
 
 ## References
 

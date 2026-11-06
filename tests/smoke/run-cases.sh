@@ -70,6 +70,21 @@ rnk_run() {
 
 rnk_ctx() { echo "$IN/ctx"; }
 
+# rnk_run_sh SCRIPT CTX OUT ARGS...: T1 only, as rnk_run, but `sh -c SCRIPT`
+# runs in the container, given rnk_run's ranikust command line ($0 the
+# binary); prints what the script prints. A case may add `podman run`
+# arguments to PODMAN_ARGS (`-e`, `--tmpfs`), as rnk_run reads them too.
+rnk_run_sh() {
+  local script="$1" ctx="$2" o="$3"
+  shift 3
+  podman run --rm ${PODMAN_ARGS[@]+"${PODMAN_ARGS[@]}"} -v "$RNK:$IN/bin/ranikust:ro" \
+    -v "$ctx:$IN/ctx:ro" -v "$WORK:/var/lib/ranikust" -v "$o:$IN/out" \
+    -v "$SECRET:$IN/secret:ro" --entrypoint /bin/sh "$BASE" -c "$script" \
+    "$IN/bin/ranikust" --context "$IN/ctx" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} --no-push \
+    --oci-layout-path "$IN/out/oci" --tar-path "$IN/out/image.tar" \
+    --secret "id=tok,src=$IN/secret" "$@"
+}
+
 # rnk_run_twice CTX OUT ARGS...: kaniko mode only, two builds one after the
 # other in one container, as two CI steps would run (ADR-0052, D1); the
 # outputs go to OUT/1 and OUT/2; prints both logs. A case may set the

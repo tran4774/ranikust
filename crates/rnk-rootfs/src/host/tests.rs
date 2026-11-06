@@ -510,15 +510,83 @@ fn a_symlink_another_account_owns_is_not_followed() {
 
 /// Red team (T22, T3, ADR-0076): the owner of an output's directory swaps
 /// names under ranikust while it writes, each swap one atomic
-/// `RENAME_EXCHANGE`: the output directory with a symlink to a victim
-/// directory, the tar with a symlink to a victim file, the digest file
-/// with a symlink to another and with a hard link to it. Whatever moment
-/// each swap lands at, nothing reaches the victim directory: its two files
-/// keep their dummy text and no name appears there. Some writes succeed
-/// meanwhile, so the race was run, not refused outright.
+/// `RENAME_EXCHANGE` picked at random: the output directory with a symlink
+/// to a victim directory, the tar with a symlink to a victim file, the
+/// digest file with a symlink to another and with a hard link to a third.
+/// Whatever moment each swap lands at, nothing reaches the victim
+/// directory: after every round its three files keep their dummy text and
+/// no name appears there. Rounds go on until one saw swaps land, let some
+/// writes through meanwhile and refused others, so the race was run,
+/// neither refused outright nor missed; still inconclusive at the deadline,
+/// the test fails.
 #[test]
 fn red_team_names_swapped_during_an_output_never_redirect_it() {
-    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    // A round took 20 to 50 ms on a loaded 32-thread x86_64 (debug build,
+    // tmpfs); the rest is for a disk-backed, busy or emulated runner.
+    const DEADLINE: Duration = Duration::from_secs(60);
+    let start = Instant::now();
+    let mut all = SwapRace::default();
+    let mut rounds = 0_u32;
+    // All in one round: a round where every write was refused and another
+    // where the swapper never ran would prove nothing together.
+    let conclusive = loop {
+        rounds += 1;
+        let round = swap_race_round(rounds);
+        all.written += round.written;
+        all.refused += round.refused;
+        all.relinked += round.relinked;
+        all.swaps += round.swaps;
+        if round.swaps > 0 && round.written > 0 && round.refused > 0 {
+            break true;
+        }
+        if start.elapsed() >= DEADLINE {
+            break false;
+        }
+    };
+    let SwapRace {
+        written,
+        refused,
+        relinked,
+        swaps,
+    } = all;
+    let took = start.elapsed();
+    let counts = format!(
+        "{written} written, {refused} refused, {relinked} tar links replaced, {swaps} swaps"
+    );
+    println!("{rounds} rounds in {took:?}: {counts}");
+    assert!(
+        conclusive,
+        "no round saw swaps land, let a write through and refuse one in {rounds} rounds \
+         ({took:?}; {counts} in all): the race proved nothing"
+    );
+}
+
+/// What the swap race saw, in one round or in all.
+#[derive(Default)]
+struct SwapRace {
+    written: u32,
+    refused: u32,
+    /// Writes whose rename replaced the tar's symlink, put back since.
+    relinked: u32,
+    swaps: u64,
+}
+
+/// Sets its flag when dropped.
+struct StopOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// One round of `red_team_names_swapped_during_an_output_never_redirect_it`
+/// in a fresh directory: 3000 outputs written while a thread swaps names,
+/// then the victim checked.
+fn swap_race_round(round: u32) -> SwapRace {
+    use std::sync::Barrier;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use rustix::fs::{Mode, OFlags, RenameFlags, renameat_with};
@@ -529,74 +597,85 @@ fn red_team_names_swapped_during_an_output_never_redirect_it() {
     fs::create_dir(&victim).unwrap();
     fs::write(victim.join("out.tar"), b"dummy-victim-tar").unwrap();
     fs::write(victim.join("digest"), b"dummy-victim-digest").unwrap();
+    fs::write(victim.join("hard"), b"dummy-victim-hard").unwrap();
     let out = top.join("out");
     fs::create_dir(&out).unwrap();
     symlink(&victim, top.join("outlink")).unwrap();
     fs::write(out.join("out.tar"), b"old").unwrap();
     fs::write(out.join("digest"), b"old").unwrap();
     symlink(victim.join("out.tar"), out.join("tarlink")).unwrap();
+    rustix::fs::linkat(
+        rustix::fs::CWD,
+        out.join("tarlink"),
+        rustix::fs::CWD,
+        out.join("tarlink.keep"),
+        rustix::fs::AtFlags::empty(),
+    )
+    .unwrap();
+    // A symlink to the hard link's file would be refused for its link
+    // count even if followed, so each link gets its own victim.
     symlink(victim.join("digest"), out.join("digestlink")).unwrap();
-    fs::hard_link(victim.join("digest"), out.join("digesthard")).unwrap();
+    fs::hard_link(victim.join("hard"), out.join("digesthard")).unwrap();
 
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = AtomicBool::new(false);
+    let started = Barrier::new(2);
     let top_fd = rustix::fs::open(&top, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
     // The real output directory, wherever its name is at the moment.
     let out_fd = rustix::fs::open(&out, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
-    let swapper = {
-        let stop = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            let mut swaps = 0_u64;
+    let race = std::thread::scope(|s| {
+        // On a panic too: the flag stops the swapper, the scope joins it,
+        // and only then is `dir` removed.
+        let _stop_on_drop = StopOnDrop(&stop);
+        let swapper = s.spawn(|| {
             let pairs = [
-                ("out.tar", "tarlink"),
-                ("digest", "digestlink"),
-                ("digest", "digesthard"),
+                (&out_fd, "out.tar", "tarlink"),
+                (&out_fd, "digest", "digestlink"),
+                (&out_fd, "digest", "digesthard"),
+                (&top_fd, "out", "outlink"),
             ];
+            // In a fixed order the swaps can fall into step with the
+            // writer's steps, which then meet the same names every time.
+            let mut x = 0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(u64::from(round));
+            let mut swaps = 0_u64;
+            started.wait();
             while !stop.load(Ordering::Relaxed) {
-                for (a, b) in pairs {
-                    if renameat_with(&out_fd, a, &out_fd, b, RenameFlags::EXCHANGE).is_ok() {
-                        swaps += 1;
-                    }
-                }
-                if renameat_with(&top_fd, "out", &top_fd, "outlink", RenameFlags::EXCHANGE).is_ok()
-                {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let (fd, a, b) = pairs[usize::try_from(x >> 62).unwrap()];
+                if renameat_with(fd, a, fd, b, RenameFlags::EXCHANGE).is_ok() {
                     swaps += 1;
                 }
             }
             swaps
-        })
-    };
-    let mut written = 0_u32;
-    let mut refused = 0_u32;
-    for _ in 0..3000 {
-        let Ok(dir) = OutputDir::open(&out, Some(0o700), None) else {
-            refused += 1;
-            continue;
-        };
-        let tar = dir.write_atomically(OsStr::new("out.tar"), 0o644, |f| {
-            f.write_all(b"rnk-output").map_err(|source| Error::Io {
-                op: "write",
-                path: "out.tar".into(),
-                source,
-            })
         });
-        let digest = dir.write_in_place(OsStr::new("digest"), 0o644, b"rnk-digest");
-        if tar.is_ok() && digest.is_ok() {
-            written += 1;
-        } else {
-            refused += 1;
+        started.wait();
+        let mut race = SwapRace::default();
+        for _ in 0..3000 {
+            if write_both(&out) {
+                race.written += 1;
+            } else {
+                race.refused += 1;
+            }
+            if relink_tar(&out_fd) {
+                race.relinked += 1;
+            }
         }
+        stop.store(true, Ordering::Relaxed);
+        race.swaps = swapper.join().unwrap();
+        race
+    });
+    for (name, text) in [
+        ("out.tar", "dummy-victim-tar"),
+        ("digest", "dummy-victim-digest"),
+        ("hard", "dummy-victim-hard"),
+    ] {
+        assert_eq!(
+            fs::read(victim.join(name)).unwrap(),
+            text.as_bytes(),
+            "{name}"
+        );
     }
-    stop.store(true, Ordering::Relaxed);
-    let swaps = swapper.join().unwrap();
-    println!("{written} written, {refused} refused, {swaps} swaps");
-    assert_eq!(
-        fs::read(victim.join("out.tar")).unwrap(),
-        b"dummy-victim-tar"
-    );
-    assert_eq!(
-        fs::read(victim.join("digest")).unwrap(),
-        b"dummy-victim-digest"
-    );
     let mut names: Vec<_> = fs::read_dir(&victim)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -604,12 +683,45 @@ fn red_team_names_swapped_during_an_output_never_redirect_it() {
     names.sort();
     assert_eq!(
         names,
-        ["digest", "out.tar"],
+        ["digest", "hard", "out.tar"],
         "a name appeared in the victim"
     );
-    assert!(written > 0, "no write got through: the race proved nothing");
-    assert!(
-        refused > 0,
-        "no swap was ever seen: the race proved nothing"
-    );
+    race
+}
+
+/// Writes the tar and the digest file in the output directory `out`, as an
+/// export does; whether both got through.
+fn write_both(out: &Path) -> bool {
+    let Ok(dir) = OutputDir::open(out, Some(0o700), None) else {
+        return false;
+    };
+    let tar = dir.write_atomically(OsStr::new("out.tar"), 0o644, |f| {
+        f.write_all(b"rnk-output").map_err(|source| Error::Io {
+            op: "write",
+            path: "out.tar".into(),
+            source,
+        })
+    });
+    let digest = dir.write_in_place(OsStr::new("digest"), 0o644, b"rnk-digest");
+    tar.is_ok() && digest.is_ok()
+}
+
+/// Puts the tar's link back at `tarlink` where a write's rename replaced it
+/// (the swapper had put it at `out.tar`), so the tar's race lasts the whole
+/// round; whether it had to. The link's second name, `tarlink.keep`, makes
+/// its link count say whether it is still at one of the two names, which no
+/// exchange changes; looking at both names instead races with the swapper.
+fn relink_tar(out: &rustix::fd::OwnedFd) -> bool {
+    use rustix::fs::{AtFlags, linkat, renameat, statat};
+
+    let replaced = statat(out, "tarlink.keep", AtFlags::SYMLINK_NOFOLLOW)
+        .unwrap()
+        .st_nlink
+        == 1;
+    if replaced {
+        // Both names hold files now, and only a write changes that.
+        linkat(out, "tarlink.keep", out, "tarlink.new", AtFlags::empty()).unwrap();
+        renameat(out, "tarlink.new", out, "tarlink").unwrap();
+    }
+    replaced
 }

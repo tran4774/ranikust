@@ -147,6 +147,7 @@ gets the code.
 | `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
 | `ranikust.setup` | | Mount namespace, the state directory's checks (ADR-0050), the kaniko-mode root, store open, probes, spawner start: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
+| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, inside `ranikust.setup`: the user-namespace probe, reported only (#74); `passes` when every step a `RUN` there needs and the overlay mount in the namespace worked; its start-up cost. |
 
 ### `rnk-dockerfile`
 
@@ -211,6 +212,7 @@ No span per HTTP request or body chunk.
 | `rnk_sandbox.run` | `user_ns`, `sys_ns`, `max_rss_kb`, `minflt`, `majflt`, `inblock`, `oublock`, `nvcsw`, `nivcsw`, `failed` | One `RUN` process from fork to reap; rusage from `wait4` (the child and the descendants it waited for). Becomes kaniko's `run.child`, `child_*` and `overhead_ns`; `exp-02`, `exp-15`. |
 | `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal, the `RUN`'s cgroups where it gets them. |
 | `rnk_sandbox.probe` | `ok` | One probe step (userns, `proc`, `pivot_root`, `sysfs`); start-up cost. |
+| `rnk_sandbox.probe_userns` | `ok`, `map` | The user-namespace steps, every map tried, each in forked children; `ok` when every step a `RUN` there needs worked, `map` the one that did (`multi-range`, `newuidmap`, `one uid`). What runs in the namespace's own child (the overlay probe) records no span here. |
 | `rnk_sandbox.cgroups` | `layout` (`nested`, `single`, `none`) | Finding and probing the `RUN` cgroups at `Sandbox::start` ([sandbox](sandbox.md#run-cgroups)); start-up cost. |
 
 ### `rnk-snapshot`
