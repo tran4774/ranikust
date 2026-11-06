@@ -2,7 +2,7 @@
 //! one. Neither ever fails a build: a failure is a miss or a warning
 //! (ADR-0113).
 
-use rnk_oci::{Descriptor, Digest, Reference};
+use rnk_oci::{Descriptor, Digest, Platform, Reference};
 use rnk_registry::{BlobBody, PushOutcome};
 
 use crate::error::Error;
@@ -91,6 +91,9 @@ pub struct BuiltLayer {
     pub blob: Descriptor,
     /// The digest of the uncompressed tar.
     pub diff_id: Digest,
+    /// The platform the stage is built for, which the entry's config names
+    /// (its architecture, OS and variant).
+    pub platform: Platform,
     /// How to read the blob.
     pub body: BlobBody,
     /// A repository of the cache's registry that may hold the blob already

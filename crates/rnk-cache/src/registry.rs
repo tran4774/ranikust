@@ -160,7 +160,7 @@ impl RegistryCache {
             *bytes_out += blob.size;
         }
         let created = Timestamp::from_system_time(SystemTime::now());
-        let config = entry::config(&layer.diff_id, created).map_err(document)?;
+        let config = entry::config(&layer.diff_id, &layer.platform, created).map_err(document)?;
         let body = BlobBody::Bytes(Bytes::from(config.bytes));
         let pushed = self
             .client

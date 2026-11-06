@@ -231,9 +231,11 @@ An entry, under its tag
   (`KEY_VERSION`, decimal) and `io.github.tran4774.ranikust.cache.encoding`
   (`gzip;level=6;times=kept`, `zstd;level=3;times=clamped;epoch=0`,
   `uncompressed;times=kept`);
-- an OCI config holding the push time as `created` (RFC 3339, UTC) and the
-  layer's diff ID; its `architecture` and `os` are empty, as in kaniko's
-  entries, since the key holds the platform.
+- an OCI config holding the push time as `created` (RFC 3339, UTC), the
+  layer's diff ID, and the `architecture`, `os` and `variant` of the
+  platform the stage is built for: OCI requires the first two (kaniko's
+  entries leave them empty), and the key's root holds the platform already,
+  so they disclose nothing new. A lookup does not check them.
 
 A lookup reads the manifest under the tag and then the config, each bounded
 by its `--limit` limit (ADR-0079):

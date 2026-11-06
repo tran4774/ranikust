@@ -106,6 +106,10 @@ async fn a_push_then_a_lookup_is_a_hit_with_the_same_digests() {
         config["rootfs"]["diff_ids"],
         json!([built.diff_id.as_str()])
     );
+    assert_eq!(
+        (&config["architecture"], &config["os"]),
+        (&json!("amd64"), &json!("linux"))
+    );
     let created = Timestamp::parse_rfc3339(config["created"].as_str().unwrap()).unwrap();
     assert!(created.to_system_time() >= before - Duration::from_secs(1));
     assert!(created.to_system_time() <= SystemTime::now());

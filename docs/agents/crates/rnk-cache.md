@@ -77,7 +77,8 @@ pub enum Lookup { Hit(CachedLayer), Miss(Miss) }       // #[must_use]
 pub enum Miss { Absent, Expired, Failed(Error) }       // Expired: no warning; Failed: a warning, never a failed build
 pub struct CachedLayer { pub source: Source, pub blob: Descriptor, pub diff_id: Digest } // blob: the encoding's OCI type, digest and size only
 #[non_exhaustive] pub enum Source { Registry(Reference) } // the entry's tagged reference, to pull the blob from
-pub struct BuiltLayer { pub blob: Descriptor, pub diff_id: Digest, pub body: BlobBody, pub mount_from: Option<Reference> }
+pub struct BuiltLayer { pub blob: Descriptor, pub diff_id: Digest, pub platform: Platform, pub body: BlobBody, pub mount_from: Option<Reference> }
+    // platform: the stage's, named in the entry's config (architecture, os, variant)
 pub enum Pushed { Done(PushOutcome), Failed(Error) }   // #[must_use]; PushOutcome: the layer's, rnk_registry's
 pub struct RegistryCache;            // new(Arc<Client>, repository, ttl) -> Result<_, Error>: no tag or digest; Clone
 #[non_exhaustive] pub enum Error { Repository, Registry, Refused, Encoding, Document } // messages hold excerpts only

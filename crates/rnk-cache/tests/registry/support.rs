@@ -78,6 +78,7 @@ pub(crate) fn layer(content: &[u8]) -> BuiltLayer {
     BuiltLayer {
         blob: Descriptor::new(MediaType::OCI_LAYER_GZIP, digest, size),
         diff_id: Digest::parse(&sha256(&tar)).unwrap(),
+        platform: Platform::new("linux", "amd64"),
         body: BlobBody::Bytes(Bytes::copy_from_slice(content)),
         mount_from: None,
     }

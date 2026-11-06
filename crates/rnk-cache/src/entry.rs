@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use rnk_oci::{
-    Compression, Descriptor, Digest, ImageConfig, ImageFormat, ImageManifest, MediaType, RootFs,
-    Timestamp,
+    Compression, Descriptor, Digest, ImageConfig, ImageFormat, ImageManifest, MediaType, Platform,
+    RootFs, Timestamp,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -63,12 +63,22 @@ fn document(media_type: MediaType, bytes: Vec<u8>) -> Document {
     }
 }
 
-/// The entry's config: the one layer's diff ID and `created`, the push
-/// time, which `--cache-ttl` counts from. No platform, as kaniko's entries
-/// have none: the key holds it.
-pub(crate) fn config(diff_id: &Digest, created: Timestamp) -> Result<Document, rnk_oci::Error> {
+/// The entry's config: the one layer's diff ID, `created`, the push time,
+/// which `--cache-ttl` counts from, and the stage's platform.
+///
+/// OCI requires `architecture` and `os` (kaniko's entries leave them
+/// empty); the key's root holds the platform already, so naming it
+/// discloses nothing new. A lookup does not check them: the key does.
+pub(crate) fn config(
+    diff_id: &Digest,
+    platform: &Platform,
+    created: Timestamp,
+) -> Result<Document, rnk_oci::Error> {
     let config = ImageConfig {
         created: Some(created.to_string()),
+        architecture: platform.architecture.clone(),
+        os: platform.os.clone(),
+        variant: platform.variant.clone(),
         rootfs: RootFs {
             kind: "layers".to_owned(),
             diff_ids: vec![diff_id.clone()],
@@ -188,14 +198,12 @@ pub(crate) fn check_config(bytes: &[u8]) -> Result<(Digest, Timestamp), Refusal>
 
 #[cfg(test)]
 mod tests {
-    use rnk_oci::Platform;
-
     use super::*;
     use crate::{CacheKey, Encoding, KEY_VERSION, KeyInputs, TimePolicy};
 
-    /// The entry form a lookup checks, pinned: a change bumps
-    /// `KEY_VERSION`, or entries already pushed are refused with a warning
-    /// instead of missed.
+    /// What a push writes, pinned. A change to what a lookup checks (not
+    /// the platform) bumps `KEY_VERSION`, or entries already pushed are
+    /// refused with a warning instead of missed.
     #[test]
     fn the_entry_form_is_pinned_with_the_key_version() {
         let encoding = Encoding {
@@ -203,12 +211,13 @@ mod tests {
             level: 3,
             times: TimePolicy::Clamped { epoch: 0 },
         };
-        let key = CacheKey::root(None, &Platform::new("linux", "amd64"))
-            .next("RUN make", KeyInputs::new(&encoding));
+        let mut platform = Platform::new("linux", "arm64");
+        platform.variant = Some("v8".to_owned());
+        let key = CacheKey::root(None, &platform).next("RUN make", KeyInputs::new(&encoding));
         let entry = EntryId::new(key, encoding);
         let diff_id = Digest::from_sha256_bytes(&[1; 32]);
         let created = Timestamp::parse_rfc3339("2026-11-07T01:02:03.5Z").unwrap();
-        let config = config(&diff_id, created).unwrap();
+        let config = config(&diff_id, &platform, created).unwrap();
         let blob = Descriptor::new(layer_type(&entry), Digest::from_sha256_bytes(&[2; 32]), 7);
         let manifest = manifest(&entry, config.descriptor, blob).unwrap();
         let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
@@ -216,10 +225,11 @@ mod tests {
         assert_eq!(
             text(&config.bytes),
             concat!(
-                r#"{"architecture":"","config":{},"created":"2026-11-07T01:02:03.5Z","os":"","#,
+                r#"{"architecture":"arm64","config":{},"created":"2026-11-07T01:02:03.5Z","#,
+                r#""os":"linux","#,
                 r#""rootfs":{"diff_ids":["sha256:"#,
                 "0101010101010101010101010101010101010101010101010101010101010101",
-                r#""],"type":"layers"}}"#,
+                r#""],"type":"layers"},"variant":"v8"}"#,
             ),
             "{bump}"
         );
@@ -229,11 +239,11 @@ mod tests {
                 r#"{"annotations":{"#,
                 r#""io.github.tran4774.ranikust.cache.encoding":"zstd;level=3;times=clamped;epoch=0","#,
                 r#""io.github.tran4774.ranikust.cache.key":"#,
-                r#""22c04fe87504e908bc776349803b5acbb8b0cc2cee066648a201a838ba5f08a2","#,
+                r#""fcf86e70916984a0d909c073f939451ddbb3076a7a2ff1e87a13200614d93c51","#,
                 r#""io.github.tran4774.ranikust.cache.version":"1"},"#,
                 r#""config":{"digest":"sha256:"#,
-                "8de4810af97d373f830ab5595b6ee0b9eabce1401c0c65d19122a728e2e53ac7",
-                r#"","mediaType":"application/vnd.oci.image.config.v1+json","size":188},"#,
+                "fa714745d6cf6c9a9c6baf7d65593f5e937e4c754e953119aadac83a4b896516",
+                r#"","mediaType":"application/vnd.oci.image.config.v1+json","size":213},"#,
                 r#""layers":[{"digest":"sha256:"#,
                 "0202020202020202020202020202020202020202020202020202020202020202",
                 r#"","mediaType":"application/vnd.oci.image.layer.v1.tar+zstd","size":7}],"#,
