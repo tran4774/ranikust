@@ -174,9 +174,9 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
 - **A profile that refuses `exit` and `exit_group`, or refuses everything,
   keeps the behaviour it has** ("Để như Docker, mở task", leave it as Docker
   does, and open a task). Where it refuses with an errno, the build then runs
-  until it is cancelled; `SCMP_ACT_KILL_PROCESS`, or a trap in a program
-  without a `SIGSYS` handler, fails the `RUN` instead. This is not a security
-  matter. It is tracked in
+  until it is cancelled; `SCMP_ACT_KILL_PROCESS`, `SCMP_ACT_KILL` in a
+  single-threaded program, or a trap in a program without a `SIGSYS`
+  handler, fails the `RUN` instead. This is not a security matter. It is tracked in
   [#103](https://github.com/tran4774/ranikust/issues/103), which lists the
   options left open: refuse such a profile at start-up, or end such a `RUN`
   from the parent. Docker's behaviour with the same profiles was not checked
@@ -239,8 +239,8 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
 - **[inferred]** from `seccomp(2)`: `SECCOMP_RET_KILL_PROCESS` ends the
   process and `SECCOMP_RET_TRAP` sends a `SIGSYS` that ends a program
   without a handler, so either fails the `RUN` at the refused call, where
-  `SECCOMP_RET_KILL_THREAD` (`SCMP_ACT_KILL`) ends only the calling thread.
-  Not measured.
+  `SECCOMP_RET_KILL_THREAD` (`SCMP_ACT_KILL`) ends only the calling thread,
+  and the process too when it has one thread. Not measured.
 - **[measured]** 2026-11-06, kernel 7.0.0-42-generic, ranikust in rootless
   Podman (T1), as reported in
   [#103](https://github.com/tran4774/ranikust/issues/103): a profile that
