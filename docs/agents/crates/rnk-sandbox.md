@@ -410,7 +410,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   list of strings); a 1 MiB profile of 5.5 million instructions refused
   within 8 MiB (`tests/seccomp_memory.rs`, a counting allocator);
   `errno_0_reads_as_eproto`; a killed set-up's message, its signal and,
-  for `SIGSYS` under a profile, the profile (`src/error.rs`). Moby's
+  for `SIGSYS` under a profile, the profile (`src/error.rs`); how a `RUN`
+  ends (`a_runs_end_is_its_status_its_record_or_its_killed_set_up` in
+  `src/spawner.rs`: its status, a failure record, a killed set-up winning
+  over an init's record and losing to any other). Moby's
   profile's argument-rule form
   (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
   of `clone3` and `io_uring_*`

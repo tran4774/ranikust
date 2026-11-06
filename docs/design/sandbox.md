@@ -459,11 +459,17 @@ the command exits, the init reports its status and exits, and the kernel kills
 everything left in the namespace, so no `tini` and no process-group kill are
 needed; exit codes and signals read as they would from the command itself. An
 init killed by a signal before it wrote that status (a profile's kill or trap
-of a call it or the command makes, at the latest its wait) is no status of the
-command's, which may not have run: the `RUN` fails as `Error::SetupKilled`,
-which names the signal and, for `SIGSYS` under a profile, the profile as the
-likely cause; it comes before a failure record of the command's, which may
-only follow from it (the go pipe ended), and is not one that ran no command. A
+of a call the init makes: its own steps after its filters, or its wait) is no
+status of the command's, which may not have run: the `RUN` fails as
+`Error::SetupKilled`, which names the signal and, for `SIGSYS` under a
+profile, the profile as the likely cause, and is not one that ran no command.
+It wins over a failure record of `Step::Init`, which the init's end may cause
+(the go pipe ended, the command orphaned before its parent check), and loses
+to any other record, the more precise; the one not returned is logged. A kill
+of a call only the command makes after its filters and before `execve` (its
+go read, `setsid`, the `USER` switch) leaves the init alive, and the `RUN`
+fails with the command's status (`SIGSYS`, code 159), as one killed after
+`execve` does: nothing tells the two apart. A
 cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit kills the
 process on a cancel; the child is forgotten only once it has exited and before
 it is reaped, so the kill never reaches a reused pid. The command is PID 2, as

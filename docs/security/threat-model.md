@@ -293,8 +293,8 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
 - A `RUN`'s seccomp profile cannot fake a success: `--seccomp` refuses an
   `SCMP_ACT_ERRNO` whose errno would be 0 or from 512 up (the kernel's own
   codes); it refuses `SCMP_ACT_TRACE` and `SCMP_ACT_NOTIFY`; and
-  `SCMP_ACT_TRAP` kills the set-up, which has no handler for it (the `RUN`
-  fails as a set-up killed by `SIGSYS`, naming its profile)
+  `SCMP_ACT_TRAP` kills the set-up, which has no handler for it, and fails
+  the `RUN` ([how it is reported](../design/sandbox.md#per-run-sequence))
   ([ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)).
   A filter around ranikust, which the operator's runtime installs and
   ranikust does not control, may still fake one, for ranikust's own calls
