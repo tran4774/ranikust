@@ -39,7 +39,8 @@ PROFILES=(default privileged)
 mkdir -p "$TARGET"
 OUT="$(mktemp -d "$TARGET/rootless.XXXXXX")"
 STAGE="$OUT/stage"
-trap 'rm -rf "$STAGE"' EXIT
+# The run's directory stays only while it holds a log.
+trap 'rm -rf "$STAGE"; rmdir "$OUT" 2>/dev/null || true' EXIT
 mkdir -p "$STAGE/bin"
 
 # The fn under each marker.

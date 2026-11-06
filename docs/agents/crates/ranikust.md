@@ -32,8 +32,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   `/etc/subuid` and `/etc/subgid` by name, from `/etc/passwd`, or by uid;
   a missing file gives none, one that cannot be read refuses),
   `rnk_sandbox::enter_build_user_namespace`, then `Store::open`, whose
-  clean-up removes a dead build's files of subordinate ids. No build calls
-  it yet: `prune --all` (#76) and rootless overlay mode (#79) will; a user
+  clean-up removes a dead build's files of subordinate ids. A refusal
+  once the process may be in the namespace is `Kind::Broken`, which never
+  routes to another mode: the process must end. No build calls it yet: `prune --all` (#76) and rootless overlay mode (#79) will; a user
   other than root is still refused before the state directory
   (`NEEDS_ROOT`).
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
@@ -310,7 +311,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   values and files refused for each reason, a FIFO given as the file never
   opened, under an inotify watch), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to
-  kaniko mode, a probe failure other than a refused mount never routes, no
+  kaniko mode, a probe failure other than a refused mount never routes, nor
+  a refusal once the process may be in the build's user namespace, no
   guidance sends a user back to the mode they used, the user-namespace
   probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
   the overlay probe was left, and only then; `setup/tests/userns.rs`: the
@@ -365,8 +367,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `without_root_the_set_up_refuses_before_touching_the_state_dir` and
   `without_root_the_set_up_never_makes_the_default_state_dir` run only
   as a normal user (skipped as root): nothing is created, a `--state-dir`
-  is left empty with `ranikust.setup` in the report, and without one no
-  `~/.local` is made.
+  is left empty with `ranikust.setup` in the report, and without one
+  `$HOME` is left empty in every `--mode`.
 - **T1** (`just smoke`, `RANIKUST_CASE_MODE=kaniko just smoke-case`): the
   release binary's set-up and builds in rootless podman (overlay as root in
   a user namespace; kaniko mode on the container's `/`, `RUN` `Direct`);

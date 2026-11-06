@@ -323,6 +323,17 @@ fn a_broken_user_namespace_never_falls_back() {
     assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
     let refusal = userns_refusal(SandboxError::NotSingleThreaded { threads: 2 }, USER);
     assert_eq!(refusal.kind, Kind::Other);
+    // The store refusing once inside: of the same kind, its words kept.
+    for kind in [Kind::Other, Kind::OverlayUnusable, Kind::NoMountPrivilege] {
+        let refusal = inside_userns(Refusal {
+            kind,
+            reason: "r".to_owned(),
+            guidance: "g",
+        });
+        assert_eq!(refusal.kind, Kind::Broken, "{kind:?}");
+        assert_eq!((refusal.reason.as_str(), refusal.guidance), ("r", "g"));
+        assert_eq!(route(&refusal, false), Route::Refuse);
+    }
 }
 
 /// A fresh temp dir no one else may write, whatever the umask.

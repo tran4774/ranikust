@@ -82,8 +82,9 @@ pub(crate) enum Kind {
     /// A step of the `RUN` sandbox was refused although root may mount (an
     /// LSM blocking mounts).
     SandboxBlocked,
-    /// The process is inside the build's user namespace, and its set-up or
-    /// a later step failed: it must end, so no mode may follow (#75).
+    /// The process may be in the build's user namespace (it is not known to
+    /// be unchanged), and its set-up or a later step failed: it must end,
+    /// so no mode may follow.
     Broken,
 }
 
@@ -224,9 +225,10 @@ pub(crate) struct UsernsSetup {
 ///
 /// # Errors
 ///
-/// A [`Refusal`]. One once the process is in the namespace (its set-up,
-/// [`rnk_sandbox::Error::UserNamespaceBroken`], or the store failed) is of
-/// [`Kind::Broken`]: the process must end.
+/// A [`Refusal`]. Where the process may be in the namespace already (an
+/// error of [`rnk_sandbox::enter_build_user_namespace`] not known to come
+/// before any change, or the store refused), it is of [`Kind::Broken`]:
+/// the process must end, and no caller, in any mode, may ignore it.
 #[cfg_attr(
     not(test),
     expect(
@@ -245,17 +247,22 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
     let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
         .map_err(|e| userns_refusal(e, euid))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
-    // In the namespace now: whatever refuses, no other mode may follow.
-    let store = open_store(state_dir, state_dir).map_err(|r| Refusal {
-        kind: Kind::Broken,
-        ..r
-    })?;
+    let store = open_store(state_dir, state_dir).map_err(inside_userns)?;
     Ok(UsernsSetup { userns, store })
+}
+
+/// `refusal`, made once the process is in the build's user namespace: no
+/// other mode may follow it.
+fn inside_userns(refusal: Refusal) -> Refusal {
+    Refusal {
+        kind: Kind::Broken,
+        ..refusal
+    }
 }
 
 /// The refusal for [`rnk_sandbox::enter_build_user_namespace`]'s error
 /// `e`, for the effective uid `euid`: [`Kind::Broken`] unless `e` is one
-/// that function documents as leaving the process unchanged.
+/// known to come before any change.
 fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
     Refusal {
         kind: match e {
