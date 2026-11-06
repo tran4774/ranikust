@@ -299,7 +299,11 @@ impl UsernsReport {
     /// child runs `f`, which may allocate; and before any credential is
     /// read, as for [`probe_user_namespace`]. `f` must not fork: nothing
     /// here kills or reaps a process it starts, which would outlive the
-    /// child, holding its namespaces and mounts.
+    /// child, holding its namespaces and mounts. `f` runs with no `tracing`
+    /// subscriber, and a thread it starts must carry `f`'s (empty)
+    /// dispatcher over (`dispatcher::get_default`, then `with_default`), as
+    /// `rnk-snapshot`'s mount thread does: else it logs through the global
+    /// one, into the build's log.
     pub fn in_namespace(
         &self,
         // A function, not a closure: it captures no descriptor of this

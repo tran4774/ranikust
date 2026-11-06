@@ -2314,7 +2314,8 @@ unsafe fn close_listed(keep: &[RawFd], on_refusal: OnRefusal) -> Listed {
             {
                 found += 1;
                 // SAFETY: the caller's contract: no owner of a descriptor
-                // not in `keep` is used or dropped after.
+                // this closes is used or dropped after (the listing's own
+                // is passed over above).
                 if let Err(e) = unsafe { close_raw(fd) } {
                     match on_refusal {
                         OnRefusal::Stop => return Listed::Refused(e),

@@ -369,17 +369,18 @@ What a change here must keep, with where it lives:
   pipes, the probe's directory, the `chown` target), then makes system
   calls only, then `_exit`. `in_namespace`'s function may allocate (it
   checks for one thread first) but must not fork (a process it starts
-  would outlive the child), and runs with an empty panic hook and, on
-  its thread, no `tracing` subscriber: the inherited ones write ranikust's
-  metrics report and log (a thread the function starts carries its
-  dispatcher over, as `rnk-snapshot`'s mount thread does). Each
-  child is killed at its deadline (10 s, the closure 60 s) and reaped
-  within 2 s (one that closed its report but is not reaped then is killed,
-  and given 2 s more); its namespaces and mounts go with it. One still
-  there after is `Error::ProbeChildLeft`: the probe's directory stays, and
-  `ranikust` leaves its own too, until the build's directory is removed: at
-  the end of the build, or at once when `--mode=auto` falls back to kaniko
-  mode.
+  would outlive the child), and runs with an empty panic hook and, on its
+  thread, no `tracing` subscriber: the inherited ones write ranikust's
+  metrics report and log (a thread the function starts must carry the
+  function's empty dispatcher over, as `rnk-snapshot`'s mount thread
+  does). Each child is killed at its deadline (10 s, the closure 60 s) and
+  reaped within 2 s (one that closed its report but is not reaped then is
+  killed, and given 2 s more); its namespaces and mounts go with it. One
+  still there after is `Error::ProbeChildLeft`: the probe's directory
+  stays, and `ranikust` leaves its own too, until the build's directory is
+  removed (or, with an anonymous store, the state directory emptied): at
+  the end of the run, at once when `--mode=auto` falls back to kaniko
+  mode, else at the next start (a refused set-up, a run cut short).
   `newuidmap` and `newgidmap` each get 10 s, then are killed and given 2 s
   to be reaped; one whose wait fails is too, except after `ECHILD`. The
   child waits for them, so an attempt can run past its 10 s: it is then
@@ -516,16 +517,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   panic in the closure reported as not finishing, never as its refusal, nor
   through the parent's panic hook, and a log line of the closure not
   through its subscriber (in a copy of the test binary with one test
-  thread); a child holding only stdio and its own
-  descriptors; a child reaped within its grace, else killed, else reported
-  left; a tool reaped elsewhere (`ECHILD`) not killed. Its red team
-  (`red_team_*`, as any user; T22, T4, T7, T8, T9): names planted where it
-  makes its files (a symlink out, a hard link of a file outside, a FIFO;
-  the directory itself a symlink or a FIFO) never followed, opened or
-  removed; nothing left after a probe and a closure that mounts (no
-  process, orphan included, no descriptor, mount or entry); the prober
-  killed while a child of the probe runs (`SIGKILL`, `SIGINT`, `SIGINT` to
-  its group) leaves no process or mount.
+  thread); a child holding only stdio and its own descriptors; a child
+  reaped within its grace, else killed, else reported left; a tool reaped
+  elsewhere (`ECHILD`) not killed. Its red team (`red_team_*`, as any
+  user; T22, T4, T7, T8, T9): names planted where it makes its files (a
+  symlink out, a hard link of a file outside, a FIFO; the directory itself
+  a symlink or a FIFO) never followed, opened or removed; nothing left
+  after a probe and a closure that mounts (no process, orphan included, no
+  descriptor, mount or entry); the prober killed while a child of the
+  probe runs (`SIGKILL`, `SIGINT`, `SIGINT` to its group) leaves no
+  process or mount.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
