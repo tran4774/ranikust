@@ -144,6 +144,10 @@ fn the_advice_names_the_default_of_the_effective_user() {
         assert!(private_state(euid).contains("~/.local/share/ranikust"));
         assert!(private_state(euid).contains("only you or root"));
     }
+    // The default may be the directory refused: never offered as the fix.
+    for euid in [0, 1000] {
+        assert!(!private_state(euid).contains("use the default"));
+    }
 }
 
 #[test]

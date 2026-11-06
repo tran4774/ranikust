@@ -22,14 +22,15 @@ impl fmt::Display for Refused {
     }
 }
 
-/// What a refused state directory should become, for the effective user.
+/// What a refused state directory should become, for the effective user;
+/// the refused one may be the default itself.
 fn private_state(euid: u32) -> &'static str {
     if euid == 0 {
-        "use the default /var/lib/ranikust, or a --state-dir below directories that only \
-         root may write (ADR-0050)"
+        "use a --state-dir below directories that only root may write, as the default \
+         /var/lib/ranikust is on most hosts (ADR-0050)"
     } else {
-        "use the default ~/.local/share/ranikust, or a --state-dir below directories that \
-         only you or root may write (ADR-0050)"
+        "use a --state-dir below directories that only you or root may write, as the default \
+         ~/.local/share/ranikust is where your home is private (ADR-0050)"
     }
 }
 

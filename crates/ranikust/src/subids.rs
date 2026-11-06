@@ -15,25 +15,45 @@ const SUBGID: &str = "subgid";
 
 /// The subordinate ids of `uid` under `/etc`, `None` for root, which maps
 /// its own ids, or where either file has no usable range for the user.
-pub(crate) fn lookup(uid: u32) -> Option<SubordinateIds> {
+///
+/// # Errors
+///
+/// A file there that cannot be read, but for one that does not exist,
+/// which gives no range: the file and why.
+pub(crate) fn lookup(uid: u32) -> Result<Option<SubordinateIds>, String> {
     lookup_in(std::path::Path::new("/etc"), uid)
 }
 
-/// [`lookup`] with the files in `etc`; a file that cannot be read counts
-/// as empty.
-fn lookup_in(etc: &std::path::Path, uid: u32) -> Option<SubordinateIds> {
+/// [`lookup`] with the files in `etc`.
+fn lookup_in(etc: &std::path::Path, uid: u32) -> Result<Option<SubordinateIds>, String> {
     if uid == 0 {
-        return None;
+        return Ok(None);
     }
-    // Missing or unreadable, a file just gives no range: the build then maps
-    // one uid and says so.
-    let read = |name: &str| std::fs::read_to_string(etc.join(name)).unwrap_or_default();
-    let passwd = read(PASSWD);
+    let read = |name: &str| {
+        let path = etc.join(name);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(valid_lines(&bytes)),
+            // A missing file gives no range: the build maps one uid and says so.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    };
+    let passwd = read(PASSWD)?;
     let name = user_name(&passwd, uid);
-    Some(SubordinateIds {
-        uids: first_range(&read(SUBUID), name, uid)?,
-        gids: first_range(&read(SUBGID), name, uid)?,
-    })
+    let (subuid, subgid) = (read(SUBUID)?, read(SUBGID)?);
+    Ok(first_range(&subuid, name, uid)
+        .zip(first_range(&subgid, name, uid))
+        .map(|(uids, gids)| SubordinateIds { uids, gids }))
+}
+
+/// The lines of `bytes` that are UTF-8: another (a Latin-1 comment field
+/// of `/etc/passwd`) names no one this lookup could match.
+fn valid_lines(bytes: &[u8]) -> String {
+    bytes
+        .split(|b| *b == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The name of `uid` in `passwd` (`name:x:uid:...`), its first entry.
@@ -46,8 +66,8 @@ fn user_name(passwd: &str, uid: u32) -> Option<&str> {
 }
 
 /// The first well-formed range (`owner:start:count`) of `text` whose owner
-/// is `name` or `uid` in decimal: a count of at least one, whose last id
-/// fits in 32 bits.
+/// is `name` or `uid` in decimal: a count of at least one, whose end
+/// (`start + count`) fits in 32 bits, as the kernel takes a map's line.
 fn first_range(text: &str, name: Option<&str>, uid: u32) -> Option<IdRange> {
     let uid = uid.to_string();
     text.lines().find_map(|line| {
@@ -57,7 +77,7 @@ fn first_range(text: &str, name: Option<&str>, uid: u32) -> Option<IdRange> {
             return None;
         }
         let (start, count) = (decimal(start)?, decimal(count)?);
-        (count >= 1 && start.checked_add(count - 1).is_some()).then_some(IdRange { start, count })
+        (count >= 1 && start.checked_add(count).is_some()).then_some(IdRange { start, count })
     })
 }
 

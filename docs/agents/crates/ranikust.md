@@ -29,7 +29,8 @@ writer) before `unshare`, the probes and the state directory's checks.
 - The build's user namespace with the store opened in it
   (`setup::enter_user_namespace`, #75): the state directory's checks
   outside, the user's subordinate ids (`subids.rs`: the first range of
-  `/etc/subuid` and `/etc/subgid` by name, from `/etc/passwd`, or by uid),
+  `/etc/subuid` and `/etc/subgid` by name, from `/etc/passwd`, or by uid;
+  a missing file gives none, one that cannot be read refuses),
   `rnk_sandbox::enter_build_user_namespace`, then `Store::open`, whose
   clean-up removes a dead build's files of subordinate ids. No build calls
   it yet: `prune --all` (#76) and rootless overlay mode (#79) will; a user
@@ -319,7 +320,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
   advice), `subids` (ranges by name or uid, the first well-formed one,
-  malformed and empty ones passed over, both files needed, none for root),
+  malformed and empty ones and lines not UTF-8 passed over, an end past
+  32 bits refused, both files needed, none for root, an unreadable file an
+  error),
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
@@ -455,6 +458,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - Forgetting `#[global_allocator]` is no error, just 250-300x slower
   allocation at 16 threads on musl
   ([exp-05](../../research/experiments/05-rust-ecosystem.md#q2-allocator)).
+- mimalloc, the test binary's allocator too, has no fork handler: a test
+  that forks and allocates in the child runs itself again alone, with one
+  test thread (`alone` in `setup/tests/userns.rs`).
 - `rnk_sandbox::Caps` is `#[non_exhaustive]`: `setup::pick` is generic over
   the caps so its tests need no real probe.
 - kaniko requires `--destination` unless `--no-push` (`root.go:200-202`),

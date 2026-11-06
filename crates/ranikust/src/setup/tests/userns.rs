@@ -19,15 +19,70 @@ fn private_tempdir() -> tempfile::TempDir {
     tmp
 }
 
+/// Marks the test binary [`alone`] starts.
+const ALONE: &str = "RNK_USERNS_TEST_ALONE";
+
+/// Whether the test `name` of this module runs alone in its process. Else
+/// runs it again so, in this test binary with one test thread, asserts it
+/// passed and returns false. There, the only other
+/// thread is libtest's main one, waiting for the test's result: at
+/// [`in_child`]'s fork, no other thread is inside mimalloc, which has no
+/// fork handler.
+fn alone(name: &str) -> bool {
+    if std::env::var_os(ALONE).is_some() {
+        return true;
+    }
+    let module = module_path!()
+        .split_once("::")
+        .map_or(module_path!(), |(_, m)| m);
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            &format!("{module}::{name}"),
+            "--exact",
+            "--include-ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(ALONE, "1")
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Not printed when it passed: the lanes count each `test result` line.
+    assert!(
+        out.status.success() && text.contains("test result: ok. 1 passed"),
+        "{text}"
+    );
+    false
+}
+
+/// This process's user and mount namespaces.
+fn namespaces() -> String {
+    ["user", "mnt"]
+        .map(|ns| {
+            fs::read_link(format!("/proc/self/ns/{ns}"))
+                .map_or_else(|e| e.to_string(), |p| p.display().to_string())
+        })
+        .join(" ")
+}
+
 /// Runs `f` in a forked child, as `user` (uid, gid) when given; the child
 /// is single-threaded, as the set-up must be, and the subreaper of what it
-/// forks. Returns what `f` printed, or an `error:` line.
+/// forks. Returns what `f` printed, or an `error:` line. Only in a test
+/// that runs [`alone`].
 fn in_child(user: Option<(u32, u32)>, f: impl FnOnce() -> String) -> String {
+    assert!(
+        std::env::var_os(ALONE).is_some(),
+        "only in a test run alone"
+    );
     let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
     let keep = u32::try_from(w.as_raw_fd()).unwrap();
-    // SAFETY: the child makes system calls, runs `f`, whose allocations are
-    // safe after a fork, and ends with `_exit`, dropping no owner of a
-    // descriptor it closed.
+    // SAFETY: the test runs alone ([`alone`]): the only other thread waits
+    // for its result, holding no lock the child's allocations need. The
+    // child ends with `_exit`, dropping no owner of a descriptor it closed.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
         // SAFETY: plain system calls in this child, which uses or drops no
@@ -60,14 +115,15 @@ fn in_child(user: Option<(u32, u32)>, f: impl FnOnce() -> String) -> String {
         // SAFETY: `_exit` ends this process at once.
         unsafe { libc::_exit(0) }
     }
-    assert!(pid > 0);
+    let pid = rustix::process::Pid::from_raw(pid).expect("fork");
     drop(w);
     let mut out = String::new();
     fs::File::from(r).read_to_string(&mut out).unwrap();
-    let mut status = 0;
-    // SAFETY: `waitpid` writes the status, which lives across the call.
-    assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
-    assert!(libc::WIFEXITED(status), "status {status:#x}: {out}");
+    let waited = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty());
+    let Ok(Some((_, status))) = waited else {
+        panic!("waitpid: {waited:?}: {out}");
+    };
+    assert!(status.exited(), "{status:?}: {out}");
     out
 }
 
@@ -90,10 +146,14 @@ fn plant(dir: &Path) -> std::io::Result<()> {
 /// without closing the store. `map\tid`, or `refused\t<refusal>`.
 fn dead_build(state: &Path, user: Option<(u32, u32)>) -> String {
     in_child(user, || {
+        let before = namespaces();
         let set_up = match enter_user_namespace(state) {
             Ok(s) => s,
             Err(r) => return format!("refused\t{r}"),
         };
+        if namespaces() == before {
+            return "error: the namespaces did not change".to_owned();
+        }
         let id = set_up.store.build_id().to_owned();
         let dirs = [
             set_up.store.build_dir().to_owned(),
@@ -115,10 +175,14 @@ fn dead_build(state: &Path, user: Option<(u32, u32)>) -> String {
 fn next_build(state: &Path, user: Option<(u32, u32)>, id: &str) -> String {
     let id = id.to_owned();
     in_child(user, move || {
+        let before = namespaces();
         let set_up = match enter_user_namespace(state) {
             Ok(s) => s,
             Err(r) => return format!("refused\t{r}"),
         };
+        if namespaces() == before {
+            return "error: the namespaces did not change".to_owned();
+        }
         let left: Vec<String> = ["builds", "tmp"]
             .iter()
             .map(|d| set_up.store.state_dir().join(d).join(&id))
@@ -143,33 +207,54 @@ fn next_build(state: &Path, user: Option<(u32, u32)>, id: &str) -> String {
 /// naming the maps it tried, before the store.
 #[test]
 fn the_store_opens_inside_the_user_namespace_or_not_at_all() {
+    if !alone("the_store_opens_inside_the_user_namespace_or_not_at_all") {
+        return;
+    }
     let euid = rustix::process::geteuid().as_raw();
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
-    let out = in_child(None, || match enter_user_namespace(&state) {
-        Ok(s) => {
-            let owner = fs::metadata(s.store.state_dir()).map(|m| m.uid());
-            let line = format!(
-                "ok\t{}\t{}\t{owner:?}",
-                s.userns.map,
-                rustix::process::geteuid().as_raw()
-            );
-            match s.store.close() {
-                Ok(()) => line,
-                Err(e) => format!("error: close: {e}"),
+    let out = in_child(None, || {
+        let before = namespaces();
+        match enter_user_namespace(&state) {
+            Ok(s) => {
+                let owner = fs::metadata(s.store.state_dir()).map(|m| m.uid());
+                let changed = if namespaces() == before {
+                    "same"
+                } else {
+                    "new"
+                };
+                let line = format!(
+                    "ok\t{}\t{changed}\t{}\t{owner:?}",
+                    s.userns.map,
+                    rustix::process::geteuid().as_raw()
+                );
+                match s.store.close() {
+                    Ok(()) => line,
+                    Err(e) => format!("error: close: {e}"),
+                }
             }
+            Err(r) => format!(
+                "refused\t{}\t{}\t{:?}\t{}",
+                r.reason,
+                r.guidance,
+                r.kind,
+                if namespaces() == before {
+                    "same"
+                } else {
+                    "new"
+                }
+            ),
         }
-        Err(r) => format!("refused\t{}\t{}\t{:?}", r.reason, r.guidance, r.kind),
     });
     let st = fs::metadata(&state).unwrap();
     assert_eq!((st.uid(), st.mode() & 0o7777), (euid, 0o700), "{out}");
     let marker = state.join(rnk_store::STATE_MARKER).exists();
     match out.split('\t').collect::<Vec<_>>()[..] {
-        ["ok", _map, inside, owner] => {
-            assert_eq!((inside, owner), ("0", "Ok(0)"), "{out}");
+        ["ok", _map, changed, inside, owner] => {
+            assert_eq!((changed, inside, owner), ("new", "0", "Ok(0)"), "{out}");
             assert!(marker, "{out}");
         }
-        ["refused", reason, guidance, kind] => {
+        ["refused", reason, guidance, kind, "same"] => {
             assert!(
                 reason.starts_with("no user namespace for the build: "),
                 "{out}"
@@ -189,6 +274,9 @@ fn the_store_opens_inside_the_user_namespace_or_not_at_all() {
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container enters the build's user namespace"]
 fn the_store_in_the_user_namespace_removes_a_dead_build_of_other_ids() {
+    if !alone("the_store_in_the_user_namespace_removes_a_dead_build_of_other_ids") {
+        return;
+    }
     assert!(
         rustix::process::geteuid().is_root(),
         "run as root of a rootless Podman container (just test-rootless)"
@@ -218,6 +306,9 @@ fn the_store_in_the_user_namespace_removes_a_dead_build_of_other_ids() {
 #[test]
 #[ignore = "T2: drops from root to the sudo user to open the store in the build's user namespace"]
 fn a_regular_user_s_store_removes_a_dead_build_of_subordinate_ids() {
+    if !alone("a_regular_user_s_store_removes_a_dead_build_of_subordinate_ids") {
+        return;
+    }
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
     let (Some(uid), Some(gid)) = (var("SUDO_UID"), var("SUDO_GID")) else {
@@ -240,7 +331,9 @@ fn a_regular_user_s_store_removes_a_dead_build_of_subordinate_ids() {
         assert!(!state.join(rnk_store::STATE_MARKER).exists(), "{dead}");
         return;
     }
-    let sub = crate::subids::lookup(uid).expect("the VM's user has subordinate ids");
+    let sub = crate::subids::lookup(uid)
+        .unwrap()
+        .expect("the VM's user has subordinate ids");
     let Some(("newuidmap", id)) = dead.split_once('\t') else {
         panic!("{dead}");
     };

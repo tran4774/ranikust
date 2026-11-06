@@ -231,7 +231,11 @@ pub(crate) struct UsernsSetup {
 pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
-    let subordinate = crate::subids::lookup(euid);
+    let subordinate = crate::subids::lookup(euid).map_err(|e| Refusal {
+        kind: Kind::Other,
+        guidance: "",
+        reason: format!("cannot read this user's subordinate ids: {e}"),
+    })?;
     let userns = rnk_sandbox::enter_build_user_namespace(subordinate).map_err(|e| Refusal {
         kind: Kind::Other,
         guidance: if euid != 0 && matches!(e, SandboxError::NoUserNamespace { .. }) {
