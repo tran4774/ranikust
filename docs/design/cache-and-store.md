@@ -166,8 +166,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     to it, content, mode, owner after `--chown`, type, link target,
     `security.capability` and, under `--reproducible`, its mtime clamped to
     the epoch;
-  - for a `COPY` heredoc, its body, which `rnk-builder` hashes (task 3 of
-    #123);
+  - a heredoc's body that the instruction text leaves out (`COPY` and
+    `ADD` sources, a `#!` `RUN` script), which `rnk-builder` hashes (task 3
+    of #123);
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (ADR-0114).
 - **never:** the snapshot mode, the host, its users or id maps, the time,
@@ -189,8 +190,8 @@ whose `<hex>` hashes the key with the layer's encoding: the compression, its
 level (none for a plain tar), and whether file times are kept or clamped to
 an epoch, with the epoch. A hit was then encoded with this build's settings,
 so under `--reproducible` a warm build gives a cold build's digests when the
-layers it reuses were cached by the same mode (below); builds with another
-encoding share no entries (ADR-0113).
+layers it reuses were cached by a build in its mode (below); builds with
+another encoding share no entries (ADR-0113).
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or

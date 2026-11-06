@@ -28,7 +28,7 @@ impl Spec {
         self.encoded_as(&encoding(self.epoch))
     }
 
-    /// The inputs with another encoding than gzip 6; `epoch` is ignored.
+    /// The inputs with `encoding`; `epoch` is ignored.
     pub(crate) fn encoded_as(&self, encoding: &Encoding) -> KeyInputs {
         let mut inputs = KeyInputs::new(encoding);
         for (name, value) in &self.args {

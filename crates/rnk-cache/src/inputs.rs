@@ -116,7 +116,7 @@ impl KeyInputs {
         self
     }
 
-    /// A file a `COPY` or `ADD` writes.
+    /// A file a `COPY` or `ADD` writes from the build context.
     pub fn file(&mut self, file: File) -> &mut Self {
         self.files.push(file);
         self
