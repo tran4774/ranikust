@@ -14,6 +14,8 @@ workspace = true
 [dependencies]
 bytes.workspace = true
 futures-util.workspace = true
+# Every step's cache key, computed before the build (ADR-0114, ADR-0115).
+rnk-cache.workspace = true
 rnk-context.workspace = true
 rnk-dockerfile.workspace = true
 rnk-ignore.workspace = true

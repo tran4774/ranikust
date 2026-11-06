@@ -52,7 +52,7 @@ impl CacheKey {
     pub fn tag(&self, encoding: &Encoding) -> String;                 // "rnk-v<version>-<64 hex>"
 }
 pub struct KeyInputs;                // new(&Encoding) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file, heredoc(name, body)
-pub enum Network { Default, None, Host }               // the Dockerfile's --network, never what a mode gives
+pub enum Network { Default, None, Host }               // BuildKit's: the RUN's --network, else none under the build's --network=none; never what a mode gives
 pub enum Mount { Secret { id, target, mode, uid, gid }, Cache { id, sharing, dropped } } // no secret value; given or not
 pub enum Sharing { Shared, Private, Locked }
 pub enum CopyFrom { Image(Digest), Stage(CacheKey) }   // platform manifest digest; source stage's final key (ADR-0114); either stands for its files

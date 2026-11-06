@@ -441,7 +441,7 @@ fn cache_owner(m: &Mount) -> Option<CacheOwner> {
 
 /// A secret mount's id: `id=`, else `source=`, else the target's last
 /// name, as BuildKit; empty when none is given.
-fn secret_id(m: &Mount) -> String {
+pub(crate) fn secret_id(m: &Mount) -> String {
     if !m.source.is_empty() {
         m.source.clone()
     } else if !m.cache_id.is_empty() {

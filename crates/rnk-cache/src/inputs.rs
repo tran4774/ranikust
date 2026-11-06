@@ -239,8 +239,10 @@ impl fmt::Debug for KeyInputs {
     }
 }
 
-/// A `RUN`'s `--network`, as the Dockerfile gives it, never the network the
-/// `RUN` ends up with in one mode or another.
+/// A `RUN`'s network as BuildKit keys it: its `--network`, or, for a `RUN`
+/// without one, the build's `--network=none`
+/// (`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert.go:823`);
+/// never what a snapshot mode gives the `RUN`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Network {
     /// `default`, also when the flag is absent.
