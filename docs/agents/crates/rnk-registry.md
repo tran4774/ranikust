@@ -3,7 +3,7 @@
 > **Status:** in progress · **Phase:** 1-2 (mirrors, credential helpers: 5) ·
 > **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from
 > `rnk-store`) ·
-> **Used by:** `rnk-builder`, `ranikust` (the client), `rnk-cache` (planned) ·
+> **Used by:** `rnk-builder`, `ranikust` (the client), `rnk-cache` (the registry cache) ·
 > **Path:** `crates/rnk-registry/`
 
 **TL;DR:** A thin wrapper over `oci-client` 0.18 adding what it lacks:
@@ -72,6 +72,7 @@ pub fn select_platform<'a>(index: &'a ImageIndex, p: &Platform) -> Option<&'a De
 impl Client {
     pub fn new(options: ClientOptions, trust: TrustStore, credentials: Credentials) -> Result<Client, Error>;
     pub async fn pull_manifest(&self, r: &Reference) -> Result<RawManifest, Error>;
+    pub async fn find_manifest(&self, r: &Reference) -> Result<Option<RawManifest>, Error>; // None on a 404 only (the layer cache's miss)
     pub async fn pull_image_manifest(&self, r: &Reference, p: &Platform) -> Result<ImageManifests, Error>;
     pub async fn pull_blob(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>;
     pub async fn pull_config(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>; // the `config` limit first (ADR-0079)
@@ -81,7 +82,8 @@ impl Client {
     pub async fn mount_or_push(&self, r: &Reference, from: &Reference, d: &Descriptor, body: &BlobBody) -> Result<PushOutcome, Error>;
     pub async fn push_manifest(&self, r: &Reference, m: &RawManifest) -> Result<Digest, Error>; // by tag only
 }
-pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, DigestMismatch, SizeMismatch, Manifest, Io }
+pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, refused, not_found, .. }, DigestMismatch, SizeMismatch, Manifest, Io }
+    // is_not_found(): a manifest or blob GET answered 404
 ```
 
 ## Invariants
@@ -134,7 +136,9 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   registries, `config.json` credentials, identity tokens per scope, digest
   and size mismatches, retries on 503 and none on 404, one-PUT push,
   existence check, mount refused (`202`) then upload, mount accepted,
-  platform selection, a loopback registry over plain HTTP unlisted.
+  platform selection, a loopback registry over plain HTTP unlisted,
+  `find_manifest` none on a 404 only. `rnk-cache` compiles the fake into its
+  own tests: keep it free of anything specific to this crate's tests.
   `tests/spans/` checks the spans in a binary with one test, since tracing
   caches callsite interest per process.
 - `tests/limits/`: the `--limit` limits against hostile bodies (64 MiB
@@ -192,7 +196,8 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   `Error::Registry`'s `refused`, set from the status (401, 403) and the
   envelope's `UNAUTHORIZED` and `DENIED` codes
   (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
-  `retryable` is.
+  `retryable` is, and `not_found` from a pull's 404 alone
+  (`find_manifest_is_none_only_for_a_404`).
 - The test fake answers `HEAD` and `GET` of a blob only in repositories that
   hold it, checks the source scope of a mount under bearer authentication,
   and stores a pushed manifest with its `Content-Type`: without these,

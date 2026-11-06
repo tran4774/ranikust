@@ -268,8 +268,8 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 | Span | Fields | Why |
 |---|---|---|
 | `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next`: the regular files it holds and their content bytes; kaniko's `cache.key`. |
-| `rnk_cache.lookup` | `hit` | Phase 4: misses = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
-| `rnk_cache.push` | `bytes_out` | Phase 4: background push, parented to `rnk_sched.run`; kaniko's `cache.push`. |
+| `rnk_cache.lookup` | `hit` | One lookup, from its manifest request to its answer; misses (absent, expired or failed) = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
+| `rnk_cache.push` | `bytes_out` | One entry's push, beside the build: the layer and config bytes uploaded (not held or mounted) plus the manifest's; `rnk_registry.push_blob` and `push_manifest` nested; the caller parents it to `rnk_sched.run`; kaniko's `cache.push`. |
 
 ## The report
 
@@ -331,7 +331,7 @@ needs only a map of phase names and named fields in place of `bytes` and
 | `layer.compress` (bytes) | `rnk_layer.encode` (`bytes_out`) | |
 | `stage.finalize` | `rnk_builder.assemble` | |
 | `fs.delete` | `rnk_snapshot.release`, `rnk_rootfs.delete` | |
-| `cache.key`, `cache.lookup_hit`/`_miss`, `cache.push` | `rnk_cache.key`, `rnk_cache.lookup` (`hit`), `rnk_cache.push` | Phase 4 |
+| `cache.key`, `cache.lookup_hit`/`_miss`, `cache.push` | `rnk_cache.key`, `rnk_cache.lookup` (`hit`), `rnk_cache.push` | no build emits them before Phase 4's task 7 |
 
 kaniko at `44aa7ddc0` adds phases for its optimization flags
 (`base.reuse_*`, `snapshot.hash_cache_*`, `snapshot.tar_*`,

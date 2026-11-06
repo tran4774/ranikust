@@ -1,27 +1,29 @@
 # rnk-cache
 
 > **Status:** in progress · **Phase:** 4 ·
-> **Depends on:** `rnk-oci`; `rnk-registry`, `rnk-rootfs` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)) and
+> **Depends on:** `rnk-oci`, `rnk-registry`; `rnk-rootfs` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)) and
 > `rnk-store` ([ADR-0021](../../adr/0021-rnk-store-crate.md)), planned ·
 > **Used by:** `rnk-builder` (planned; its lookups started up front by
 > `rnk-sched` through `StageRunner`, [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)) ·
 > **Path:** `crates/rnk-cache/`
 
-**TL;DR:** Computes a versioned, chained cache key per step and the tag its
-cached layer is looked up by; lookup and push in a registry repository or an
-OCI layout are not built yet. A key depends on the step's instruction, its
-inputs and the previous key only, never on the snapshot mode, host, the
-build's time, an mtime outside `--reproducible` or thread count, and it is
-not compatible with kaniko's cache. Nothing calls the crate yet: the CLI
-refuses `--cache`, `--cache-repo` and the related flags until Phase 4 and
-accepts `--cache=false` (ADR-0036).
+**TL;DR:** Computes a versioned, chained cache key per step, and looks up
+and pushes the layer cached under it in a registry repository
+(`RegistryCache`); the OCI layout cache is planned. A key depends on the
+step's instruction, its inputs and the previous key only, never on the
+snapshot mode, host, the build's time, an mtime outside `--reproducible` or
+thread count, and it is not compatible with kaniko's cache. A lookup or push
+that fails is a miss or a warning, never a failed build. Nothing calls the
+crate yet: the CLI refuses `--cache`, `--cache-repo` and the related flags
+until Phase 4 and accepts `--cache=false` (ADR-0036).
 
 ## Owns
 
 - The cache key of each step, with a format version, and the tag of its
   entry for one layer encoding.
-- Lookup and push of cached layers in a registry (`--cache-repo`) or an OCI
-  layout (planned).
+- Lookup and push of cached layers in a registry (`--cache-repo`, built) or
+  an OCI layout (planned), and the form of an entry
+  ([cache-and-store](../../design/cache-and-store.md#cache-entries)).
 
 ## Must not
 
@@ -38,10 +40,13 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
   builds `KeyInputs` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
 - Transfer blobs (`rnk-registry`), encode layers (`rnk-layer`), own the local
   store (`rnk-store`) or choose what to export (`rnk-builder`).
+- Fail a build or change its image when the cache fails, or vouch for a
+  hit: the caller verifies its blob and diff ID and extracts it as a base
+  layer's.
 
 ## API
 
-Built (keys and tags):
+Built (keys, tags and the registry cache):
 
 ```rust
 pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how
@@ -49,8 +54,9 @@ pub struct CacheKey;                 // version + SHA-256; Copy, Eq, Hash; versi
 impl CacheKey {
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self; // platform manifest digest; None: FROM scratch
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self; // instruction expanded, with its flags
-    pub fn tag(&self, encoding: &Encoding) -> String;                 // "rnk-v<version>-<64 hex>"
 }
+pub struct EntryId;                  // new(CacheKey, Encoding); key(), encoding(); Copy, Eq, Hash
+impl EntryId { pub fn tag(&self) -> String; } // "rnk-v<version>-<64 hex>"; the annotations and layer type come from it too
 pub struct KeyInputs;                // new(&Encoding) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file
 pub enum Network { Default, None, Host }               // the Dockerfile's --network, never what a mode gives
 pub enum Mount { Secret { id, target, mode, uid, gid }, Cache { id, sharing, dropped } } // no secret value; given or not
@@ -60,18 +66,32 @@ pub struct File { path: Vec<u8>, kind: FileKind, mode, uid, gid, capability: Opt
 pub enum FileKind { Regular(Content), Directory, Symlink(Vec<u8>), Hardlink(Vec<u8>), Fifo, CharDevice { .. }, BlockDevice { .. } }
 pub struct Content;                  // sha256(), size(); only from ContentHasher; == compares copied bytes with hashed ones
 pub struct ContentHasher;            // update(chunk) or io::Write, then finish() -> Content
-pub struct Encoding { compression: rnk_oci::Compression, level: i32, times: TimePolicy }
+pub struct Encoding { compression: rnk_oci::Compression, level: i32, times: TimePolicy } // Display: the encoding annotation
 pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp
+
+pub trait LayerCache {               // futures not Send: block_on on a thread of their own, as rnk-builder's uploads
+    fn lookup(&self, entry: &EntryId) -> impl Future<Output = Lookup>;
+    fn push(&self, entry: &EntryId, layer: &BuiltLayer) -> impl Future<Output = Pushed>;
+}
+pub enum Lookup { Hit(CachedLayer), Miss(Miss) }       // #[must_use]
+pub enum Miss { Absent, Expired, Failed(Error) }       // Expired: no warning; Failed: a warning, never a failed build
+pub struct CachedLayer { pub source: Source, pub blob: Descriptor, pub diff_id: Digest } // blob: the encoding's OCI type
+#[non_exhaustive] pub enum Source { Registry(Reference) } // the entry's tagged reference, to pull the blob from
+pub struct BuiltLayer { pub blob: Descriptor, pub diff_id: Digest, pub body: BlobBody, pub mount_from: Option<Reference> }
+pub enum Pushed { Done(PushOutcome), Failed(Error) }   // #[must_use]; PushOutcome: the layer's, rnk_registry's
+pub struct RegistryCache;            // new(Arc<Client>, repository, ttl) -> Result<_, Error>: no tag or digest; Clone
+#[non_exhaustive] pub enum Error { Repository, Registry, Refused, Encoding, Document } // messages hold excerpts only
+#[non_exhaustive] pub enum Refusal { NotAnImageManifest, Malformed, Layers, LayerType, ConfigType, NotAnImage, Annotation, DiffIds, Created }
+pub const KEY_ANNOTATION: &str;      // "io.github.tran4774.ranikust.cache.key": the key's hash, 64 hex
+pub const VERSION_ANNOTATION: &str;  // "io.github.tran4774.ranikust.cache.version": the key's version, decimal
+pub const ENCODING_ANNOTATION: &str; // "io.github.tran4774.ranikust.cache.encoding": "gzip;level=6;times=kept"
 ```
 
-Planned (tasks 3, 4 and 11 of #123):
+Planned (tasks 3 and 11 of #123):
 
 ```rust
 impl KeyInputs { pub fn heredoc(&mut self, name: &str, body: &[u8]) -> &mut Self; } // task 3 (#126): adds a field to the step hash, so KEY_VERSION is bumped then; its bytes count in bytes_hashed
-pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
-    async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>; // by tag, ADR-0113
-    async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &Descriptor) -> Result<()>; // rnk_oci; the new layer's blob, read from the store; asynchronous
-}
+pub struct LayoutCache;              // task 11: a LayerCache in an OCI layout, through rnk-rootfs (ADR-0116)
 ```
 
 Never append heredoc bodies to the instruction string, because that would
@@ -123,11 +143,19 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   settings ([ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)). One compressed blob serves both the image and the
   cache; pushes run asynchronously. Waiting for them before exit, as kaniko
   does, is [inferred].
+- One `EntryId` gives the tag, the annotations a hit must carry and its
+  layer type: a lookup never takes a layer of another encoding than its tag.
+- A hit is an entry of [the entry form](../../design/cache-and-store.md#cache-entries)
+  naming this key, version and encoding, younger than `--cache-ttl`;
+  anything else under the tag is `Miss::Failed`. Every document read is
+  bounded by the client's `--limit` values (ADR-0079).
+- A push sends the manifest last, so a tag never names an entry whose
+  blobs are missing.
 
 ## Refs
 
-- **Design:** [`design/cache-and-store.md#cache-keys`](../../design/cache-and-store.md#cache-keys), [`#ownership`](../../design/cache-and-store.md#ownership); [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export) (`--cache` makes a layer needed); [threat model T11, T13](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (the fields, SHA-256, the tag and its encoding), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (`COPY --from=<stage>`; lookahead and skipping cached stages, not built yet), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (crate edges), [ADR-0116](../../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md) (registry or layout, none on `/`; not built yet), [ADR-0057](../../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) (dropped cache mounts), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
+- **Design:** [`design/cache-and-store.md#cache-keys`](../../design/cache-and-store.md#cache-keys), [`#cache-entries`](../../design/cache-and-store.md#cache-entries), [`#ownership`](../../design/cache-and-store.md#ownership); [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export) (`--cache` makes a layer needed); [threat model T11, T13](../../security/threat-model.md#5-threats-and-mitigations)
+- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (the fields, SHA-256, the tag and its encoding), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (`COPY --from=<stage>`; lookahead and skipping cached stages, not built yet), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (crate edges), [ADR-0116](../../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md) (registry or layout, no layout on `/`; the layout cache and the flags not built yet), [ADR-0057](../../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) (dropped cache mounts), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
 - **Open:** [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
 - **Evidence:** none measured: workload W2 (cold, warm, partial cache) was never run; mode independence is argued in [survey 06](../../research/survey/06-overlay-and-parallelism.md) §6.
 - **kaniko** (compare, do not copy): `kaniko@44aa7ddc0`
@@ -145,20 +173,32 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shows that a key ignores the order of build arguments, environment and
   files, the chunking of content and any mtime the header does not carry,
   that changing any one field changes it, that field boundaries cannot
-  shift, and that every encoding field changes the tag; `tests/spans.rs`
-  checks `rnk_cache.key`.
+  shift, and that every encoding field changes the tag; it also pins the
+  encoding annotation. `tests/registry/` runs `RegistryCache` against
+  `rnk-registry`'s fake registry (compiled in through `#[path]`): a push
+  then a lookup is a hit with the same digests; an unknown key is a miss
+  after one request; a 500, a stall past `registry-idle` and bad credentials
+  are `Miss::Failed`; an expired entry is `Miss::Expired`; another encoding
+  misses, and an entry copied under its tag is refused; hostile entries (an
+  index, a Docker manifest, zero or two layers, another layer or config
+  type, an artifact, annotations of another key, version or encoding, two
+  diff IDs, a bad `created`) and documents over `--limit` are refused; a
+  held blob is not uploaded again and one in a destination is mounted; a
+  failed push publishes nothing. `tests/spans.rs` checks the three spans.
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
-  against a local registry; W2 cold, warm and partial; a layer cached in one
-  mode reused by the other, checked against the ADR-0012 list.
+  against a real registry (T1); W2 cold, warm and partial; a layer cached in
+  one mode reused by the other, checked against the ADR-0012 list.
 
 ## Metrics
 
 - `rnk_cache.key` (`files_hashed`, `bytes_hashed`): one per step, from
   `KeyInputs::new` to `CacheKey::next`; the regular files the key holds and
   their bytes.
-- Phase 4, planned: `rnk_cache.lookup` (`hit`), `rnk_cache.push`
-  (`bytes_out`) ([rows](../../design/metrics.md#rnk-cache)). A push
-  outlives its instruction and stage: parent it to `rnk_sched.run`.
+- `rnk_cache.lookup` (`hit`): one per lookup, a miss of any kind included.
+- `rnk_cache.push` (`bytes_out`): one per push; the layer and config bytes
+  uploaded (not held or mounted) plus the manifest's
+  ([rows](../../design/metrics.md#rnk-cache)). A push outlives its
+  instruction and stage: the caller drives it inside `rnk_sched.run`'s span.
 
 ## Pitfalls
 
@@ -182,6 +222,15 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 - The instruction holds no heredoc body: `rnk-builder` adds each one (of a
   `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
   that task 3 (#126) adds.
-- Give `KeyInputs::new` and `CacheKey::tag` the same `Encoding`, or a
+- Give `KeyInputs::new` and `EntryId::new` the same `Encoding`, or a
   `--reproducible` hit can carry other mtimes.
+- A `RegistryCache` gets the build's `Client`: its registry needs a
+  destination's options there (credentials over plain HTTP only if the
+  operator named it, verified TLS only on `/`), or it gets none or too
+  many.
+- Warn on `Miss::Failed` and `Pushed::Failed`, never on `Miss::Expired`
+  (kaniko's expired entry is a plain miss too), and never change the exit
+  status for either.
+- The `LayerCache` futures are not `Send` (the registry client's are not):
+  `tokio::spawn` refuses them; drive them with `Handle::block_on`.
 - No cache measurement exists: claim no speed-up before W2 runs.

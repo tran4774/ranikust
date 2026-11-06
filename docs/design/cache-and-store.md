@@ -1,14 +1,16 @@
 # Cache and store
 
 **TL;DR:** how ranikust keeps downloaded and extracted content between
-builds, shares it between concurrent builds, and keys its layer cache.
+builds, shares it between concurrent builds, and keys and stores its layer
+cache.
 
 Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 [ADR-0006](../adr/0006-persistent-store.md),
 [ADR-0007](../adr/0007-run-anywhere-shared-store.md),
 [ADR-0012](../adr/0012-accept-divergence-between-modes.md),
 [ADR-0021](../adr/0021-rnk-store-crate.md),
-[ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md).
+[ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md),
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md).
 
 ## Invariants
 
@@ -204,21 +206,69 @@ with another encoding share no entries
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
 The cold, warm and partial cache scenarios of workload W2 test the keys.
 
+Because keys ignore the mode, a layer cached by one mode can be used by the
+other and carry that mode's accepted differences
+([ADR-0012](../adr/0012-accept-divergence-between-modes.md)).
+
+## Cache entries
+
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
-layout. A cache hit adds the layer to the lower stack (overlay mode) or
+layout. The registry cache is built (`rnk-cache`'s `RegistryCache`), but no
+build uses it yet (Phase 4 tasks 7 and 8); the layout cache is planned
+(task 11). A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
 
-In kaniko mode with a directory per stage, a hit streams into the stage root,
-and a blob found bad after extraction began makes the stage start again from its
-base without that entry; on `/` a hit is verified before extraction
+An entry, under its tag
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)):
+
+- an OCI image manifest, with no `artifactType` or `subject`, holding one
+  layer of the OCI media type of the entry's compression;
+- three annotations: `io.github.tran4774.ranikust.cache.key` (the key's
+  SHA-256 in lower-case hex), `io.github.tran4774.ranikust.cache.version`
+  (`KEY_VERSION`, decimal) and `io.github.tran4774.ranikust.cache.encoding`
+  (`gzip;level=6;times=kept`, `zstd;level=3;times=clamped;epoch=0`,
+  `uncompressed;times=kept`);
+- an OCI config holding the push time as `created` (RFC 3339, UTC) and the
+  layer's diff ID; its `architecture` and `os` are empty, as in kaniko's
+  entries, since the key holds the platform.
+
+A lookup reads the manifest under the tag and then the config, each bounded
+by its `--limit` limit (ADR-0079):
+
+- a 404 is a miss, never retried, and needs no warning;
+- any other failure (a 5xx after the client's retries, a stall past
+  `registry-idle`, bad credentials, a document over its limit) is a miss
+  with a warning;
+- an entry not of the form above, or naming another key, version or
+  encoding, is a miss with a warning: a hostile repository costs misses,
+  never a failed build;
+- an entry whose `created` plus `--cache-ttl` is past is a miss without a
+  warning; a hit does not refresh `created`, and a `created` ahead of the
+  clock never expires, as kaniko compares it.
+
+A hit returns the layer's descriptor and diff ID, which prove nothing: the
+caller checks the blob against both as it checks a base layer's, and
+extracts it under the same rules. In kaniko mode with a directory per stage,
+a hit streams into the stage root, and a blob found bad after extraction
+began makes the stage start again from its base without that entry; on `/` a
+hit is verified before extraction
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
 how often a stage may restart is not settled, decided before
 [#130](https://github.com/tran4774/ranikust/issues/130)).
 
-Because keys ignore the mode, a layer cached by one mode can be used by the
-other and carry that mode's accepted differences
-([ADR-0012](../adr/0012-accept-divergence-between-modes.md)).
+A push refuses a layer of another compression than its entry's, then sends
+the layer blob (skipped when the repository holds it, mounted from a
+destination of the same registry, uploaded otherwise), the config, and the
+manifest last, so a tag never names an entry whose blobs are missing. Its
+failure is a warning; the build's exit status and image do not change.
+
+The cache repository is treated as a destination: the build's registry
+client, with its trust and limits; credentials over plain HTTP only to a
+registry the operator named, and only over verified TLS in kaniko mode on
+`/` (ADR-0051,
+[ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+Only the operator names it, never the Dockerfile.
 
 ## Ownership
 

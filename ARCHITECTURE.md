@@ -198,14 +198,16 @@ decide what goes into a layer or where it is sent, or write extracted files
 ### `rnk-cache`
 
 Phase 4, in progress. Versioned cache keys per step and the tags of their
-entries (built); lookup and push of cached layers in a registry or an OCI
-layout (planned). **Must not** be compatible with kaniko's cache, let a key
-depend on the snapshot mode, the host, the build's time, an mtime outside
+entries, and lookup and push of cached layers in a registry repository
+(built, not used by a build yet); the same in an OCI layout (planned). A
+lookup or push that fails is a miss or a warning, never a failed build.
+**Must not** be compatible with kaniko's cache, let a key depend on the
+snapshot mode, the host, the build's time, an mtime outside
 `--reproducible` or a thread count, or hold a secret's value: keys depend on
 the instruction, its inputs and the previous key only, and carry a format
-version. Key computation opens no file; the cache (planned) reaches an OCI
-layout only through `rnk-rootfs` and a registry only through
-`rnk-registry`. The crate never depends on `rnk-dockerfile`, `rnk-ignore`
+version. Key computation opens no file; the cache reaches a registry only
+through `rnk-registry` and an OCI layout (planned) only through
+`rnk-rootfs`. The crate never depends on `rnk-dockerfile`, `rnk-ignore`
 or `rnk-layer`, since `rnk-builder` builds the key inputs
 ([ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
 
@@ -258,10 +260,11 @@ depend on higher ones. Besides the chain:
   reach it through `tracing` spans alone.
 
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
-declares `rnk-oci`.
+declares `rnk-oci` and `rnk-registry`.
 [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
-fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`,
-`rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
+fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`, now
+declared, and `rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` →
+`rnk-layer`) and
 the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
 `rnk-layer`; `rnk-context` → `rnk-registry`);
 `rnk-cache` → `rnk-store` is [ADR-0021](docs/adr/0021-rnk-store-crate.md)'s.
