@@ -3,7 +3,7 @@
 > **Status:** in progress · **Phase:** 1-2 (mirrors, credential helpers: 5) ·
 > **Depends on:** `rnk-oci` (pulls go into sinks its caller takes from
 > `rnk-store`) ·
-> **Used by:** `rnk-builder`, `ranikust` (the client), `rnk-cache` (planned) ·
+> **Used by:** `rnk-builder`, `ranikust` (the client), `rnk-cache` (the registry cache) ·
 > **Path:** `crates/rnk-registry/`
 
 **TL;DR:** A thin wrapper over `oci-client` 0.18 adding what it lacks:
@@ -21,7 +21,7 @@ streaming; never log a credential.
   file) and pushes; cross-repository mounts with a fallback to a regular
   upload (ADR-0032); platform selection from an index. Mirrors in Phase 5. A
   Range resume of a cache hit's body after a drop is planned
-  ([cache keys](../../design/cache-and-store.md#cache-keys), #130).
+  ([cache entries](../../design/cache-and-store.md#cache-entries), #130).
 - Manifest and blob `GET`s and anonymous or basic token requests
   (`fetch.rs`, `token.rs`), so every body read is bounded as it arrives (the
   `--limit` limits, ADR-0079); the push side goes through `oci-client`.
@@ -74,6 +74,7 @@ pub fn select_platform<'a>(index: &'a ImageIndex, p: &Platform) -> Option<&'a De
 impl Client {
     pub fn new(options: ClientOptions, trust: TrustStore, credentials: Credentials) -> Result<Client, Error>;
     pub async fn pull_manifest(&self, r: &Reference) -> Result<RawManifest, Error>;
+    pub async fn find_manifest(&self, r: &Reference) -> Result<Option<RawManifest>, Error>; // None on a 404 only (the layer cache's miss)
     pub async fn pull_image_manifest(&self, r: &Reference, p: &Platform) -> Result<ImageManifests, Error>;
     pub async fn pull_blob(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>;
     pub async fn pull_config(&self, r: &Reference, d: &Descriptor, out: &mut impl BlobSink) -> Result<(), Error>; // the `config` limit first (ADR-0079)
@@ -83,7 +84,8 @@ impl Client {
     pub async fn mount_or_push(&self, r: &Reference, from: &Reference, d: &Descriptor, body: &BlobBody) -> Result<PushOutcome, Error>;
     pub async fn push_manifest(&self, r: &Reference, m: &RawManifest) -> Result<Digest, Error>; // by tag only
 }
-pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, DigestMismatch, SizeMismatch, Manifest, Io }
+pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, refused, not_found, .. }, DigestMismatch, SizeMismatch, Manifest, Io }
+    // is_not_found(): a manifest or blob GET answered 404; never retried
 ```
 
 ## Invariants
@@ -121,7 +123,7 @@ pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, .. }, 
 
 - **Design:** [design/cache-and-store.md#ownership](../../design/cache-and-store.md#ownership) (blob transfer here), [#atomic-publication](../../design/cache-and-store.md#atomic-publication), [#locks](../../design/cache-and-store.md#locks); [design/streaming.md](../../design/streaming.md)
 - **Decisions:** [ADR-0024](../../adr/0024-tls-rustls-ring.md) (`ring`, combined trust store), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (DER certs to `oci-client`; helpers external; `ring` compiles C, built with cargo-zigbuild), [ADR-0021](../../adr/0021-rnk-store-crate.md) (blobs go through `rnk-store`), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (`--destination`, `--registry-certificate`, `--cache-repo`), [ADR-0006](../../adr/0006-persistent-store.md) (per-digest locks), [ADR-0026](../../adr/0026-rnk-oci-owns-its-types.md) (`oci-spec` types stay inside), [ADR-0070](../../adr/0070-registry-references-reach-oci-client-built-from-parts.md) (references built from parts), [ADR-0079](../../adr/0079-resource-limits-with-a-limit-flag.md) (`--limit`)
-- **Open:** [#28](https://github.com/tran4774/ranikust/issues/28) (an overall pull deadline or minimum rate), [#25](https://github.com/tran4774/ranikust/issues/25) (`--network=none` and ranikust's own requests), [#23](https://github.com/tran4774/ranikust/issues/23) (encode a layer straight into its upload), [#37](https://github.com/tran4774/ranikust/issues/37) (signing). Decided, not built yet: [ADR-0120](../../adr/0120-credential-helpers-are-external-for-now-mirrors-keep-kanikos-flags-and-pushes-go-through-rnk-registry.md) (push requests move from `oci-client` to `rnk-registry`), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (HTTPS downloads live here), [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md) (planned with #130: a Range resume of a cache hit's body, [cache keys](../../design/cache-and-store.md#cache-keys))
+- **Open:** [#28](https://github.com/tran4774/ranikust/issues/28) (an overall pull deadline or minimum rate), [#25](https://github.com/tran4774/ranikust/issues/25) (`--network=none` and ranikust's own requests), [#23](https://github.com/tran4774/ranikust/issues/23) (encode a layer straight into its upload), [#37](https://github.com/tran4774/ranikust/issues/37) (signing). Decided, not built yet: [ADR-0120](../../adr/0120-credential-helpers-are-external-for-now-mirrors-keep-kanikos-flags-and-pushes-go-through-rnk-registry.md) (push requests move from `oci-client` to `rnk-registry`), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (HTTPS downloads live here), [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md) (planned with #130: a Range resume of a cache hit's body, [cache entries](../../design/cache-and-store.md#cache-entries))
 - **Evidence:** [exp-05 Q4](../../research/experiments/05-rust-ecosystem.md#q4-oci-client-0180) (`oci-client` behaviour, timings), [Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (CAs in `scratch`), [Q7](../../research/experiments/05-rust-ecosystem.md#q7-docker_credential-and-oci-spec) (credential lookup table); only a loopback registry was measured ([survey 00 §4](../../research/survey/00-summary.md#4-what-was-verified-and-what-was-not))
 - **kaniko:** `kaniko@44aa7ddc0 pkg/image/remote/remote.go:40-129` (maps, mirrors, retries), `pkg/creds/creds.go:35-70` (keychains), `pkg/util/gcr_util.go:30-46` (`DOCKER_CONFIG`), `transport_util.go:143-196`, `pkg/executor/push.go:95-140` (permission check), `:318-366` (mount, then upload, retries); `cmd/executor/cmd/root.go:391-410` (flags); vendored go-containerregistry: `pkg/v1/remote/options.go:80-101` (retry defaults), `pkg/v1/remote/index.go:252-291` (platform match), `pkg/v1/remote/transport/bearer.go:442-497` (identity tokens), `ping.go:47-58` and `pkg/name/registry.go:88-108` (HTTP fallback)
 - **External:** [oci-client v0.18.0 client.rs](https://github.com/oras-project/rust-oci-client/blob/v0.18.0/src/client.rs), [OCI distribution-spec v1.1.1](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md), [token authentication](https://distribution.github.io/distribution/spec/auth/oauth/), [docker_credential](https://crates.io/crates/docker_credential), [webpki-root-certs](https://crates.io/crates/webpki-root-certs)
@@ -136,7 +138,9 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   registries, `config.json` credentials, identity tokens per scope, digest
   and size mismatches, retries on 503 and none on 404, one-PUT push,
   existence check, mount refused (`202`) then upload, mount accepted,
-  platform selection, a loopback registry over plain HTTP unlisted.
+  platform selection, a loopback registry over plain HTTP unlisted,
+  `find_manifest` none on a 404 only. `rnk-cache` compiles the fake into its
+  own tests: keep it free of anything specific to this crate's tests.
   `tests/spans/` checks the spans in a binary with one test, since tracing
   caches callsite interest per process.
 - `tests/limits/`: the `--limit` limits against hostile bodies (64 MiB
@@ -154,7 +158,8 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   error body: each error stays under 400 bytes).
 - Unit tests: exp-05's Table 14 credential cases without helpers, secret
   redaction in `Debug` and errors, trust store (embedded roots, invalid host
-  certificates dropped, PEM files), retry delays, challenge parsing.
+  certificates dropped, PEM files), retry delays, the retry and not-found
+  decisions from status and codes, challenge parsing.
 - Ignored (need a registry): `real_registry_pull` (read-only, pulls
   `RNK_TEST_IMAGE` for linux/amd64) and `real_registry_round_trip` (pushes to
   a `k6-*` repository of `RNK_TEST_REGISTRY`, `host:port`, plain HTTP, and
@@ -194,7 +199,9 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   `Error::Registry`'s `refused`, set from the status (401, 403) and the
   envelope's `UNAUTHORIZED` and `DENIED` codes
   (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
-  `retryable` is.
+  `retryable` is, and `not_found` from a pull's 404 alone, never retried
+  (`find_manifest_is_none_only_for_a_404`,
+  `a_404_is_not_found_and_never_retried`).
 - The test fake answers `HEAD` and `GET` of a blob only in repositories that
   hold it, checks the source scope of a mount under bearer authentication,
   and stores a pushed manifest with its `Content-Type`: without these,

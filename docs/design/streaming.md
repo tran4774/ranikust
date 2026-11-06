@@ -151,7 +151,8 @@ layers uploading or waiting to is bounded by twice `--jobs`.
   retries.
   - **A cache hit is the exception**: a connection dropped after the first byte
     is resumed with a Range request, and a hit that still fails is a miss, not a
-    failed build ([cache keys](cache-and-store.md#cache-keys),
+    failed build, apart from ADR-0123's open cases [open: #171] [open: #172]
+    ([cache entries](cache-and-store.md#cache-entries),
     [ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md);
     decided, planned in [#130](https://github.com/tran4774/ranikust/issues/130),
     not built yet).
@@ -176,9 +177,10 @@ while writing, for overlay mode and kaniko mode on a host
 ([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)). A cache
 hit needs no local blob either: the cached layer is mounted or streamed from
 the cache repository, as a base layer is. On `/` the state never outlives the
-process (ADR-0051). A bad hit costs a miss and a restart of its stage with no
-cache, not a failed build (see
-[Credentials and failures](#credentials-and-failures)).
+process (ADR-0051). A bad hit costs a miss with a warning and, once its
+extraction began, a restart of its stage with no cache, not a failed build,
+apart from ADR-0123's open cases [open: #171] [open: #172]
+([cache entries](cache-and-store.md#cache-entries)).
 
 ## Measurements
 
