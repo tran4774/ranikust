@@ -105,7 +105,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    as root probes it during the set-up, before the spawner starts, and
    logs one line (whether the path passes or where it stops, each step with
    its errno, the map, the overlay, the AppArmor switch below); nothing
-   routes on it until rootless overlay mode (Phase 3).
+   routes on it until rootless overlay mode (Phase 3). A process that is not
+   root does not probe, as it never reaches a set-up (fail-closed); task 8
+   ([#79](https://github.com/tran4774/ranikust/issues/79)) routes there.
    `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
    a directory of the build under the state directory (`userns-probe`, or a
    name the next start removes when the store is anonymous), removed after.
@@ -122,8 +124,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      `newuidmap`, then one uid); the log names the one that worked
      (multi-range, newuidmap, one uid) or none.
    - `chown` to a mapped id other than 0 (not with one uid), then
-     `unshare(CLONE_NEWNS)`, apart from the first `unshare` so that a refusal
-     names its step.
+     `unshare(CLONE_NEWNS)`: a second call, after the map, so that the mount
+     namespace is owned by the new user namespace and a refusal names its
+     step.
    - A new `proc` in a new PID namespace; if that fails, an rbind of the
      existing `/proc` (`RUN` then sees the container's processes, like
      BuildKit's `--oci-worker-no-process-sandbox`). Read-only `sysfs`, else

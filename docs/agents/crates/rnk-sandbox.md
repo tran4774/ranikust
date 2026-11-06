@@ -35,12 +35,17 @@ path is built, reported only
   children that leave no namespace or mount behind: `unshare(CLONE_NEWUSER)`;
   the id map (root: its own ranges mirrored, else one id; another user:
   `newuidmap`/`newgidmap` with the subordinate ids the caller read, else one
-  id); `chown` to a mapped id other than 0; `unshare(CLONE_NEWNS)`, apart,
-  where Ubuntu 24.04 stops a ranged map; a new `proc` in a new PID namespace,
+  id); `chown` to a mapped id other than 0; `unshare(CLONE_NEWNS)`, a second
+  call after the map, so that the mount namespace is owned by the new user
+  namespace and a refusal names its step (Ubuntu 24.04 stops a ranged map
+  there); a new `proc` in a new PID namespace,
   else an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
   `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
   closure as root of a namespace with the map that worked, for the overlay
-  probe.
+  probe. The `newuidmap` path has no caller but the T2 test: `ranikust`
+  probes as root only and passes no subordinate ids, and task 5
+  ([#75](https://github.com/tran4774/ranikust/issues/75)) decides where
+  the lookup lives.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`.
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
@@ -368,7 +373,9 @@ What a change here must keep, with where it lives:
   before it returns. `newuidmap` is looked for in `/usr/bin` and `/bin`
   only, run with an empty environment. A child of a user other than root
   is dumpable only around its map write, which the kernel's owner check of
-  `/proc/<pid>/uid_map` needs.
+  `/proc/<pid>/uid_map` needs: from just before it to just after, before
+  any other step. `ranikust` probes as root, whose children never change
+  it.
 
 ## Refs
 
