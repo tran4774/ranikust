@@ -14,6 +14,7 @@ use super::*;
 
 fn fake_host(dir: &Path) -> HostPaths {
     HostPaths {
+        pid: 7,
         proc_self_cgroup: dir.join("missing"),
         cgroup_root: dir.join("missing"),
         proc_self_status: dir.join("missing"),

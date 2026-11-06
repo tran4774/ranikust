@@ -26,7 +26,7 @@ use rustix::mount::{
     MountFlags, MountPropagationFlags, MoveMountFlags, OpenTreeFlags, UnmountFlags,
 };
 use rustix::process::{Gid, Signal, Uid};
-use rustix::thread::{CapabilitySet, CapabilitySets};
+use rustix::thread::{CapabilitySet, CapabilitySets, UnshareFlags};
 
 use crate::error::Step;
 use crate::plan::{
@@ -194,6 +194,14 @@ pub(crate) struct ChildArgs {
     /// interpreter, so it is the one descriptor besides stdio that crosses
     /// `execve` (ADR-0057).
     pub(crate) script: Option<RawFd>,
+    /// The full sandbox in a delegated cgroup tree, nested (ADR-0110):
+    /// `cgroup.procs` of the init's cgroup, which the child writes `0` to
+    /// right after arming its death signal, then closes.
+    pub(crate) cgroup_init: Option<RawFd>,
+    /// The full sandbox in a delegated cgroup tree: `cgroup.procs` of the
+    /// command's cgroup, which the command writes `0` to once the init forked
+    /// it, then closes, before it waits for the go.
+    pub(crate) cgroup_command: Option<RawFd>,
 }
 
 /// The `NULL`-terminated pointer arrays `execve` takes, pointing into a
@@ -377,6 +385,11 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     default_signals();
     let parent = ParentCheck::open(err, fds.parent);
     arm_death_signal(err, parent);
+    // Before anything the `RUN` chooses runs: the init and all it forks
+    // start in the `RUN`'s cgroup.
+    if let Some(fd) = args.cgroup_init {
+        join_cgroup(err, fd);
+    }
     close_inherited(args, fds, parent);
     early_stdio(err, &args.stdio, parent);
     // First, so that `sysfs` below is mounted for this namespace.
@@ -514,7 +527,13 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
         install_filter(err, f);
     }
 
-    drop_capabilities(err, args);
+    // `CAP_SYS_ADMIN` for the command's cgroup namespace: the init drops it
+    // with every capability, the command once it made the namespace.
+    let cgroupns = match args.cgroup_command {
+        Some(_) => CapabilitySet::SYS_ADMIN,
+        None => CapabilitySet::empty(),
+    };
+    drop_capabilities_but(err, args, cgroupns);
     run_init(err, parent, fds.status_w, args, ptrs)
 }
 
@@ -596,6 +615,10 @@ fn run_init(
         // SAFETY: closing a descriptor number this process holds.
         unsafe { libc::close(status_w) };
         drop(go_w);
+        // Before it can go on: what the command starts is in its cgroup.
+        if let Some(fd) = args.cgroup_command {
+            enter_command_cgroup(err, fd, args);
+        }
         wait_for_go(err, &go_r);
         drop(go_r);
         switch_user_and_exec(err, None, args, ptrs);
@@ -621,6 +644,42 @@ fn run_init(
     // SAFETY: `_exit` ends the process at once; the kernel then kills what
     // is left of the namespace.
     unsafe { libc::_exit(0) }
+}
+
+/// Moves this process into the cgroup whose `cgroup.procs` the parent
+/// opened as `fd` (ADR-0110), then closes it: the `RUN` never holds a
+/// descriptor of the cgroupfs. A failure fails the `RUN` before its command
+/// ran.
+fn join_cgroup(err: RawFd, fd: RawFd) {
+    // SAFETY: `fd` is open in this process, copied from the parent's, and
+    // nothing else here closes it.
+    let procs = unsafe { OwnedFd::from_raw_fd(fd) };
+    loop {
+        // Writing 0 moves the writer's whole process.
+        match rustix::io::write(&procs, b"0") {
+            Ok(1) => break,
+            Ok(_) => fail(err, Step::JoinCgroup, Errno::IO),
+            Err(Errno::INTR) => {}
+            Err(e) => fail(err, Step::JoinCgroup, e),
+        }
+    }
+    drop(procs);
+}
+
+/// The command joins its cgroup, then makes a cgroup namespace rooted there
+/// and drops the `CAP_SYS_ADMIN` that took (ADR-0110). The `RUN` then reads
+/// `0::/` in `/proc/self/cgroup`, as in a container with a private cgroup
+/// namespace, rather than a path naming ranikust's pid and the `RUN`'s
+/// number, which a layer must not depend on. A failure fails the `RUN`
+/// before its command ran.
+fn enter_command_cgroup(err: RawFd, fd: RawFd, args: &ChildArgs) {
+    join_cgroup(err, fd);
+    // SAFETY: `NEWCGROUP` does not unshare the descriptor table, the only
+    // flag `unshare_unsafe` is unsafe for; this process is single-threaded.
+    if let Err(e) = unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWCGROUP) } {
+        fail(err, Step::CgroupNamespace, e);
+    }
+    trim_capabilities(err, args);
 }
 
 /// The command waits here until the init has closed its write end of the
@@ -1858,20 +1917,20 @@ fn close_all_but(keep: RawFd) {
 }
 
 /// Closes, right after the clone, every descriptor the child copied from
-/// ranikust but those it uses: stdio, the error and status pipes, the parent check's
-/// `stat` file, the network namespace to join, the stdio sources and a
-/// `#!` script. ranikust holds directories outside the root (the state
-/// directory, the build context, stage roots); left open until `execve`,
-/// `/proc/self/fd/<n>` would lead a `WORKDIR`, a `PATH` entry or a mount
-/// target to them (runc's CVE-2024-21626). None of those kept is a
-/// directory. Close-on-exec acts only at `execve`, after the child has
-/// looked up paths the `RUN` chooses.
+/// ranikust but those it uses: stdio, the error and status pipes, the parent
+/// check's `stat` file, the network namespace to join, the stdio sources, a
+/// `#!` script and the command's `cgroup.procs`. ranikust holds directories
+/// outside the root (the state directory, the build context, stage roots);
+/// left open until `execve`, `/proc/self/fd/<n>` would lead a `WORKDIR`, a
+/// `PATH` entry or a mount target to them (runc's CVE-2024-21626). None of
+/// those kept is a directory. Close-on-exec acts only at `execve`, after the
+/// child has looked up paths the `RUN` chooses.
 pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentCheck) {
     let [s0, s1, s2] = args.stdio.map(|s| match s {
         ChildStdio::Fd(fd) => fd,
         ChildStdio::Inherit | ChildStdio::Null => -1,
     });
-    let mut keep: [RawFd; 11] = [
+    let mut keep: [RawFd; 12] = [
         0,
         1,
         2,
@@ -1883,8 +1942,9 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
         s1,
         s2,
         args.script.unwrap_or(-1),
+        args.cgroup_command.unwrap_or(-1),
     ];
-    // Ascending, for `close_all_except`: eleven entries, no allocation.
+    // Ascending, for `close_all_except`: twelve entries, no allocation.
     for i in 1..keep.len() {
         let mut j = i;
         while j > 0 && keep[j - 1] > keep[j] {
@@ -2008,6 +2068,14 @@ fn install_filter(err: RawFd, filter: &[libc::sock_filter]) {
 /// `execve`; any other user loses them at `setresuid` and can regain at
 /// most the defaults through a setuid binary or file capabilities.
 pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
+    drop_capabilities_but(err, args, CapabilitySet::empty());
+}
+
+/// [`drop_capabilities`], with `also` kept in the effective and permitted
+/// sets (of those the process has) until a [`trim_capabilities`]. `also`
+/// must be among `args.drops`: out of the bounding set, no `execve` gives
+/// it back.
+fn drop_capabilities_but(err: RawFd, args: &ChildArgs, also: CapabilitySet) {
     let (drops, len) = &args.drops;
     for &cap in drops.iter().take(*len) {
         let set = CapabilitySet::from_bits_retain(1u64.checked_shl(cap).unwrap_or(0));
@@ -2018,7 +2086,7 @@ pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
             Err(e) => fail(err, Step::BoundingSet, e),
         }
     }
-    trim_capabilities(err, args);
+    trim_capabilities_but(err, args, also);
 }
 
 /// Clears the ambient and inheritable sets and keeps only Docker's defaults
@@ -2026,6 +2094,11 @@ pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
 /// unlike the bounding set (ADR-0051). Same rules as
 /// [`drop_capabilities`].
 pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
+    trim_capabilities_but(err, args, CapabilitySet::empty());
+}
+
+/// [`trim_capabilities`], with `also` kept beside Docker's defaults.
+fn trim_capabilities_but(err: RawFd, args: &ChildArgs, also: CapabilitySet) {
     match rustix::thread::clear_ambient_capability_set() {
         // Kernels before 4.3 have no ambient set.
         Ok(()) | Err(Errno::INVAL) => {}
@@ -2036,7 +2109,7 @@ pub(crate) fn trim_capabilities(err: RawFd, args: &ChildArgs) {
         Step::CapabilitySets,
         rustix::thread::capabilities(None),
     );
-    let keep = current.permitted & CapabilitySet::from_bits_retain(args.keep);
+    let keep = current.permitted & (CapabilitySet::from_bits_retain(args.keep) | also);
     check(
         err,
         Step::CapabilitySets,
@@ -2516,6 +2589,8 @@ mod tests {
             envp: vec![c"A=1".into()],
             candidates: Vec::new(),
             script: None,
+            cgroup_init: None,
+            cgroup_command: None,
         };
         let ptrs = ExecPtrs::new(&args);
         assert_eq!(ptrs.argv.len(), 3);

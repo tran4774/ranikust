@@ -27,7 +27,10 @@ for bin in bin/tests/*; do
   }
   n="$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' <<<"$out" | awk '{ s += $1 } END { print s + 0 }')"
   if [ "$n" -gt 0 ]; then
-    echo "$out" | grep -E '^test .* \.\.\. '
+    # A passing test's output is captured, but for the `measured:` lines a
+    # test writes to stderr past that capture, to keep a number in the log;
+    # after them, its `ok` stands alone on a line (a failure exits above).
+    echo "$out" | grep -E '^test .* \.\.\. |^measured: |^ok$'
     ran=$((ran + n))
   fi
 done

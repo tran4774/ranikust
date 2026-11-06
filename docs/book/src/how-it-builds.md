@@ -31,8 +31,10 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   directory, and each instruction writes into a fresh layer of it, so the
   changes are known without scanning the filesystem.
 - **`RUN` sandbox.** A `RUN` gets its own mount, process, hostname and IPC
-  namespaces, the stage's root as its `/`, and the capabilities Docker gives a
-  container by default: about the isolation of `docker build` ([ADR-0003]).
+  namespaces (and a cgroup namespace where it gets cgroups, see
+  [Where to run it](where-to-run.md#cgroups-of-run-commands)), the stage's
+  root as its `/`, and the capabilities Docker gives a container by default:
+  about the isolation of `docker build` ([ADR-0003]).
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]).

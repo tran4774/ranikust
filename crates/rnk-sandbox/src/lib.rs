@@ -4,7 +4,9 @@
 //! rootfs with `pivot_root` (or `MS_MOVE` where seccomp blocks it), drops
 //! capabilities, manages stub mountpoints, switches to the `USER` ids that
 //! `rnk-rootfs` resolved in the rootfs, and executes the command. In sequential
-//! kaniko mode it runs `RUN` directly on `/`, like kaniko.
+//! kaniko mode it runs `RUN` directly on `/`, like kaniko. Where ranikust's
+//! cgroup v2 tree is delegated, each full-sandbox `RUN` also gets cgroups of
+//! its own, ended with `cgroup.kill` (ADR-0110).
 //!
 //! Also probes, by actually trying each step, what the environment allows this
 //! crate: namespaces, the uid map, `proc`, `pivot_root` or `MS_MOVE`, and
@@ -36,11 +38,16 @@
 //!   on the host.
 //! - Does not snapshot or diff the rootfs, or mount or probe overlays
 //!   (`rnk-snapshot`).
+//! - Writes the cgroupfs only in and below ranikust's own cgroup, and only
+//!   where that cgroup is delegated (ADR-0110); sets no resource limit,
+//!   only how many cgroups, and how deep, a `RUN` may make below its own.
 
 mod caps;
+mod cgroup;
 mod child;
 mod direct;
 mod error;
+mod fd;
 mod journal;
 mod plan;
 mod probe;

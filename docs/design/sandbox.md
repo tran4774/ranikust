@@ -41,6 +41,9 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    `O_NONBLOCK | O_NOCTTY`, and reads at most 16 MiB, the most a `RUN` writes:
    a FIFO or a device node planted at a journal's name is left in place with a
    warning, never blocked on or opened.
+4. Where the full sandbox runs and ranikust's cgroup v2 tree is delegated,
+   probe the cgroups each `RUN` gets there, nesting ranikust first where it
+   may ([`RUN` cgroups](#run-cgroups)).
 
 The privilege probes of [modes-and-detection](modes-and-detection.md) run in
 the same single-threaded window, before the spawner thread starts.
@@ -208,7 +211,12 @@ The steps, in order:
    Docker's 14 default capabilities, clear the ambient set, keep the defaults
    in the effective and permitted sets and leave the inheritable set empty, as
    Docker since 20.10.14. A non-root user has no effective capabilities but a
-   full bounding set, which a setuid binary in the image would regain.
+   full bounding set, which a setuid binary in the image would regain. Where
+   the `RUN` has cgroups of its own, the full sandbox's child also keeps
+   `CAP_SYS_ADMIN`, already out of the bounding set, in the effective and
+   permitted sets: the init drops it with every other capability, and the
+   command makes its cgroup namespace with it and drops it, both before the
+   go ([`RUN` cgroups](#run-cgroups)).
 
    Then the full sandbox's child becomes the `RUN`'s **init**
    ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)):
@@ -216,8 +224,9 @@ The steps, in order:
      environment strings ranikust started with (`/proc/self/stat` fields 48 to
      51, refused as `Step::Init` if zero; `/proc/1/cmdline` has no ptrace
      check), starts a session of its own and forks. The new process, PID 2,
-     waits on a close-on-exec go pipe, then runs steps 6 to 8 and becomes the
-     command.
+     joins its cgroup and makes its cgroup namespace where the `RUN` has
+     cgroups ([`RUN` cgroups](#run-cgroups)), waits on a close-on-exec go
+     pipe, then runs steps 6 to 8 and becomes the command.
    - The init keeps the death signal of step 1, drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
@@ -327,6 +336,127 @@ The binary never runs that (ADR-0050, ADR-0060); tests do
   belongs to the open file description, which a child cloned meanwhile shares
   until it executes or exits.
 
+## `RUN` cgroups
+
+Where ranikust's cgroup v2 tree is delegated, each full-sandbox `RUN` gets
+cgroups of its own, ended with `cgroup.kill`
+([ADR-0110](../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md),
+refining [ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
+(a)); elsewhere nothing changes and cgroups are only read (ADR-0007). They
+set no resource limit, only how many cgroups a `RUN` may make below its own,
+and how deep (`cgroup.rs`).
+
+**Where.** `Sandbox::start` reads ranikust's own cgroup `D` from
+`/proc/self/cgroup` and opens it under `/sys/fs/cgroup`, which must be
+cgroup2 and list ranikust's pid in `D/cgroup.procs`. `D` counts as delegated
+only if it carries a delegation mark ranikust trusts, set to `1` on `D`
+itself, not an ancestor, or is the root of ranikust's cgroup namespace, and
+then only on a read-write cgroupfs, with `cgroup.kill` (Linux 5.14) and
+`cgroup.type` `domain`. A root ranikust trusts systemd's `trusted.delegate`
+alone, which only `CAP_SYS_ADMIN` in the initial user namespace can set;
+`user.delegate`, which anyone who may write `D`'s inode can set, a root
+`RUN` included, counts only for a ranikust that is not root and owns `D`
+(rootless, [#79](https://github.com/tran4774/ranikust/issues/79)). A
+namespace's root counts whoever made it, delegated or not. A `D` with
+neither a mark nor a namespace's root, or on a read-only cgroupfs, is read
+no further. An unreadable mark, or an unreadable file of a marked or
+namespace-root `D` on a read-write cgroupfs, other than one that is absent,
+means no `RUN` cgroups, logged with its errno at `warn`:
+
+| Environment | `RUN` cgroups |
+|---|---|
+| A systemd unit or scope with `Delegate=yes` (marked `trusted.delegate` by Ubuntu 22.04's systemd 249 and 24.04's 255 **[measured]**) | Yes |
+| `docker run --privileged` (its own cgroup namespace, cgroupfs read-write) | Yes |
+| Another cgroup namespace's root on a read-write cgroupfs, delegated or not: root's own `unshare -C` with cgroup2 remounted; a systemd 257 unit with `ProtectControlGroups=private` **[inferred]** | Yes |
+| `Delegate=yes` under a systemd that sets no `trusted.delegate` | No |
+| Root on a host, an ssh session's scope, a unit without `Delegate=` | No |
+| Docker's default options, most pods (cgroupfs read-only) | No |
+| A kernel before 5.14 (no `cgroup.kill`); `Direct` on `/`; the probe's own `RUN`s | No |
+
+**Layout**, logged at `info` once the probe passes (span `rnk_sandbox.cgroups`,
+field `layout`):
+
+- **Nested**, where ranikust is alone in `D` and `cpu` is in
+  `D/cgroup.controllers`: ranikust moves into `D/ranikust-<pid>` and enables
+  `+cpu` in `D`; each `RUN` gets `D/run-<pid>-<n>` with `+cpu` and two leaves
+  side by side, `init` and `command`. In T2, in the spinner cases of threat
+  model section 6 (8 and 32 spinners), the `RUN`'s PID namespace died
+  within 4.1 ms of the death signal, over five runs **[measured]**
+  ([ADR-0110](../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md#evidence)).
+  That is not a bound: a `RUN` can still lengthen its init's death delay
+  after ranikust is killed, up to the delay of the layout without nesting,
+  an accepted risk
+  ([threat model, section 6](../security/threat-model.md#6-accepted-risks)).
+- **Single** otherwise: each `RUN` gets `D/run-<pid>-<n>`, with no
+  controller, and one leaf, `command`; the init stays in `D` with ranikust.
+
+A process that joins `D` between its read and `+cpu` makes the kernel refuse
+`+cpu` (`EBUSY`): the probe fails, as below, and no `RUN` gets a cgroup.
+
+**Per `RUN`.** The parent makes the cgroups before the clone and opens their
+`cgroup.procs`, `cgroup.kill` and `cgroup.events`. In `D/run-<pid>-<n>`,
+before anything else, it writes `cgroup.max.descendants` 4095 and
+`cgroup.max.depth` 32, the removal's bound below. The init, nested, writes `0`
+to its leaf's `cgroup.procs` right after arming its death signal, the command
+to `command`'s once the init forked it, before it waits for the go; each
+closes the descriptor at once, so no `RUN` process holds one when the command
+starts. The command then makes a cgroup namespace of its own, rooted at
+`command`, and drops the `CAP_SYS_ADMIN` it kept for it (step 5), as Docker
+and containerd give a container a private one on cgroup v2. So a `RUN` reads
+`0::/` in `/proc/self/cgroup`, and its init's cgroup in `/proc/1/cgroup` as
+`0::/../init` nested or `0::/../..` single, whatever ranikust's pid and the
+`RUN`'s number: a layer that records them does not depend on `--jobs` or the
+run. The `RUN` has no cgroupfs mounted and no capability in ranikust's
+user namespace to mount one. A `RUN` that may create a user namespace can
+still mount a cgroupfs of its own, rooted at the cgroup it is in, and make
+cgroups below it, as on Ubuntu 22.04; Ubuntu 24.04's AppArmor leaves it no
+capability in that namespace **[measured]**. ADR-0103's default seccomp
+profile, planned and not built yet, is to refuse it the namespace except under
+`--seccomp=unconfined` **[inferred]**. Once the init is reaped, ranikust
+writes `cgroup.kill` (which reaches every cgroup below), waits up to 10 s for
+`populated 0` and removes the cgroups with every cgroup below them, the
+deepest first, before the diff. Each is opened relative to its parent's
+descriptor with `openat2`, never through a link or onto another mount; at most
+4096 cgroups, 32 levels below the `RUN`'s. The kernel refuses a `RUN` a cgroup
+past the limits (`EAGAIN`). The command runs in `command` in both layouts, so
+its own cgroup namespace and every one a `RUN` makes are rooted at `command`
+or below, under the cgroup with the limits, whose files no cgroupfs it can
+mount shows. The limits hold whether or not the cgroupfs is mounted with
+`nsdelegate`
+**[measured]** ([ADR-0110](../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
+A cancel, and so a handled `SIGINT` or `SIGTERM`, writes `cgroup.kill` before
+it kills the init.
+
+**Failures.** The probe at start-up runs every step once: nesting where the
+layout says so, a `RUN`'s cgroups, a child moved into each leaf that then
+makes a cgroup namespace in `command`, `cgroup.kill` and the removal. If a
+step fails, ranikust logs it with the errno at `warn`, undoes what it changed,
+and builds as it would without a delegated tree. A step that fails during a
+`RUN` fails that `RUN`: before the clone a `Cgroup` error naming the step and
+the cgroup, `Step::JoinCgroup` or `Step::CgroupNamespace` in the child (both
+before any command ran), and the removal as an `Io` error naming the step
+and the cgroup, the one below the `RUN`'s that failed if one did, or past
+its bound, which the limits keep every `RUN` within. A `RUN` whose cgroups
+could not be removed leaves them; nested, their `+cpu` then makes the `-cpu`
+of the `Sandbox`'s drop fail (`EBUSY`), so ranikust stays in its leaf and `D`
+keeps `+cpu`, with a warning, until the unit or container ends.
+
+**What is left.** Dropping the `Sandbox` undoes the nesting: `-cpu`, ranikust
+back in `D`, its leaf removed (at once refused, with a warning, if another
+process joined the leaf). A `SIGKILL`ed ranikust, one stopped at once by a
+second `SIGINT` (exit 130), or a panic (the release build aborts), runs no
+clean-up: its empty `RUN` cgroups, and when nested its leaf and `+cpu`, stay
+in `D` until the unit or container ends. Nothing in ranikust removes them; a
+later ranikust with the same pid skips the `run-` names they hold (64 at
+most, then the `RUN` fails), but a `probe-` or `ranikust-` name left makes
+its probe fail, and it builds without `RUN` cgroups. systemd and Docker
+removed them with the scope or container **[measured]**, and `docker exec`
+into a nested `--privileged` container still runs, in ranikust's leaf
+([ADR-0110's evidence](../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md#evidence)).
+The cgroups a `RUN` that got no cgroup of its own made in `D` stay too;
+ranikust never removes them, and they go with the unit or container
+**[inferred]**.
+
 ## Variants by environment
 
 | Environment | Differences |
@@ -390,8 +520,11 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   binds and `devpts` is `nodev`.
 - `/dev/null` and the other nodes are read-only binds: `chmod` and `chown` on
   them fail with `EROFS`.
-- A `RUN` gets no cgroup limits, so a fork bomb is bounded only by the
-  environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)).
+- A `RUN` gets no resource limits, so a fork bomb is bounded only by the
+  environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)). Where a
+  delegated tree exists it gets cgroups of its own, limited only in how many
+  cgroups it may make below them, and how deep
+  ([`RUN` cgroups](#run-cgroups)).
 
 ## Hardening planned for Phase 3
 
@@ -426,6 +559,9 @@ Neither exists yet (ADR-0003).
   by trial during the build.
 - A non-zero exit of the command fails the stage; ranikust still removes stubs
   and lets the namespace collapse.
+- The `RUN` cgroups are probed once at start-up; a failed probe leaves the
+  build as it would be without them, a failing step during a `RUN` fails it
+  ([`RUN` cgroups](#run-cgroups)).
 - Overhead per `RUN` is about 1 ms (1-2.5 ms in the Go prototype including its
   re-exec), negligible next to any real command.
 

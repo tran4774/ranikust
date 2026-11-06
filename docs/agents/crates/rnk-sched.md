@@ -86,14 +86,16 @@ pub use tokio_util::sync::CancellationToken;
 - `LayerDemand` is `rnk-builder`'s; which crate derives it from the graph and
   the outputs is [open: #8]. `StageJob` carries `graph` and `stage`, enough
   for either answer.
-- Memory gate: another stage starts while free memory (cgroup `memory.max`
-  less the working set, `memory.current` minus `inactive_file`; else
-  `MemAvailable`) is at least an eighth of the limit, and at least
-  512 MiB; at most one stage per fresh reading (500 ms after the last
-  admission); a stage always starts when none runs; a stage held back asks
-  again when one finishes, at the latest every 250 ms. The algorithm and
-  thresholds are [open: #9] until measured; the gate is a trait, so the
-  placeholder is one function and two constants.
+- Memory gate: another stage starts while free memory (cgroup `memory.max` of
+  ranikust's cgroup, or, when that is the leaf `ranikust-<pid>` with only
+  `cpu` that `rnk-sandbox` nested it in (ADR-0110), of its parent; never a
+  cgroup further up, whose limit others share; less the working set,
+  `memory.current` minus `inactive_file`; else `MemAvailable`) is at least an
+  eighth of the limit, and at least 512 MiB; at most one stage per fresh
+  reading (500 ms after the last admission); a stage always starts when none
+  runs; a stage held back asks again when one finishes, at the latest every
+  250 ms. The algorithm and thresholds are [open: #9] until measured; the gate
+  is a trait, so the placeholder is one function and two constants.
 - `--jobs` relies on the runner: `build` must call `run_slot` before each
   `RUN` (ADR-0013). Later, the `RUN` entry point (`rnk-sandbox` through
   `rnk-builder`) should take a `&RunPermit`, so a `RUN` without a permit
