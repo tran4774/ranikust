@@ -28,6 +28,12 @@ never delete across a mount: compare `mnt_id`, not `st_dev`.
 - The parser of `/proc/self/mountinfo` (`parse_mountinfo`), shared by
   `rnk-snapshot`'s ignore list and `rnk-sandbox`'s measurement of the
   binary's mount (ADR-0101); text only, it opens nothing.
+- Planned: a header check over a decompressed tar `Read`, which the spool pass of
+  `rnk-snapshot` calls on `/` before `/` changes. It frames headers as the
+  extractor does and applies its `tar-header` limit, so `rnk-snapshot` needs no
+  tar parser of its own
+  ([ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+  [#174](https://github.com/tran4774/ranikust/issues/174)).
 
 ## Must not
 

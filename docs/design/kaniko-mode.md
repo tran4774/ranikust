@@ -767,8 +767,11 @@ layer is.
   under [its rules](#ignore-list), and its diff ID is checked at the end. On
   `/` a streamed layer is spooled and verified before its first entry
   reaches `/` ([streaming](streaming.md#credentials-and-failures)), so a
-  blob whose digest or diff ID is wrong is a miss; per stage it is
-  extracted as it arrives (ADR-0055). The scan ADR-0098 plans for base
+  blob whose digest or diff ID is wrong is a miss. The same pass will also check
+  the tar headers and `--limit`, by a call into `rnk-rootfs`
+  ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+  planned in [#174](https://github.com/tran4774/ranikust/issues/174)); per stage
+  a layer is extracted as it arrives (ADR-0055). The scan ADR-0098 plans for base
   layers in a user namespace (Phase 3) must cover cached layers too.
 - **The walk catches up lazily.** Applying a layer marks the walk's record
   of the root stale; the next `begin_layer` of a stage whose layers are
@@ -778,18 +781,28 @@ layer is.
   ([ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)), it takes one baseline, as a cold build does:
   a warm or partial build walks no more than a cold one, toward
   [ADR-0117](../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md)'s target.
-- **No step goes on from a half-applied layer.** A failure before the first
-  entry can reach the root (the source refuses the request; on `/`, the
-  spool's check) leaves the root as it was, usable. A later one leaves it
+- **No step goes on from a half-applied layer.** A failure before the layer's
+  extraction began (the source refuses the request; on `/`, the spool pass)
+  leaves the root as it was, usable. A later one leaves it
   broken: no layer, applied layer, view, keep or child stage (`FROM`,
   squashed or handed over) goes on from it, so no later layer is computed
   over part of a cached one. A broken stage directory is only released, and
-  the builder runs the stage again from its base, the bad entry a miss
-  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
-  whose open points include how often and from which base;
-  [#130](https://github.com/tran4774/ranikust/issues/130)). On `/`, what
-  the builder does once a hit has broken the root is not decided
-  [open: #167]; the root is usable again once a new base empties it.
+  the builder runs the stage again from its base
+  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
+  On `/` it does the same, for a failure found while writing only (an entry
+  refused under the base-layer rules, or any failure while extracting a blob
+  already in the store, which is never spooled): the new base empties `/`, as
+  between stages, and the root is usable again then. The restart
+  happens at most once, with no cache at all, and always rebuilds its base from
+  the layers of its chain
+  ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+  decided; the builder's part is planned in
+  [#130](https://github.com/tran4774/ranikust/issues/130), not built). What a
+  restart does when a layer of its chain is held by neither the store nor a
+  registry is not decided [open: #171]; nor are five cases of the restart, among
+  them the restart on `/` of a stage built `FROM <stage>`, whose parent's root
+  `/` cannot give back, and, with a directory per stage, a failure that is not the
+  blob's fault (a full disk, an I/O error) [open: #172].
 - **Refused, nothing changed:** a layer open, a root not held (shared root)
   or handed over (per stage).
 - Span `rnk_snapshot.apply`, the extraction's `rnk_layer.decode` and
