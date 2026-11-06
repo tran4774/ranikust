@@ -104,13 +104,13 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   arm on aarch64) gets `EPERM`.
 - Refused with exit 2, before anything is written: `SCMP_ACT_NOTIFY`,
   `SCMP_ACT_TRACE`, a `listenerPath`, a flag other than `TSYNC`, `LOG` and
-  `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success; the
-  message names `syscalls[N]` or `defaultErrnoRet`) or from 512 up, where the
-  kernel keeps its own codes (on 516 it may run its restart block instead of
-  returning the refusal), two conditions on one argument in a rule, a rule
-  without names (the message names the rule, `syscalls[N]`; ADR-0109), a
-  filter longer than the kernel's 4096 instructions, and anything malformed; a
-  file that is not a regular file or is over 1 MiB.
+  `SPEC_ALLOW`, an `SCMP_ACT_ERRNO` whose errno is 0 (a faked success) or from
+  512 up, where the kernel keeps its own codes (on 516 it may run its restart
+  block instead of returning the refusal), either named in the message as
+  `syscalls[N]` or `defaultErrnoRet`, two conditions on one argument in a
+  rule, a rule without names (the message names the rule, `syscalls[N]`;
+  ADR-0109), a filter longer than the kernel's 4096 instructions, and anything
+  malformed; a file that is not a regular file or is over 1 MiB.
 - The profile is the operator's and may refuse any call with any errno
   `--seccomp` accepts, so every step that need not follow it comes before
   it, in the order of step 4. After it come the `capset` to the default

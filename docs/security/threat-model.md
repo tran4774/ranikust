@@ -237,13 +237,14 @@ These follow from decisions and are documented to users rather than fixed:
   trust the answer, such as the capability cut, the command's session and
   `USER` switch and the `PATH` search. Docker's default profile fakes no
   call.
-- A `RUN`'s profile that refuses `close` with an errno hangs that `RUN`
-  until the build is cancelled, a limit of reliability, not of security:
-  the go pipe that starts the command stays open. If it refuses
-  `close_range` too, the init first busy-loops, holding up to ranikust's
-  own soft `RLIMIT_NOFILE` (its hard limit in kaniko mode) in descriptors,
-  with work that grows with the square of that limit, then waits. Docker's
-  default profile allows `close`.
+- A `RUN`'s profile that refuses `close` with an errno (a kill or a trap
+  fails the `RUN` instead) hangs that `RUN` until the build is cancelled, a
+  limit of reliability, not of security: the go pipe that starts the
+  command stays open. If it refuses `close_range` too, the init first
+  busy-loops, holding up to ranikust's own soft `RLIMIT_NOFILE`, not the
+  `RUN`'s (ranikust's hard limit in kaniko mode), in descriptors, with work
+  that grows with the square of that limit, then waits. Docker's default
+  profile allows `close`.
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

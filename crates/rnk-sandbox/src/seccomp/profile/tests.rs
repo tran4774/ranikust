@@ -759,7 +759,7 @@ fn calls_the_default_allows_but_libc_does_not_name_are_pinned() {
     let cx = cx((6, 8));
     let mut unnamed = Vec::new();
     for r in p.syscalls.iter().flatten() {
-        let (_, names) = rule(r, "rule", &cx).unwrap();
+        let (_, names) = rule(r, "rule", false).unwrap();
         if cx.keeps(r).unwrap() {
             unnamed.extend(names.into_iter().filter(|n| syscalls::number(n).is_none()));
         }
