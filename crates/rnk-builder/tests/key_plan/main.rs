@@ -279,20 +279,25 @@ fn a_fifo_is_keyed_without_being_opened() {
     let (tx, rx) = mpsc::channel();
     let path = ctx.path.clone();
     let planner = std::thread::spawn(move || {
+        // The receiver is gone only once the test has failed.
         tx.send(last(df, &path, &Opts::default())).ok();
     });
     let fifo = match rx.recv_timeout(Duration::from_secs(60)) {
         Ok(key) => key,
         Err(RecvTimeoutError::Timeout) => {
-            // A writer unblocks the plan's open, so the thread and the
-            // context go before the test fails.
+            // A writer unblocks a plan blocked in its open, so the thread
+            // and the context go before the test fails; a plan blocked
+            // elsewhere is left behind rather than waited for.
             use rustix::fs::{Mode, OFlags, open};
-            drop(open(
+            let writer = open(
                 ctx.file("pipe"),
                 OFlags::WRONLY | OFlags::NONBLOCK,
                 Mode::empty(),
-            ));
-            planner.join().ok();
+            );
+            if writer.is_ok() {
+                drop(writer);
+                planner.join().ok();
+            }
             panic!("the plan opened the FIFO");
         }
         Err(RecvTimeoutError::Disconnected) => {
@@ -386,20 +391,34 @@ fn tar(content: &[u8]) -> Vec<u8> {
 }
 
 /// A `--chown` resolves in the stage's root, which the plan does not have:
-/// no key until #168 says what stands for the ids.
+/// no key until #168 says what stands for the ids; the same steps without
+/// it have keys.
 #[test]
 fn a_chown_step_has_no_key_until_its_owner_can_be_keyed() {
     let ctx = context(&[("run.sh", b"#!/bin/sh\n")]);
-    for df in [
-        "FROM base\nCOPY --chown=1:1 run.sh /bin/\nRUN true\n",
-        "FROM base\nADD --chown=app run.sh /bin/\n",
-        "FROM base AS one\nFROM base\nCOPY --from=one --chown=0:0 /etc /etc\n",
-    ] {
-        let stage = keys(df, &ctx.path, &Opts::default())
+    let steps = |df: &str| {
+        keys(df, &ctx.path, &Opts::default())
             .pop()
             .flatten()
-            .unwrap();
-        assert!(stage.steps().iter().all(Option::is_none), "{df}");
+            .unwrap()
+            .steps()
+            .to_vec()
+    };
+    for (owner, df) in [
+        (
+            "--chown=1:1 ",
+            "FROM base\nCOPY {} run.sh /bin/\nRUN true\n",
+        ),
+        ("--chown=app ", "FROM base\nADD {} run.sh /bin/\n"),
+        (
+            "--chown=0:0 ",
+            "FROM base AS one\nFROM base\nCOPY --from=one {} /etc /etc\n",
+        ),
+    ] {
+        let with = steps(&df.replace("{} ", owner));
+        assert!(with.iter().all(Option::is_none), "{df} {owner}");
+        let without = steps(&df.replace("{} ", ""));
+        assert!(without.iter().all(Option::is_some), "{df}");
     }
 }
 

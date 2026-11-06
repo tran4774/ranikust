@@ -169,7 +169,8 @@ pub struct StepKey { pub key: CacheKey, pub reads_stage: Option<usize> }  // a C
   neither has a later step of its stage nor a stage built on or reading it.
   The one exception: an `ADD` of a local archive is keyed, as one file, the
   archive (BuildKit's way), though the build refuses it until Phase 5; no
-  build pushes a layer under that key before then.
+  build pushes a layer under that key before then, and Phase 5 keys any
+  rule its extraction adds to the archive's bytes, or bumps `KEY_VERSION`.
 - A file is keyed as the copy writes it: under the name it is copied under,
   owned by `0:0`, with `--chmod` applied; hardlinks inside one directory
   source as links to the first; a socket as an empty file; under

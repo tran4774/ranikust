@@ -176,9 +176,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     `.dockerignore`): its path relative to the context, content, mode, owner
     after `--chown` (`0:0` without one; a step with `--chown`, which
     resolves in a stage root the plan does not have, gets no key yet
-    [open: #168]), type, link target, `security.capability` and, under `--reproducible`, its mtime
-    clamped to the epoch, so only the mtime of a file older than the epoch
-    counts;
+    [open: #168]), type, link target, `security.capability` and, under
+    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
+    file older than the epoch counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (a forced miss when
     that stage ran in this build,
@@ -187,8 +187,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   The instruction holds no heredoc body: each one (of a `RUN`, `#!` or
   not, a `COPY` or an `ADD`) is an input of its own, after the expansion
   BuildKit does. An `ADD` of a local archive is keyed as one file, the
-  archive, as BuildKit keys it, already, though the build refuses it until
-  Phase 5.
+  archive, as BuildKit keys it, though the build refuses it until Phase 5,
+  which keys any rule its extraction adds to the archive's bytes, or bumps
+  `KEY_VERSION`.
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
   unordered collection.

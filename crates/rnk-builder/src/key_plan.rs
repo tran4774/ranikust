@@ -24,8 +24,9 @@
 //! \[open: #168]) has no key, and neither has any later step of its stage
 //! or a stage built on it or reading it: fail closed, a miss. The one
 //! exception is an `ADD` of a local archive, keyed though the build refuses
-//! it until Phase 5: its key is defined, and no build pushes a layer under
-//! it before then. Which keys are looked up is the caller's choice.
+//! it until Phase 5: no build pushes a layer under its key before then, and
+//! Phase 5 keys any rule its extraction adds to the archive's bytes, or
+//! bumps `KEY_VERSION`. Which keys are looked up is the caller's choice.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -583,9 +584,9 @@ impl Step<'_, '_> {
             });
         }
         let described = self.reader.describe_all(&jobs)?;
-        // `build_stage`'s `copy_skips_special`, for the one isolation known
-        // to skip: keying an entry the copy leaves out only costs a miss.
-        let skip_special = self.input.isolation == Isolation::Direct;
+        // `build_stage`'s `copy_skips_special`, word for word: a key holds no
+        // isolation, so the plan and the copy must agree for every one.
+        let skip_special = self.input.isolation != Isolation::Full;
         // A copy links the later names of an inode to its first, within one
         // source, in the order it reads them (rnk-rootfs `Copier::node`).
         let mut first: HashMap<(usize, u32, u32, u64), Vec<u8>> = HashMap::new();
@@ -653,14 +654,15 @@ impl Step<'_, '_> {
 }
 
 /// A `--chown` resolves in the stage's root, which does not exist before
-/// the build: such a step gets no key until #168 says what stands for the
-/// ids (ADR-0113 keys them).
+/// the build, so the ids ADR-0113 keys are unknown: no key for such a step
+/// \[open: #168].
 fn unkeyed_chown(chown: &str) -> Result<()> {
-    // [open: #168]
     if chown.is_empty() {
         Ok(())
     } else {
-        Err(unsupported("--chown"))
+        Err(Error::Invalid(
+            "--chown resolves in the stage's root: not keyed yet [open: #168]".to_owned(),
+        ))
     }
 }
 
