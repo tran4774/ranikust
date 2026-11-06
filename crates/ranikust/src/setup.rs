@@ -195,7 +195,7 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// again when the spawner starts. `userns_network` is `--allow
 /// network.none-userns` (ADR-0033); `seccomp` the profile of every `RUN`
 /// (ADR-0109); `userns_probe` (`--mode=auto`) adds the user namespace
-/// probe, reported only.
+/// probe, reported only, and is cleared once it ran, refused or not.
 ///
 /// # Errors
 ///
@@ -204,7 +204,7 @@ pub(crate) fn set_up(
     state_dir: &Path,
     userns_network: bool,
     seccomp: &Seccomp,
-    userns_probe: bool,
+    userns_probe: &mut bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
@@ -223,7 +223,7 @@ pub(crate) fn set_up(
     // only once its marker is checked (Q-111, (a)).
     let store = open_store(state_dir, state_dir)?;
     // Before the overlay probe: a thread it joined may still be counted.
-    if userns_probe {
+    if std::mem::take(userns_probe) {
         report_user_namespace(&store);
     }
     let sandbox_dir = state_dir.join("sandbox");

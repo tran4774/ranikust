@@ -529,12 +529,13 @@ fn build(
                     // Overlay mode's flags are checked before its set-up
                     // writes anything, and count only if it is picked.
                     let flags = config::overlay_mode_flags(args);
+                    let mut userns_probe = true;
                     let refusal = match span.in_scope(|| {
                         setup::set_up(
                             &config.state_dir,
                             config.allow_network_none_userns,
                             &seccomp,
-                            true,
+                            &mut userns_probe,
                         )
                     }) {
                         Ok(setup) => {
@@ -569,10 +570,16 @@ fn build(
                             );
                             // Never read: off `/`, or with `can_mount`, no scan runs.
                             let started_in = Err(rustix::io::Errno::INVAL);
+                            // One probe line per build.
+                            let by = if userns_probe {
+                                KanikoBy::Auto
+                            } else {
+                                KanikoBy::AutoProbed
+                            };
                             kaniko(
                                 &config,
                                 &seccomp,
-                                KanikoBy::Auto,
+                                by,
                                 true,
                                 runtime,
                                 metrics_file,
@@ -604,11 +611,13 @@ fn build(
 }
 
 /// How [`kaniko`] was reached: `--mode=kaniko`, or picked by
-/// `--mode=auto`, which also runs the user-namespace probe, reported only.
+/// `--mode=auto`, which also runs the user-namespace probe, reported only,
+/// unless overlay mode's set-up ran it before it was refused.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KanikoBy {
     Flag,
     Auto,
+    AutoProbed,
 }
 
 impl KanikoBy {
@@ -616,7 +625,7 @@ impl KanikoBy {
     fn flag(self) -> &'static str {
         match self {
             Self::Flag => "--mode=kaniko",
-            Self::Auto => "--mode=auto",
+            Self::Auto | Self::AutoProbed => "--mode=auto",
         }
     }
 }
@@ -640,7 +649,7 @@ fn overlay(config: &BuildConfig, seccomp: &Seccomp, span: &tracing::Span) -> Res
                 &config.state_dir,
                 config.allow_network_none_userns,
                 seccomp,
-                false,
+                &mut false,
             )
         })
         .map_err(Failure::refused)?;
@@ -681,7 +690,7 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
         .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
 }
 
-/// Kaniko mode, chosen by `how` (ADR-0050): in a container (kaniko's
+/// Kaniko mode, reached as `by` says (ADR-0050): in a container (kaniko's
 /// heuristic, ADR-0048) the root is `/`, and the stages run one unit at a
 /// time on it (`design/kaniko-mode.md#stage-roots-on-the-shared-root`);
 /// anywhere else each stage gets a directory of its own in the state
