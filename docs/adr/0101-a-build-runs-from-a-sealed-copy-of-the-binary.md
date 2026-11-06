@@ -580,7 +580,9 @@ The decision:
   `a_mount_namespace_is_held_by_an_open_descriptor_of_its_own_file` (an
   open `O_PATH`, close-on-exec descriptor of the namespace's nsfs file,
   whose device and inode the handle names),
-  `a_process_name_is_trimmed_and_escaped`,
+  `a_zombie_is_passed_over_as_gone_and_its_root_does_not_open` (a process
+  that has exited but is not reaped is gone, whatever its namespace, and
+  neither of its roots opens), `a_process_name_is_trimmed_and_escaped`,
   `a_process_is_named_by_its_pid_and_its_name_when_read` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   (messages and guidance). T1 `pid-peers` (rootless podman 5.7.0, Linux
@@ -599,7 +601,25 @@ The decision:
   it is refused before any `RUN`, ranikust started from `sh` (before the
   state directory exists) or exec'd, the only process of the namespace it
   started in [measured]. These steps pass under rootful Docker in the VM's
-  quick suite too [measured].
+  quick suite too [measured]. The steps added after the red team (T1,
+  rootless podman 5.7.0, Linux 7.0): with a root peer that has a
+  capability ranikust lacks (`NET_ADMIN`) and a writable bind, and
+  `half_entered` with no peer, ranikust started from `sh` or exec'd, the
+  build goes ahead, and its `RUN` goes through every process, reaches no
+  peer and holds only its standard streams; with no peer, a `sleep` of the
+  container itself unshared into a mount namespace of its own just before
+  ranikust starts is refused before the state directory exists and before
+  any `RUN` [measured]. They have not run under Docker in the VM's quick
+  suite yet. T2 (the VM's `unit`, Ubuntu noble, Linux 6.8)
+  `a_namespace_left_but_held_keeps_its_number_from_new_ones`: a mount
+  namespace no process is in, held by the handle, keeps its number from
+  64 new ones in each of three rounds; without the handle the number comes
+  back in one round at least [measured]. T2c (profile `sysadmin`, run as
+  root by the VM's `unit` too)
+  `one_thread_in_another_mount_namespace_listed_late_reaches_its_process`
+  (one thread unshared after a hundred others refuses its process) and
+  `a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone`
+  [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its

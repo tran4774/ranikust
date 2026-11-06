@@ -328,10 +328,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`--pid container:<peer>`: a root peer refused before any `RUN`, a peer
   of another user and no peer build; `half_entered`: a set-up that failed
   after its `unshare` builds with no peer and still refuses a root peer,
-  ranikust started from `sh` or exec'd; where a build goes ahead, a peer of
-  another user or a root peer with a capability ranikust lacks, each with a
-  writable bind, or `half_entered` with no peer, its `RUN` reaches no peer
-  and holds only its standard streams; a `sleep` of the container itself
+  ranikust started from `sh` or exec'd; where a build goes ahead, with a
+  root peer that has a capability ranikust lacks and a writable bind, or
+  `half_entered` with no peer, its `RUN` reaches no peer and holds only its
+  standard streams; with no peer, a `sleep` of the container itself
   unshared just before ranikust starts is refused).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
@@ -351,13 +351,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   copied into the container's root, it builds; the
   only test of `refuse_unsafe_slash` calling `refuse_writable_binary`);
   `rt_auto_privileged_container` (`--mode=auto` in a `--privileged`
-  container is refused, with or without `/.dockerenv`). `unit`:
-  `exposure.rs` `a_namespace_left_but_held_keeps_its_number_from_new_ones`
-  (ADR-0101: a mount namespace no process is in, held by the handle, keeps
-  its number from 64 new ones; the control, without the handle, gets it
-  back). A
-  `--state-dir` at `/`, below `/home/<user>` or in a directory others may
-  write ([testing](../../testing.md#planned-test-suites)).
+  container is refused, with or without `/.dockerenv`). A `--state-dir` at
+  `/`, below `/home/<user>` or in a directory others may write
+  ([testing](../../testing.md#planned-test-suites)). `unit`: `exposure.rs`
+  `a_namespace_left_but_held_keeps_its_number_from_new_ones` (ADR-0101: a
+  mount namespace no process is in, held by the handle, keeps its number
+  from 64 new ones in each of three rounds; the control, without the
+  handle, gets it back in one round at least).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
   ranikust build is using / in this container"); `exposure.rs`, profile

@@ -835,24 +835,46 @@ mod tests {
         assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
     }
 
-    /// `sleep 600` started with `before` run in its process after the fork
-    /// (single-threaded, before the exec), its stdout a pipe; with the
+    /// Children killed and reaped when it drops, so that a test that fails
+    /// leaves no `sleep 600` behind.
+    #[derive(Default)]
+    struct Sleepers(Vec<std::process::Child>);
+
+    impl Drop for Sleepers {
+        fn drop(&mut self) {
+            for child in &mut self.0 {
+                // A child already gone has nothing left to stop.
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    /// Starts `sleep 600` into `sleepers`, with `before` run in its process
+    /// after the fork (before the exec, its stdout a pipe); returns the
     /// namespace identity `before` wrote there ([`report`]).
-    fn sleeper(
+    ///
+    /// # Safety
+    ///
+    /// `before` runs in the child of a fork of a multi-threaded process: it
+    /// may only make system calls, with no lock and no allocation.
+    unsafe fn sleeper(
+        sleepers: &mut Sleepers,
         before: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static,
-    ) -> (std::process::Child, (u64, u64)) {
+    ) -> (u64, u64) {
         use std::io::Read;
         use std::os::unix::process::CommandExt;
         let mut command = std::process::Command::new("sleep");
         command.arg("600").stdout(std::process::Stdio::piped());
-        // SAFETY: every `before` here makes system calls only: no lock, no
-        // allocation, nothing a fork of a multi-threaded process breaks.
+        // SAFETY: the caller's promise on `before`.
         unsafe { command.pre_exec(before) };
         let mut child = command.spawn().unwrap();
+        let mut out = child.stdout.take().unwrap();
+        sleepers.0.push(child);
         let mut id = [0u8; 16];
-        child.stdout.take().unwrap().read_exact(&mut id).unwrap();
+        out.read_exact(&mut id).unwrap();
         let half = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
-        (child, (half(&id[..8]), half(&id[8..])))
+        (half(&id[..8]), half(&id[8..]))
     }
 
     /// Writes a namespace identity to fd 1, from a forked child.
@@ -868,7 +890,7 @@ mod tests {
         }
     }
 
-    /// Moves the calling process into a new mount namespace.
+    /// Moves the calling thread into a new mount namespace.
     fn unshare_mounts() -> std::io::Result<()> {
         // SAFETY: `NEWNS` does not unshare the descriptor table, the only
         // flag `unshare_unsafe` is unsafe for.
@@ -876,62 +898,61 @@ mod tests {
         Ok(())
     }
 
-    /// Stops and reaps `children`.
-    fn stop(children: impl IntoIterator<Item = std::process::Child>) {
-        for mut child in children {
-            child.kill().unwrap();
-            child.wait().unwrap();
-        }
-    }
-
     // The half-entered set-up (ADR-0101): a mount namespace no process is in
     // any more, held by ranikust's handle, keeps its number from new ones.
     #[test]
-    #[ignore = "T2: unshare(CLONE_NEWNS) as root; a freed namespace number is handed out again \
-                predictably only on a kernel nothing else uses"]
+    #[ignore = "T2: unshare(CLONE_NEWNS) as root; a freed namespace number comes back soon only \
+                on a kernel few other processes use"]
     fn a_namespace_left_but_held_keeps_its_number_from_new_ones() {
         // New namespaces made after it was left, each kept.
         const NEW: usize = 64;
+        let mut controls = Vec::new();
         for round in 0..3 {
             for hold in [false, true] {
+                let mut sleepers = Sleepers::default();
                 // In M1, `mount_namespace()` on it, then into M2: M1 has no
                 // process left, only the handle when `hold`, kept open in
                 // the same process across its exec.
-                let (left, m1) = sleeper(move || {
-                    unshare_mounts()?;
-                    let ns = mount_namespace()?;
-                    let m1 = ns.id;
-                    let held = hold.then_some(ns);
-                    unshare_mounts()?;
-                    if let Some(ns) = held {
-                        rustix::io::fcntl_setfd(&ns._held, rustix::io::FdFlags::empty())?;
-                        std::mem::forget(ns);
-                    }
-                    report(m1)
-                });
-                let mut made = Vec::new();
-                let mut ids = Vec::new();
-                while made.len() < NEW && !ids.contains(&m1) {
-                    let (child, id) = sleeper(|| {
+                // SAFETY: unshares, an open, a stat, an fcntl and a write.
+                let m1 = unsafe {
+                    sleeper(&mut sleepers, move || {
                         unshare_mounts()?;
-                        report(mount_namespace()?.id)
+                        let ns = mount_namespace()?;
+                        let m1 = ns.id;
+                        let held = hold.then_some(ns);
+                        unshare_mounts()?;
+                        if let Some(ns) = held {
+                            rustix::io::fcntl_setfd(&ns._held, rustix::io::FdFlags::empty())?;
+                            std::mem::forget(ns);
+                        }
+                        report(m1)
+                    })
+                };
+                let mut ids = Vec::new();
+                while ids.len() < NEW && !ids.contains(&m1) {
+                    // SAFETY: an unshare, an open, a stat and a write.
+                    ids.push(unsafe {
+                        sleeper(&mut sleepers, || {
+                            unshare_mounts()?;
+                            report(mount_namespace()?.id)
+                        })
                     });
-                    made.push(child);
-                    ids.push(id);
                 }
-                stop(made.into_iter().chain([left]));
+                drop(sleepers);
                 let reused = ids.iter().position(|&id| id == m1);
                 if hold {
                     assert_eq!(reused, None, "round {round}: held {m1:?} reused: {ids:?}");
                 } else {
-                    // The control: without the handle the number comes back.
-                    assert!(
-                        reused.is_some(),
-                        "round {round}: {m1:?} not reused within {NEW}: {ids:?}"
-                    );
+                    controls.push((round, m1, reused, ids));
                 }
             }
         }
+        // The control: without the handle the number comes back, in one
+        // round at least on a kernel other processes share.
+        assert!(
+            controls.iter().any(|(_, _, reused, _)| reused.is_some()),
+            "not reused within {NEW}: {controls:?}"
+        );
     }
 
     // T21: one thread of a process in another mount namespace, listed after
@@ -953,7 +974,7 @@ mod tests {
                     unshare_mounts().unwrap();
                     ready.send(()).unwrap();
                 }
-                let _ = parked.lock().unwrap().recv();
+                parked.lock().unwrap().recv().unwrap_err();
             })
         };
         let mut threads: Vec<_> = (0..100).map(|_| park(None)).collect();
@@ -977,14 +998,18 @@ mod tests {
     #[ignore = "T2c: sysadmin: unshare(CLONE_NEWNS) in a child"]
     fn a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone() {
         let now = mount_namespace().unwrap().id;
-        let (sleeping, theirs) = sleeper(|| {
-            unshare_mounts()?;
-            report(mount_namespace()?.id)
-        });
-        assert_ne!(theirs, now);
-        let pid = sleeping.id().to_string();
+        let mut sleeping = Sleepers::default();
+        // SAFETY: an unshare, an open, a stat and a write.
+        let theirs = unsafe {
+            sleeper(&mut sleeping, || {
+                unshare_mounts()?;
+                report(mount_namespace()?.id)
+            })
+        };
+        let pid = sleeping.0[0].id().to_string();
         let reached = probe([now, now], &pid, PEER_SCAN_LIMIT);
-        stop([sleeping]);
+        drop(sleeping);
+        assert_ne!(theirs, now);
         assert_eq!(reached, (Peer::Reachable("sleep".into()), 1));
         zombie_is_gone(
             std::process::Command::new("true").pre_exec_unshared(),
@@ -1007,6 +1032,7 @@ mod tests {
         let mut child = command.spawn().unwrap();
         let pid = child.id().to_string();
         let state = || {
+            // A read that fails counts as not yet a zombie, until the deadline.
             fs::read_to_string(format!("/proc/{pid}/stat"))
                 .ok()
                 .and_then(|s| s.rsplit_once(") ").map(|(_, r)| r.starts_with('Z')))
