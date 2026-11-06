@@ -171,8 +171,9 @@ fn tags() {
     );
 }
 
-/// The encoding as a cache entry's annotation names it: pushed entries
-/// stop being hits if this changes.
+/// The encoding as a cache entry's annotation names it. A change here
+/// bumps `KEY_VERSION`: entries already pushed would be refused, with a
+/// warning, instead of missed.
 #[test]
 fn encoding_annotations() {
     let annotation = |compression, level, times| {

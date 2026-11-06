@@ -90,8 +90,8 @@ interpret the Dockerfile, or decide which files an instruction copies.
 OCI and Docker v2 schema 2 types (digests, descriptors, manifests, indexes,
 configs, image references), the canonical JSON of every config and manifest
 ranikust writes (so equal values give equal digests), the config edits of the
-metadata instructions, and the file names of a docker-save tarball and an OCI
-layout. Owns its types instead of taking `oci-spec`'s, whose hash-map order
+metadata instructions, the RFC 3339 times of a config, and the file names of
+a docker-save tarball and an OCI layout. Owns its types instead of taking `oci-spec`'s, whose hash-map order
 would change digests and which drops Docker-only config fields; `oci-spec`
 comes in only with `oci-client`, inside `rnk-registry`. **Must not** access the
 network or filesystem.
@@ -253,6 +253,8 @@ depend on higher ones. Besides the chain:
 - `rnk-sandbox` uses `rnk-rootfs` for `USER`, for the parser of
   `/proc/self/mountinfo` it shares with `rnk-snapshot`, and for `RootPath`
   to reach a writable mount's mount point from `/` (ADR-0101).
+- `rnk-cache` uses `rnk-registry`'s client for the registry cache
+  ([ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
 - `rnk-context` uses `rnk-ignore` for its walk (ADR-0027), and `rnk-sched` uses
   `rnk-dockerfile` for the stage graph: both settled by ADR-0115.
 - `rnk-rootfs` never depends on `rnk-layer`. `rnk-dockerfile`, `rnk-ignore` and

@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use rnk_oci::{
-    Descriptor, Digest, ImageConfig, ImageFormat, ImageManifest, MediaType, RootFs, Timestamp,
+    Compression, Descriptor, Digest, ImageConfig, ImageFormat, ImageManifest, MediaType, RootFs,
+    Timestamp,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -27,10 +28,10 @@ pub const ENCODING_ANNOTATION: &str = "io.github.tran4774.ranikust.cache.encodin
 
 /// The OCI layer media type of the entry's encoding.
 pub(crate) fn layer_type(entry: &EntryId) -> MediaType {
-    match ImageFormat::Oci.layer_media_type(entry.encoding().compression) {
-        Ok(media_type) => media_type,
-        // OCI has a layer type for every compression.
-        Err(_) => MediaType::OCI_LAYER,
+    match entry.encoding().compression {
+        Compression::Uncompressed => MediaType::OCI_LAYER,
+        Compression::Gzip => MediaType::OCI_LAYER_GZIP,
+        Compression::Zstd => MediaType::OCI_LAYER_ZSTD,
     }
 }
 
@@ -118,7 +119,10 @@ pub(crate) fn check_manifest(
     })?;
     if manifest.media_type.as_ref() != Some(&MediaType::OCI_MANIFEST) {
         return Err(Refusal::NotAnImageManifest {
-            media_type: excerpt(manifest.media_type.as_ref().map_or("", MediaType::as_str)),
+            media_type: manifest
+                .media_type
+                .as_ref()
+                .map_or_else(|| "(no mediaType)".to_owned(), |m| excerpt(m.as_str())),
         });
     }
     if manifest.artifact_type.is_some() || manifest.subject.is_some() {
@@ -175,9 +179,11 @@ pub(crate) fn check_config(bytes: &[u8]) -> Result<(Digest, Timestamp), Refusal>
         Some(diff_id) if diff_ids.is_empty() && kind == "layers" => diff_id,
         _ => return Err(Refusal::DiffIds),
     };
-    let created = created
-        .as_deref()
-        .and_then(|text| Timestamp::parse_rfc3339(text).ok())
-        .ok_or(Refusal::Created)?;
+    let created = created.as_deref().ok_or(Refusal::Created {
+        reason: "missing".to_owned(),
+    })?;
+    let created = Timestamp::parse_rfc3339(created).map_err(|e| Refusal::Created {
+        reason: excerpt(&e.to_string()),
+    })?;
     Ok((diff_id, created))
 }

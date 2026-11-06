@@ -49,7 +49,7 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 Built (keys, tags and the registry cache):
 
 ```rust
-pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how
+pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how, or to an entry's annotations
 pub struct CacheKey;                 // version + SHA-256; Copy, Eq, Hash; version(), hash()
 impl CacheKey {
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self; // platform manifest digest; None: FROM scratch
@@ -186,7 +186,7 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   held blob is not uploaded again and one in a destination is mounted; a
   failed push publishes nothing. `tests/spans.rs` checks the three spans.
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
-  against a real registry (T1); W2 cold, warm and partial; a layer cached in
+  against a real registry (T2); W2 cold, warm and partial; a layer cached in
   one mode reused by the other, checked against the ADR-0012 list.
 
 ## Metrics

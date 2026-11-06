@@ -83,7 +83,7 @@ impl Client {
     pub async fn push_manifest(&self, r: &Reference, m: &RawManifest) -> Result<Digest, Error>; // by tag only
 }
 pub enum Error { Tls, Credentials, Reference, Auth, Registry { retryable, refused, not_found, .. }, DigestMismatch, SizeMismatch, Manifest, Io }
-    // is_not_found(): a manifest or blob GET answered 404
+    // is_not_found(): a manifest or blob GET answered 404; never retried
 ```
 
 ## Invariants

@@ -250,15 +250,20 @@ pub(crate) fn retryable_status(code: u16) -> bool {
 
 impl Op<'_> {
     /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
-    /// refusal whatever its body said, and a 404 is "not found".
+    /// refusal whatever its body said, and a 404 is "not found" and never
+    /// retried, even with a `TOOMANYREQUESTS` code.
     pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
         let mut e = self.error(err);
         if let Error::Registry {
-            refused, not_found, ..
+            retryable,
+            refused,
+            not_found,
+            ..
         } = &mut e
         {
             *refused |= refusal_status(status);
             *not_found = status == 404;
+            *retryable &= !*not_found;
         }
         e
     }

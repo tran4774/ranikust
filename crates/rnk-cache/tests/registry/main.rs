@@ -367,22 +367,22 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
                 c.as_object_mut().unwrap().remove("created");
                 c
             },
-            Refusal::Created,
-        ),
-        (
-            "a created that is not RFC 3339",
-            {
-                let mut c = config.clone();
-                c["created"] = json!("yesterday");
-                c
+            Refusal::Created {
+                reason: "missing".to_owned(),
             },
-            Refusal::Created,
         ),
     ];
     for (what, config, want) in config_cases {
         store(&registry, &tag, manifest.clone(), &config);
         assert_eq!(refusal(cache.lookup(&entry).await), want, "{what}");
     }
+    let mut yesterday = config.clone();
+    yesterday["created"] = json!("yesterday");
+    store(&registry, &tag, manifest.clone(), &yesterday);
+    let Refusal::Created { reason } = refusal(cache.lookup(&entry).await) else {
+        panic!("a created that is not RFC 3339 was not refused as such");
+    };
+    assert!(reason.contains("yesterday"), "{reason}");
     let mut not_json = config.clone();
     not_json["rootfs"] = json!("layers");
     store(&registry, &tag, manifest.clone(), &not_json);
@@ -424,6 +424,16 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
         refusal(cache.lookup(&entry).await),
         Refusal::NotAnImageManifest {
             media_type: MediaType::DOCKER_MANIFEST.as_str().to_owned()
+        }
+    );
+    let untyped = edit(&|m| {
+        m.as_object_mut().unwrap().remove("mediaType");
+    });
+    store(&registry, &tag, untyped, &config);
+    assert_eq!(
+        refusal(cache.lookup(&entry).await),
+        Refusal::NotAnImageManifest {
+            media_type: "(no mediaType)".to_owned()
         }
     );
     // Not a manifest at all: the client refuses it.

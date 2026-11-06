@@ -52,7 +52,8 @@ pub enum Error {
         /// The entry's encoding.
         encoding: Encoding,
     },
-    /// An entry document could not be written.
+    /// The entry's tagged reference or one of its documents could not be
+    /// made.
     #[error("cache entry {entry}: {source}")]
     Document {
         /// The entry's reference.
@@ -109,7 +110,10 @@ pub enum Refusal {
     /// The config's `rootfs` does not name exactly one layer.
     DiffIds,
     /// The config's `created` is missing or not an RFC 3339 time.
-    Created,
+    Created {
+        /// Why, cut to an excerpt.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -131,7 +135,7 @@ impl fmt::Display for Refusal {
                 write!(f, "annotation {name} missing or naming another entry")
             }
             Self::DiffIds => f.write_str("its config does not name exactly one layer"),
-            Self::Created => f.write_str("its config has no RFC 3339 created time"),
+            Self::Created { reason } => write!(f, "its config's created time: {reason}"),
         }
     }
 }
