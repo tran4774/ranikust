@@ -20,9 +20,10 @@
 //! - `placed <path> <mtime>`: the parent's mtime just after; all `placed`
 //!   records are synced before the `RUN` starts.
 //!
-//! Entries are undone after the `RUN`, newest first: a stub is removed while
-//! still empty; a swapped path gets its aside entry back by `rename`, or,
-//! without one, the placed file is removed. The parent's times go back to
+//! Entries are undone after the `RUN`, newest first, one that fails leaving
+//! the older ones to be undone all the same: a stub is removed while still
+//! empty; a swapped path gets its aside entry back by `rename`, or, without
+//! one, the placed file is removed. The parent's times go back to
 //! the old ones only if its mtime still is the `placed` one (no `placed`
 //! record: the build died before the `RUN`). At start-up, journals no live
 //! process holds are replayed the same way.
@@ -666,15 +667,25 @@ fn replay_locked(
     Ok(Some(removed))
 }
 
-/// Undoes the entries newest first and restores their parents' times.
+/// Undoes the entries newest first and restores their parents' times. An
+/// entry that fails leaves the older ones to be undone all the same, each
+/// checked again on its own; the first error is returned after them, the
+/// later ones logged.
 fn remove_stubs(root: &RootPath, stubs: &[StubRecord]) -> Result<usize> {
     let mut removed = 0;
+    let mut first = None;
     for stub in stubs.iter().rev() {
-        if undo(root, stub)? {
-            removed += 1;
+        match undo(root, stub) {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(e) if first.is_none() => first = Some(e),
+            Err(e) => tracing::warn!(
+                "rnk-sandbox: cannot remove the stub {}: {e}",
+                stub.path.display()
+            ),
         }
     }
-    Ok(removed)
+    first.map_or(Ok(removed), Err)
 }
 
 /// Undoes one entry; `true` when something was removed or put back, after
@@ -1681,11 +1692,12 @@ mod tests {
         assert_eq!(parse(text.as_bytes()).1.len(), 8);
         fs::write(f.runs.join("x.journal"), text.as_bytes()).unwrap();
         // A record naming no entry, newest: its journal stays, with a
-        // warning, and nothing of it is undone.
-        fs::create_dir(f.root_dir.join("keep")).unwrap();
-        for (name, bad) in [("y", "/"), ("z", "/keep/..")] {
+        // warning; the older entries are undone all the same.
+        for (name, bad) in [("y", "/"), ("z", "/older-z/..")] {
+            let older = format!("/older-{name}");
+            fs::create_dir(f.root_dir.join(&older[1..])).unwrap();
             let text =
-                root_line.clone() + &stub("d", Path::new("/keep")) + &stub("d", Path::new(bad));
+                root_line.clone() + &stub("d", Path::new(&older)) + &stub("d", Path::new(bad));
             fs::write(f.runs.join(format!("{name}.journal")), text).unwrap();
         }
         assert_eq!(
@@ -1701,9 +1713,11 @@ mod tests {
         assert!(h.join("f").is_file());
         assert_eq!(host_root.statx("/").unwrap().mtime, old);
         assert!(!f.runs.join("x.journal").exists());
-        assert!(f.root_dir.join("keep").is_dir());
-        assert!(f.runs.join("y.journal").exists());
-        assert!(f.runs.join("z.journal").exists());
+        assert!(f.root_dir.join("etc").is_dir());
+        for name in ["y", "z"] {
+            assert!(!f.root_dir.join(format!("older-{name}")).exists(), "{name}");
+            assert!(f.runs.join(format!("{name}.journal")).exists(), "{name}");
+        }
     }
 
     #[test]
@@ -1954,6 +1968,38 @@ mod tests {
             }
             assert!(left > 0, "{what}: the journal stays");
         }
+    }
+
+    /// An entry that fails does not keep the older ones in place: here the
+    /// `RUN` made `/dev` a symlink loop under its newer stub, and the older
+    /// swap of `/etc/hosts` still goes back. The error comes back after
+    /// them, and the journal stays.
+    #[test]
+    fn a_failed_entry_does_not_stop_the_older_ones() {
+        let f = fixture();
+        fs::write(f.root_dir.join("etc/hosts"), b"image").unwrap();
+        fs::create_dir(f.root_dir.join("dev")).unwrap();
+        let root = RootPath::open(&f.root_dir).unwrap();
+        let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+        assert!(
+            j.swap_in(Path::new("/etc/hosts"), Content::File(b"ours"))
+                .unwrap()
+        );
+        assert_eq!(
+            j.ensure(Path::new("/dev/shm"), MountKind::Directory)
+                .unwrap(),
+            1
+        );
+        j.commit().unwrap();
+        fs::rename(f.root_dir.join("dev"), f.root_dir.join("dev2")).unwrap();
+        std::os::unix::fs::symlink("dev", f.root_dir.join("dev")).unwrap();
+        match j.finish() {
+            Err(Error::Rootfs(e)) if e.raw_os_error() == Some(libc::ELOOP) => {}
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(fs::read(f.root_dir.join("etc/hosts")).unwrap(), b"image");
+        assert!(asides(&f.root_dir.join("etc")).is_empty());
+        assert!(f.runs.join("1.journal").exists(), "the journal stays");
     }
 
     #[test]

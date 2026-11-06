@@ -493,7 +493,7 @@ So, as in BuildKit's `executor/stubs.go`, with one journal per `RUN` in
    metadata; a stub counts as gone only where its lookup says nothing can be
    at its path (`ENOENT`, or `ENOTDIR` for a parent the `RUN` made a file),
    and any other lookup error fails the clean-up with its step and errno,
-   the journal kept;
+   the journal kept, once the older stubs are undone all the same;
 3. on start-up, remove any stub left in the journal.
 
 Because all other mounts live in the child's namespace, no ignore-list entry is

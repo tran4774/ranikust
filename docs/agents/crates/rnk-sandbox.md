@@ -388,11 +388,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (placement through symlinks, removal, parent times, replay of dead
   journals only, a lock kept by a shared description, a lookup failing
   with `ELOOP` failing the clean-up and keeping the journal while
-  `ENOTDIR` counts as gone), swaps and planted
-  records, the journal's red-team tests (a file, FIFO, socket or whiteout
-  where a directory is needed or as the target; stubs a `RUN` swaps for
-  symlinks out of the root or for nodes; planted stub records aimed
-  outside, naming `/` or ending in `..`), `Direct` children that fail
+  `ENOTDIR` counts as gone, the older entries undone all the same), swaps
+  and planted records, the journal's red-team tests (a file, FIFO, socket
+  or whiteout where a directory is needed or as the target; stubs a `RUN`
+  swaps for symlinks out of the root or for nodes; planted stub records
+  aimed outside, naming `/` or ending in `..`), `Direct` children that fail
   before executing, mount sources and remount flags, `Direct` refusals,
   the sealed heredoc memfd, the relay (a surviving write end, a full
   stream, a `RUN` reading its own stream back), the init's status records,
