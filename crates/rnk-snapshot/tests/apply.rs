@@ -1475,6 +1475,8 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
             ),
             "{what}: {e:?}"
         );
+        // The body's failure, never one of its tar.
+        assert!(matches!(e, Error::Layer(_)), "{what}: {e:?}");
         assert!(!f.root.join("first").exists(), "{what}");
         r.begin_layer()
             .unwrap_or_else(|e| panic!("{what}: / broken: {e:?}"));

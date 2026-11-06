@@ -182,6 +182,8 @@ pub struct Extracted {
 
 /// Refuses what an extraction that applies whiteouts would refuse from
 /// the headers of the plain tar stream `tar` alone, and writes nothing.
+/// Values only the kernel refuses (a NUL byte or an over-long name, an
+/// xattr it does not take) still fail at write time (#179).
 ///
 /// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
 /// the same framing, up to the end-of-archive block, and the same

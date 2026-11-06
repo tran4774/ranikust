@@ -278,8 +278,9 @@ that found a bug stay as its regression test.
   changes whether the blob is plain, gzip or zstd, in a second gzip member or
   zstd frame included; entries past the end-of-archive block reach nothing; a
   body or its decompression failing while the headers are read (corrupt or
-  cut, a bad gzip checksum, a digest refused, a connection dropped) never
-  reads as an entry refusal or a `--limit` overrun and leaves `/` usable; in
+  cut, a bad gzip checksum, a digest refused, a connection dropped) is
+  reported as the body's error, never as one of its tar, and leaves `/`
+  usable; in
   `src/kaniko/root/tests.rs`, a base or `COPY --from` image layer with a bad
   header is refused before any of it is written or any directory made, and
   keeps no spool. `tests/spans.rs`: on `/` a streamed layer is decoded once

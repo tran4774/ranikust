@@ -1025,9 +1025,9 @@ impl Spooled {
     /// extraction frames and refuses them, the `tar-header` limit included
     /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The body
     /// is read to its end, even after a bad header, where its source checks
-    /// the size and the compressed digest: a body its source refuses is
-    /// reported as such, before a bad header or a wrong diff ID. A blob
-    /// already on disk is kept as it is.
+    /// the size and the compressed digest: a body its source refuses, or
+    /// whose decompression fails, is reported as such, before a bad header
+    /// or a wrong diff ID. A blob already on disk is kept as it is.
     fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
             return Ok(Self(SpooledBlob::Blob(layer.clone())));
@@ -1048,11 +1048,21 @@ impl Spooled {
         let mut decoder = rnk_layer::Decoder::new(body)?;
         // The same decompression reads the headers as the extraction will
         // (ADR-0123), then the rest for the diff ID.
-        let headers = rnk_rootfs::check_headers(&mut decoder);
+        let mut read = FirstError {
+            inner: &mut decoder,
+            first: None,
+        };
+        let headers = rnk_rootfs::check_headers(&mut read);
+        let failed = read.first;
         // A failure of the body (its source's verdict) or of its
-        // decompression is reported before its tar's.
-        let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
+        // decompression is reported before its tar's, even one the decoder
+        // reported once and then read as an end.
+        let finished = decoder.finish()?;
+        if let (Err(_), Some(e)) = (&headers, failed) {
+            return Err(rnk_layer::Error::from(e).into());
+        }
         headers?;
+        let actual = Digest::from_sha256_bytes(finished.as_bytes());
         // The source verifies the digest only at the end of its body.
         if !ended.load(Ordering::Relaxed) {
             return Err(Error::State(
@@ -1090,6 +1100,26 @@ impl Spooled {
         match &self.0 {
             SpooledBlob::Blob(layer) => &layer.diff_id,
             SpooledBlob::File { diff_id, .. } => diff_id,
+        }
+    }
+}
+
+/// A reader that keeps the first error it returned, which the caller
+/// reports as is; the error passed on is a copy of it.
+struct FirstError<R> {
+    inner: R,
+    first: Option<std::io::Error>,
+}
+
+impl<R: std::io::Read> std::io::Read for FirstError<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self.inner.read(buf) {
+            Err(e) if self.first.is_none() && e.kind() != std::io::ErrorKind::Interrupted => {
+                let copy = std::io::Error::new(e.kind(), e.to_string());
+                self.first = Some(e);
+                Err(copy)
+            }
+            r => r,
         }
     }
 }

@@ -771,8 +771,9 @@ layer is.
   decompression, checks the tar headers and `--limit` as the extraction will,
   by `rnk_rootfs::check_headers` ([rootfs](rootfs.md#extraction),
   [ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md)),
-  so a hit with a header every extraction refuses, or one over the limit, is a
-  miss too; per stage a layer is extracted as it arrives (ADR-0055). The scan
+  so a hit with a header every extraction refuses from the header alone, or
+  one over the limit, is a miss too (values only the kernel refuses still fail
+  while writing, [#179](https://github.com/tran4774/ranikust/issues/179)); per stage a layer is extracted as it arrives (ADR-0055). The scan
   ADR-0098 plans for base layers in a user namespace (Phase 3) must cover
   cached layers too.
 - **The walk catches up lazily.** Applying a layer marks the walk's record
