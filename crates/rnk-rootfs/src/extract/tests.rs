@@ -1545,11 +1545,11 @@ fn bad_headers(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
             first().hardlink("self", "self").bytes(),
         ),
         (
-            "a hardlink to the root",
+            "a hardlink whose target is the layer's root",
             first().hardlink("h", "./").bytes(),
         ),
         (
-            "a symlink without a target",
+            "a symlink whose header names no target",
             first().symlink("s", "").bytes(),
         ),
         (
@@ -1656,7 +1656,8 @@ fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
 }
 
 /// One entry of a generated layer: a kind, a name, a link target, and for
-/// some kinds a value (an mtime record, an id).
+/// some kinds a value (an mtime, size or uid record, an id). GNU long name
+/// and long link records, and PAX records, apply to the entry after them.
 type Gen = (u8, usize, usize, usize);
 
 const GEN_NAMES: &[&str] = &[
@@ -1676,13 +1677,14 @@ const GEN_NAMES: &[&str] = &[
 ];
 const GEN_TARGETS: &[&str] = &["a", "d/b", "../x", "missing", "./", "d", "proc/x", ""];
 const GEN_TIMES: &[&[u8]] = &[b"1", b"1x", b"-1.5", b"", b"1.000000001"];
+const GEN_SIZES: &[&[u8]] = &[b"0", b"1", b"512", b"1024", b"x", b""];
 
 fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
     let mut t = Tar::new(f);
     for &(kind, name, target, value) in entries {
         let name = GEN_NAMES[name % GEN_NAMES.len()];
         let target = GEN_TARGETS[target % GEN_TARGETS.len()];
-        match kind % 11 {
+        match kind % 17 {
             0 => t.file(name, 0o644, b"x"),
             1 => t.dir(name, 0o755),
             2 => t.symlink(name, target),
@@ -1703,9 +1705,31 @@ fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
                 let h = t.header(b"g", EntryType::XGlobalHeader, 0o644, 0);
                 t.push(h, b"")
             }
-            _ => {
+            11 | 12 => {
+                let (etype, data) = if kind % 17 == 11 {
+                    (EntryType::GNULongName, name)
+                } else {
+                    (EntryType::GNULongLink, target)
+                };
+                let size = u64::try_from(data.len()).unwrap();
+                let h = t.header(b"././@LongLink", etype, 0o644, size);
+                t.push(h, data.as_bytes())
+            }
+            13 => t.pax(&[("path", name.as_bytes())]),
+            14 => t.pax(&[("linkpath", target.as_bytes())]),
+            15 => t.pax(&[("size", GEN_SIZES[value % GEN_SIZES.len()])]),
+            10 => {
                 let h = t.header(name.as_bytes(), EntryType::GNUSparse, 0o644, 0);
                 t.push(h, b"")
+            }
+            _ => {
+                let uid = match value % 4 {
+                    0 => t.uid.to_string(),
+                    1 => "x".to_owned(),
+                    2 => (1u64 << 32).to_string(),
+                    _ => String::new(),
+                };
+                t.pax(&[("uid", uid.as_bytes())])
             }
         };
     }
@@ -1716,7 +1740,8 @@ proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
 
     /// Red team (ADR-0123): on generated layers of hostile names, links,
-    /// whiteouts, entry types, PAX times and ids, [`check_headers`] refuses
+    /// whiteouts, entry types, GNU long names and links, PAX paths, link
+    /// paths, sizes, times and ids, [`check_headers`] refuses
     /// only layers that every extraction applying whiteouts refuses too, so
     /// the spool pass on `/` never fails a layer the extraction takes; and
     /// on a layer it passes, no extraction fails on the framing or the
@@ -1724,7 +1749,7 @@ proptest::proptest! {
     #[test]
     fn red_team_check_headers_refuses_only_what_an_extraction_refuses(
         entries in proptest::collection::vec(
-            (0u8..11, 0..GEN_NAMES.len(), 0..GEN_TARGETS.len(), 0usize..8),
+            (0u8..17, 0..GEN_NAMES.len(), 0..GEN_TARGETS.len(), 0usize..12),
             0..8,
         ),
     ) {

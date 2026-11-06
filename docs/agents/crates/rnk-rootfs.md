@@ -181,9 +181,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   name over the limit) refused with the extraction's very error; a missing
   hardlink target, a hardlink or device node as the layer's root, and ignored
   paths left to the extraction;
-  `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest):
-  it refuses no generated layer that an extraction takes, and passes none whose
-  framing an extraction refuses. `red_team_names_swapped_during_an_output_never_redirect_it`
+  `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
+  GNU long names and links and PAX `path`, `linkpath`, `size`, `uid` and
+  `mtime` records included): it refuses no generated layer that an extraction
+  takes, and passes none whose framing an extraction refuses. `red_team_names_swapped_during_an_output_never_redirect_it`
   (`src/host/tests.rs`): a thread exchanging the output directory, the tar
   and the digest file with links to victims, in random order, while
   `OutputDir` writes; rounds of 3000 writes, the victim checked after each,

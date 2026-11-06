@@ -297,7 +297,9 @@ that found a bug stay as its regression test.
   overlay mounts or deletion; kaniko mode on `/`, flattened content against
   kaniko, BuildKit and the other mode; a hostile cached layer on the `/` of a
   default `docker run`, a volume of the VM bound in (`tests/apply.rs`, its
-  `inner_*` test runs in the container).
+  `inner_*` test runs in the container): a layer climbing out of the root,
+  streamed, is refused before `/` changes and, from the store, while writing,
+  breaking `/`.
 - **To do:** benchmark `--snapshot-mode=redo|time` against `full` on W1-W3:
   they skip content reads and can miss a change, so they stay only if
   significantly faster (ADR-0023, ADR-0049).

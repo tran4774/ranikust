@@ -186,10 +186,12 @@ pub struct Extracted {
 /// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
 /// the same framing, up to the end-of-archive block, and the same
 /// `tar-header` limit (ADR-0079). It refuses a name or hardlink target that
-/// leaves the root, a hardlink to itself or to the root, a link without a
-/// target, a GNU sparse or unknown entry type, a whiteout that names
-/// nothing, a file or symlink as the layer's root, and ids, modes, device
-/// numbers and times that do not parse or are out of range.
+/// leaves the root, a hardlink to itself or whose target is the layer's
+/// root, a link whose header names no target (an empty ustar link field
+/// and no PAX `linkpath` or GNU long link), a GNU sparse or unknown entry
+/// type, a whiteout that names nothing, a file or symlink as the layer's
+/// root, and ids, modes, device numbers and times that do not parse or are
+/// out of range.
 /// It refuses nothing such an extraction takes: what depends on the root
 /// or the ignore list (where an entry lands, a hardlink's target, a
 /// hardlink or device node as the layer's root) is left to the extraction.
@@ -411,13 +413,14 @@ fn for_each_entry<R: Read>(
 
 /// Reads `entry`'s header and PAX records, and refuses what no root can
 /// make right: a GNU sparse entry, a name or hardlink target that leaves
-/// the root, a hardlink to itself or to the root, a link without a target,
-/// a whiteout that names nothing, an unknown entry type, a file or symlink
-/// as the layer's root, and ids, modes, device numbers and times that do
-/// not parse or are out of range. The first step of every extraction, and
-/// all of [`check_headers`]. `wh` tells what a whiteout is; the `trusted.*`
-/// xattrs left out ([`SKIPPED_XATTR`]) are counted in `skipped`, the first
-/// of them kept in `first_skipped`.
+/// the root, a hardlink to itself or whose target is the layer's root, a
+/// link whose header names no target (an empty ustar link field and no PAX
+/// `linkpath` or GNU long link), a whiteout that names nothing, an unknown
+/// entry type, a file or symlink as the layer's root, and ids, modes,
+/// device numbers and times that do not parse or are out of range. The
+/// first step of every extraction, and all of [`check_headers`]. `wh` tells
+/// what a whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`])
+/// are counted in `skipped`, the first of them kept in `first_skipped`.
 fn read_header<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     wh: Whiteouts,

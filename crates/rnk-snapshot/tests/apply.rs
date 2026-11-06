@@ -1438,7 +1438,8 @@ fn hostile_on_slash() -> Vec<u8> {
 /// writes nothing into the state directory, `/proc`, an ignored path, a
 /// volume or the marker of `/`, links nothing of them into the root, and
 /// the walk after it reports nothing; a layer whose names climb out of the
-/// root is refused before `/` changes and reaches nothing.
+/// root reaches nothing: streamed, it is refused before `/` changes; from
+/// the store, while writing, which breaks `/`.
 fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     fs::create_dir_all(host.join("ignored")).unwrap();
     fs::write(host.join("ignored/canary"), b"IGNORED").unwrap();
@@ -1489,6 +1490,27 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
         protected(host),
         before,
         "the protected paths after the refusal"
+    );
+
+    // From the store it is never spooled: the extraction refuses the entry,
+    // and `/` is broken. Made after the walk above, which would see it.
+    let blobs = tempfile::tempdir().unwrap();
+    let stored = blob(&kaniko, blobs.path(), "climbs", &climbs);
+    assert!(
+        root.apply_layer(&stored).is_err(),
+        "a name climbing out of the root is refused while writing"
+    );
+    for p in ["escape", "../escape", "after"] {
+        assert!(!host.join(p).exists(), "{p}");
+    }
+    assert!(
+        matches!(root.begin_layer(), Err(Error::State(_))),
+        "the refusal while writing breaks /"
+    );
+    assert_eq!(
+        protected(host),
+        before,
+        "the protected paths after the refusal while writing"
     );
     root.release().unwrap();
     assert!(!kaniko.finish().unwrap(), "/ is left as it is");
