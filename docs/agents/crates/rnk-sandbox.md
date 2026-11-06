@@ -416,7 +416,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   not, each `KeyringJoin`; an `execve` or `execveat` back without an error; a
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
   the init's and the command's reads, the parent check's against an unfiltered
-  control; the command's go only on its init's go byte, never on an ended
+  control; the parent check's read refused or faked failing with its errno
+  or `EINVAL`, another parent with `ESRCH`; the command's go only on its init's go byte, never on an ended
   pipe, another byte or a read faked with no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; the init's closing: a refused `close` reported with its errno,

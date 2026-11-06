@@ -385,7 +385,9 @@ The steps, in order:
      argument areas', the parent check's, the go pipe's) fails the `RUN` as
      `Step::Init` instead of reading again: with no handler, the kernel
      restarts a read a signal interrupts, so only a filter answers so, and
-     it could forever.
+     it could forever. The parent check fails with its read's errno, `EINVAL`
+     for a line that does not parse (a read faked with no bytes); only
+     another parent is `ESRCH`.
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits; a `waitpid`

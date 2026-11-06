@@ -873,8 +873,10 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args
     if signal != libc::SIGKILL {
         fail_init(Errno::INVAL);
     }
-    if !parent_alive(parent) {
-        fail_init(Errno::SRCH);
+    match parent_alive(parent) {
+        Ok(true) => {}
+        Ok(false) => fail_init(Errno::SRCH),
+        Err(e) => fail_init(e),
     }
 }
 
@@ -888,16 +890,19 @@ fn kill_and_fail(err: RawFd, command: libc::pid_t, step: Step, e: Errno) -> ! {
 }
 
 /// Whether the process that cloned this one is still its parent, from the
-/// outer `stat` file [`ParentCheck`] holds.
-fn parent_alive(parent: ParentCheck) -> bool {
+/// outer `stat` file [`ParentCheck`] holds. A failed read is its errno,
+/// never a parent gone: a filter may refuse it. A line that does not parse
+/// (a read faked with no bytes) is `EINVAL`, as for [`arm_death_signal`].
+fn parent_alive(parent: ParentCheck) -> Result<bool, Errno> {
     // SAFETY: `stat` is open in this process until it is closed below.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 256];
     // One read: an `EINTR` comes only from a filter (`wait_for_go`).
-    let Ok(len) = rustix::io::pread(stat, &mut buf, 0) else {
-        return false;
-    };
-    matches!(buf.get(..len).and_then(stat_pid_and_ppid), Some((_, ppid)) if ppid == parent.parent)
+    let len = rustix::io::pread(stat, &mut buf, 0)?;
+    match buf.get(..len).and_then(stat_pid_and_ppid) {
+        Some((_, ppid)) => Ok(ppid == parent.parent),
+        None => Err(Errno::INVAL),
+    }
 }
 
 /// The kernel's `struct sigaction` for `rt_sigaction`: handler, flags,
@@ -2896,13 +2901,54 @@ mod tests {
             let alive = |rule: &str| {
                 failure_under(rule, |w| {
                     alarm();
-                    if !parent_alive(parent) {
-                        fail(w, Step::Init, Errno::SRCH);
-                    }
+                    parent_check_as_the_init(w, parent);
                 })
             };
             assert_eq!(alive(""), None, "parent check, unfiltered");
-            assert_eq!(alive(&eintr("pread64")), init(libc::ESRCH), "parent check");
+            assert_eq!(alive(&eintr("pread64")), init(libc::EINTR), "parent check");
+        }
+
+        /// The init's parent check as `init_keep_nothing` makes it.
+        fn parent_check_as_the_init(err: RawFd, parent: ParentCheck) {
+            match parent_alive(parent) {
+                Ok(true) => {}
+                Ok(false) => fail(err, Step::Init, Errno::SRCH),
+                Err(e) => fail(err, Step::Init, e),
+            }
+        }
+
+        /// The init's parent check fails a `RUN` with the errno of its
+        /// read, never as a parent gone: a read the profile refuses, or one
+        /// a filter around ranikust fakes with no bytes (`EINVAL`, a line
+        /// that does not parse). Only another parent is `ESRCH`. It reads
+        /// this process's `stat`, whose parent holds unfiltered.
+        #[test]
+        fn a_refused_parent_check_fails_with_its_errno() {
+            let stat = rustix::fs::open(
+                c"/proc/self/stat",
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            let ppid = i32::try_from(std::os::unix::process::parent_id()).unwrap();
+            let check = |rule: &str, parent: i32| {
+                let parent = ParentCheck {
+                    stat: stat.as_raw_fd(),
+                    parent,
+                };
+                failure_under(rule, |w| parent_check_as_the_init(w, parent))
+            };
+            let pread = |errno: i32| {
+                format!(
+                    r#"{{"names": ["pread64"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                )
+            };
+            let init = |e| Some((Step::Init, e));
+            assert_eq!(check("", ppid), None, "unfiltered");
+            assert_eq!(check(&pread(libc::EPERM), ppid), init(libc::EPERM));
+            assert_eq!(check(&pread(libc::EACCES), ppid), init(libc::EACCES));
+            assert_eq!(check(&pread(0), ppid), init(libc::EINVAL), "faked");
+            assert_eq!(check("", ppid + 1), init(libc::ESRCH), "another parent");
         }
 
         /// The command starts only on its init's go byte, never on the end
