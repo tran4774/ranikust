@@ -28,7 +28,7 @@ Four questions decide how they work (see [the roadmap](../../README.md#roadmap))
   Q-454). [ADR-0085](0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md)
   places a secret file at its target on `/` and removes it after the `RUN`. Writing it
   replaces what the image holds there, and creating parents leaves them in the next
-  diff. Bind copies on `/` are placed the same way.
+  diff. Bind copies on `/` are placed by the same mechanism.
 - **`RUN --mount=type=ssh`.** Neither the roadmap nor survey 04 lists it; kaniko only
   warns on it. BuildKit forwards the client's SSH agent into the `RUN`; here every
   process of that `RUN` could sign with the operator's keys.
@@ -70,9 +70,10 @@ How a bind presents the context:
 
 A `RUN --mount=type=bind` without `from=` reads one filtered copy of the local context,
 made once per build; on `/`, where nothing can be mounted, a bind is copied in at its
-target as kaniko does, `tmpfs` becomes an empty directory, and `from=` is refused; a
-placed file whose target exists is refused, and missing parents are created and
-removed again; and `type=ssh` goes to the Backlog.
+target as kaniko does (an existing target is moved aside and put back), `tmpfs` becomes
+an empty directory, and `from=` is refused; a secret file whose target exists is
+refused, and missing parents are created and removed again; and `type=ssh` goes to the
+Backlog.
 
 The maintainer, 2026-11-06, in the question window: "Bản sao context, như kaniko trên
 / (khuyến nghị)" ("A copy of the context, as kaniko does on / (recommended)"). It stood
@@ -85,23 +86,28 @@ and #35 moved into Phase 5, option (a) of how a bind presents the context, and o
   a private copy of its source, discarded after the `RUN`. Every mount sees the same
   content, as BuildKit's one transferred snapshot, and the owner's later changes cannot
   reach a `RUN`.
-- **On `/`, #24 (b) and (c).** The bind's source is copied in at the target, read-only
-  by convention only, and removed, with the target restored, before the walk. `tmpfs`
-  is an empty directory removed before the walk. `from=` is refused on `/` with its
-  reason: kaniko never had it, and a stage copy would cost a full tree. kaniko's
-  Dockerfiles keep building in the mode meant for them, and the placing reuses the
-  mechanism of secret files on `/`.
-- **A placed file's target, #31 (b).** An existing target is refused; missing parent
-  directories are created, and the ones ranikust created are removed after the `RUN`.
-  This refines ADR-0085. #31 and #35 (the secret files of ADR-0085) move into Phase 5,
-  since the bind copies build on the same mechanism.
+- **Three rules for what is at a target on `/`.** One placing mechanism (create the
+  missing parents, place, remove) serves all three; they differ in what an existing
+  target gets:
+  - **Secret files on `/`, #31 (b).** An existing target is refused; missing parent
+    directories are created, and the ones ranikust created are removed after the `RUN`.
+    This refines ADR-0085. #31 and #35 (the secret files of ADR-0085) move into Phase 5,
+    since the bind copies build on the same mechanism.
+  - **Bind copies on `/`, #24 (b).** The bind's source is copied in at the target,
+    read-only by convention only. An existing target is moved aside and put back before
+    the walk, and the parents ranikust created are removed, as kaniko does.
+  - **`tmpfs` on `/`, #24 (c).** An empty directory at the target, removed before the
+    walk; an existing target is handled as for a bind.
+- **Why the rules differ.** A secret must never be mixed with what the image holds, so a
+  secret file is refused where something already is. A bind copy is kaniko's established
+  behaviour, so kaniko's Dockerfiles keep building in the mode meant for them.
+- **`from=` on `/`.** It is refused with its reason: kaniko never had it, and a stage
+  copy would cost a full tree.
 - **`type=ssh` (a).** It stays refused with its reason, and a Backlog issue keeps it
   visible: no user asked, kaniko never had it, and it exposes a new credential.
 
 Not settled here, for the task that builds the placing: how the per-build copy and the
-per-`RUN` copy on `/` relate, and whether a bind copy's existing target is restored
-(#24 (b): kaniko moves it aside) or refused (#31 (b), for a secret file's target). Each
-answer is recorded for its own case.
+per-`RUN` copy on `/` relate.
 
 ### Consequences
 
@@ -110,8 +116,7 @@ answer is recorded for its own case.
   and the context owner's later changes cannot reach a `RUN`.
 - Good, because one placing mechanism serves secret files and bind copies on `/`, built
   once.
-- Good, because a placed file never overwrites what the image has at an existing
-  target.
+- Good, because a secret file never mixes with what the image holds at its target.
 - Bad, because the copy costs one context's size on disk per build, and a `rw` mount a
   private copy besides.
 - Bad, because on `/` read-only holds by convention only, a copy is made per `RUN`, and
@@ -120,6 +125,8 @@ answer is recorded for its own case.
   until a later decision.
 - Bad, because a `RUN --mount=type=secret` whose target already exists in the image is
   refused on `/`.
+- Neutral, because an existing target is refused for a secret file and moved aside for a
+  bind copy or `tmpfs`: two rules, each stated where the mount is documented.
 
 ## Evidence
 
@@ -143,7 +150,10 @@ answer is recorded for its own case.
 
 Answers #24, #31 and two Phase 5 questions (how a bind presents the context, `type=ssh`).
 Refines ADR-0085 (its existing target and missing parents), which stays accepted with its
-body unchanged. Related: ADR-0057 (nothing is mounted on `/`),
+body unchanged. Each of the three rules is the option the maintainer chose for its
+question; setting them side by side, with the reason they differ and the `tmpfs` case
+following a bind's, was added when Phase 5 task 13b (#152) needed it, and his words
+name the options, not this comparison. Related: ADR-0057 (nothing is mounted on `/`),
 [ADR-0084](0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md),
 [ADR-0078](0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md).
 The marker on #30 in `mounts.rs` stays: a cache mount on `/` is still #30's.
