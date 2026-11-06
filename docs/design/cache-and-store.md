@@ -8,7 +8,10 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 [ADR-0007](../adr/0007-run-anywhere-shared-store.md),
 [ADR-0012](../adr/0012-accept-divergence-between-modes.md),
 [ADR-0021](../adr/0021-rnk-store-crate.md),
-[ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md).
+[ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md),
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
+[ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md),
+[ADR-0116](../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md).
 
 ## Invariants
 
@@ -17,8 +20,26 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 - Two builds never download or extract the same digest at the same time.
 - A crash leaves only temporary entries and build directories, both removed
   on the next start.
-- Cache keys depend only on build inputs, never on the snapshot mode, the
-  host, the time or the thread count.
+- The layer cache (Phase 4), against threats T13 and T25 to T29 of the
+  [threat model](../security/threat-model.md#5-threats-and-mitigations),
+  whose rows say what is built:
+  - Keys and tags name build inputs only, never a secret's value or a
+    credential, and never depend on the snapshot mode, the host, the
+    build's time or a thread count ([cache keys](#cache-keys), T27).
+  - Only the operator names the cache repository or layout; it is trusted
+    as the destination is until cache entries are signed (T25).
+  - A hit is hostile image content, checked and extracted as a base layer
+    is, and every cache document read is bounded by `--limit`. A bad
+    entry, or a lookup or push that fails, is a miss or a warning: the
+    exit status and the image do not change (T26).
+  - A layer is pushed under a key only if its step read what the key names
+    (T28).
+  - The cache never changes the output: with `--reproducible`, a cold, a
+    warm and a partial build in one mode give one digest at any `--jobs`
+    (T29).
+  - The store holds no cache key, so builds sharing a state directory
+    share only content-addressed data; kaniko mode on `/` keeps no local
+    cache (T13).
 
 ## Store layout
 
@@ -213,8 +234,10 @@ In kaniko mode with a directory per stage, a hit streams into the stage root,
 and a blob found bad after extraction began makes the stage start again from its
 base without that entry; on `/` a hit is verified before extraction
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
-how often a stage may restart is not settled, decided before
-[#130](https://github.com/tran4774/ranikust/issues/130)).
+how often a stage may restart is decided before
+[#130](https://github.com/tran4774/ranikust/issues/130)). What a hit on `/`
+does when it fails after its first entry reached `/` is not decided
+[open: #167].
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
