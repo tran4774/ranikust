@@ -2,7 +2,7 @@
 
 > **Status:** in progress · **Phase:** 1-2 ·
 > **Depends on:** `rnk-dockerfile`, `tokio`, `tokio-util`, `futures-util`
-> ([open: #7], interim) · **Used by:** `ranikust` (it implements
+> (ADR-0115) · **Used by:** `ranikust` (it implements
 > `StageRunner` over `rnk-builder`) · **Path:** `crates/rnk-sched/`
 
 **TL;DR:** Runs the stage DAG: each stage is an async task that starts when

@@ -1,7 +1,7 @@
 # rnk-context
 
 > **Status:** in progress · **Phase:** 1 (tar, git, HTTPS: 5) ·
-> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, [open: #7]) ·
+> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, ADR-0115) ·
 > **Used by:** `rnk-builder`, `ranikust` · **Path:** `crates/rnk-context/`
 
 **TL;DR:** The build context from a local directory (tar, git and HTTPS are
@@ -36,7 +36,7 @@ Boundaries: `crates/rnk-context/src/lib.rs`. In short:
 pub enum ContextSpec { Dir(PathBuf), Tar(String), Git(String), Https(String) }  // kaniko prefixes; #[non_exhaustive]
 pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https://; bare path = dir; gs://, s3:// refused; `dir://` refused with Error::DirScheme, naming the plain path (ADR-0053, ADR-0054)
 pub trait ContextSource {                             // [decided] open trait, ADR-0008
-    fn open(&self) -> Result<Context>;                // sync for now [open: #6]
+    fn open(&self) -> Result<Context>;                // sync, ADR-0115
 }
 pub struct DirSource;                                 // DirSource::new(path): opened with RESOLVE_NO_SYMLINKS, a symlink anywhere refused (Error::Symlink, ADR-0076), used in place
 pub fn open(spec: &ContextSpec) -> Result<Context>;   // Dir only; Tar, Git, Https -> Error::Unsupported until Phase 5

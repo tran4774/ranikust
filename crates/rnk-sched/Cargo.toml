@@ -10,8 +10,8 @@ publish = false
 
 [dependencies]
 futures-util.workspace = true
-# [open: #7] `rnk-sched` → `rnk-dockerfile` for the stage graph type,
-# interim; the alternative routes the graph through `rnk-builder`.
+# `rnk-sched` → `rnk-dockerfile` for the stage graph type, settled by
+# ADR-0115 (the alternative routed the graph through `rnk-builder`).
 rnk-dockerfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
