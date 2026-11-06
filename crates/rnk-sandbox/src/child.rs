@@ -893,7 +893,8 @@ fn kill_and_fail(err: RawFd, command: libc::pid_t, step: Step, e: Errno) -> ! {
 /// A line that does not parse (a read faked with no bytes) is `EINVAL`, as
 /// for [`arm_death_signal`].
 fn check_parent(parent: ParentCheck) -> Result<(), Errno> {
-    // SAFETY: `stat` is open in this process until it is closed below.
+    // SAFETY: `stat` is open in this process until `run_init` closes it
+    // with `close_all_except_checked`, after this check.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 256];
     // One read: an `EINTR` comes only from a filter (`wait_for_go`).
