@@ -10,3 +10,13 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+# The digests and the platform a key names (ADR-0115).
+rnk-oci.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rnk-metrics.workspace = true

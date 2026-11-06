@@ -197,10 +197,14 @@ decide what goes into a layer or where it is sent, or write extracted files
 
 ### `rnk-cache`
 
-Skeleton (Phase 4). Cache keys per instruction; lookup and push of cached
-layers in a registry or an OCI layout. **Must not** be compatible with kaniko's
-cache or let a key depend on the snapshot mode: keys depend on the instruction,
-the context and the previous keys only, and carry a format version.
+Phase 4, in progress. Versioned cache keys per step and the tags of their
+entries (built); lookup and push of cached layers in a registry or an OCI
+layout (planned). **Must not** be compatible with kaniko's cache, let a key
+depend on the snapshot mode, the host, the time or a thread count, or hold a
+secret's value: keys depend on the instruction, its inputs and the previous
+key only, and carry a format version. Opens no file; never depends on
+`rnk-dockerfile`, `rnk-ignore` or `rnk-layer`, since `rnk-builder` builds the
+key inputs (ADR-0115).
 
 ### `rnk-builder`
 
@@ -249,7 +253,7 @@ depend on higher ones. Besides the chain:
   reach it through `tracing` spans alone.
 
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
-declares none yet.
+declares `rnk-oci` (ADR-0115).
 
 ## Data flow of a build
 

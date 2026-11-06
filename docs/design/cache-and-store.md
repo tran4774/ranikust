@@ -140,26 +140,42 @@ unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 
 ## Cache keys
 
-Not built (Phase 4). Each instruction's key is a hash over a version field
-and the inputs the instruction depends on, chained to the previous key:
+The keys are built in `rnk-cache`; nothing computes or looks them up during
+a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
+the inputs the step depends on, chained to the previous key (ADR-0005; the
+fields are ADR-0113's, BuildKit's):
 
 ```
 key(k) = H(version, key(k-1), instruction, inputs(k))
 ```
 
-- **version:** bumped whenever the algorithm changes; old entries are simply
-  never matched again.
-- **chain root:** the resolved base image digest for the target platform
-  [inferred].
-- **instruction:** the instruction after variable expansion, with the build
-  arguments and environment in effect [inferred].
-- **inputs:** for `COPY`/`ADD`, the digests of the files read from the
-  context (after `.dockerignore`) or from the source stage; for
-  `RUN --mount`, the mount specifications [inferred].
-- **never:** the snapshot mode, the host, timestamps, thread counts.
+- **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
+  entries are simply never matched again.
+- **chain root:** the base image's platform manifest digest (none for
+  `FROM scratch`) and the platform.
+- **instruction:** the instruction after variable expansion, with its flags.
+- **inputs:** every declared `ARG` and the environment in effect; `USER`,
+  `WORKDIR` and `SHELL`; for a `RUN`, its `--network` and its mounts: a
+  secret's id, target, mode and owner, never its value, and a cache mount's
+  id and sharing, marked as dropped where
+  [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
+  drops it; for `COPY` and `ADD`, each file's path, content, mode, owner
+  after `--chown`, type, link target and `security.capability`, never its
+  mtime; for `COPY --from=<image>`, the image's platform manifest digest, and
+  for `COPY --from=<stage>`, the source stage's final key (ADR-0114).
+- **never:** the snapshot mode, the host, its users or id maps, timestamps,
+  thread counts, the order of an unordered collection.
 
-The exact field list is open ([#13](https://github.com/tran4774/ranikust/issues/13)),
-to be settled with the cold, warm and partial cache scenarios of workload W2.
+`ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
+features. How the fields are written into the hash:
+[the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
+
+A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
+whose `<hex>` hashes the key with the layer's encoding: the compression, its
+level, and whether file times are kept or clamped to an epoch, with the
+epoch. A hit then has the bytes this build would write, so a warm build gives
+a cold build's digests; builds with another encoding share no entries
+(ADR-0113).
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or
@@ -207,7 +223,6 @@ other and carry that mode's accepted differences
 - [Q-015](https://github.com/tran4774/ranikust/issues/1) Which digest names an extracted layer, and where do locks live?
 - [Q-016](https://github.com/tran4774/ranikust/issues/2) How is the store lock protocol proven under crashes and races?
 - [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
-- [Q-041](https://github.com/tran4774/ranikust/issues/13) What exactly goes into a cache key and its tag?
 - [Q-042](https://github.com/tran4774/ranikust/issues/14) How do cache lookahead and cached-stage skipping work?
 
 ## References

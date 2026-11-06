@@ -3,7 +3,8 @@
 > **Status:** done · **Phase:** 1 ·
 > **Depends on:** nothing internal (`serde`, `serde_json`, `thiserror`) ·
 > **Used by:** `rnk-registry`, `rnk-builder`, `rnk-store` (`Digest`),
-> `rnk-snapshot`, `ranikust` (`rnk-cache` planned) · **Path:** `crates/rnk-oci/`
+> `rnk-snapshot`, `ranikust`, `rnk-cache` (`Digest`, `Platform`,
+> `Compression`) · **Path:** `crates/rnk-oci/`
 
 **TL;DR:** OCI and Docker manifests, indexes, image configs and media types,
 owned here rather than taken from `oci-spec`. A digest covers exact bytes:
