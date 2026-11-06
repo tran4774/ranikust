@@ -195,8 +195,8 @@ Each step before the next; design in
    the state directory, `Store::open`, the sandbox probe and
    `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured). On `/`
    and off, `--mode=auto` runs `report_user_namespace` just before the
-   sandbox starts, unless overlay mode's set-up ran it before it was
-   refused (`KanikoBy::AutoProbed`: one probe line per build); when
+   sandbox starts; off `/`, not when overlay mode's set-up ran it before it
+   was refused (`KanikoBy::AutoProbed`: one probe line per build); when
    `set_up_kaniko` returns, `main.rs` builds `KanikoStages`
    (`stages_snapshotter`). Credentials
    go only over verified TLS (`verified_credentials_only`, `build.rs`).
@@ -359,8 +359,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
   all quick cases in both modes; `rt_*` checks (`container=docker` on the VM
   never builds on `/`, `--mode=auto` with `--ignore-path` refused after
-  overlay mode's set-up leaves nothing, a ramfs state directory refused, root
-  without `CAP_SYS_ADMIN` refused before the state directory exists);
+  overlay mode's set-up leaves nothing, a ramfs state directory refused or
+  built with a directory per stage, root without `CAP_SYS_ADMIN` refused
+  before the state directory exists; the user-namespace probe logged
+  exactly once on the overlayfs route, at most once on ramfs);
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
   from a sealed memfd (ADR-0101);
   `seccomp_on_slash` (every `--seccomp` refused, exit 2, in kaniko mode on

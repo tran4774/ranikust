@@ -177,6 +177,12 @@ auto_routes_to_stages() {
     echo "$log" >&2
     return 1
   fi
+  # Refused before the user namespace probe, so kaniko mode runs it: once.
+  if [ "$(grep -c 'user namespace probe (reported only)' <<<"$log")" != 1 ]; then
+    echo "error: --mode=auto with a state directory on overlayfs: not one user namespace probe line" >&2
+    echo "$log" >&2
+    return 1
+  fi
   echo "auto: a state directory on overlayfs built in kaniko mode with a directory per stage"
 }
 
@@ -306,7 +312,7 @@ rt_auto_ignore_path() {
 # build removes it, and the third finds only its own. Which way it goes is
 # printed.
 rt_auto_on_ramfs() {
-  local ctx="$W/rt-ctx" fs="$W/rt-ramfs" log rc bad=0 i before="" now
+  local ctx="$W/rt-ctx" fs="$W/rt-ramfs" log rc bad=0 i before="" now n
   rt_ctx || return 1
   sudo mkdir -p "$fs"
   sudo mount -t ramfs -o mode=0700 ramfs "$fs" || return 1
@@ -324,6 +330,13 @@ rt_auto_on_ramfs() {
       1) ;;
       *) echo "error: red team: ramfs build $i: exit $rc" >&2; bad=1 ;;
     esac
+    # One user namespace probe line per build, also where overlay mode's
+    # set-up probed before it was refused; none where nothing reached it.
+    n="$(grep -c 'user namespace probe (reported only)' <<<"$log")"
+    if [ "$n" -gt 1 ] || { [ "$rc" = 0 ] && [ "$n" != 1 ]; }; then
+      echo "error: red team: ramfs build $i: $n user namespace probe lines" >&2
+      bad=1
+    fi
     echo "red team: ramfs state directory, build $i: exit $rc: $(grep -Eo 'directory per stage|overlay mode cannot run here: [^;]{0,120}|set up for [a-z ]+' <<<"$log" | head -2 | tr '\n' ' ')"
     rt_nothing_left "$fs" "/nonexistent" "ramfs build $i" || bad=1
     now="$(sudo find "$fs/state/builds" "$fs/state/tmp" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)"
