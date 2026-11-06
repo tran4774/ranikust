@@ -465,14 +465,15 @@ impl OutputDir {
         Ok(())
     }
 
-    /// Writes `bytes` to the file `name` in place, as kaniko writes its
-    /// digest files (a file the operator mounted there, such as a
-    /// Kubernetes termination log, keeps its inode): made exclusively with
-    /// `mode` (less the umask) when missing, else truncated and rewritten.
-    /// An existing entry is pinned without following it and checked first:
-    /// a symlink is refused, and so is anything but a regular file with one
-    /// link, since a hardlink would carry the write to its other names; a
-    /// FIFO or a device node is never opened.
+    /// Writes `bytes` to the file `name`, one plain name in this directory,
+    /// in place, as kaniko writes its digest files (a file the operator
+    /// mounted there, such as a Kubernetes termination log, keeps its
+    /// inode): made exclusively with `mode` (less the umask) when missing,
+    /// else truncated and rewritten. An existing entry is pinned without
+    /// following it and checked first: a symlink is refused, and so is
+    /// anything but a regular file with one link, since a hardlink would
+    /// carry the write to its other names; a FIFO or a device node is never
+    /// opened.
     ///
     /// # Errors
     ///
@@ -522,19 +523,20 @@ impl OutputDir {
         })
     }
 
-    /// Writes the file `name` through a temporary file in this directory,
-    /// renamed over `name` once `write` succeeded and the data is synced: a
-    /// reader never sees a partial file. A regular file at `name` is
-    /// replaced (a hardlink's other names keep the old content); otherwise
-    /// the file goes only where nothing is (`RENAME_NOREPLACE`): a symlink,
-    /// a device node (`/dev/null`), a FIFO, a socket or a directory is
-    /// refused, before anything is written, and so is a directory on
-    /// procfs, sysfs or another filesystem of kernel interfaces. Anything
-    /// but a directory a writer of this directory swaps in after the last
-    /// look, a symlink included, may still be replaced, but is never
-    /// followed or opened. The temporary file has a
-    /// random name and is made exclusively (`O_CREAT | O_EXCL`) with `mode`
-    /// (less the umask); it is removed on every error.
+    /// Writes the file `name`, one plain name in this directory, through a
+    /// temporary file in this directory, renamed over `name` once `write`
+    /// succeeded and the data is synced: a reader never sees a partial
+    /// file. A regular file at `name` is replaced (a hardlink's other names
+    /// keep the old content); otherwise the file goes only where nothing is
+    /// (`RENAME_NOREPLACE`): a symlink, a device node (`/dev/null`), a FIFO,
+    /// a socket or a directory is refused: one there when the call starts
+    /// before anything is written, one swapped in later before the rename
+    /// (the temporary file removed); anything but a directory swapped in
+    /// after the last look may still be replaced, but is never followed or
+    /// opened. A directory on procfs, sysfs or another filesystem of kernel
+    /// interfaces is refused before anything is written. The temporary file
+    /// has a random name and is made exclusively (`O_CREAT | O_EXCL`) with
+    /// `mode` (less the umask); it is removed on every error.
     ///
     /// # Errors
     ///
@@ -577,9 +579,8 @@ impl OutputDir {
     /// (`/dev/null`, `/dev/stdout`) is refused. Anything but a directory a
     /// writer of this directory swaps in between the look and the rename, a
     /// symlink included, may be replaced, but is never followed or opened.
-    /// Where the filesystem refuses
-    /// `RENAME_NOREPLACE` (NFS, 9p, FUSE without `rename2`: `EINVAL`),
-    /// [`OutputDir::link_into`] takes over.
+    /// Where the filesystem refuses `RENAME_NOREPLACE` (NFS, 9p, FUSE
+    /// without `rename2`: `EINVAL`), [`OutputDir::link_into`] takes over.
     fn rename_into(&self, tmp: &OsStr, name: &OsStr, tmp_path: &Path) -> Result<()> {
         for _ in 0..2 {
             if self.replaceable(name)? {
