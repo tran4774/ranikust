@@ -20,10 +20,9 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 - Two builds never download or extract the same digest at the same time.
 - A crash leaves only temporary entries and build directories, both removed
   on the next start.
-- The layer cache (Phase 4: the keys and tags and kaniko mode's
-  application of a hit are built, the rest is planned), against threats
-  T13 and T25 to T29 of the
-  [threat model](../security/threat-model.md#5-threats-and-mitigations):
+- The layer cache (Phase 4), against threats T13 and T25 to T29 of the
+  [threat model](../security/threat-model.md#5-threats-and-mitigations),
+  whose rows say what is built:
   - Keys and tags name build inputs only, never a secret's value or a
     credential, and never depend on the snapshot mode, the host, the
     build's time or a thread count ([cache keys](#cache-keys), T27).
@@ -236,7 +235,8 @@ and a blob found bad after extraction began makes the stage start again from its
 base without that entry; on `/` a hit is verified before extraction
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
 how often a stage may restart is not settled, decided before
-[#130](https://github.com/tran4774/ranikust/issues/130)).
+[#130](https://github.com/tran4774/ranikust/issues/130)). What a hit on `/`
+does when it fails after its first entry reached `/` is open [open: #167].
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
