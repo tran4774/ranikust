@@ -298,7 +298,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   outcome from the probes' results, which refusals route `--mode=auto` to
   kaniko mode, a probe failure other than a refused mount never routes, no
   guidance sends a user back to the mode they used, the user-namespace
-  probe's line, the probe's directory kept when a child of the steps or of
+  probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
   the overlay probe was left, and only then), `statedir` (each
   ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
   nothing created through a planted link; `0700`), `container` (every signal
@@ -350,6 +350,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
   the kaniko leg (a default container), `--mode=auto` picking kaniko mode
   and its user-namespace probe passing with an rbind of `/proc` (#74);
+  `userns-probe` the probe's red team (one line per build, nothing of it
+  seen by a `RUN`, `RANIKUST_DEBUG_FAULT=overlay-refused` in a container,
+  a state directory on tmpfs, ranikust killed mid-probe);
   `seccomp` the default profile, unconfined and a file, and in the kaniko leg
   every `--seccomp` refused and a `RUN` under the container's profile;
   `binary-mounts` is the red team of `refuse_writable_binary` (ADR-0101),

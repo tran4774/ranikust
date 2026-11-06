@@ -523,3 +523,58 @@ fn the_user_namespace_line_says_whether_the_path_passes_and_where_it_stops() {
     assert!(!passes);
     assert!(line.starts_with("stops at chown; "), "{line}");
 }
+
+/// Red team (#74): the user namespace line never reads as a mode line.
+#[test]
+fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
+    let steps = [
+        "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; unshare(CLONE_NEWNS): ok; \
+         proc: new instance; sysfs: rbind of /sys (mount sysfs: EPERM); mknod: EPERM",
+        "unshare(CLONE_NEWUSER): ok; map: one uid: write uid_map: EPERM",
+        "unshare(CLONE_NEWUSER): EPERM",
+    ];
+    let api = |a| Some(Ok(Ok(mount_api_name(a).to_owned())));
+    let overlays: [OverlayInNamespace; 5] = [
+        api(MountApi::LowerdirPlus),
+        api(MountApi::Mount2),
+        Some(Ok(Err("mount: EINVAL".to_owned()))),
+        Some(Err("fork the probe's child: EAGAIN".to_owned())),
+        None,
+    ];
+    let marks = [
+        "overlay mode",
+        "kaniko mode",
+        "set up for",
+        "RUN enters its root",
+        "RUN directly",
+        "RUN in the full sandbox",
+        "directory per stage",
+        "root may not mount",
+        "cannot run here",
+    ];
+    for stop in [
+        None,
+        Some("unshare"),
+        Some("map"),
+        Some("chown"),
+        Some("mknod"),
+    ] {
+        for step in steps {
+            for overlay in &overlays {
+                for apparmor in ["0", "1", "absent", "unreadable: EACCES"] {
+                    let (_, line) = userns_summary(stop, step, overlay.clone(), apparmor);
+                    assert!(!line.contains('\n'), "{line}");
+                    assert!(
+                        ["passes; ", "stops at ", "overlay not probed; "]
+                            .iter()
+                            .any(|v| line.starts_with(v)),
+                        "{line}"
+                    );
+                    for mark in marks {
+                        assert!(!line.contains(mark), "{mark:?} in {line}");
+                    }
+                }
+            }
+        }
+    }
+}
