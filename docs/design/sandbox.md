@@ -457,7 +457,13 @@ failing step writes the step and the errno to a close-on-exec pipe and exits
 **Waiting.** The parent waits for the child, in the full sandbox the init. When
 the command exits, the init reports its status and exits, and the kernel kills
 everything left in the namespace, so no `tini` and no process-group kill are
-needed; exit codes and signals read as they would from the command itself. A
+needed; exit codes and signals read as they would from the command itself. An
+init killed by a signal before it wrote that status (a profile's kill or trap
+of a call it or the command makes, at the latest its wait) is no status of the
+command's, which may not have run: the `RUN` fails as `Error::SetupKilled`,
+which names the signal and, for `SIGSYS` under a profile, the profile as the
+likely cause; it comes before a failure record of the command's, which may
+only follow from it (the go pipe ended), and is not one that ran no command. A
 cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit kills the
 process on a cancel; the child is forgotten only once it has exited and before
 it is reaped, so the kill never reaches a reused pid. The command is PID 2, as
