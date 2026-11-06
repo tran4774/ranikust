@@ -255,8 +255,9 @@ These follow from decisions and are documented to users rather than fixed:
   that grows with the square of that limit, then waits. Docker's default
   profile allows `close`.
 - A `RUN`'s profile that refuses `exit` and `exit_group`, or every call,
-  with an errno (a kill or a trap fails the `RUN` instead) leaves the build
-  running until it is cancelled, a limit of reliability, not of security
+  with an errno (`SCMP_ACT_KILL_PROCESS`, or a trap in a program without a
+  `SIGSYS` handler, fails the `RUN` instead) leaves the build running until
+  it is cancelled, a limit of reliability, not of security
   ([#103](https://github.com/tran4774/ranikust/issues/103)).
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
