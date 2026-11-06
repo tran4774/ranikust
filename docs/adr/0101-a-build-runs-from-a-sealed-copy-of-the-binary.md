@@ -400,8 +400,8 @@ The decision:
   running process still named the original mount, not the bind's.
 - runc [external], v1.0.0-rc7 (commits `0a8e4117e7f7`, the CVE-2019-5736
   fix, and `16612d74de5f`, the bind): `libcontainer/nsenter/cloned_binary.c`
-  executes `runc init` from a read-only bind of `/proc/self/exe` where it
-  can mount one, else from a sealed copy. The bind guards because runc executes it,
+  executes `runc init` from a read-only bind of `/proc/self/exe` where it can
+  mount one, else from a sealed copy. The bind guards because runc executes it,
   which ADR-0082's bind did not. runc dropped the bind in 1.1.15
   (`614ce12f0e97`) and on main before 1.2.0 (`b999376fb237`).
 - runc [external], v1.2.0 (commit `0b9fa21be2bc`), `libcontainer/dmz`:

@@ -514,6 +514,8 @@ fn build(
             let span = tracing::debug_span!("ranikust.setup");
             match span.in_scope(setup::enter_namespace) {
                 Ok(()) => {
+                    // Only kaniko mode on `/` looks at it, never reached here.
+                    drop(started_in);
                     // Root may mount: overlay mode if its probes pass. Where
                     // overlayfs is unusable (a state directory on NFS or on
                     // overlayfs) outside a container, kaniko mode keeps a
@@ -526,8 +528,6 @@ fn build(
                         setup::set_up(&config.state_dir, config.allow_network_none_userns)
                     }) {
                         Ok(setup) => {
-                            // Only kaniko mode on `/` looks at it.
-                            drop(started_in);
                             let warnings = match flags {
                                 Ok(warnings) => warnings,
                                 Err(invalid) => {
@@ -557,6 +557,8 @@ fn build(
                                 "kaniko mode with a directory per stage, because overlay mode \
                                  cannot run here: {why}"
                             );
+                            // Never read: off `/`, or with `can_mount`, no scan runs.
+                            let started_in = Err(rustix::io::Errno::INVAL);
                             kaniko(
                                 &config,
                                 "--mode=auto",
@@ -653,8 +655,9 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 /// whether the build's mount namespace could be entered; `runtime` is
 /// what [`container::detect`] found, read once by the caller; `binary`
 /// where the binary ranikust started from lies; `started_in` the mount
-/// namespace ranikust started in ([`exposure::mount_namespace`]), closed
-/// before the set-up.
+/// namespace ranikust started in ([`exposure::mount_namespace`]), read only
+/// on `/` where root may not mount ([`refuse_unsafe_slash`]), closed before
+/// the set-up.
 fn kaniko(
     config: &BuildConfig,
     how: &str,
