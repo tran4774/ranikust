@@ -494,11 +494,12 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
     let pid = fork(false);
     let left = reap(pid, true, Duration::from_millis(100));
     // Only a child not reaped yet: a reaped one's number may be another
-    // process's. An error is the next `reap`'s to show.
-    if matches!(left, Ok(None)) {
+    // process's.
+    let after = matches!(left, Ok(None)).then(|| {
+        // A refused kill shows as `after` still `None`.
         let _ = rustix::process::kill_process(pid, Signal::KILL);
-    }
-    let after = reap(pid, true, Duration::from_secs(10));
+        reap(pid, true, Duration::from_secs(10))
+    });
     let left = left.unwrap();
     assert_ne!(left.and_then(|st| st.exit_status()), Some(4), "{gave_up}");
     assert!(
@@ -506,7 +507,7 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
         "reaped before the kill: {:?}",
         left.map(|st| (st.exit_status(), st.terminating_signal()))
     );
-    assert!(after.unwrap().is_some());
+    assert!(after.unwrap().unwrap().is_some());
 }
 
 /// [`probe_in`] in the directory at `dir`, opened as a caller that did

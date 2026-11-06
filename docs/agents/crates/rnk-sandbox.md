@@ -376,8 +376,8 @@ What a change here must keep, with where it lives:
   does). Each child is killed at its deadline (10 s, the closure 60 s) and
   reaped within 2 s (one that closed its report but is not reaped then is
   killed, and given 2 s more); its namespaces and mounts go with it. One
-  still there after is `Error::ProbeChildLeft`: the probe's directory
-  stays, and `ranikust` leaves its own too, until the build's directory is
+  still there after is `Error::ProbeChildLeft`: the probe's files stay,
+  and `ranikust` leaves their directory, until the build's directory is
   removed (or, with an anonymous store, the state directory emptied): at
   the end of the run, at once when `--mode=auto` falls back to kaniko
   mode, else at the next start (a refused set-up, a run cut short).
