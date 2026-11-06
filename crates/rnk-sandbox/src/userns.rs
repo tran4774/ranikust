@@ -1412,7 +1412,8 @@ fn closure_outcome(
         CLOSURE_OK => Ok(Ok(text)),
         CLOSURE_REFUSED => Ok(Err(text)),
         // A panic did not finish `f`, as under `panic = "abort"`.
-        _ => Err(text),
+        CLOSURE_PANICKED => Err(text),
+        other => Err(format!("unknown closure status {other}: {text}")),
     }
 }
 

@@ -197,7 +197,8 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// (ADR-0109); `userns_probe` (`--mode=auto`) adds the user namespace
 /// probe, reported only, and is cleared once the set-up reaches the probe,
 /// whatever follows; `refuse_overlay`, the test hook's `overlay-refused`,
-/// takes the overlay probe, once it passed, as refused by the kernel.
+/// takes the overlay probe, once it passed, as a failed probe check, which
+/// routes as a mount the kernel refused does.
 ///
 /// # Errors
 ///
@@ -490,7 +491,7 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
 /// an overlay mount in it (`rnk_snapshot::probe`), tried in a directory of
 /// this build on the state directory's filesystem (where it mounts is
 /// \[open: #4], interim (a)). Logs one line; nothing here refuses or
-/// changes the outcome. Root only: another user never reaches a set-up.
+/// changes the outcome. Root only: the effective uid is checked.
 /// Call while single-threaded, before the spawner starts and before
 /// `probe_overlay`, whose joined thread may still be counted.
 fn report_user_namespace(store: &Store) {
@@ -641,7 +642,8 @@ fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal> {
 }
 
 /// What the test hook's `overlay-refused` makes of a passed overlay probe:
-/// a refusal of the kind the kernel's gives.
+/// a failed probe check, which routes as a mount the kernel refused (on
+/// NFS) does.
 const FAULT_OVERLAY_REFUSED: SnapshotError =
     SnapshotError::ProbeCheck("refused by RANIKUST_DEBUG_FAULT=overlay-refused");
 

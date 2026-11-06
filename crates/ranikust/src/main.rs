@@ -69,8 +69,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// code 1, after metrics are set up; `kernel-missing`, `kernel-blocked` and
 /// `kernel-hidden` make the kernel check fail; `seal-tmpfile` skips the
 /// memfd way of sealing the binary and `seal-none` both ways (ADR-0101);
-/// `overlay-refused` takes overlay mode's probe, once it passed, as refused
-/// by the kernel, as on NFS ([`setup::set_up`]). It lets the tests run the
+/// `overlay-refused` takes overlay mode's probe, once it passed, as a
+/// failed probe check, which routes as NFS's refused mount does
+/// ([`setup::set_up`]). It lets the tests run the
 /// real binary through these paths, including a release build, where
 /// `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
