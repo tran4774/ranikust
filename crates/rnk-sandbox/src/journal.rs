@@ -34,7 +34,7 @@ use std::io::{self, Read as _, Write as _};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
-use rnk_rootfs::{FileTime, FileType, Meta, OpenHow, RootPath};
+use rnk_rootfs::{FileTime, FileType, Meta, OpenHow, RootPath, Stat};
 use rustix::fs::FlockOperation;
 use rustix::io::Errno;
 
@@ -679,74 +679,71 @@ fn remove_stubs(root: &RootPath, stubs: &[StubRecord]) -> Result<usize> {
 
 /// Undoes one entry; `true` when something was removed or put back, after
 /// which the parent's times are restored unless something else changed
-/// them.
+/// them. A `statx` error other than those of [`present`] fails it with its
+/// step and errno.
 fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
     let parent = stub.path.parent().unwrap_or(Path::new("/"));
     // `root` stays on its mount, so no parent below another mount resolves
     // (`EXDEV`); an entry that is itself a mount point (a mount root, or on
     // another mount) is left alone.
     let parent_st = match root.statx(parent) {
-        Ok(st) => Some(st),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return Ok(false),
-        // Any other error (a non-exhaustive type, maybe no errno): the parent's times are unknown.
-        Err(_) => None,
+        st => match present(st)? {
+            Some(st) => st,
+            // The parent gone, its entry is too.
+            None => return Ok(false),
+        },
     };
-    if parent_st.is_some_and(|st| st.mnt_id != root.mnt_id()) {
+    if parent_st.mnt_id != root.mnt_id() {
         return Ok(false);
     }
-    let on_root_mount = |p: &Path| {
-        root.statx(p)
-            .is_ok_and(|st| st.mnt_id == root.mnt_id() && !st.mount_root)
-    };
     let mut targets = vec![stub.path.as_path()];
     if let Placed::Swap { aside: Some(aside) } = &stub.kind {
         targets.push(aside);
     }
-    if targets
-        .iter()
-        .any(|p| root.statx(p).is_ok() && !on_root_mount(p))
-    {
-        return Ok(false);
+    for p in targets {
+        if let Some(st) = present(root.statx(p))?
+            && (st.mnt_id != root.mnt_id() || st.mount_root)
+        {
+            return Ok(false);
+        }
     }
-    let parent_mtime = parent_st.map(|st| st.mtime);
     let gone = match &stub.kind {
         Placed::Stub(MountKind::Directory) => ok_unless(
             root.remove_dir(&stub.path),
             &[libc::ENOENT, libc::ENOTEMPTY, libc::ENOTDIR, libc::EEXIST],
         )?,
-        Placed::Stub(MountKind::File) => match root.statx(&stub.path) {
-            Ok(st) if st.file_type() == FileType::Regular && st.size == 0 => {
+        Placed::Stub(MountKind::File) => match present(root.statx(&stub.path))? {
+            Some(st) if st.file_type() == FileType::Regular && st.size == 0 => {
                 ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
             }
-            // Gone, unreadable, or no longer the empty file placed: leave it.
-            _ => false,
+            // Gone, or no longer the empty file placed: leave it.
+            Some(_) | None => false,
         },
         // The original goes back over whatever is there now: `rename`
         // replaces a file, a node or a symlink. No aside: never moved, or
         // already back.
-        Placed::Swap { aside: Some(aside) } => match root.statx(aside) {
-            Ok(_) => {
+        Placed::Swap { aside: Some(aside) } => match present(root.statx(aside))? {
+            Some(_) => {
                 root.rename(aside, &stub.path)?;
                 true
             }
-            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => false,
-            Err(e) => return Err(e.into()),
+            None => false,
         },
         // Nothing was there before: what is there now is what ranikust
         // placed, or what the `RUN` made of it, and goes. A directory stays.
-        Placed::Swap { aside: None } => match root.statx(&stub.path) {
-            Ok(st) if st.file_type() != FileType::Directory => {
+        Placed::Swap { aside: None } => match present(root.statx(&stub.path))? {
+            Some(st) if st.file_type() != FileType::Directory => {
                 ok_unless(root.remove_file(&stub.path), &[libc::ENOENT])?
             }
-            // A directory, gone or unreadable: leave it.
-            _ => false,
+            Some(_) | None => false,
         },
     };
     if !gone {
         return Ok(false);
     }
     let restore = match stub.placed_mtime {
-        Some(placed) => parent_mtime == Some(placed),
+        Some(placed) => parent_st.mtime == placed,
         // Never placed: the build died before the `RUN` started.
         None => true,
     };
@@ -761,6 +758,19 @@ fn undo(root: &RootPath, stub: &StubRecord) -> Result<bool> {
         )?;
     }
     Ok(true)
+}
+
+/// A `statx` result for [`undo`]: `None` where no entry can be at the
+/// path, the error otherwise.
+fn present(st: rnk_rootfs::Result<Stat>) -> Result<Option<Stat>> {
+    match st {
+        Ok(st) => Ok(Some(st)),
+        // `ENOENT`: nothing there. `ENOTDIR`: a parent is no longer a
+        // directory, so nothing can be there. Any other error, `ELOOP`
+        // included, leaves open whether the entry is still there.
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Whether `path` is one of [`PLACEABLE`].
@@ -1896,6 +1906,54 @@ mod tests {
         let root = RootPath::open(&f.root_dir).unwrap();
         assert_ne!(root.statx("/etc").unwrap().mtime, old);
         assert!(f.root_dir.join("etc/new").exists());
+    }
+
+    /// `undo` takes an entry for gone only where nothing can be at its
+    /// path: `ENOENT`, or `ENOTDIR` for a parent the `RUN` made a file.
+    /// Any other `statx` error fails the clean-up with its step and errno,
+    /// and the journal stays for the next start-up: `ELOOP` here, for a
+    /// parent the `RUN` made a symlink loop, both for a stub and for a
+    /// file swapped in where there was none.
+    #[test]
+    fn a_stub_that_cannot_be_looked_up_fails_the_clean_up() {
+        let place = |j: &mut Journal, what: &str| {
+            if what == "stub" {
+                let placed = j.ensure(Path::new("/etc/resolv.conf"), MountKind::File);
+                assert_eq!(placed.unwrap(), 1);
+            } else {
+                let placed = j.swap_in(Path::new("/etc/hosts"), Content::File(b"h"));
+                assert!(placed.unwrap());
+            }
+        };
+        for what in ["stub", "swap"] {
+            // The `RUN` moves `/etc` aside and puts `etc` in its place.
+            let clean_up = |etc: &dyn Fn(&Path)| {
+                let f = fixture();
+                let root = RootPath::open(&f.root_dir).unwrap();
+                let mut j = Journal::create(&f.runs, "1", &f.root_dir, root).unwrap();
+                place(&mut j, what);
+                j.commit().unwrap();
+                fs::rename(f.root_dir.join("etc"), f.root_dir.join("etc2")).unwrap();
+                etc(&f.root_dir.join("etc"));
+                let done = j.finish();
+                let left = fs::read_dir(&f.runs).unwrap().count();
+                (done, left)
+            };
+            let (done, left) = clean_up(&|etc| fs::write(etc, b"x").unwrap());
+            assert_eq!(done.unwrap(), 0, "{what}: ENOTDIR is gone");
+            assert_eq!(left, 0, "{what}");
+            let (done, left) = clean_up(&|etc| std::os::unix::fs::symlink("etc", etc).unwrap());
+            match done {
+                // The lookup's step, its path and its errno.
+                Err(Error::Rootfs(e @ rnk_rootfs::Error::Io { .. }))
+                    if e.raw_os_error() == Some(libc::ELOOP) =>
+                {
+                    assert!(e.to_string().starts_with("open /etc:"), "{what}: {e}");
+                }
+                other => panic!("{what}: {other:?}"),
+            }
+            assert!(left > 0, "{what}: the journal stays");
+        }
     }
 
     #[test]

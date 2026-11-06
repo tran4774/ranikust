@@ -386,7 +386,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`,
   `red_team_binds_stacked_on_the_binarys_path`), the stub journal
   (placement through symlinks, removal, parent times, replay of dead
-  journals only, a lock kept by a shared description), swaps and planted
+  journals only, a lock kept by a shared description, a lookup failing
+  with `ELOOP` failing the clean-up and keeping the journal while
+  `ENOTDIR` counts as gone), swaps and planted
   records, the journal's red-team tests (a file, FIFO, socket or whiteout
   where a directory is needed or as the target; stubs a `RUN` swaps for
   symlinks out of the root or for nodes; planted stub records aimed

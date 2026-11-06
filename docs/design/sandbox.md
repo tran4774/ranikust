@@ -476,7 +476,10 @@ So, as in BuildKit's `executor/stubs.go`, with one journal per `RUN` in
 
 1. write the stub's path to the journal in the state directory, then create it;
 2. remove stubs after the `RUN`, before the diff, and restore the parent's
-   metadata;
+   metadata; a stub counts as gone only where its lookup says nothing can be
+   at its path (`ENOENT`, or `ENOTDIR` for a parent the `RUN` made a file),
+   and any other lookup error fails the clean-up with its step and errno,
+   the journal kept;
 3. on start-up, remove any stub left in the journal.
 
 Because all other mounts live in the child's namespace, no ignore-list entry is
