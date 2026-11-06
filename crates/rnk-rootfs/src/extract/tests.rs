@@ -1775,3 +1775,148 @@ proptest::proptest! {
         }
     }
 }
+
+/// A layer with one of each header [`check_headers`] reads (PAX records,
+/// GNU long names and links, links, a FIFO, whiteouts, a PAX `size`, a
+/// global header), and the offset of every header block in it.
+fn mutation_base(f: &Fixture) -> (Vec<u8>, Vec<usize>) {
+    let mut t = Tar::new(f);
+    let mut at = Vec::new();
+    let long = |t: &mut Tar, at: &mut Vec<usize>, kind: EntryType, body: &[u8]| {
+        at.push(t.out.len());
+        let size = u64::try_from(body.len()).unwrap();
+        let h = t.header(b"././@LongLink", kind, 0o644, size);
+        t.push(h, body);
+    };
+    at.push(t.out.len());
+    t.pax(&[("SCHILY.xattr.user.a", b"v"), ("mtime", b"1700000000.5")]);
+    at.push(t.out.len());
+    t.dir("d", 0o755);
+    at.push(t.out.len());
+    t.file("d/f", 0o644, b"hello world");
+    at.push(t.out.len());
+    t.symlink("d/s", "f");
+    at.push(t.out.len());
+    t.hardlink("d/h", "d/f");
+    at.push(t.out.len());
+    t.node("p", EntryType::Fifo, 0, 0);
+    let mut name = b"d/".to_vec();
+    name.extend([b'l'; 150]);
+    long(&mut t, &mut at, EntryType::GNULongName, &name);
+    at.push(t.out.len());
+    t.file("x", 0o644, b"long");
+    long(&mut t, &mut at, EntryType::GNULongLink, b"d/f");
+    at.push(t.out.len());
+    t.hardlink("d/k", "x");
+    at.push(t.out.len());
+    t.file("d/.wh.gone", 0o644, b"");
+    at.push(t.out.len());
+    t.file("d/.wh..wh..opq", 0o644, b"");
+    at.push(t.out.len());
+    t.pax(&[("path", b"d/pp"), ("linkpath", b"f")]);
+    at.push(t.out.len());
+    t.symlink("n", "t");
+    at.push(t.out.len());
+    t.pax(&[("size", b"5")]);
+    at.push(t.out.len());
+    let h = t.header(b"sz", EntryType::Regular, 0o644, 0);
+    t.push(h, b"abcde");
+    at.push(t.out.len());
+    let h = t.header(b"g", EntryType::XGlobalHeader, 0o644, 17);
+    t.push(h, b"17 comment=hello\n");
+    at.push(t.out.len());
+    t.file("proc/x", 0o644, b"");
+    at.push(t.out.len());
+    t.file("last", 0o644, b"z");
+    (t.bytes(), at)
+}
+
+/// Header bytes worth changing: the first and last of each field.
+const FIELD_BYTES: &[usize] = &[
+    0, 1, 99, 100, 107, 108, 116, 124, 125, 134, 135, 136, 147, 156, 157, 158, 256, 257, 262, 263,
+    329, 337, 345, 400, 499,
+];
+/// Values worth writing there: NUL, octal digits, a base-256 marker, path
+/// and entry type characters.
+const VALUES: &[u8] = &[
+    0, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'9', 0x80, 0xff, b'/', b'.', b' ', b'L',
+    b'K', b'x', b'g', b'S', b'V', b'Q',
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
+
+    /// Red team (ADR-0123): a valid layer with one to four bytes changed,
+    /// in a header (its checksum recomputed, three times in four) or anywhere in the
+    /// stream: [`check_headers`] refuses only what every extraction that
+    /// applies whiteouts refuses too, and on what it passes no extraction
+    /// fails on the framing or the `tar-header` limit.
+    #[test]
+    fn red_team_check_headers_agrees_with_every_extraction_on_mutated_headers(
+        changes in proptest::collection::vec(
+            (proptest::bool::ANY, 0usize..64, 0usize..4096, 0usize..256, 0u8..4),
+            1..5,
+        ),
+    ) {
+        let (mut bytes, headers) = mutation_base(&Fixture::new());
+        for (in_header, which, offset, value, fix) in changes {
+            let pos = if in_header {
+                let field = if offset % 2 == 0 {
+                    FIELD_BYTES[offset / 2 % FIELD_BYTES.len()]
+                } else {
+                    offset % 512
+                };
+                headers[which % headers.len()] + field
+            } else {
+                offset * 7 % bytes.len()
+            };
+            bytes[pos] = if value < 128 {
+                VALUES[value % VALUES.len()]
+            } else {
+                u8::try_from(value).unwrap()
+            };
+            let block = pos - pos % 512;
+            if fix != 0 && headers.contains(&block) {
+                let mut h = Header::new_old();
+                h.as_mut_bytes().copy_from_slice(&bytes[block..block + 512]);
+                h.set_cksum();
+                bytes[block..block + 512].copy_from_slice(h.as_bytes());
+            }
+        }
+        let checked = check_headers(bytes.as_slice());
+        let results = [Whiteouts::Apply, Whiteouts::Overlay].map(|wh| {
+            let f = Fixture::new();
+            extract(&f.root, bytes.as_slice(), wh)
+        });
+        let f = Fixture::new();
+        let live = extract_live(&f.root, bytes.as_slice(), &live_keep());
+        for r in results.iter().chain([&live]) {
+            match (&checked, r) {
+                (Err(c), Ok(())) => {
+                    proptest::prop_assert!(false, "checked {c}, but extracted");
+                }
+                (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
+                    proptest::prop_assert!(false, "checked, but the framing failed: {e}");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The unmutated base of the proptest above passes the check and every
+/// extraction, so its mutations start from a layer that is taken.
+#[test]
+fn the_mutation_base_is_a_layer_every_extraction_takes() {
+    let (bytes, headers) = mutation_base(&Fixture::new());
+    assert_eq!(headers.len(), 19);
+    check_headers(bytes.as_slice()).unwrap();
+    for wh in [Whiteouts::Apply, Whiteouts::Overlay] {
+        let f = Fixture::new();
+        extract(&f.root, bytes.as_slice(), wh).unwrap_or_else(|e| panic!("{wh:?}: {e}"));
+    }
+    let f = Fixture::new();
+    extract_live(&f.root, bytes.as_slice(), &live_keep()).unwrap();
+    assert!(f.host("d/pp").is_symlink());
+    assert_eq!(fs::read(f.host("sz")).unwrap(), b"abcde");
+}

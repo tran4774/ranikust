@@ -184,7 +184,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
   GNU long names and links and PAX `path`, `linkpath`, `size`, `uid` and
   `mtime` records included): it refuses no generated layer that an extraction
-  takes, and passes none whose framing an extraction refuses.
+  takes, and passes none whose framing an extraction refuses;
+  `red_team_check_headers_agrees_with_every_extraction_on_mutated_headers`
+  (proptest) holds the same on a layer of every header kind with one to four
+  bytes changed, in a header's fields or anywhere. `tests/header_check.rs`:
+  `check_headers` refuses a 64 MiB GNU long name, long link or PAX set with
+  under 2 MiB held, holds one entry at a time (16 entries each with a long
+  name, a long link and a PAX set at the limit, 100,000 tiny entries, a
+  256 MiB global header skipped), and follows the limit lowered and raised.
   `red_team_names_swapped_during_an_output_never_redirect_it`
   (`src/host/tests.rs`): a thread exchanging the output directory, the tar
   and the digest file with links to victims, in random order, while
