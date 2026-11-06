@@ -429,7 +429,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   nothing.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
-  (PID 2 under `ranikust-init`, host name, capability sets `a80425fb` with
+  (PID 2 under `ranikust-init`, which runs under the command's filters,
+  host name, capability sets `a80425fb` with
   empty inheritable and ambient, `nodev` root and `/dev`, read-only
   `/proc/sys` and `/dev/null`, masked kernel files, no terminal, only stdio
   descriptors, no stub in the layer); `sealed-exe`: a `RUN` reaches no
@@ -445,8 +446,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
   delays, threat model section 6;
   `a_running_binary_cannot_be_opened_for_writing`;
-  `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
-  profile that refuses the keyring join; each `RUN` in a keyring of its own;
+  `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, a
+  profile that refuses the keyring join, and unconfined with a held network
+  (ADR-0033's filter); each `RUN` in a keyring of its own, its init under
+  the same filters as its command;
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
   that fails one of the init's last steps the `RUN` fails as that step and
   its command leaves no mark, which it leaves under a control profile; a
@@ -474,8 +477,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   probe, a planted `run-` name, a scope without `Delegate=` and the ssh
   session's, and what a `RUN` under Docker's default profile reads in
   `/proc/self/cgroup` and `/proc/1/cgroup`, with Docker's capabilities
-  alone and its init with none, and the same reads for a later unconfined
-  `RUN`; the default profile refuses the first a user namespace, which an
+  alone and its init with none, both under the profile's filter, and the
+  same reads for a later unconfined `RUN`, both under ranikust's filters
+  alone; the default profile refuses the first a user namespace, which an
   unconfined `RUN` gets (the control); the `RUN`s that make a user
   namespace, there and below, are unconfined, as `--seccomp=unconfined`;
   `run_cgroup_limits_on_a_cgroupfs_without_nsdelegate`, the same `RUN`s with

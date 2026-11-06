@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::tests::{
     IDLE_INIT, TestMounts, in_private_mount_namespace, kill_named, output_to, root_with_usr,
-    slow_init, spinner_root,
+    seccomp_filters, slow_init, spinner_root,
 };
 use super::*;
 use crate::cgroup::{Layout, MAKE_RUN, REMOVE_DEPTH, REMOVE_LIMIT, Tree, Unused};
@@ -417,16 +417,29 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
             .map(str::to_owned)
             .collect()
     };
+    // The filters the command and its init run under, which each installs
+    // itself, on top of ranikust's own.
+    let filters = "for p in self 1; do echo \"seccomp $p \
+         $(grep -E '^Seccomp(_filters)?:' /proc/$p/status | tr -d ' \\t\\n')\"; done";
+    let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
+        .expect("Seccomp_filters in /proc/self/status");
+    let filtered_as = |text: &str, mode: u32, count: u32| {
+        for who in ["self", "1"] {
+            let want = format!("seccomp {who} Seccomp:{mode}Seccomp_filters:{count}\n");
+            assert!(text.contains(&want), "want {want:?}: {text}");
+        }
+    };
 
     // 1. Under the default profile: the command (and the init, nested) in
     // the RUN's cgroups, which it cannot reach, and no user namespace for
-    // it; a process it leaves dies, and the cgroups go, with the RUN.
+    // it; a process it leaves dies, and the cgroups go, with the RUN. The
+    // init runs under the command's filters.
     let out = top.join("first.out");
     let status = run(
         &format!(
             "{views}; echo \"cgroupfs=$(ls -A /sys/fs/cgroup | wc -l)\"; \
              for p in self 1; do echo \"$p $(grep ^CapPrm: /proc/$p/status) \
-             $(grep ^CapEff: /proc/$p/status)\"; done; \
+             $(grep ^CapEff: /proc/$p/status)\"; done; {filters}; \
              if unshare -U true; then echo userns=ok; else echo userns=refused; fi; \
              /rnkcgsleep 300 & exit 3"
         ),
@@ -443,6 +456,7 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
         let want = format!("{who} CapPrm:\t{set} CapEff:\t{set}\n");
         assert!(text.contains(&want), "want {want:?}: {text}");
     }
+    filtered_as(&text, 2, own + 1);
     let first_seen = views_in(&text);
     assert_eq!(
         first_seen,
@@ -582,14 +596,19 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
             "{r:?}"
         );
     }
-    // A later RUN, with another number and unconfined, reads the same.
+    // A later RUN, with another number and unconfined, reads the same; it
+    // and its init run under ranikust's filters alone (none in a scope or
+    // a privileged container), without a held network, whose filter
+    // (ADR-0033) each would add.
     let out = top.join("after.out");
-    let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), views.into()]);
+    let script = format!("{views}; {filters}");
+    let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
     output_to(&out, &mut spec);
     let r = runner.run(spec, Some(&running_again), |job| clone_child(job, parent));
     let text = fs::read_to_string(&out).unwrap();
     assert!(r.as_ref().is_ok_and(ExitStatus::success), "{r:?}: {text}");
     assert_eq!(views_in(&text), first_seen, "{text}");
+    filtered_as(&text, if own == 0 { 0 } else { 2 }, own);
     fs::remove_dir(&left).unwrap();
     drop(runner);
     drop(mounts);

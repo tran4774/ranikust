@@ -3370,7 +3370,7 @@ mod tests {
 
     /// `Seccomp_filters` of `/proc/self/status` (Linux 5.9): how many
     /// filters the process runs under.
-    fn seccomp_filters(status: &str) -> Option<u32> {
+    pub(super) fn seccomp_filters(status: &str) -> Option<u32> {
         status
             .lines()
             .find_map(|l| l.strip_prefix("Seccomp_filters:"))
@@ -3384,7 +3384,9 @@ mod tests {
     /// effect in its place. Each `RUN` runs in a session keyring of its own
     /// (T11), joined before the profile: a profile that refuses the join
     /// with an errno the child does not take for "unsupported" still lets
-    /// the `RUN` start.
+    /// the `RUN` start. Its init runs under the same filters as its
+    /// command, each installing its own: ADR-0033's filter under a held
+    /// network adds one to both, unconfined too.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_run_gets_its_seccomp_profile() {
@@ -3395,6 +3397,7 @@ mod tests {
             root_with_usr(&mut mounts, &root);
             let parent = ParentPid::new().unwrap();
             let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            runner.hold_networks();
             let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
                 .expect("Seccomp_filters in /proc/self/status");
             let file = SeccompProfile::from_json(
@@ -3427,6 +3430,7 @@ mod tests {
             // `keyring=-1` where the profile refuses `keyctl`.
             let probe = format!(
                 "cat /proc/self/status; \
+                 grep -E '^Seccomp(_filters)?:' /proc/1/status | sed 's/^/init-/'; \
                  if setarch -R true; then echo personality=ok; else echo personality=refused; fi; \
                  if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi; \
                  python3 -c 'import ctypes as c; print(\"keyring=%d\" % c.CDLL(None).syscall(\
@@ -3436,11 +3440,16 @@ mod tests {
                 libc::KEY_SPEC_SESSION_KEYRING,
             );
             let mut got = Vec::new();
-            for (name, profile) in [
-                ("default", Some(SeccompProfile::docker_default().unwrap())),
-                ("unconfined", None),
-                ("file", Some(file)),
-                ("join", Some(join)),
+            for (name, profile, network) in [
+                (
+                    "default",
+                    Some(SeccompProfile::docker_default().unwrap()),
+                    Network::Host,
+                ),
+                ("unconfined", None, Network::Host),
+                ("file", Some(file), Network::Host),
+                ("join", Some(join), Network::Host),
+                ("unconfined, held network", None, Network::None),
             ] {
                 runner.seccomp = profile;
                 let out = top.join(format!("out-{name}"));
@@ -3448,6 +3457,7 @@ mod tests {
                     &root,
                     vec!["/bin/sh".into(), "-c".into(), probe.clone().into()],
                 );
+                spec.network = network;
                 output_to(&out, &mut spec);
                 let st = runner.run(spec, None, |job| clone_child(job, parent));
                 let text = fs::read_to_string(&out).unwrap_or_default();
@@ -3461,9 +3471,20 @@ mod tests {
                 (own, "personality=ok", "uname=ok", true),
                 (own + 1, "personality=ok", "uname=refused", true),
                 (own + 1, "personality=ok", "uname=ok", true),
+                (own + 1, "personality=ok", "uname=ok", true),
             ]) {
                 assert_eq!(*ok, Some(true), "{name}: the RUN ran: {text}");
                 assert_eq!(seccomp_filters(text), Some(filters), "{name}: {text}");
+                let mode = if filters == 0 { "0" } else { "2" };
+                for key in ["Seccomp", "init-Seccomp"] {
+                    assert_eq!(status_value(text, key), Some(mode), "{name}: {key}: {text}");
+                }
+                let count = filters.to_string();
+                assert_eq!(
+                    status_value(text, "init-Seccomp_filters"),
+                    Some(count.as_str()),
+                    "{name}: the init's filters: {text}"
+                );
                 assert!(text.contains(personality), "{name}: {personality}: {text}");
                 assert!(text.contains(uname), "{name}: {uname}: {text}");
                 let keyring: Option<i64> = text

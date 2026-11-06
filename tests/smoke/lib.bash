@@ -6,6 +6,7 @@
 smoke_checks=(
   'test "$$" = 2 && test "$(cat /proc/1/comm)" = ranikust-init'      # PID 2 under its init (ADR-0080)
   '! grep -Eq "^Cap(Eff|Prm):[[:space:]]*0*[1-9a-f]" /proc/1/status'  # the init holds no capability
+  'grep -q "^Seccomp:[[:space:]]*2$" /proc/1/status && test "$(grep -E "^Seccomp(_filters)?:" /proc/1/status)" = "$(grep -E "^Seccomp(_filters)?:" /proc/self/status)"' # the init under the command's filters
   'test "$(hostname)" = ranikust'
   'grep -q "^CapBnd:[[:space:]]*00000000a80425fb$" /proc/self/status' # Docker's 14 capabilities
   'grep -q "^CapInh:[[:space:]]*0*$" /proc/self/status'

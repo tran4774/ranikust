@@ -1,8 +1,9 @@
 import ctypes, os, sys
 
 # Records what case.sh checks, one line per probe. A refused step is the
-# probe's result; in_child turns an exception into a line, so the RUN
-# succeeds wherever it runs.
+# probe's result; in_child turns an exception of a child probe into a line,
+# so those probes record a result wherever they run. A failure outside them
+# fails the RUN, and so the build.
 report = sys.argv[1]
 libc = ctypes.CDLL(None, use_errno=True)
 CLONE_NEWUSER = 0x10000000
@@ -27,7 +28,7 @@ def map_root():
     step that failed, or None."""
     uid, gid = os.getuid(), os.getgid()
     if libc.unshare(CLONE_NEWUSER) != 0:
-        return failed("unshare")
+        return failed("unshare-userns")
     for name, text in (("setgroups", "deny"), ("uid_map", "0 %d 1" % uid), ("gid_map", "0 %d 1" % gid)):
         try:
             with open("/proc/self/" + name, "w") as f:
@@ -83,7 +84,7 @@ def mounted():
     if step:
         return "refused " + step
     if libc.unshare(CLONE_NEWNS | CLONE_NEWCGROUP) != 0:
-        return "refused " + failed("unshare")
+        return "refused " + failed("unshare-mountns")
     os.makedirs("/tmp/cg", exist_ok=True)
     if libc.mount(b"none", b"/tmp/cg", b"cgroup2", 0, None) != 0:
         return "refused " + failed("mount")
