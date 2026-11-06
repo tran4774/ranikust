@@ -168,6 +168,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 - A `File` path with a host or mode-specific prefix ties the key to the
   host or the mode, and one relative to each source operand lets two files
   share a path: paths are relative to the build context.
-- A `COPY` heredoc's body reaches the key only as a `File` the builder adds
-  (task 3 of #123).
+- A `COPY` heredoc's body is not in the instruction text: `rnk-builder`
+  hashes it into the key (task 3 of #123).
+- Give `KeyInputs::new` and `CacheKey::tag` the same `Encoding`, or a
+  `--reproducible` hit can carry other mtimes.
 - No cache measurement exists: claim no speed-up before W2 runs.

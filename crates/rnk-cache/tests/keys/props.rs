@@ -562,6 +562,25 @@ fn an_old_mtime_counts_only_under_reproducible() {
 }
 
 #[test]
+fn a_key_ignores_the_compression_and_its_level() {
+    let spec = full();
+    for times in [TimePolicy::Kept, TimePolicy::Clamped { epoch: EPOCH }] {
+        let key = |compression, level| {
+            let encoding = Encoding {
+                compression,
+                level,
+                times,
+            };
+            root().next(&spec.instruction, spec.encoded_as(&encoding))
+        };
+        let gzip = key(Compression::Gzip, 6);
+        assert_eq!(gzip, key(Compression::Gzip, 9), "{times:?}");
+        assert_eq!(gzip, key(Compression::Zstd, 3), "{times:?}");
+        assert_eq!(gzip, key(Compression::Uncompressed, 0), "{times:?}");
+    }
+}
+
+#[test]
 fn an_uncompressed_tag_ignores_the_level() {
     let tag = |level| {
         root().tag(&Encoding {

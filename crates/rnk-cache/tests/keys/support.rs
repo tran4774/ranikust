@@ -25,7 +25,12 @@ pub(crate) struct Spec {
 
 impl Spec {
     pub(crate) fn inputs(&self) -> KeyInputs {
-        let mut inputs = KeyInputs::new(&encoding(self.epoch));
+        self.encoded_as(&encoding(self.epoch))
+    }
+
+    /// The inputs with another encoding than gzip 6; `epoch` is ignored.
+    pub(crate) fn encoded_as(&self, encoding: &Encoding) -> KeyInputs {
+        let mut inputs = KeyInputs::new(encoding);
         for (name, value) in &self.args {
             inputs.arg(name, value.as_deref());
         }

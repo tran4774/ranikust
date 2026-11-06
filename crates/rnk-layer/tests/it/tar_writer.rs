@@ -341,7 +341,8 @@ fn content_must_match_the_announced_size() {
 
 /// sha256 of the layer in `control_bytes_in_names_are_written_as_they_are`,
 /// pinned when the escaping of printed names came in (the writer itself
-/// unchanged). A change here means a name's bytes changed in layers.
+/// unchanged). A change here means a name's bytes changed in layers, and
+/// bumps `rnk-cache`'s `KEY_VERSION` (ADR-0005).
 const CONTROL_NAMES_TAR_SHA256: &str =
     "509487ed79da23a4c2e085f448ba056f51da17bba5dab63c7d2a3e49c91132c7";
 

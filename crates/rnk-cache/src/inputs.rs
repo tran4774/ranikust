@@ -357,8 +357,7 @@ impl CopyFrom {
     }
 }
 
-/// A file a `COPY` or `ADD` writes, as it writes it. A `COPY` heredoc's
-/// body is content as well: the caller adds it as a file.
+/// A file a `COPY` or `ADD` writes from the build context, as it writes it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct File {
     /// The file's path relative to the build context, with no host or

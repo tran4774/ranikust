@@ -17,8 +17,9 @@
 //! - A key depends on the step's instruction, its inputs and the previous
 //!   key only: never on the snapshot mode, a host user or id map, the
 //!   build's time, an mtime outside `--reproducible`, a thread count or the
-//!   order of an unordered collection. The API takes no mode, user, time
-//!   or thread count, and has no field meant for a secret's value; callers
+//!   order of an unordered collection. The API takes no snapshot mode,
+//!   host user or id map, clock time or thread count, and has no field
+//!   meant for a secret's value; callers
 //!   never pass a secret mount's `env=` variable to [`KeyInputs::env`]
 //!   (threat model T11).
 //! - Key computation opens no file and no connection: file content arrives

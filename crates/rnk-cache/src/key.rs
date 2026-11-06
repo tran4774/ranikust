@@ -155,8 +155,7 @@ pub enum TimePolicy {
     /// Each file keeps its own: a build without `--reproducible`.
     Kept,
     /// `--reproducible`: an mtime later than `epoch`, in seconds since the
-    /// Unix epoch, is clamped to it. The key holds each file's mtime as
-    /// clamped.
+    /// Unix epoch, is clamped to it.
     Clamped {
         /// `SOURCE_DATE_EPOCH`, or 0.
         epoch: i64,

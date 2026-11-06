@@ -163,9 +163,11 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
     drops it;
   - for `COPY` and `ADD` from the build context, each file's path relative
-    to it, content (a heredoc's body too), mode, owner after `--chown`,
-    type, link target, `security.capability` and, under `--reproducible`,
-    its mtime clamped to the epoch;
+    to it, content, mode, owner after `--chown`, type, link target,
+    `security.capability` and, under `--reproducible`, its mtime clamped to
+    the epoch;
+  - for a `COPY` heredoc, its body, which `rnk-builder` hashes (task 3 of
+    #123);
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (ADR-0114).
 - **never:** the snapshot mode, the host, its users or id maps, the time,
@@ -186,8 +188,9 @@ A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
 whose `<hex>` hashes the key with the layer's encoding: the compression, its
 level (none for a plain tar), and whether file times are kept or clamped to
 an epoch, with the epoch. A hit was then encoded with this build's settings,
-so under `--reproducible` a warm build gives a cold build's digests; builds
-with another encoding share no entries (ADR-0113).
+so under `--reproducible` a warm build gives a cold build's digests when the
+layers it reuses were cached by the same mode (below); builds with another
+encoding share no entries (ADR-0113).
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or
