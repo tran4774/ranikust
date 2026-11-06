@@ -158,9 +158,13 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
 3. **Sandbox capabilities.** Try `pivot_root` (Docker's seccomp profile
    blocks it even with `CAP_SYS_ADMIN`; fallback `MS_MOVE` + `chroot`) and a
    read-only `sysfs`, so the sandbox knows which variant to use
-   ([sandbox](sandbox.md)). The rbind `/sys` fallback is planned (Phase 3): a
-   refused `sysfs` mount fails this probe today; the user-namespace probe
-   (step 2) already tries it.
+   ([sandbox](sandbox.md)). In the build's user namespace, a `proc` or
+   `sysfs` mount refused with `EPERM` is tried again as an rbind, only where
+   the user-namespace probe (step 2) found the same
+   (`rnk_sandbox::probe_with_fallbacks`,
+   [#78](https://github.com/tran4774/ranikust/issues/78)); every `RUN` of the
+   build then gets what worked, and an rbind of `/proc` is logged once.
+   Elsewhere a refused mount fails this probe.
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at
    `FSCONFIG_CMD_CREATE` (`EINVAL`), so only a real create counts. On failure

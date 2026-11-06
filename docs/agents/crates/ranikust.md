@@ -65,7 +65,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
 | `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
-| `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace |
+| `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
 | `limits.rs` | `--limit <name>=<value>`: bounds on what a registry or image can make ranikust hold or wait for (ADR-0079, T15) |

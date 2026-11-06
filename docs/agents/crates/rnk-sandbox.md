@@ -9,13 +9,15 @@
 with `pivot_root` (or `MS_MOVE`), with the capability bounding set cut to
 Docker's defaults and Docker's default seccomp profile, and probes its own
 capabilities. Never a bare `chroot` where mounting is possible; no `RUN`
-process outlives the build. A `RUN` in a user namespace, with the
-`proc`/`sysfs` fallbacks, and `--userns` are Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)); the probe of that
-path is built, reported only
-([#74](https://github.com/tran4774/ranikust/issues/74)), and so is the
-entry into the build's user namespace
-([#75](https://github.com/tran4774/ranikust/issues/75)), which the binary
+process outlives the build. Rootless builds and `--userns` are Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)); built for them:
+the probe of that path, reported only
+([#74](https://github.com/tran4774/ranikust/issues/74)), the entry into
+the build's user namespace
+([#75](https://github.com/tran4774/ranikust/issues/75)), and a `RUN` in
+it with the `proc`/`sysfs` rbinds the probe chooses, `setgroups` where the
+map allows it and `--network=none`
+([#78](https://github.com/tran4774/ranikust/issues/78)), which the binary
 does not call yet.
 
 ## Owns
@@ -29,10 +31,12 @@ does not call yet.
   kaniko mode on `/`.
 - Process set-up, called by `ranikust` while single-threaded: private mount
   namespace, spawner thread, stub-journal replay; and the probe of its own
-  steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
-  the `Full` per-`RUN` sequence in an empty root (`probe.rs`) and reports
-  only `root_entry`; its guidance (uid map, `sysfs`, bind mounts) is
-  Phase 3.
+  steps, which `ranikust` runs with `rnk-snapshot`'s. The probe runs the
+  `Full` per-`RUN` sequence in an empty root (`probe.rs`) and reports
+  `root_entry` and how a `RUN` gets `proc` and `sysfs`: a new one, else,
+  in the build's user namespace and only where the user-namespace probe
+  found the same refusal (`Fallbacks`), an rbind, logged once (#78); its
+  guidance (uid map, bind mounts) is Phase 3.
 - The user-namespace probe (`userns.rs`, #74), reported only: nothing
   routes on it yet. Each step a `RUN` in a user namespace needs, in forked
   children that leave no namespace or mount behind: `unshare(CLONE_NEWUSER)`;
@@ -62,7 +66,11 @@ does not call yet.
   (`Error::NoUserNamespace`); a step failing once inside is
   `Error::UserNamespaceBroken`, after which the process must end.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
-  the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`.
+  the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`. In the
+  build's user namespace (#78): the `proc` and `sysfs` the probe chose,
+  `setgroups` only where `/proc/self/setgroups` allows it, `devpts`
+  without `gid=5` where gid 5 is unmapped (`OwnNamespace`, read once per
+  `Sandbox`).
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
   (`cgroup.rs`, ADR-0110): the start-up probe, the nesting, and each `RUN`'s
   cgroups, killed and removed when it ends.
@@ -105,8 +113,11 @@ pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave
 pub fn enter_build_user_namespace(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
 pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, StepResult)>, .. } // #[non_exhaustive]; read back from /proc/self once inside: map OneId whenever the uid or gid map gives one id (root's own one-id map mirrored too); setgroups_allowed(): as /proc/self/setgroups says (deny for OneId written by the process, or inherited); unreadable: UserNamespaceBroken; Display: "newuidmap map", "one uid map, setgroups denied (newuidmap: ...)"
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
-pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
-pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
+pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE; probe_with_fallbacks(dir, Fallbacks::default())
+pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps>; // #78: a new proc and sysfs first; an EPERM of one allowed tried again as an rbind; warns once for a proc rbind, info for sysfs
+pub struct Caps { pub root_entry: RootEntry, pub proc: KernelFs, pub sysfs: KernelFs } // #[non_exhaustive]; every RUN of the Sandbox gets them
+pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]
+pub struct Fallbacks { pub proc: bool, pub sysfs: bool } // #[non_exhaustive], Default: none; UsernsReport::fallbacks(): an rbind the user-namespace probe needed
 pub enum RootEntry { PivotRoot, MoveMount }
 pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
@@ -205,7 +216,9 @@ What a change here must keep, with where it lives:
   `allow_userns_network`: a helper's user namespace joined as an nsfs
   descriptor under the `seccomp` module's denylist; probed once by
   `probe_network`, `NetNs`, ADR-0033); with `RUN` cgroups, a cgroup
-  namespace the command makes (below). User namespace: Phase 3. Mounts exist
+  namespace the command makes (below). No user namespace of its own: in
+  the build's, a `RUN` keeps its map (#78), and its `--network=none`
+  clone brings `lo` up without the helper. Mounts exist
   only in the child, so the parent diffs the root as the image left it.
 - **Mounts**, in the order of the design doc. Every target is resolved with
   `openat2(RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)` from the bound root and
@@ -221,6 +234,14 @@ What a change here must keep, with where it lives:
   namespace (`O_PATH`, no final symlink, type checked) and keep their locked
   flags. The root bind is `nodev` recursively (`mount_setattr(AT_RECURSIVE)`,
   Linux 5.12; an older kernel refuses a root with a mount below it).
+  A new `proc` or `sysfs` is used wherever it mounts: an rbind only where
+  `Caps` says so, which only `probe_with_fallbacks` sets after an `EPERM`
+  the user-namespace probe met too (#78, and #79's condition). The rbind
+  (`MS_BIND | MS_REC`, its source `/proc` or `/sys` opened `O_PATH`, its
+  type checked before and after) gets `nosuid`, `nodev`, `noexec`, and
+  `/sys` read-only, on every mount of it with `mount_setattr(AT_RECURSIVE)`;
+  a refusal fails the `RUN`, never leaves a mount without them. The masks
+  and read-only paths then go on top as for a new one.
   Then `pivot_root(".", ".")` + `umount2(MNT_DETACH)`; where seccomp refuses
   it and `/` is a mount root, `MS_MOVE` + `chroot(".")`.
 - **Seccomp**
@@ -434,7 +455,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of every cgroup below a `RUN`'s, a tree at the kernel's limits removed in
   full, its bounds, the cgroup a failed removal names, and a walk that
   enters no link or mount,
-  detection on this host, which only reads); spec validation, mount plan order,
+  detection on this host, which only reads); spec validation, mount plan
+  order (a new `proc` and `sysfs` or their rbinds), the probe's next
+  attempt (an rbind only after an allowed `EPERM`), `setgroups` and the
+  tty gid read from `/proc/self` (`src/userns/tests.rs`),
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, the sealed copy (the order of the ways and the stop
   when the core-file limit cannot go back, one marker in the copy's
@@ -580,7 +604,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   namespace of the test's own, `user.max_user_namespaces` and
   `user.max_mnt_namespaces` at 0 and 1: entered whole, or unchanged by
   an error other than `UserNamespaceBroken`; prints how often each).
-  Not yet: the sandbox's fallbacks.
+  `runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose`
+  (`src/userns/build/run_tests.rs`): root of rootless Podman, after both
+  probes, gets an rbind of `/proc` and of `/sys` with every mount
+  `nosuid`, `nodev`, `noexec`, `/sys` read-only, `/proc/sys` read-only,
+  `/proc/kcore` masked; `USER _apt` gets 42:65534 through `setgroups`;
+  `--network=none` has `lo` up in a network namespace of its own;
+  `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
+  one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
+  _apt` refused at `setgid`. `just smoke` also runs `smoke-build --userns`
+  in a default `podman run`: the checks of `smoke_checks` that an rbind of
+  `/proc` and Podman's seccomp (no `sethostname`) leave.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`);
@@ -595,6 +629,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and with `newuidmap` hidden; where AppArmor restricts, every leg is
   refused at the `uid_map` write and nothing changed, elsewhere the ranges
   through `newuidmap`, else one uid, named as such);
+  `runs_in_the_build_user_namespace_of_a_regular_user`
+  (`src/userns/build/run_tests.rs`: the T1 `RUN`s as that user; refused
+  where AppArmor restricts, elsewhere a new `proc`, PID 2 under
+  `ranikust-init`, and an rbind of `/sys`);
   `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
   T1 mount red team as real root, whose map is every id);
   `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
@@ -685,7 +723,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   sealed copy root cannot write (ADR-0101). The quick suite's kaniko mode
   checks a build on a container's `/` runs from a sealed memfd. In the
   `SYS_ADMIN` variant `tests/smoke/netns-check.py` passes over the default
-  profile and under `--seccomp=unconfined`, one filter apart.
+  profile and under `--seccomp=unconfined`, one filter apart. The VM's
+  regular user runs the example with `--userns` and the same `--run`s
+  (#78): refused where AppArmor restricts user namespaces (Ubuntu 24.04),
+  elsewhere (22.04) a new `proc`, an rbind of `/sys`, and an image Docker
+  runs.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid

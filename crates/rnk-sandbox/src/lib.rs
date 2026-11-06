@@ -17,7 +17,9 @@
 //! user namespace would need, and only reports them: nothing routes on it
 //! yet. [`enter_build_user_namespace`] moves the process into the build's
 //! user namespace, each id map tried in a forked child first; no build of
-//! the binary calls it yet.
+//! the binary calls it yet. There, [`probe_with_fallbacks`] lets a `RUN`
+//! get an rbind of `/proc` or `/sys` where the user-namespace probe found a
+//! new one refused ([`UsernsReport::fallbacks`]).
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused
@@ -42,14 +44,15 @@
 //! says root may not mount), then [`trim_to_run_capabilities`], still
 //! single-threaded; in `--mode=auto` then [`probe_user_namespace`]; then
 //! [`Sandbox::start_direct`] (ADR-0078). A build in its own user namespace
-//! calls [`enter_build_user_namespace`] in place of
-//! [`enter_build_namespace`], before any thread.
+//! calls [`probe_user_namespace`], then [`enter_build_user_namespace`] in
+//! place of [`enter_build_namespace`], before any thread, then
+//! [`probe_with_fallbacks`] in place of [`probe`].
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
-//! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. A `RUN` in a
-//! user namespace, the `proc` and `sysfs` fallbacks and the bare-`chroot`
-//! path come later (`docs/agents/crates/rnk-sandbox.md`); the user-namespace
-//! probe already tries the fallbacks.
+//! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. Phase 3 adds a
+//! `RUN` in the build's user namespace with the `proc` and `sysfs`
+//! fallbacks; the bare-`chroot` path comes later
+//! (`docs/agents/crates/rnk-sandbox.md`).
 //!
 //! # Boundaries
 //!
