@@ -88,7 +88,8 @@ Modules of `crates/ranikust/src/` (all crate-private):
   by `rnk_sandbox::SeccompProfile::from_json`; any failure is exit 2.
   `set_up` and `set_up_kaniko` hand it to the sandbox (`Seccomp::apply`); no
   flag keeps the sandbox's own default, Docker's profile. Kaniko mode on `/`
-  refuses every value in `refuse_unsafe_slash`, exit 2.
+  refuses every value in `refuse_unsafe_slash`, exit 2 (a file that cannot
+  be read or compiled is refused before, by `read_seccomp`).
 - `--snapshot-mode` is kaniko's (`full|redo|time`) and keeps that meaning in
   kaniko mode; the mode is `--mode`. Overlay mode warns and ignores it
   (ADR-0023). In overlay mode `overlay_mode_flags` refuses kaniko flags that

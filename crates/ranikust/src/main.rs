@@ -12,9 +12,11 @@
 //! binary (ADR-0101, `rnk_sandbox::run_from_sealed_copy`), which starts
 //! over from the top → logs and the opt-in metrics of `rnk-metrics`, which
 //! start no thread, the report asked for with `--metrics-file` only
-//! (ADR-0037) → flag validation into a `BuildConfig` → the process set-up
-//! of `setup`: a private mount namespace, the probes of `rnk-sandbox` and
-//! `rnk-snapshot`, the outcome, the spawner thread → hand-off.
+//! (ADR-0037) → flag validation into a `BuildConfig` → the `--seccomp`
+//! profile read and compiled (ADR-0109), so by the copy only → the process
+//! set-up of `setup`: a private mount namespace, the probes of
+//! `rnk-sandbox` and `rnk-snapshot`, the outcome, the spawner thread →
+//! hand-off.
 //! `--mode=auto` picks kaniko mode where root may not mount (ADR-0040).
 //! Kaniko mode: root required; the container check of `container` decides
 //! where it builds: on the shared root `/` in a container
