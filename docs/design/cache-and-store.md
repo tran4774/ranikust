@@ -325,9 +325,10 @@ registry is not decided [open: #171], nor are five more cases of the restart
   offset with a Range request, about 3 attempts without progress, and the answer
   must be a 206 starting at the offset; then the entry is a miss with a
   warning and the stage starts again. On `/`, a resume that still fails during
-  the spool fails before `/` changes and starts nothing again. That count does
-  not bound a connection that drops every few bytes; the overall pull deadline
-  is [#28](https://github.com/tran4774/ranikust/issues/28).
+  the spool is a miss with a warning before `/` changes, and starts nothing
+  again. That count does not bound a connection that drops every few bytes;
+  the overall pull deadline is
+  [#28](https://github.com/tran4774/ranikust/issues/28).
 - A bad blob found while pushing the layers of a skipped, fully cached stage
   makes it stop being skipped: it is built with no cache, its layers pushed as
   above. A blob mounted across repositories

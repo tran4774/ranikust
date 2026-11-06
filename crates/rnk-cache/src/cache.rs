@@ -49,7 +49,8 @@ pub enum Lookup {
 pub enum Miss {
     /// The cache holds nothing under the tag.
     Absent,
-    /// The entry is older than `--cache-ttl`: a plain miss, as in kaniko.
+    /// The entry is older than `--cache-ttl`: a miss not warned about, as in
+    /// kaniko.
     Expired,
     /// The lookup failed or the entry was refused: a miss the caller warns
     /// about.
