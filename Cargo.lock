@@ -1251,6 +1251,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rnk-cache",
  "rnk-context",
  "rnk-dockerfile",
  "rnk-ignore",

@@ -26,7 +26,7 @@ fn hex(key: &CacheKey) -> String {
 
 #[test]
 fn the_version_is_pinned_with_the_goldens() {
-    golden("KEY_VERSION", &KEY_VERSION.to_string(), "1");
+    golden("KEY_VERSION", &KEY_VERSION.to_string(), "2");
 }
 
 #[test]
@@ -34,12 +34,12 @@ fn root_keys() {
     golden(
         "scratch root",
         &hex(&CacheKey::root(None, &linux_amd64())),
-        "ab8e094e90ab8bc439529a735f850510873e7c8291795d410f331454fb85d805",
+        "48207fdaf7bfb8b8226df64a7c68c029cddc50c760033e851d36175379f95f21",
     );
     golden(
         "image root",
         &hex(&root()),
-        "75e3a7f9230e90b2f22cbd68926efb70731c31c5d4f4a0ef9789b7ff7c9021da",
+        "4d669e4d32682f1268681f288cbeb8fe5145c27877827ab1351b80e28622f6b2",
     );
     let platform = Platform {
         architecture: "arm64".to_owned(),
@@ -52,7 +52,7 @@ fn root_keys() {
     golden(
         "root with every platform field",
         &hex(&CacheKey::root(Some(&digest(1)), &platform)),
-        "e858411304d2a3c251eec227722b20e0608190a4755ea980123665e087bc3d2b",
+        "2e85a0034c248a85db3f24625780aa059cb873ab6f1a8e683e8f1c8e72864faa",
     );
 }
 
@@ -62,19 +62,19 @@ fn step_keys() {
     golden(
         "step with empty inputs",
         &hex(&empty),
-        "a8bcfad0a78ac2177b0cc738cc2507ce8f51ee226780e03796ec642986db3529",
+        "86d41f6f6d1119c3ef45f38a81e32376f9fcc12f398b27c358376350776a9981",
     );
     golden(
         "step with every input",
         &hex(&full().key(&root())),
-        "a6f3004f53b56028173198b4e295c2e55cc907c27ac7f619391c095c30a12055",
+        "a949f4ffdf8c45cdd972d636face070a22bc8e7090b6d40f0cf971a06fdee1bf",
     );
     let mut inputs = KeyInputs::new(&encoding(None));
     inputs.copy_from(CopyFrom::Stage(empty));
     golden(
         "COPY --from=<stage> step",
         &hex(&root().next("COPY --from=build /out /", inputs)),
-        "8f6939bab18a88c37a726427e7148abc691780763a76077017bf5b1a43bd5e5f",
+        "c1d2b83e308f988402fa5d9ecc66fdb927acf54befd87690d3a2d6919d787270",
     );
     // The network and sharing names `full` does not use.
     let mut inputs = KeyInputs::new(&encoding(None));
@@ -89,14 +89,14 @@ fn step_keys() {
             "RUN --mount=type=cache,id=go,sharing=private go build",
             inputs,
         )),
-        "8e348f6b209e57f9edc39b6cb793d5e88d15ead23897273307e1ba307e1a26aa",
+        "c4e70a7c1d27863397cb8de41af6e685f48c7c6a8b0dbd2e4cfe35b9a20556a1",
     );
     let mut inputs = KeyInputs::new(&encoding(None));
     inputs.network(Network::Host);
     golden(
         "RUN step with the host network",
         &hex(&root().next("RUN --network=host true", inputs)),
-        "13a30b9e8e4acd874dcf74b1ea4f76dff5d597f980936b1a12b0ff8d8a762c92",
+        "744fa5b5038f2f6889712660dd182502cda1c71ecb67a98771c6ba19d20de3b0",
     );
 }
 
@@ -112,12 +112,12 @@ fn copy_keys() {
     golden(
         "COPY step",
         &hex(&copy(None, vec![hello("a.txt")]).key(&root())),
-        "6e2dd52a966ca983c7d7b79dc873c0230a6f9be911e80c8b647234cefcc173e3",
+        "141f69c2e97d39f95f3aa3738528882951b0d67ed2994a020ecf9fbf3fa0c29b",
     );
     golden(
         "COPY step with the file renamed",
         &hex(&copy(None, vec![hello("b.txt")]).key(&root())),
-        "14941e9be42acb99dadc9dc198d496aec98174f9b5a2587c21f0ed1bc214c540",
+        "c022ee1e9bf8850e6ca34ef38f811a9d98bba6fe1a6f980b337232a22116fcc2",
     );
     // One mtime later than the epoch, clamped, and one earlier, kept.
     let files = vec![
@@ -133,7 +133,7 @@ fn copy_keys() {
     golden(
         "COPY step under --reproducible",
         &hex(&copy(Some(EPOCH), files).key(&root())),
-        "f8e857ea4ac3d6a0364f8dd16ee784b467f07389b462b75170bcabb16c91ae32",
+        "91aad27c42e4e5f0ef254fde9cad0db4e5f28a34090506dcb8da0654276e42a7",
     );
 }
 
@@ -151,12 +151,12 @@ fn tags() {
     golden(
         "gzip tag",
         &tag(Compression::Gzip, 6, TimePolicy::Kept),
-        "rnk-v1-bef53ce32b702cb50fca05750380ccfd7bf08cf3b0e6e0c95d8d06dee2bee59e",
+        "rnk-v2-94a5f7718b77018ac1be744ed70692af43c77d2716dcf501d6615008216e38a8",
     );
     golden(
         "zstd reproducible tag",
         &tag(Compression::Zstd, 3, TimePolicy::Clamped { epoch: 0 }),
-        "rnk-v1-8cbc428fb8592e18fb87c528583b8b23694a9584fdfc1ade3d6874afc5cdb9c3",
+        "rnk-v2-4c0be455b28f53568ffe1ff1292acf63d1ae87fb3af1ef0bb8524cbabe788193",
     );
     golden(
         "uncompressed tag",
@@ -167,7 +167,7 @@ fn tags() {
                 epoch: 1_700_000_000,
             },
         ),
-        "rnk-v1-0e97749319b93b0a381b183a5c5676d710398d8919c49641b38d0d913dd8ab5d",
+        "rnk-v2-fab985be670211bd2a2ace5aaf692beec32ffdcc269d9624bf0797ef9715cfc9",
     );
 }
 

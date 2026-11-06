@@ -13,8 +13,8 @@ use base64::Engine as _;
 use fake::{Auth, FakeRegistry, Fault};
 use hyper::Method;
 use rnk_cache::{
-    ENCODING_ANNOTATION, Encoding, EntryId, Error, KEY_ANNOTATION, LayerCache, Lookup, Miss,
-    Pushed, Refusal, RegistryCache, Source, TimePolicy, VERSION_ANNOTATION,
+    ENCODING_ANNOTATION, Encoding, EntryId, Error, KEY_ANNOTATION, KEY_VERSION, LayerCache, Lookup,
+    Miss, Pushed, Refusal, RegistryCache, Source, TimePolicy, VERSION_ANNOTATION,
 };
 use rnk_oci::{Compression, MediaType, Reference, Timestamp};
 use rnk_registry::{Credentials, PushOutcome};
@@ -100,7 +100,7 @@ async fn a_push_then_a_lookup_is_a_hit_with_the_same_digests() {
     let annotations = &manifest["annotations"];
     let hex = rnk_oci::Digest::from_sha256_bytes(entry.key().hash());
     assert_eq!(annotations[KEY_ANNOTATION], hex.encoded());
-    assert_eq!(annotations[VERSION_ANNOTATION], "1");
+    assert_eq!(annotations[VERSION_ANNOTATION], KEY_VERSION.to_string());
     assert_eq!(annotations[ENCODING_ANNOTATION], "gzip;level=6;times=kept");
     assert_eq!(
         config["rootfs"]["diff_ids"],
@@ -123,7 +123,8 @@ async fn an_unknown_key_is_a_miss_with_one_request() {
     assert!(matches!(lookup, Lookup::Miss(Miss::Absent)), "{lookup:?}");
     let seen = requests(&registry);
     assert_eq!(seen.len(), 1, "{seen:?}");
-    assert!(seen[0].starts_with(&format!("GET /v2/{REPO}/manifests/rnk-v1-")));
+    let prefix = format!("GET /v2/{REPO}/manifests/rnk-v{KEY_VERSION}-");
+    assert!(seen[0].starts_with(&prefix), "{seen:?}");
 }
 
 #[tokio::test]
@@ -319,7 +320,7 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
         ),
         (
             "another version",
-            annotation(VERSION_ANNOTATION, json!("2")),
+            annotation(VERSION_ANNOTATION, json!((KEY_VERSION + 1).to_string())),
             Refusal::Annotation {
                 name: VERSION_ANNOTATION,
             },

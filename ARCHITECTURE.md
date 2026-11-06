@@ -218,8 +218,10 @@ Builds one stage and assembles the image: one executor per instruction
 `rnk-sandbox`), one layer per changing instruction, lazy layer export (a layer
 is encoded only if pushed, cached or part of the target), then the image
 (config and manifest at one build time) and its output: push, Docker tar, OCI
-layout. Also pulls a base image into the store. It does not depend on
-`rnk-sched`: the binary implements the scheduler's `StageRunner` with it.
+layout. Also pulls a base image into the store, and computes every step's
+cache key before the build (the key plan, inputs for `rnk-cache` to hash). It
+does not depend on `rnk-sched`: the binary implements the scheduler's
+`StageRunner` with it.
 **Must not** keep global state (paths arrive as `rnk-store`'s `BuildPaths`, the
 clock and `SOURCE_DATE_EPOCH` as values), order stages, parse flags, or write
 tar itself (`rnk-layer` does).
@@ -262,7 +264,8 @@ depend on higher ones. Besides the chain:
   reach it through `tracing` spans alone.
 
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
-declares `rnk-oci` and `rnk-registry`.
+declares `rnk-oci` and `rnk-registry`, and `rnk-builder` declares `rnk-cache`
+for its key plan.
 [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
 fixes the edges Phases 4 and 5 add (`rnk-cache` → `rnk-registry`,
 `rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
@@ -297,8 +300,9 @@ the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
 3. **Front end**: read the context and `.dockerignore` (`rnk-context`,
    `rnk-ignore`); parse the Dockerfile into a stage graph and expand build
    arguments (`rnk-dockerfile`).
-4. **Up-front I/O**: resolve and pull every stage's base image into the store
-   and look up the cache, in parallel (`rnk-registry`, `rnk-store`,
+4. **Up-front I/O**: resolve and pull every stage's base image into the store,
+   compute every step's cache key (`rnk-builder`'s key plan, ADR-0114) and
+   look up the cache, in parallel (`rnk-registry`, `rnk-store`,
    `rnk-cache`). In kaniko mode only manifests and configs are fetched here:
    base layers are streamed from the registry into extraction when a stage needs
    them, and no blob is kept unless an output needs its bytes
@@ -307,7 +311,7 @@ the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
    at most `--jobs` `RUN`s at a time; one stage at a time on a shared `/`.
 6. **Build a stage** (`rnk-builder`): prepare the root (`rnk-snapshot`: overlay
    mount over the layer store, or extraction plus a baseline walk). For each
-   instruction compute the cache key; on a hit add the cached layer; on a miss
+   instruction, on a hit of its key add the cached layer; on a miss
    execute it (`RUN` through `rnk-sandbox`, `COPY`/`ADD` through `rnk-rootfs`)
    and take the diff (upper directory, or walk and hash). Update the image
    config.

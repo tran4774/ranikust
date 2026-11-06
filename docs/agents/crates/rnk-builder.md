@@ -3,20 +3,25 @@
 > **Status:** in progress · **Phase:** 1-2 (cache checks: 4) ·
 > **Depends on:** `rnk-snapshot`, `rnk-sandbox`, `rnk-layer`, `rnk-registry`,
 > `rnk-context`, `rnk-ignore`, `rnk-dockerfile`, `rnk-store`, `rnk-rootfs`,
-> `rnk-oci` (`rnk-cache` planned) ·
+> `rnk-oci`, `rnk-cache` ·
 > **Used by:** `ranikust` (its `rnk-sched` runner) ·
 > **Path:** `crates/rnk-builder/`
 
 **TL;DR:** Builds one stage: one executor per instruction, diffs through
 `rnk-snapshot`, `RUN` through `rnk-sandbox`, encoding only the layers that are
-needed (lazy export), image config updates, then image assembly and output.
-Keep it free of global state (paths come as `BuildPaths`) and its output
-independent of timing.
+needed (lazy export), image config updates, then image assembly and output;
+before the build, every step's cache key (the key plan). Keep it free of
+global state (paths come as `BuildPaths`) and its output independent of
+timing.
 
 ## Owns
 
 - One executor per instruction and the `RUN --mount` and secret handling
   (`stage.rs`, `mounts.rs`, `sources.rs`); cache checks come in Phase 4.
+- The key plan (`key_plan.rs`): every step's cache key, computed before any
+  stage runs from the Dockerfile, the context and the base images' digests
+  and configs, by building `rnk-cache`'s `KeyInputs` as the executors would
+  run the step (ADR-0114, ADR-0115).
 - Lazy layer export: a layer is encoded only when it is pushed, cached or
   part of the target.
 - Image config updates, image assembly and output: registry push, Docker tar,
@@ -32,7 +37,8 @@ Boundaries: `crates/rnk-builder/src/lib.rs`. In short:
 - Order stages (`rnk-sched`; this crate does not depend on it, `ranikust`
   implements its `StageRunner`), parse flags (`ranikust`) or the Dockerfile
   (`rnk-dockerfile`); mount or diff (`rnk-snapshot`), fork `RUN`
-  (`rnk-sandbox`), compute keys (`rnk-cache`), write tar (`rnk-layer`).
+  (`rnk-sandbox`), hash keys (`rnk-cache`: this crate only gathers their
+  inputs), write tar (`rnk-layer`).
 - Touch a path in a root except through `RootPath`; reach an output except
   through `rnk_rootfs::OutputDir` (ADR-0076).
 
@@ -142,6 +148,43 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
   the root goes into `StageDone` (ADR-0059); a `RUN`'s spec gets
   `spec.expect_root(root)` for the root the layer holds (ADR-0059).
 
+### Key plan
+
+Blocking; nothing calls it yet (lookups come later in Phase 4).
+
+```rust
+pub struct KeyPlan;                                     // compute(&PlanInput) -> KeyPlan; stage(graph index) -> Option<&StageKeys>
+pub struct PlanInput<'a> { pub graph: &StageGraph, pub stages: &[Stage], pub images: &BTreeMap<String, PlanImage>,
+    pub context: &Context, pub context_files: &ContextFiles, pub platform: &Platform, pub isolation: Isolation,
+    pub network: Network, pub allow_network_host: bool, pub encoding: &Encoding,
+    pub threads: NonZeroUsize }                          // threads hashing context files; no key depends on it
+pub struct PlanImage<'a> { pub digest: &Digest, pub config: &ImageConfig }  // a FROM or COPY --from image: platform manifest digest, config
+pub struct StageKeys;                                   // root(), base_stage(), steps() -> &[Option<StepKey>], final_key()
+pub struct StepKey { pub key: CacheKey, pub reads_stage: Option<usize> }  // a COPY --from=<stage>: a miss when that stage runs (ADR-0114)
+```
+
+- Fail closed: a step the build refuses (the Phase 5 features, `ONBUILD`
+  triggers, a `Direct` refusal) or whose expansion or read fails has no
+  key, and neither has a later step of its stage nor a stage built on or
+  reading it. The one exception, an `ADD` of a local archive
+  ([ADR-0125](../../adr/0125-cache-copy-layers-covers-copy-and-a-local-add.md)), and the
+  owner names keyed as written, after expansion (`--chown`, a `WORKDIR`'s
+  `USER`, [ADR-0124](../../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md)):
+  [cache-and-store](../../design/cache-and-store.md#cache-keys).
+- A file is keyed as the copy writes it: under the name it is copied under,
+  owned by `0:0` (its `--chown` is in the instruction), with `--chmod`
+  applied; hardlinks inside one directory source as links to the first; a
+  socket as an empty file; special files left out under any isolation but
+  `Full`, as the copy leaves them. A FIFO, socket or device is described,
+  never opened.
+- `base_stage()`: a stage built on another chains from its final key.
+  ADR-0114's stop rule holds across it: the caller treats a miss on any
+  step of the base stage as a miss for every step built on it, or a cached
+  layer would sit on a lower it was not made on, and an owner name would
+  resolve in another root than its key names.
+- A `RUN` without `--network` is keyed with the network BuildKit gives it:
+  `none` under the build's `--network=none`, else the default.
+
 ### Instruction behaviour
 
 - `RUN`, `COPY`, `ADD` and a `WORKDIR` other than `/` each run in a layer of
@@ -234,7 +277,7 @@ pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, p
 
 - **Design:** [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export), [`design/overlay-snapshot.md#one-layer-per-instruction`](../../design/overlay-snapshot.md#one-layer-per-instruction), [`#lazy-export`](../../design/overlay-snapshot.md#lazy-export), [`design/kaniko-mode.md#sequential-flow`](../../design/kaniko-mode.md#sequential-flow), [`#after-a-failed-run`](../../design/kaniko-mode.md#after-a-failed-run); [ARCHITECTURE.md](../../../ARCHITECTURE.md) (data flow of a build)
 - **Decisions:** [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (kaniko flags), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (differences between modes), [ADR-0016](../../adr/0016-overlay-mount-options.md) and [ADR-0023](../../adr/0023-mode-flag.md) (`EXDEV` hint), [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (cache keys), [ADR-0032](../../adr/0032-observable-behaviour-follows-buildkit.md) (BuildKit's observable behaviour), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: a build in a user namespace refuses an image with an owner it does not map, at the first failing `chown` for what the build creates)
-- **Open:** [#8](https://github.com/tran4774/ranikust/issues/8) (which crate computes `LayerDemand`), [#23](https://github.com/tran4774/ranikust/issues/23) (encode a layer straight into its upload), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds). Decided, not built yet: [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (cache key fields), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (lookahead, skipping cached stages), [ADR-0121](../../adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md) (mounts for a `Direct` `RUN`, a placed secret file's target)
+- **Open:** [#8](https://github.com/tran4774/ranikust/issues/8) (which crate computes `LayerDemand`), [#23](https://github.com/tran4774/ranikust/issues/23) (encode a layer straight into its upload), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds). Decided, not built yet: [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (lookups up front and skipping cached stages; its keys before the build are the key plan, with [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s fields and [ADR-0124](../../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md)'s owner as written), [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md) (a stage whose hit fails starts again once with no cache, its base always rebuilt from its chain; a skipped stage can stop being skipped; #130, #132; open points [#171](https://github.com/tran4774/ranikust/issues/171), [#172](https://github.com/tran4774/ranikust/issues/172)), [ADR-0125](../../adr/0125-cache-copy-layers-covers-copy-and-a-local-add.md) (`--cache-copy-layers` covers `COPY` and an `ADD` from local sources; #131), [ADR-0121](../../adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md) (mounts for a `Direct` `RUN`, a placed secret file's target)
 - **Evidence:** [exp-08](../../research/experiments/08-parallel-stages-lazy-export.md) (lazy export saved 1.3-6.6 s), [exp-06](../../research/experiments/06-overlay-vs-walk.md) (about 2 s to export one large layer), [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (export variance, image check), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) (lazy saved 2.8-3.6 s in parallel kaniko mode)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/commands/commands.go:32` `DockerCommand` (the shape to compare the executors with); `pkg/executor/build.go:603` `stageBuilder.build` (the per-instruction loop); `:1019` `shouldTakeSnapshot`; `:1034` `saveSnapshotToImage`; `:1689` `DoBuild`
 - **External:** <https://github.com/opencontainers/image-spec/blob/main/config.md>, <https://docs.docker.com/reference/dockerfile/>
@@ -254,6 +297,16 @@ noted.
   The rules of each config change are `rnk_oci::ConfigEdit`'s
   (`crates/rnk-oci/src/edit.rs`); here, that each executor builds the right
   edit.
+- `tests/key_plan/`: keys the same on 1 or 8 threads, with the context
+  listed in another order or touched; under `--reproducible` an mtime older
+  than the epoch counts; each input (a declared build argument, `ENV`,
+  content, mode, name, `--chown` as written, `--chmod`, mounts, a dropped
+  cache mount, the network, a source stage, a heredoc body, the `USER` of a
+  `WORKDIR`) changes the key, an undeclared build argument does not (a
+  secret's value cannot: `PlanInput` holds none); a FIFO keyed without
+  being opened; special files and hardlinks as the copy writes them; an
+  archive `ADD`; no key from a refused step on; stages built on stages; one
+  golden pinning the inputs a build gives.
 - `tests/outputs/` (layer bytes the same at 1, 2 and 8 threads;
   `--reproducible` scrubbing; the OCI layout and Docker tar file by file and
   through `skopeo inspect` when installed; push with mounts against
@@ -293,8 +346,9 @@ noted.
 
 - The instruction record `rnk_builder.instruction` (`stage`, `index`, `line`,
   `kind`, `text` as written, never expanded, `cache_hit`); `stage`, `execute`,
-  `layer` (`skipped`), `upload` (`bytes`, ADR-0055), `assemble`, `output`
-  ([rows](../../design/metrics.md#rnk-builder)).
+  `layer` (`skipped`), `upload` (`bytes`, ADR-0055), `assemble`, `output`,
+  `key_plan` (`stages`, `steps`, `keyed`; one `rnk_cache.key` nested per
+  step) ([rows](../../design/metrics.md#rnk-builder)).
 - Test: with `--reproducible`, digests equal with `--metrics-file` set and
   unset.
 

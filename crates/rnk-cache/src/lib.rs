@@ -37,8 +37,7 @@
 //!   `rnk-ignore` or `rnk-layer`: `rnk-builder` builds [`KeyInputs`] from
 //!   parsed instructions and the context walk ([ADR-0115]). The instruction
 //!   holds no heredoc body: `rnk-builder` adds each one (of a `RUN`, `#!` or
-//!   not, a `COPY` or an `ADD`) through a `KeyInputs` method that task 3
-//!   (#126) adds.
+//!   not, a `COPY` or an `ADD`) through [`KeyInputs::heredoc`].
 //! - Does not own the local store: pulled cache layers enter it through
 //!   `rnk-store`.
 //!

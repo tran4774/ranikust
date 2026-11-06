@@ -10,7 +10,9 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 [ADR-0012](../adr/0012-accept-divergence-between-modes.md),
 [ADR-0021](../adr/0021-rnk-store-crate.md),
 [ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md),
-[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md).
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
+[ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md),
+[ADR-0116](../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md).
 
 ## Invariants
 
@@ -19,8 +21,26 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 - Two builds never download or extract the same digest at the same time.
 - A crash leaves only temporary entries and build directories, both removed
   on the next start.
-- Cache keys depend only on build inputs, never on the snapshot mode, the
-  host, the time or the thread count.
+- The layer cache (Phase 4), against threats T13 and T25 to T29 of the
+  [threat model](../security/threat-model.md#5-threats-and-mitigations),
+  whose rows say what is built:
+  - Keys and tags name build inputs only, never a secret's value or a
+    credential, and never depend on the snapshot mode, the host, the
+    build's time or a thread count ([cache keys](#cache-keys), T27).
+  - Only the operator names the cache repository or layout; it is trusted
+    as the destination is until cache entries are signed (T25).
+  - A hit is hostile image content, checked and extracted as a base layer
+    is, and every cache document read is bounded by `--limit`. A bad
+    entry, or a lookup or push that fails, is a miss or a warning: the
+    exit status and the image do not change (T26).
+  - A layer is pushed under a key only if its step read what the key names
+    (T28).
+  - The cache never changes the output: with `--reproducible`, a cold, a
+    warm and a partial build in one mode give one digest at any `--jobs`
+    (T29).
+  - The store holds no cache key, so builds sharing a state directory
+    share only content-addressed data; kaniko mode on `/` keeps no local
+    cache (T13).
 
 ## Store layout
 
@@ -145,10 +165,12 @@ unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 
 ## Cache keys
 
-The keys are built in `rnk-cache`; nothing computes or looks them up during
-a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
-the inputs the step depends on, chained to the previous key (ADR-0005; the
-fields are
+The keys are hashed in `rnk-cache`; `rnk-builder`'s key plan computes every
+step's key before any stage runs
+([ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)),
+but no build looks them up yet (Phase 4). Each step's key is a SHA-256
+over a version field and the inputs the step depends on, chained to the
+previous key (ADR-0005; the fields are
 [ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
 BuildKit's):
 
@@ -161,35 +183,51 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   never matched again (without the bump, each would be refused with a
   warning).
 - **chain root:** the base image's platform manifest digest (none for
-  `FROM scratch`) and the platform.
+  `FROM scratch`) and the platform; for `FROM <stage>`, that stage's final
+  key. Every step is looked up even after a miss, so the chain alone does
+  not stop reuse: the caller treats a miss in the base stage as a miss for
+  every step built on it (`StageKeys::base_stage`, ADR-0114's stop rule: no
+  cached layer on a lower it was not made on).
 - **instruction:** the instruction after variable expansion, with its flags.
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
-    and `SHELL`;
-  - for a `RUN`, its `--network`, each secret mount's id, target, mode and
-    owner, given or not (below), and each cache mount's id and sharing,
-    marked as dropped where
+    and `SHELL`; an owner name as written, after expansion, never the ids
+    it resolves to (the `USER` that owns what a `WORKDIR` creates, a
+    `--chown`): it resolves in the stage's root, which under the stop rule
+    the previous key fixes, and which does not exist before the build
+    ([ADR-0124](../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md));
+  - for a `RUN`, its network as BuildKit keys it (its `--network`, or
+    `none` for one without it under the build's `--network=none`), each
+    secret mount's id, target, mode and owner, given or not (below), and
+    each cache mount's id and sharing, marked as dropped where
     [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
     drops it;
   - for `COPY` and `ADD` from the build context, each file read (after
     `.dockerignore`): its path relative to the context, content, mode, owner
-    after `--chown`, type, link target, `security.capability` and, under
-    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
-    file older than the epoch counts;
+    (`0:0`, the `--chown` being in the instruction, ADR-0124), type, link
+    target,
+    `security.capability` and, under `--reproducible`, its mtime clamped to
+    the epoch, so only the mtime of a file older than the epoch counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (a forced miss when
     that stage ran in this build,
     [ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)).
 
-  The instruction holds no heredoc body: `rnk-builder` adds each one (of a
-  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
-  that task 3 (#126) adds.
+  The instruction holds no heredoc body: each one (of a `RUN`, `#!` or
+  not, a `COPY` or an `ADD`) is an input of its own, after the expansion
+  BuildKit does. An `ADD` of a local archive is keyed as one file, the
+  archive, as BuildKit keys it, though the build refuses it until Phase 5
+  ([ADR-0125](../adr/0125-cache-copy-layers-covers-copy-and-a-local-add.md)):
+  no build pushes a layer under that key before then, and a change to how
+  an archive is extracted is keyed or bumps `KEY_VERSION`.
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
   unordered collection.
 
 `ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
-features. How the fields are written into the hash:
+features; until then, as for any step the plan cannot key as the build runs
+it, that step and every step after it have no key: a miss. How the fields
+are written into the hash:
 [the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
 
 A secret mount is keyed whether or not the build is given the secret, as
@@ -259,9 +297,41 @@ extracts it under the same rules; in kaniko mode,
 [a cache hit](kaniko-mode.md#a-cache-hit) says when a blob found bad leaves
 the root broken. A blob found bad makes its entry a miss with a warning, as
 a refused entry is
-([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
-how often a stage may restart is not settled, decided before
-[#130](https://github.com/tran4774/ranikust/issues/130)).
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
+
+A bad cache entry costs a miss and a restart, not a failed build
+([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
+decided and planned in [#130](https://github.com/tran4774/ranikust/issues/130)
+and [#132](https://github.com/tran4774/ranikust/issues/132), not built yet).
+What a restart does when a layer of its chain is held by neither the store nor a
+registry is not decided [open: #171], nor are five more cases of the restart
+[open: #172].
+
+- In kaniko mode with a directory per stage a hit streams into the stage root; on
+  `/` it is spooled and verified before extraction. A hit found bad before its
+  extraction began (the source refused it; on `/`, the spool pass, which will also
+  check the tar headers and `--limit`,
+  [#174](https://github.com/tran4774/ranikust/issues/174)) is a plain miss. One
+  found bad after extraction began (on `/`, only a failure while writing) makes
+  the stage start again from its base
+  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
+  at most once and with no cache at all: every step runs, and its layers are
+  pushed under their keys as a cold build pushes them, only the steps the cache
+  flags cache.
+- A restart always rebuilds its base by extracting the layers of its chain by
+  digest, from the store, else from the registry that holds them, whether or not
+  the parent's directory is still there.
+- A connection dropped after the first byte of a hit is re-requested from the
+  offset with a Range request, about 3 attempts without progress, and the answer
+  must be a 206 starting at the offset; then the entry is a miss and the stage
+  starts again. On `/`, a resume that still fails during the spool is a plain
+  miss. That count does not bound a connection that drops every few bytes; the
+  overall pull deadline is [#28](https://github.com/tran4774/ranikust/issues/28).
+- A bad blob found while pushing the layers of a skipped, fully cached stage
+  makes it stop being skipped: it is built with no cache, its layers pushed as
+  above. A blob mounted across repositories
+  ([ADR-0055](../adr/0055-stream-layers-keep-nothing-proportional-to-the-image.md))
+  is not read: it is trusted by its digest and its entry's diff ID.
 
 A push refuses a layer of another compression than its entry's, then sends
 the layer blob (skipped when the repository holds it, mounted from a

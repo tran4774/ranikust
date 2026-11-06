@@ -8,7 +8,8 @@
 //! ([`LayerSource`]) when its [`LayerDemand`] needs it; [`assemble`] turns the
 //! final config and the [`BlobLayer`]s into an [`Image`] at one
 //! [`BuildTime`]; [`write_oci_layout`], [`write_docker_tar`] and [`push`]
-//! write it to the [`Outputs`]. Cache checks come in Phase 4.
+//! write it to the [`Outputs`]. [`KeyPlan`] computes every step's cache
+//! key before the build (ADR-0114); lookups come later in Phase 4.
 //!
 //! # Boundaries
 //!
@@ -30,6 +31,7 @@ mod error;
 mod glob;
 mod history;
 mod image;
+mod key_plan;
 mod layer;
 mod mounts;
 mod output;
@@ -43,6 +45,7 @@ pub use error::{Error, Result};
 pub use image::{
     HISTORY_COMMENT, Image, assemble, assemble_annotated, image_format, instruction_history,
 };
+pub use key_plan::{KeyPlan, PlanImage, PlanInput, StageKeys, StepKey};
 pub use layer::{
     AnonBlob, BlobLayer, EMPTY_LAYER_DIFF_ID, EntriesLayer, LayerBytes, LayerDemand, LayerExporter,
     LayerSource,

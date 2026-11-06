@@ -9,10 +9,12 @@ use crate::canonical::Canonical;
 use crate::inputs::KeyInputs;
 
 /// The version of the key algorithm, hashed into every key and named in
-/// every tag. Any change to what a key or a tag hashes, or how, or to the
-/// entry form a lookup checks, bumps it: new keys then miss the old
-/// entries, which are never rewritten (ADR-0005).
-pub const KEY_VERSION: u32 = 1;
+/// every tag. Any change to what a key or a tag hashes, or how, bumps it,
+/// and so does any change to the entry form a lookup checks or to the
+/// layer format, what a cached layer holds for given inputs: [`Encoding`]
+/// names no encoder version. New keys then miss the old entries, which are
+/// never rewritten (ADR-0005).
+pub const KEY_VERSION: u32 = 2;
 
 /// A step's cache key: `key(k) = SHA-256(version, key(k-1), instruction,
 /// inputs(k))`, chained from [`CacheKey::root`].
