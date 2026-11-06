@@ -47,13 +47,19 @@ here it stood for option (a).
   counted from when an entry was last taken, not when its build ended.
 - **Cost.** One descriptor per entry a build uses, held until the build ends.
 
-Not settled here, and decided before Phase 5's task 17
-([#157](https://github.com/tran4774/ranikust/issues/157)), which builds `prune`,
-is built (a `question` issue if it needs the maintainer): which file the shared
-lock is taken on (the per-digest lock files exist already and are never removed,
-#1), and what the marker is for a blob, an extracted layer and a cache mount.
-[#76](https://github.com/tran4774/ranikust/issues/76) (Phase 3) builds the
-in-use mechanism that `prune --all` uses, and #157 uses the same one.
+Not settled here, each decided before the task that needs it is built (a
+`question` issue if it needs the maintainer):
+
+- Which file the shared lock is taken on (the per-digest lock files exist
+  already and are never removed, #1). It is decided before
+  [#76](https://github.com/tran4774/ranikust/issues/76) (Phase 3) is built,
+  since #76 builds the in-use mechanism that its minimal `prune --all` uses
+  ([ADR-0105](0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md):
+  "the mechanism being #76's"), and Phase 5's `prune` uses the same one.
+- What the marker is for a blob, an extracted layer and a cache mount. It is
+  decided before Phase 5's task 17
+  ([#157](https://github.com/tran4774/ranikust/issues/157)), which builds
+  `prune`, is built.
 
 ### Consequences
 
@@ -89,8 +95,10 @@ Related: [ADR-0006](0006-persistent-store.md) (digest locks and atomic rename),
 (the minimal `prune --all`, which already promises never to remove what a
 running build uses, "the mechanism being #76's").
 
-[cache-and-store](../design/cache-and-store.md#prune) already points here.
-Follow-ups, with Phase 5's task for `prune`
-([#157](https://github.com/tran4774/ranikust/issues/157)) and not before it is
-built: the `rnk-store` and `ranikust` cards, the book, the threat model (T13),
-and the `## Changelog` entry.
+[cache-and-store](../design/cache-and-store.md#prune) and the `rnk-store` card
+already point here. Follow-ups, not before the task is built: with
+[#76](https://github.com/tran4774/ranikust/issues/76) (Phase 3), the lock part
+of the `rnk-store` card and the threat model's T13 row; with Phase 5's task for
+`prune` ([#157](https://github.com/tran4774/ranikust/issues/157)), the marker
+part of the `rnk-store` card, the `ranikust` card, the book, and the
+`## Changelog` entry.

@@ -125,8 +125,9 @@ touch.
   `GIT_AUTH_TOKEN` and `GIT_AUTH_HEADER`, host-suffixed first
   (`source/http/source.go:243-272`, `source/git/source.go:438-532`); an
   `ADD <url>` fetch reads no netrc.
-- ADR-0035 is the only record of the backends, flags and fragments, none built:
-  the planned design is in [rnk-context](../agents/crates/rnk-context.md).
+- **[code]** none of ADR-0035's backends, flags or fragments is built; ADR-0035
+  is the only record of them, and the planned design is in
+  [rnk-context](../agents/crates/rnk-context.md).
 
 ## More Information
 

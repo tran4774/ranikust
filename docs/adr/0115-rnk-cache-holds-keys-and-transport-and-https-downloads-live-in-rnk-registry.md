@@ -60,7 +60,8 @@ and `ADD <url>` share; and `ContextSource` stays synchronous.
 
 For the Phase 4 edges the maintainer answered (2026-11-06: "Registry + OCI
 layout an toàn (khuyến nghị)", "Registry plus a safe OCI layout (recommended)"),
-which stood for the recommended Phase 4 edges of #7; and for Phase 5
+which stood for the Phase 4 edges of #7 as the question put to him recommended
+them (#7 itself says "Recommendation: none"); and for Phase 5
 (2026-11-06: "Tải trong rnk-registry, chặt (khuyến nghị)", "Download in
 rnk-registry, strict (recommended)"), which stood for the Phase 5 download
 question's option (b) and option (a) of #6.

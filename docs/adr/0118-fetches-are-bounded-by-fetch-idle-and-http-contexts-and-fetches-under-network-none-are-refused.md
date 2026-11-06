@@ -135,4 +135,6 @@ Follow-ups, with Phase 5's tasks and not before they are built: the `--limit`
 table in the book and the `ranikust` card, the threat model's rows for
 Dockerfile-named fetches, the kaniko map, and the `## Changelog` entry. The
 code's message for an `http://` context (`crates/ranikust/src/config.rs`) says
-"come in Phase 5"; it must refuse it for good and name `https://`.
+"come in Phase 5"; it must refuse it for good and name `https://`. Task
+[#162](https://github.com/tran4774/ranikust/issues/162) changes it, ahead of
+Phase 5's tasks.

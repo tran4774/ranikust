@@ -166,5 +166,12 @@ Not covered: a content-based `COPY --from` key beside this definition-based one
 Follow-ups, with Phase 4's tasks and not before they are built: change
 [cache-and-store](../design/cache-and-store.md), the
 [scheduler](../design/scheduler.md) and [kaniko-mode](../design/kaniko-mode.md)
-design docs, the `rnk-sched` and `ranikust` cards, the book's `--materialize`
-entry and the kaniko map, and add the `## Changelog` entry.
+design docs, the `rnk-sched` and `ranikust` cards and the kaniko map, and add
+the `## Changelog` entry. The book's `--materialize` entry already says where
+the flag will be accepted, and changes when it is.
+
+The code's message for `--materialize` (`crates/ranikust/src/cli.rs`) says "the
+layer cache comes in Phase 4" for every mode; it must say that the flag will be
+accepted in kaniko mode on `/` only. Task
+[#162](https://github.com/tran4774/ranikust/issues/162) changes it, ahead of
+Phase 4's tasks.

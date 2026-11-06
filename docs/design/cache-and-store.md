@@ -132,7 +132,8 @@ the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age. Both forms open the store as a build does
 (state-directory checks, the `.ranikust-state` marker), so they refuse a
 directory ranikust did not make; they take the same locks as a build and never
-remove an entry a running build uses (decided by
+remove an entry a running build uses (the mechanism is
+[#76](https://github.com/tran4774/ranikust/issues/76)'s, in Phase 3; decided by
 [ADR-0122](../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
 not built yet: a shared `flock` on each entry a build uses, and the entry's
 marker mtime as its last use). The defaults are BuildKit's tiers, aging by last
@@ -156,13 +157,17 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **instruction:** the instruction after variable expansion, with every
   declared build argument, the environment in effect, `USER`, `WORKDIR` and
   `SHELL`.
-- **inputs:** for `COPY`/`ADD`, each file's content, mode, owner after
-  `--chown`, type, link target and `security.capability`, read from the
-  context (after `.dockerignore`), never its mtime; for `COPY --from=<stage>`,
-  the source stage's final key when that stage did not run in this build; for
-  `COPY --from=<image>`, that image's platform manifest digest; for `RUN`, its
-  network and its mounts (a secret's id, target, mode and owner, never its
-  value; a cache mount's id and sharing).
+- **inputs:** for `COPY`/`ADD`, each file's path relative to the source,
+  content, mode, owner after `--chown`, type, link target and
+  `security.capability`, read from the context (after `.dockerignore`), never
+  its mtime, except under `--reproducible`: a file's clamped mtime (its own when
+  older than the epoch); for `COPY --from=<stage>`, the source stage's final key
+  (a forced miss when that stage ran in this build); for `COPY --from=<image>`,
+  that image's platform manifest digest; for `RUN`, its network and its mounts
+  (a secret's id, target, mode and owner, never its value; a cache mount's id
+  and sharing, and a cache mount marked as dropped where
+  [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) drops
+  it).
 - **never:** the snapshot mode, the host, timestamps, thread counts.
 
 The field list is decided by

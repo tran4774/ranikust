@@ -1,9 +1,10 @@
 # rnk-cache
 
 > **Status:** skeleton · **Phase:** 4 ·
-> **Depends on:** `rnk-registry`, `rnk-oci`, `rnk-rootfs` (planned, ADR-0115),
-> `rnk-store` (ADR-0021) ·
-> **Used by:** `rnk-builder`, `rnk-sched` (up-front lookups) ·
+> **Depends on:** `rnk-registry`, `rnk-oci`, `rnk-rootfs` (ADR-0115) and
+> `rnk-store` (ADR-0021), all planned: the crate declares none yet ·
+> **Used by:** `rnk-builder` (its lookups started up front by `rnk-sched`
+> through `StageRunner`) ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per instruction and looks
@@ -42,10 +43,10 @@ impl CacheKey {
     pub fn next(&self, instr: &ExpandedInstr, inputs: &KeyInputs) -> Self; // [design]
     pub fn tag(&self, encoding: &Encoding) -> String;                     // form: ADR-0113; derivation: #125
 }
-pub struct KeyInputs { /* sorted file digests, mount specs, args, env */ }   // fields: ADR-0113
+pub struct KeyInputs { /* per file: path, content digest, attributes, clamped mtime under --reproducible; mount specs; args; env; USER, WORKDIR, SHELL */ }   // fields: ADR-0113
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>;  // takes the encoding (ADR-0113): a value of rnk-cache's own, as it does not depend on rnk-layer (ADR-0115)
-    async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
+    async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &EncodedLayer) -> Result<()>;  // asynchronous; the tag and the entry's annotations need the encoding (ADR-0113)
 }
 ```
 
@@ -61,9 +62,11 @@ The key formula and its fields: [`design/cache-and-store.md#cache-keys`](../../d
 
 - A new algorithm bumps `KEY_VERSION`; old entries are never matched again
   and never rewritten.
-- `COPY`/`ADD` inputs are the digests of the files actually read, after
-  `.dockerignore`; the instruction is hashed after variable expansion, the
-  environment in a fixed order [inferred].
+- `COPY`/`ADD` inputs are the files actually read, after `.dockerignore`: each
+  one's path relative to the source, content digest and attributes, and under
+  `--reproducible` its clamped mtime (ADR-0113). The instruction is hashed after
+  variable expansion, with the environment in a fixed order [inferred]: the
+  order itself is not decided.
 - Same inputs, same key, in either mode and with any `--jobs`; a layer cached
   by one mode may serve the other (ADR-0005).
 - A `type=secret` mount adds its specification, never its content (T11);
@@ -114,5 +117,6 @@ Planned.
 - Users moving from kaniko start with a cold cache: decided, not a bug
   (ADR-0005).
 - A secret in a key or a cache tag leaks through the registry (T11).
-- The chain root and instruction fields are [inferred] and no cache
-  measurement exists: decide nothing and claim no speed-up before Phase 4.
+- The key's fields and the chain root are decided by ADR-0113 and not built,
+  and no cache measurement exists yet: claim no speed-up before Phase 4
+  measures one.

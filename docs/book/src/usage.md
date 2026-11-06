@@ -90,7 +90,7 @@ kaniko: `--no-push` and `--no-push=true` turn it on, `--no-push=false` off;
 | `--cache=false` | Accepted: no layer cache is what this version does. `--cache` itself comes later. |
 | `--skip-push-permission-check`, `--preserve-context` | Accepted: ranikust makes no write check before the build, and never changes or deletes the context. In kaniko mode on a container's `/`, a context inside the root is refused unless it is kept out of the layers (a volume, `/ranikust`). |
 | `--single-snapshot` | Not offered, in any mode and whatever its value: one snapshot at the end saves a few seconds at most and loses the layer per step that a cached rebuild reuses ([ADR-0065]). Drop it. |
-| `--materialize` | Refused until the layer cache, the only place it has an effect, as `--cache` ([ADR-0064]). |
+| `--materialize` | Refused until the layer cache, the only place it has an effect, as `--cache` ([ADR-0064]). With the cache (Phase 4) it is accepted in kaniko mode on a container's `/` only, as in kaniko, and refused in the other modes, whose stage roots are deleted at the end ([ADR-0114]). |
 
 ### Reading the Dockerfile
 
@@ -215,8 +215,8 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
   `--skip-default-registry-fallback`, `--registry-client-cert`,
   `--push-ignore-immutable-tag-errors`.
 - **Backlog:** `--credential-helpers`, for built-in cloud helpers
-  ([#138](https://github.com/tran4774/ranikust/issues/138)); until then helpers
-  are external `docker-credential-*` binaries.
+  ([#138](https://github.com/tran4774/ranikust/issues/138)). External
+  `docker-credential-*` helpers come in Phase 5; until then no helper runs.
 - **Not scheduled:** `--dryrun`.
 - **Not planned:** `--bucket` (`-b`), `--azure-container-registry-config` and
   kaniko's `bake`.
@@ -259,6 +259,7 @@ behaviour, which for most of them is what the flag turns on.
 [ADR-0058]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0058-a-step-that-changes-nothing-adds-no-layer.md
 [ADR-0064]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0064-materialize-refused-until-the-layer-cache.md
 [ADR-0065]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0065-single-snapshot-refused-for-good.md
+[ADR-0114]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md
 [ADR-0076]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0076-the-build-context-owner-is-a-lower-trust-principal.md
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md

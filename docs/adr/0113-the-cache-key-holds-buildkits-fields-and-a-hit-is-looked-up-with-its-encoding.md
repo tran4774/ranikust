@@ -27,6 +27,13 @@ compression, its level and the file times (now, or the `--reproducible` epoch).
 kaniko's key holds none of them and appends a hit as it is, so a warm build can
 change an image's digest and break `--reproducible`.
 
+A third question came from Phase 4's task 2
+([#125](https://github.com/tran4774/ranikust/issues/125)), the key's code: under
+`--reproducible`, a file newer than the epoch has its mtime clamped to it, but a
+context file older than the epoch keeps its own mtime, and that mtime is in the
+layer. A key with no mtime would let a warm build give another digest than a
+cold one.
+
 ## Considered Options
 
 The key's fields (the option letters are those of the question put to the
@@ -49,17 +56,31 @@ What a lookup uses:
 - (c) The key alone, the entry used as it is (kaniko): free, but a warm build
   may differ from a cold one.
 
+A file's mtime (the question of 2026-11-07, which this record carries only as
+the option the maintainer chose):
+
+- Under `--reproducible` only, the mtime of a file older than the epoch goes
+  into the key: images do not change, and the cost is a few misses when such a
+  file's mtime changes, which is rare.
+
 ## Decision Outcome
 
 A cache key is made of BuildKit's fields hashed with SHA-256, a cache entry is a
 one-layer OCI image found by a tag `rnk-v<version>-<hex>`, and a lookup uses the
 key together with the layer's encoding, so a warm build gives the cold build's
-digests.
+digests; under `--reproducible` the key also holds each copied file's clamped
+mtime.
 
 The maintainer's answer (2026-11-06: "Kiểu BuildKit + encoding (khuyến nghị)",
 "BuildKit style plus encoding (recommended)") stood for option (a) of #13 with
 the recommendations put with (a) (the entry, the tag, the TTL and
 bad-entry-is-a-miss), and option (a) of the encoding question.
+
+On 2026-11-07, asked what the key does with a file's mtime (the question
+raised by task 2, #125), he answered "Đưa mtime đã clamp vào key (khuyến nghị)"
+("Put the clamped mtime into the key (recommended)"). It stood for the option
+that puts, only under `--reproducible`, the mtime of a file older than the epoch
+into the key.
 
 - **Fields.** `H` is SHA-256 and the formula is ADR-0005's (see
   [cache-and-store](../design/cache-and-store.md#cache-keys)). A step's inputs
@@ -70,8 +91,10 @@ bad-entry-is-a-miss), and option (a) of the encoding question.
   - for a `RUN`, its network and its mounts: a secret's id, target, mode and
     owner (never its value), a cache mount's id and sharing, and a cache mount
     marked as dropped where ADR-0057 drops it;
-  - for `COPY` and `ADD`, each file's content, mode, uid and gid after
-    `--chown`, type, link target and `security.capability`, never mtime;
+  - for `COPY` and `ADD`, each file's path relative to the source, content,
+    mode, uid and gid after `--chown`, type, link target and
+    `security.capability`, never mtime, except under `--reproducible`: a file's
+    clamped mtime (its own when older than the epoch);
   - for `COPY --from=<image>`, that image's platform manifest digest.
 
   Every step's key holds the declared `ARG`s, the environment, `USER`, `WORKDIR`
@@ -117,6 +140,8 @@ issue if it needs the maintainer), and the `rnk-cache` card records it.
   `SHELL`) is in the key of every step, not only of a `RUN`, used or not.
 - Bad, because builds with another compression, level or time policy share no
   entries, so the repository holds one entry per encoding in use.
+- Bad, because under `--reproducible` a change to the mtime of a file older than
+  the epoch is a miss, a few misses that are rare.
 - Neutral, because users moving from kaniko start with a cold cache, as ADR-0005
   accepted.
 
@@ -139,11 +164,16 @@ issue if it needs the maintainer), and the `rnk-cache` card records it.
   declared `ARG` with a value is in a `RUN`'s environment, used or not
   (`frontend/dockerfile/dockerfile2llb/convert.go:1682-1730`); a `COPY` file
   hash holds mode, uid, gid, size, type, link name, `security.capability`,
-  content SHA-256 and never mtime (`cache/contenthash/tarsum.go:38-72`); a base
-  image is keyed by manifest digest and platform
-  (`source/containerimage/pull.go:62-84`).
+  content SHA-256 and never mtime (`cache/contenthash/tarsum.go:38-72`); it
+  holds no name either: a file is hashed with an empty name, and its name comes
+  from the directory scan, which writes it into the directory's hash
+  (`cache/contenthash/filehash.go:53`, `checksum.go:911`); a base image is keyed
+  by manifest digest and platform (`source/containerimage/pull.go:62-84`).
 - **[code]** `rnk-cache` holds no key yet; ADR-0057 drops a cache mount for a
-  `Direct` `RUN`.
+  `Direct` `RUN`. Under `--reproducible` the layer writer clamps a later mtime
+  to the epoch and keeps an earlier one
+  (`crates/rnk-layer/src/writer.rs:54-59`), so the mtime of an older file is in
+  the layer.
 - **[inferred]** Nothing measures the miss rate of (a) against (b): W2 has never
   been built with a cache
   ([ADR-0005](0005-own-versioned-cache-key.md#evidence)).
@@ -151,7 +181,8 @@ issue if it needs the maintainer), and the `rnk-cache` card records it.
 ## More Information
 
 Refines ADR-0005, which stays accepted: it fixes the field list that ADR-0005
-left to Phase 4. Answers #13 and the Phase 4 question on the encoding. Related:
+left to Phase 4. Answers #13, the Phase 4 question on the encoding and the
+question on a file's mtime (2026-11-07, raised by #125). Related:
 [ADR-0032](0032-observable-behaviour-follows-buildkit.md) (BuildKit breaks the
 tie), [ADR-0049](0049-security-and-performance-over-kaniko-compatibility.md),
 [ADR-0079](0079-resource-limits-with-a-limit-flag.md) (every document read is
@@ -163,5 +194,5 @@ with the key because it is a condition on pushing under one.
 
 [cache-and-store](../design/cache-and-store.md#cache-keys) and the `rnk-cache`
 card already point here. Follow-ups, with Phase 4's tasks and not before they
-are built: their field lists, the threat model's T13 row and the book's usage
-page, and the `## Changelog` entry.
+are built: the `rnk-cache` card's `KeyInputs` sketch, the threat model's T13
+row, the book's usage page, and the `## Changelog` entry.

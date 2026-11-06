@@ -135,4 +135,6 @@ Follow-ups, with Phase 4's tasks and not before they are built: the
 [kaniko-mode](../design/kaniko-mode.md) design docs, the threat model, the
 kaniko map, and the `## Changelog` entry. The code's message for
 `--compressed-caching` (`crates/ranikust/src/cli.rs`) says "comes in Phase 4"
-for both values; it must refuse `=false` and say why.
+for both values; it must refuse `=false` and say why. Task
+[#162](https://github.com/tran4774/ranikust/issues/162) changes it, ahead of
+Phase 4's tasks.

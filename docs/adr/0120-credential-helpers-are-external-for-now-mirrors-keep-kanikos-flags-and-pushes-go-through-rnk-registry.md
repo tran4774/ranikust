@@ -173,4 +173,6 @@ Follow-ups, with Phase 5's tasks and not before they are built: the
 section and the mirror flags), the kaniko map, the threat model (T11, and a row
 for helpers), and the `## Changelog` entry. The code's message for
 `--credential-helpers` (`crates/ranikust/src/cli.rs`) says Phase 5; since this
-ADR it is a later phase, in the Backlog as #138.
+ADR it is a later phase, in the Backlog as #138. Task
+[#162](https://github.com/tran4774/ranikust/issues/162) changes it, ahead of
+Phase 5's tasks.

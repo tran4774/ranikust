@@ -182,3 +182,5 @@ design docs, the `rnk-builder` and `rnk-snapshot` cards, the kaniko map, the
 book, the threat model (T21, and section 6 for read-only by convention), and the
 `## Changelog` entry. The code's message for `RUN --mount=type=ssh`
 (`crates/rnk-builder/src/mounts.rs`) says "Phase 5"; it must say Backlog (#139).
+Task [#162](https://github.com/tran4774/ranikust/issues/162) changes it, ahead
+of Phase 5's tasks.

@@ -161,7 +161,8 @@ Not built: `open` refuses them. `ADD <url>` and `ADD <git>` belong to
   accepted both; ADR-0119 keeps Docker's only.
 - Plan (ADR-0035): a `GitSource` with two backends behind one trait: a
   built-in `gix` by default (a static binary in `scratch` has no `git` to
-  call; TLS roots shared with `rnk-registry`, ADR-0024) and
+  call; ADR-0035 planned to share `rnk-registry`'s TLS roots, ADR-0024, and
+  how `gix` gets them is not settled, below) and
   `--git-backend=external`, a `git` binary run by the ADR's hardened recipe
   (isolated from the host's configuration, hooks and `fsmonitor` off),
   configured by `--git-binary`, `--git-config`, `--git-arg` and
