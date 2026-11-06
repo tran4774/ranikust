@@ -163,12 +163,13 @@ Not covered: a content-based `COPY --from` key beside this definition-based one
 (listed under "carried over" in
 [#123](https://github.com/tran4774/ranikust/issues/123)).
 
-Follow-ups, with Phase 4's tasks and not before they are built: change
-[cache-and-store](../design/cache-and-store.md), the
+[cache-and-store](../design/cache-and-store.md) already holds the key of
+`COPY --from=<stage>`, and the book's `--materialize` entry already says where
+the flag will be accepted. Follow-ups, with Phase 4's tasks and not before they
+are built: the lookahead and the skipping, added to cache-and-store, the
 [scheduler](../design/scheduler.md) and [kaniko-mode](../design/kaniko-mode.md)
-design docs, the `rnk-sched` and `ranikust` cards and the kaniko map, and add
-the `## Changelog` entry. The book's `--materialize` entry already says where
-the flag will be accepted, and changes when it is.
+design docs; the `rnk-sched` and `ranikust` cards, the kaniko map, and the
+`## Changelog` entry.
 
 The code's message for `--materialize` (`crates/ranikust/src/cli.rs`) says "the
 layer cache comes in Phase 4" for every mode; it must say that the flag will be

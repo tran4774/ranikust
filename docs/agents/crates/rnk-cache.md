@@ -10,8 +10,9 @@
 **TL;DR:** Computes a versioned, chained cache key per instruction and looks
 up and pushes cached layers in a registry repository or an OCI layout. A key
 depends on the instruction, the context it reads and the previous key only,
-never on the snapshot mode, host, time or thread count, and it is not
-compatible with kaniko's cache. The crate is a skeleton (docs, no code): the
+never on the snapshot mode, host, time (apart from a file's mtime under
+`--reproducible`, ADR-0113) or thread count, and it is not compatible with
+kaniko's cache. The crate is a skeleton (docs, no code): the
 CLI refuses `--cache`, `--cache-repo` and the related flags until Phase 4 and
 accepts `--cache=false` (ADR-0036).
 
@@ -26,7 +27,8 @@ accepts `--cache=false` (ADR-0036).
 Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 
 - Read or write kaniko's cache or mimic its keys (ADR-0005).
-- Let a key depend on the snapshot mode, host, users, timestamps, thread
+- Let a key depend on the snapshot mode, host, users, timestamps (apart from the
+  mtime of a file older than the epoch under `--reproducible`, ADR-0113), thread
   count or the order of an unordered collection.
 - Transfer blobs (`rnk-registry`), encode layers (`rnk-layer`), own the local
   store (`rnk-store`) or choose what to export (`rnk-builder`).
@@ -43,7 +45,7 @@ impl CacheKey {
     pub fn next(&self, instr: &ExpandedInstr, inputs: &KeyInputs) -> Self; // [design]
     pub fn tag(&self, encoding: &Encoding) -> String;                     // form: ADR-0113; derivation: #125
 }
-pub struct KeyInputs { /* per file: path, content digest, attributes, clamped mtime under --reproducible; mount specs; args; env; USER, WORKDIR, SHELL */ }   // fields: ADR-0113
+pub struct KeyInputs { /* per file: path, content digest, attributes, mtime of a file older than the epoch under --reproducible; a RUN's network and mount specs; COPY --from=<image>'s manifest digest; COPY --from=<stage>'s final key (ADR-0114); args; env; USER, WORKDIR, SHELL */ }   // fields: ADR-0113
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>;  // takes the encoding (ADR-0113): a value of rnk-cache's own, as it does not depend on rnk-layer (ADR-0115)
     async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &EncodedLayer) -> Result<()>;  // asynchronous; the tag and the entry's annotations need the encoding (ADR-0113)
@@ -64,9 +66,9 @@ The key formula and its fields: [`design/cache-and-store.md#cache-keys`](../../d
   and never rewritten.
 - `COPY`/`ADD` inputs are the files actually read, after `.dockerignore`: each
   one's path relative to the source, content digest and attributes, and under
-  `--reproducible` its clamped mtime (ADR-0113). The instruction is hashed after
-  variable expansion, with the environment in a fixed order [inferred]: the
-  order itself is not decided.
+  `--reproducible` the mtime of a file older than the epoch (ADR-0113). The
+  instruction is hashed after variable expansion, with the environment in a
+  fixed order [inferred]: the order itself is not decided.
 - Same inputs, same key, in either mode and with any `--jobs`; a layer cached
   by one mode may serve the other (ADR-0005).
 - A `type=secret` mount adds its specification, never its content (T11);

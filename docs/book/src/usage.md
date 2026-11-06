@@ -259,9 +259,9 @@ behaviour, which for most of them is what the flag turns on.
 [ADR-0058]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0058-a-step-that-changes-nothing-adds-no-layer.md
 [ADR-0064]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0064-materialize-refused-until-the-layer-cache.md
 [ADR-0065]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0065-single-snapshot-refused-for-good.md
-[ADR-0114]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md
 [ADR-0076]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0076-the-build-context-owner-is-a-lower-trust-principal.md
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
+[ADR-0114]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md
 [threat model]: https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks

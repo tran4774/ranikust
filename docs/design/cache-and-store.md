@@ -160,15 +160,18 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **inputs:** for `COPY`/`ADD`, each file's path relative to the source,
   content, mode, owner after `--chown`, type, link target and
   `security.capability`, read from the context (after `.dockerignore`), never
-  its mtime, except under `--reproducible`: a file's clamped mtime (its own when
-  older than the epoch); for `COPY --from=<stage>`, the source stage's final key
+  its mtime, except under `--reproducible`: the mtime of a file older than the
+  epoch; for `COPY --from=<stage>`, the source stage's final key
   (a forced miss when that stage ran in this build); for `COPY --from=<image>`,
   that image's platform manifest digest; for `RUN`, its network and its mounts
   (a secret's id, target, mode and owner, never its value; a cache mount's id
   and sharing, and a cache mount marked as dropped where
   [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) drops
   it).
-- **never:** the snapshot mode, the host, timestamps, thread counts.
+- **never:** the snapshot mode, the host, timestamps (apart from the mtime of a
+  file older than the epoch under `--reproducible`,
+  [ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
+  thread counts.
 
 The field list is decided by
 [ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)
