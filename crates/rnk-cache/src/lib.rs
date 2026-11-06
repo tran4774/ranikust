@@ -17,13 +17,13 @@
 //! - A key depends on the step's instruction, its inputs and the previous
 //!   key only: never on the snapshot mode, a host user or id map, the time,
 //!   a thread count or the order of an unordered collection. The API takes
-//!   none of them, and has no field meant for a secret's value; a secret's
-//!   `env=` variable is never part of the environment it is given (threat
-//!   model T11).
+//!   none of them, and has no field meant for a secret's value; callers
+//!   never pass a secret mount's `env=` variable to [`KeyInputs::env`]
+//!   (threat model T11).
 //! - Key computation opens no file and no connection: file content arrives
-//!   as bytes the caller read through `rnk-rootfs`. A cache in an OCI layout
-//!   will reach its directory only through `rnk-rootfs`, and a registry only
-//!   through `rnk-registry` (ADR-0115).
+//!   as bytes the caller read through `rnk-rootfs`. The cache in an OCI
+//!   layout (planned) reaches its directory only through `rnk-rootfs`, and
+//!   a registry only through `rnk-registry` (ADR-0115).
 //! - Depends on `rnk-oci` for digests and platforms, never on
 //!   `rnk-dockerfile`, `rnk-ignore` or `rnk-layer`: `rnk-builder` builds
 //!   [`KeyInputs`] from parsed instructions and the context walk

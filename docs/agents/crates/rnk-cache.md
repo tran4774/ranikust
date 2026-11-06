@@ -65,7 +65,7 @@ Planned (task 4 and task 11 of #123):
 ```rust
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>; // by tag, ADR-0113
-    async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
+    async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &CachedLayer) -> Result<()>; // asynchronous
 }
 ```
 
@@ -159,5 +159,7 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   `KeyInputs::env` the stage's environment, never the variables a secret
   mount's `env=` adds to a `RUN`.
 - A `File` path with a host or mode-specific prefix ties the key to the
-  host or the mode: paths are relative to the copy's source.
+  host or the mode, and one relative to each source operand lets two files
+  share a path: paths are relative to the build context or the `--from`
+  image.
 - No cache measurement exists: claim no speed-up before W2 runs.

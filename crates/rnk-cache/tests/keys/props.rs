@@ -487,7 +487,10 @@ fn debug_names_arguments_and_variables_without_their_values() {
         shown.contains("ARG_NAME") && shown.contains("ENV_NAME"),
         "{shown}"
     );
-    assert!(!shown.contains("value"), "{shown}");
+    assert!(
+        !shown.contains("arg-value") && !shown.contains("env-value"),
+        "{shown}"
+    );
 }
 
 #[test]

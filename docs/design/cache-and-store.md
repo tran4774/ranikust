@@ -156,8 +156,10 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **instruction:** the instruction after variable expansion, with its flags.
 - **inputs:** every declared `ARG` and the environment in effect; `USER`,
   `WORKDIR` and `SHELL`; for a `RUN`, its `--network` and its mounts: a
-  secret's id, target, mode and owner, never its value, and a cache mount's
-  id and sharing, marked as dropped where
+  secret's id, target (empty for an `env=`-only secret), mode and owner,
+  never its value, as a file or as the `env=` variable, and only when the
+  `RUN` is given the secret, so an absent optional secret adds nothing; a
+  cache mount's id and sharing, marked as dropped where
   [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
   drops it; for `COPY` and `ADD`, each file's path, content, mode, owner
   after `--chown`, type, link target and `security.capability`, never its
@@ -174,8 +176,10 @@ A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
 whose `<hex>` hashes the key with the layer's encoding: the compression, its
 level (none for a plain tar), and whether file times are kept or clamped to
 an epoch, with the epoch. A hit was then encoded with this build's settings,
-so under `--reproducible` a warm build gives a cold build's digests; builds
-with another encoding share no entries (ADR-0113).
+so under `--reproducible` a warm build gives a cold build's digests as long
+as no copied file is older than the epoch (the clamp keeps an older mtime,
+which no key holds); builds with another encoding share no entries
+(ADR-0113).
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or

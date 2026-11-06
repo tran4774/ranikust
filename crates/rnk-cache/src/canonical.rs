@@ -47,7 +47,7 @@ impl Canonical {
 
     /// The count of a list, or the length of a field.
     pub(crate) fn len(&mut self, len: usize) {
-        // Cannot saturate, by the assertion above: two lengths never encode alike.
+        // Cannot fail, by the assertion above, so two lengths never encode alike.
         self.u64(u64::try_from(len).unwrap_or(u64::MAX));
     }
 

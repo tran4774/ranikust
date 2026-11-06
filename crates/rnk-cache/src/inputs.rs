@@ -263,7 +263,8 @@ pub enum Mount {
     Secret {
         /// `id=`.
         id: String,
-        /// Where the file is mounted.
+        /// Where the file is mounted; empty for a secret given only as an
+        /// `env=` variable, as BuildKit leaves it.
         target: String,
         /// The file's mode.
         mode: u32,
@@ -344,9 +345,10 @@ impl CopyFrom {
 /// A file a `COPY` or `ADD` writes, as it writes it; never its mtime.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct File {
-    /// The file's path relative to the copy's source, with no host or
-    /// mode-specific prefix. One path names one file: the caller picks a
-    /// form in which two files of the step never share one.
+    /// The file's path relative to the root it is read from (the build
+    /// context or the `--from` image), as that root names it, with no host
+    /// or mode-specific prefix: `dir1/x` and `dir2/x` stay apart. One path
+    /// names one file: two files of the step never share one.
     pub path: Vec<u8>,
     /// Its type, with its content or link target.
     pub kind: FileKind,
@@ -485,7 +487,7 @@ impl ContentHasher {
     /// Hashes the next bytes of the content.
     pub fn update(&mut self, chunk: &[u8]) {
         self.sha.update(chunk);
-        // Cannot saturate: `canonical` asserts usize fits in u64.
+        // The conversion cannot fail: `canonical` asserts usize fits in u64.
         let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
         self.size = self.size.saturating_add(len);
     }
