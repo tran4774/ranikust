@@ -54,7 +54,14 @@ requirement.
 ## Report
 
 Numbered findings, most severe first. For each: `blocker` or `non-blocker`,
-`path:line`, what is wrong, why it matters, and the smallest fix. Be
-specific and nitpicky; skip style that rustfmt or clippy already enforce.
-End with one line: "No blockers" or the number of blockers. Do not repeat the
-diff back.
+`path:line`, what is wrong, why it matters, and the smallest fix. A security
+finding also gets a severity (Low, Medium, High or Critical, and a CVSS
+score where you can; the rating is in
+`docs/agents/workflow.md#security-findings`). A High or Critical finding is
+a `blocker` only when the branch introduces it or its diff changes a line
+of a file the weakness is in; otherwise it is a `non-blocker`, marked
+"holds the next release". Give each security finding that gets a draft (the
+routing table in the workflow names them) in full, however long: the main
+session files the advisory from it. Be specific and nitpicky; skip style
+that rustfmt or clippy already enforce. End with one line: "No blockers" or
+the number of blockers. Do not repeat the diff back.

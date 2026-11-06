@@ -66,13 +66,20 @@ fail-closed option meanwhile; never invent a decision.
   three rounds; then stop and report what is still open. A reviewer run
   that stops without its closing line ("No blockers" or a count) is
   unfinished: say so, the caller runs one. Non-blockers you do not fix go
-  in the report.
+  in the report. A security non-blocker the `reviewer` finds, and a blocker
+  the private fork fixes (the routing table in the workflow names it), are
+  not fixed in this branch and get no test: they go in the report in full,
+  for the main session to file as an advisory
+  (`docs/agents/workflow.md#security-findings`). A Low or Medium blocker
+  already in a release is fixed like any blocker, and goes in the report in
+  full too, for its draft.
 - After three failed attempts at the same fix, stop and report what you
   know.
 
 ## Report
 
-At most 40 lines, plain text, no preamble:
+At most 40 lines, plain text, no preamble (a security finding that gets a
+draft comes on top of that, in full):
 
 1. One line restating the task.
 2. The worktree path, the branch, and each commit as `hash: title`.
@@ -80,10 +87,10 @@ At most 40 lines, plain text, no preamble:
    narrow tests, `just doc` or `just ci` when run), and what you could not
    run (T1/T2/T2c suites) and why.
 4. Review rounds: how many, whether the last one finished, what was
-   fixed, what remains (non-blockers, deferred to issues).
+   fixed, what remains (the non-blockers you did not fix).
 5. Docs updated; the `## Changelog` line, or "none".
 6. Questions for the maintainer, each one line.
 
-Never put the details of an unfixed weakness in the report beyond what the
-maintainer needs to decide; name the file and the invariant, not the
-exploit.
+Never put the details of an unfixed weakness anywhere but the report: no
+commit message, doc, comment or issue explains it, and a test of it comes
+only with its fix, worded generically.
