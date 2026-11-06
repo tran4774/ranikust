@@ -13,7 +13,10 @@ process outlives the build. A `RUN` in a user namespace, with the
 `proc`/`sysfs` fallbacks, and `--userns` are Phase 3
 ([#41](https://github.com/tran4774/ranikust/issues/41)); the probe of that
 path is built, reported only
-([#74](https://github.com/tran4774/ranikust/issues/74)).
+([#74](https://github.com/tran4774/ranikust/issues/74)), and so is the
+entry into the build's user namespace
+([#75](https://github.com/tran4774/ranikust/issues/75)), which the binary
+does not call yet.
 
 ## Owns
 
@@ -42,10 +45,22 @@ path is built, reported only
   an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
   `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
   closure as root of a namespace with the map that worked, for the overlay
-  probe. The `newuidmap` path has no caller but the T2 test: `ranikust`
-  probes as root only and passes no subordinate ids, and task 5
-  ([#75](https://github.com/tran4774/ranikust/issues/75)) decides where
-  the lookup lives.
+  probe. `ranikust` probes as root only and passes no subordinate ids; it
+  reads them (`subids.rs`) for the build's user namespace below.
+- The build's user namespace (`userns/build.rs`, #75): moves the process
+  into a user namespace of its own and a mount namespace that namespace
+  owns, `/` a recursive slave. Each map of the probe's order is first tried
+  in a forked child (`unshare`, the map, the mount namespace); the first
+  that passes is made for the process itself: root mirrors every id it has
+  through a helper forked before the `unshare`; another user maps its
+  subordinate ids through `newuidmap` and `newgidmap` (from `/usr/bin` or
+  `/bin`), from the same helper; else the process writes one id itself,
+  `setgroups` denied (ADR-0098). The map and `setgroups` reported are
+  read back once inside: any map that gives one id, root's mirrored one
+  too, is one uid. Dumpable only while its map is written
+  (ADR-0051). Nothing passing leaves the process as it was
+  (`Error::NoUserNamespace`); a step failing once inside is
+  `Error::UserNamespaceBroken`, after which the process must end.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`.
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
@@ -87,6 +102,8 @@ pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
 pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
 pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, NotWeighed, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx_physical at its mount point through RootPath, its mount's root), Unplaced: not placed (a writable directory whose source was removed, a writable mount covered or not reached at its mount point, a table changed during the walk, among them); NotWeighed: the walk not asked for; Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it on a table that read the same twice; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
+pub fn enter_build_user_namespace(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
+pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, StepResult)>, .. } // #[non_exhaustive]; read back from /proc/self once inside: map OneId whenever the uid or gid map gives one id (root's own one-id map mirrored too); setgroups_allowed(): as /proc/self/setgroups says (deny for OneId written by the process, or inherited); unreadable: UserNamespaceBroken; Display: "newuidmap map", "one uid map, setgroups denied (newuidmap: ...)"
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
@@ -527,6 +544,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   descriptor, mount or entry); the prober killed while a child of the
   probe runs (`SIGKILL`, `SIGINT`, `SIGINT` to its group) leaves no
   process or mount.
+- **T0**, the build's user namespace (`src/userns/build/tests.rs`): a
+  trial passes only with every step and its end record; a refused `unshare`
+  ends the trials; a trial stops at the first step refused, or says how it
+  was cut short; the line names the map and what was passed over; the map
+  helper reports a refused map and ends, and ends without writing when
+  cancelled; refused beside other threads; the namespace is told as read
+  back (a map giving one id is one uid, a parent's `deny` stands). Its red team
+  (`red_team_the_build_user_namespace_is_whole_or_not_entered`, as any user,
+  with and without this user's ranges): the process either has the whole
+  namespace (uid and gid maps, `setgroups`, euid 0, new user and mount
+  namespaces, not dumpable) or kept its own, unchanged.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
@@ -537,8 +565,22 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   init's (ADR-0101). `kaniko-flags` in the kaniko leg: the user-namespace
   probe passes under rootless Podman's defaults, with an rbind of `/proc`
   (#74); `userns-probe`, its red team at the binary's level
-  ([its steps](../../testing.md#quick-smoke-cases)). Not yet: the
-  sandbox's fallbacks.
+  ([its steps](../../testing.md#quick-smoke-cases)). `just test-rootless`
+  (profile `default`):
+  `the_build_user_namespace_of_root_maps_every_id_it_has`
+  (`src/userns/build/tests.rs`): root of a rootless Podman container enters
+  with its ranges mirrored and `setgroups` allowed;
+  `the_build_user_namespace_below_one_id_is_told_one_uid`: root of a one-id
+  namespace, `setgroups` denied (as `unshare -r`), enters with its map
+  mirrored and is told one uid, `setgroups` denied. Profile `privileged`:
+  `red_team_a_mount_in_the_build_s_namespace_never_shows_outside` (a tmpfs
+  mounted in the build's namespaces below a shared mount of the parent
+  never shows there, where a plain mount namespace's does);
+  `red_team_namespace_limits_leave_the_build_whole_or_unchanged` (in a user
+  namespace of the test's own, `user.max_user_namespaces` and
+  `user.max_mnt_namespaces` at 0 and 1: entered whole, or unchanged by
+  an error other than `UserNamespaceBroken`; prints how often each).
+  Not yet: the sandbox's fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`);
@@ -548,6 +590,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   namespaces, Ubuntu 24.04, one id stops at the `uid_map` write and ranges
   at `chown`, elsewhere both pass; both harnesses install `newuidmap`, and
   the user must have subordinate ids; prints `measured:` lines);
+  `the_build_user_namespace_of_a_regular_user_maps_its_ranges_else_one_uid`
+  (`src/userns/build/tests.rs`: as that user, with ranges, without them,
+  and with `newuidmap` hidden; where AppArmor restricts, every leg is
+  refused at the `uid_map` write and nothing changed, elsewhere the ranges
+  through `newuidmap`, else one uid, named as such);
+  `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
+  T1 mount red team as real root, whose map is every id);
   `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;

@@ -34,6 +34,11 @@ use tracing::field::Empty;
 use crate::child::{self, FdPath};
 use crate::error::{Error, Result, sys_err};
 
+mod build;
+
+pub use build::BuildUserNamespace;
+pub(crate) use build::{enter_build, tried_text};
+
 /// How long one attempt may take before its child is killed.
 const ATTEMPT_DEADLINE: Duration = Duration::from_secs(10);
 
@@ -68,19 +73,18 @@ const MKNOD_OP: &str = "mknod";
 /// In the child's mount namespace, before any mount.
 const SLAVE_OP: &str = "make / a recursive slave mount";
 
-/// Which id map the probe's user namespace got.
+/// Which id map a user namespace of the probe or the build got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum IdMap {
-    /// Every id this process has, each mapped to itself, written by this
-    /// process: root, with `CAP_SETUID` and `CAP_SETGID` (in a container,
-    /// several ranges).
+    /// Every id this process has, each mapped to itself, written from the
+    /// parent namespace: root, with `CAP_SETUID` and `CAP_SETGID` (in a
+    /// container, several ranges).
     Ranges,
     /// `newuidmap` and `newgidmap`: the user's own ids as 0 and its
     /// subordinate ranges from 1.
     Newuidmap,
-    /// One id: this process's own uid and gid as 0, written by the
-    /// namespace's process itself.
+    /// One id: this process's own uid and gid as 0.
     OneId,
 }
 
@@ -615,17 +619,28 @@ fn ranges() -> std::result::Result<Plan, StepFailure> {
 /// `inside inside count` for each `inside outside count` line of this
 /// process's own map. `None` when a line is not three numbers.
 fn mirror(map: &str) -> Option<Vec<u8>> {
-    let mut out = String::new();
-    for line in map.lines().filter(|l| !l.trim().is_empty()) {
-        let mut fields = line.split_whitespace().map(str::parse::<u32>);
-        let (Some(Ok(inside)), Some(Ok(_)), Some(Ok(count)), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return None;
-        };
-        out.push_str(&format!("{inside} {inside} {count}\n"));
-    }
+    let out: String = map_lines(map)?
+        .iter()
+        .map(|[inside, _, count]| format!("{inside} {inside} {count}\n"))
+        .collect();
     (!out.is_empty()).then(|| out.into_bytes())
+}
+
+/// The `inside outside count` lines of a map's text, blank ones skipped;
+/// `None` when a line is not three numbers.
+fn map_lines(map: &str) -> Option<Vec<[u32; 3]>> {
+    map.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split_whitespace().map(str::parse::<u32>);
+            match (fields.next(), fields.next(), fields.next(), fields.next()) {
+                (Some(Ok(inside)), Some(Ok(outside)), Some(Ok(count)), None) => {
+                    Some([inside, outside, count])
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// The smallest id other than 0 a map's text gives the namespace.
@@ -1257,15 +1272,7 @@ fn map_in_child(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
         }
         Some((uid_map, gid_map)) => {
             let write = |op, path: &CStr, text: &[u8]| {
-                let r = rustix::fs::open(path, OFlags::WRONLY | OFlags::CLOEXEC, Mode::empty())
-                    .and_then(|fd| rustix::io::write(&fd, text))
-                    .and_then(|n| {
-                        if n == text.len() {
-                            Ok(())
-                        } else {
-                            Err(Errno::INVAL)
-                        }
-                    });
+                let r = write_own(path, text);
                 send(report, op, r);
                 r.is_ok()
             };
@@ -1281,6 +1288,16 @@ fn map_in_child(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
         return false;
     }
     mapped
+}
+
+/// Writes `text` to this process's own `/proc` file `path` in one write, as
+/// the kernel asks of a map; a short write is `EINVAL`.
+fn write_own(path: &CStr, text: &[u8]) -> rustix::io::Result<()> {
+    let fd = rustix::fs::open(path, OFlags::WRONLY | OFlags::CLOEXEC, Mode::empty())?;
+    match rustix::io::write(&fd, text)? {
+        n if n == text.len() => Ok(()),
+        _ => Err(Errno::INVAL),
+    }
 }
 
 /// Opens the mount point `name` in the working directory, without following

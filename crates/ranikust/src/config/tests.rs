@@ -233,10 +233,35 @@ fn paths_become_absolute_without_touching_the_filesystem() {
 }
 
 #[test]
-fn the_state_directory_defaults_to_var_lib_ranikust() {
-    // In every mode, as BuildKit's `/var/lib/buildkit` (ADR-0050).
+fn the_state_directory_defaults_to_var_lib_ranikust_as_root_else_below_home() {
+    // In every mode, as BuildKit's `/var/lib/buildkit` and rootless
+    // `~/.local/share/buildkit` (ADR-0050).
+    let home = std::ffi::OsStr::new("/home/u");
+    assert_eq!(
+        default_state_dir(0, None).unwrap(),
+        PathBuf::from("/var/lib/ranikust")
+    );
+    assert_eq!(
+        default_state_dir(0, Some(home)).unwrap(),
+        PathBuf::from("/var/lib/ranikust")
+    );
+    assert_eq!(
+        default_state_dir(1000, Some(home)).unwrap(),
+        PathBuf::from("/home/u/.local/share/ranikust")
+    );
+    // Walked as it is: a relative path, or one that climbs, is no default.
+    for bad in [None, Some(""), Some("home/u"), Some("/home/../u")] {
+        let e = default_state_dir(1000, bad.map(std::ffi::OsStr::new)).unwrap_err();
+        assert!(e.0.contains("--state-dir is needed"), "{bad:?}: {}", e.0);
+    }
+    assert_eq!(
+        default_state_dir(1000, Some(std::ffi::OsStr::new("/home/./u/"))).unwrap(),
+        PathBuf::from("/home/u/.local/share/ranikust")
+    );
     let bare = config(&["--no-push"]).expect("defaults");
-    assert_eq!(bare.state_dir, PathBuf::from("/var/lib/ranikust"));
+    let euid = rustix::process::geteuid().as_raw();
+    let want = default_state_dir(euid, std::env::var_os("HOME").as_deref()).unwrap();
+    assert_eq!(bare.state_dir, want);
     let explicit = config(&["--no-push", "--state-dir=/s"]).expect("state dir");
     assert_eq!(explicit.state_dir, PathBuf::from("/s"));
 }

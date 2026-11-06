@@ -130,10 +130,12 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("LICENSE-APACHE", NONE),
     ("LICENSE-MIT", NONE),
     ("NOTICE", NONE),
-    # Local only: benchmarks, the e2e workloads, the test registries.
+    # Local only: benchmarks, the e2e workloads, the test registries, the
+    # T1 lane (rootless Podman on a developer's machine).
     ("tests/bench/**", NONE),
     ("tests/e2e/**", NONE),
     ("tests/registry/**", NONE),
+    ("tests/rootless/**", NONE),
 )
 
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")

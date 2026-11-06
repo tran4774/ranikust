@@ -45,14 +45,15 @@ fn a_key_counts_the_files_and_bytes_it_hashed() {
             .file(file("d", FileKind::Directory))
             .file(file("l", FileKind::Symlink(b"a".to_vec())));
         let copy = root.next("COPY . /", inputs);
-        // A second step with files, so the report's sum shows.
+        // A second step with files, so the report's sum shows; a heredoc's
+        // body counts in the bytes, not in the files.
         let mut inputs = KeyInputs::new(&ENCODING);
-        inputs.file(regular("c", b"abc"));
+        inputs.file(regular("c", b"abc")).heredoc("EOF", b"ab");
         (copy, root.next("COPY c /", inputs))
     });
     let report = capture.report();
     let key = &report["phases"]["rnk_cache.key"];
     assert_eq!(key["count"], 2, "{report:#}");
     assert_eq!(key["files_hashed"], 3, "{report:#}");
-    assert_eq!(key["bytes_hashed"], 18, "{report:#}");
+    assert_eq!(key["bytes_hashed"], 20, "{report:#}");
 }

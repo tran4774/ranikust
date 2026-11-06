@@ -110,6 +110,47 @@ fn prepare_creates_a_private_state_directory() {
 }
 
 #[test]
+fn a_user_s_default_below_home_passes_the_same_checks() {
+    // The default of a user other than root, below a home directory of
+    // theirs; checked as whoever runs the test.
+    let euid = rustix::process::geteuid().as_raw();
+    let tmp = private_tempdir();
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+    let state = crate::config::default_state_dir(1000, Some(home.as_os_str())).unwrap();
+    assert_eq!(state, home.join(".local/share/ranikust"));
+    prepare(&state).unwrap();
+    for d in [".local", ".local/share", ".local/share/ranikust"] {
+        let st = fs::metadata(home.join(d)).unwrap();
+        assert_eq!((st.uid(), st.mode() & 0o7777), (euid, 0o700), "{d}");
+    }
+    // A home its group may write: refused, saying what to do instead.
+    let shared = tmp.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o775)).unwrap();
+    let state = crate::config::default_state_dir(1000, Some(shared.as_os_str())).unwrap();
+    let why = prepare(&state).unwrap_err().0;
+    assert!(why.contains("writable by group or others"), "{why}");
+    assert!(why.ends_with(private_state(euid)), "{why}");
+    assert!(!shared.join(".local").exists());
+}
+
+#[test]
+fn the_advice_names_the_default_of_the_effective_user() {
+    assert!(private_state(0).contains("/var/lib/ranikust"));
+    assert!(!private_state(0).contains("you"));
+    for euid in [1, 1000, u32::MAX] {
+        assert!(private_state(euid).contains("~/.local/share/ranikust"));
+        assert!(private_state(euid).contains("only you or root"));
+    }
+    // The default may be the directory refused: never offered as the fix.
+    for euid in [0, 1000] {
+        assert!(!private_state(euid).contains("use the default"));
+    }
+}
+
+#[test]
 fn prepare_refuses_without_creating_anything() {
     let tmp = private_tempdir();
     // A parent others may write: nothing is created below it.
@@ -226,7 +267,7 @@ fn the_system_directory_check_itself_refuses_them() {
         let Ok(fd) = open_dir(Path::new(sys), OFlags::RDONLY) else {
             continue;
         };
-        let Err(why) = accept_existing(&fd, Path::new(sys)) else {
+        let Err(why) = accept_existing(&fd, Path::new(sys), 0) else {
             panic!("{sys} accepted");
         };
         assert!(
@@ -310,4 +351,30 @@ fn the_traces_of_a_kaniko_build_cut_short_on_slash_are_taken() {
     fs::write(state.join("data"), b"x").unwrap();
     let why = prepare(&state).unwrap_err().0;
     assert!(why.contains("not a state directory"), "{why}");
+}
+
+/// A `$HOME` that reaches its directory through a `/proc` link (T4): the
+/// default below it is refused, and nothing is made where the link leads.
+#[test]
+fn red_team_a_home_through_a_proc_link_is_refused_and_nothing_is_made() {
+    use std::os::fd::AsRawFd as _;
+    let tmp = private_tempdir();
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let fd = fs::File::open(&home).unwrap();
+    let n = fd.as_raw_fd();
+    for via in [
+        format!("/proc/self/fd/{n}"),
+        format!("/proc/{}/fd/{n}", std::process::id()),
+        format!("/proc/thread-self/fd/{n}"),
+        format!("/proc/self/root{}", home.display()),
+        format!("/dev/fd/{n}"),
+    ] {
+        let state =
+            crate::config::default_state_dir(1000, Some(std::ffi::OsStr::new(&via))).unwrap();
+        let why = prepare(&state).unwrap_err().0;
+        assert!(why.contains("without following a symlink"), "{via}: {why}");
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0, "{via}");
+    }
 }

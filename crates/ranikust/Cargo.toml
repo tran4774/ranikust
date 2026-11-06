@@ -33,6 +33,9 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# `fork` and the credential drop of the user-namespace tests, whose set-up
+# must run in a single-threaded process.
+libc.workspace = true
 # `examples/smoke-build.rs`, the sandbox's smoke test without the builder.
 sha2.workspace = true
 tempfile.workspace = true

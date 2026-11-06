@@ -140,7 +140,12 @@ fn route_sends_only_an_unusable_overlay_outside_a_container_to_kaniko_stages() {
         route(&of(Kind::OverlayUnusable), true),
         Route::RefuseInContainer
     );
-    for kind in [Kind::SandboxBlocked, Kind::NoMountPrivilege, Kind::Other] {
+    for kind in [
+        Kind::SandboxBlocked,
+        Kind::NoMountPrivilege,
+        Kind::Other,
+        Kind::Broken,
+    ] {
         for in_container in [false, true] {
             assert_eq!(route(&of(kind), in_container), Route::Refuse, "{kind:?}");
         }
@@ -289,6 +294,61 @@ fn no_privileges_for_the_namespace_needs_root() {
     assert!(refusal.to_string().contains("sudo"));
     let refusal = namespace_refusal(SandboxError::Privilege("a private mount namespace"), 0);
     assert_eq!(refusal.guidance, NEEDS_KANIKO_MODE);
+}
+
+/// A process left inside a broken user namespace ends: no mode follows.
+#[test]
+fn a_broken_user_namespace_never_falls_back() {
+    let broken = || {
+        SandboxError::UserNamespaceBroken(rnk_sandbox::StepFailure {
+            op: "write uid_map",
+            errno: Some(EACCES),
+            detail: None,
+        })
+    };
+    for euid in [0, USER] {
+        let refusal = userns_refusal(broken(), euid);
+        assert_eq!(refusal.kind, Kind::Broken);
+        assert!(!refusal.needs_kaniko_mode());
+        for in_container in [false, true] {
+            assert_eq!(route(&refusal, in_container), Route::Refuse);
+        }
+    }
+    // An error not known to leave the process unchanged counts as broken.
+    let refusal = userns_refusal(SandboxError::Privilege("a user namespace"), USER);
+    assert_eq!(refusal.kind, Kind::Broken);
+    // Not entered: the process is unchanged, the refusal of the usual kind.
+    let refusal = userns_refusal(SandboxError::NoUserNamespace { tried: Vec::new() }, USER);
+    assert_eq!(refusal.kind, Kind::Other);
+    assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
+    for unchanged in [
+        SandboxError::NotSingleThreaded { threads: 2 },
+        SandboxError::InPlainChroot,
+        SandboxError::Sys {
+            op: "unshare(CLONE_NEWUSER)",
+            source: io::Error::from_raw_os_error(EACCES),
+        },
+    ] {
+        assert_eq!(userns_refusal(unchanged, USER).kind, Kind::Other);
+    }
+    // The store refusing once inside: broken whatever its kind, its words
+    // kept.
+    for kind in [
+        Kind::Other,
+        Kind::NoMountPrivilege,
+        Kind::OverlayUnusable,
+        Kind::SandboxBlocked,
+        Kind::Broken,
+    ] {
+        let refusal = inside_userns(Refusal {
+            kind,
+            reason: "r".to_owned(),
+            guidance: "g",
+        });
+        assert_eq!(refusal.kind, Kind::Broken, "{kind:?}");
+        assert_eq!((refusal.reason.as_str(), refusal.guidance), ("r", "g"));
+        assert_eq!(route(&refusal, false), Route::Refuse);
+    }
 }
 
 /// A fresh temp dir no one else may write, whatever the umask.
@@ -578,3 +638,5 @@ fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
         }
     }
 }
+
+mod userns;

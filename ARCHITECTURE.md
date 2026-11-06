@@ -29,7 +29,8 @@ every user but root is refused; rootless overlay mode is Phase 3.
 
 ranikust keeps its own files, including the persistent store and every build
 root it makes, in one state directory (`--state-dir`, default
-`/var/lib/ranikust`); there is no work-directory flag
+`/var/lib/ranikust` as root, else `~/.local/share/ranikust`); there is no
+work-directory flag
 ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It never writes outside the state directory, the requested outputs, its own
 delegated cgroup with the cgroups it makes below it
@@ -151,7 +152,10 @@ its own, ended with `cgroup.kill`, its command in a cgroup namespace rooted at
 its `command` cgroup
 ([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
 In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
-(`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
+(`Isolation::Direct`). It also moves the process into the build's user
+namespace, each id map tried in a forked child first (no build uses it yet,
+[#75](https://github.com/tran4774/ranikust/issues/75)); the subordinate ids
+come from `ranikust`. A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
@@ -217,8 +221,10 @@ Builds one stage and assembles the image: one executor per instruction
 `rnk-sandbox`), one layer per changing instruction, lazy layer export (a layer
 is encoded only if pushed, cached or part of the target), then the image
 (config and manifest at one build time) and its output: push, Docker tar, OCI
-layout. Also pulls a base image into the store. It does not depend on
-`rnk-sched`: the binary implements the scheduler's `StageRunner` with it.
+layout. Also pulls a base image into the store, and computes every step's
+cache key before the build (the key plan, inputs for `rnk-cache` to hash). It
+does not depend on `rnk-sched`: the binary implements the scheduler's
+`StageRunner` with it.
 **Must not** keep global state (paths arrive as `rnk-store`'s `BuildPaths`, the
 clock and `SOURCE_DATE_EPOCH` as values), order stages, parse flags, or write
 tar itself (`rnk-layer` does).
@@ -259,7 +265,8 @@ depend on higher ones. Besides the chain:
   reach it through `tracing` spans alone.
 
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
-declares `rnk-oci`.
+declares `rnk-oci`, and `rnk-builder` declares `rnk-cache` for its key
+plan.
 [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
 fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`,
 `rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
@@ -294,8 +301,9 @@ the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
 3. **Front end**: read the context and `.dockerignore` (`rnk-context`,
    `rnk-ignore`); parse the Dockerfile into a stage graph and expand build
    arguments (`rnk-dockerfile`).
-4. **Up-front I/O**: resolve and pull every stage's base image into the store
-   and look up the cache, in parallel (`rnk-registry`, `rnk-store`,
+4. **Up-front I/O**: resolve and pull every stage's base image into the store,
+   compute every step's cache key (`rnk-builder`'s key plan, ADR-0114) and
+   look up the cache, in parallel (`rnk-registry`, `rnk-store`,
    `rnk-cache`). In kaniko mode only manifests and configs are fetched here:
    base layers are streamed from the registry into extraction when a stage needs
    them, and no blob is kept unless an output needs its bytes
@@ -304,7 +312,7 @@ the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
    at most `--jobs` `RUN`s at a time; one stage at a time on a shared `/`.
 6. **Build a stage** (`rnk-builder`): prepare the root (`rnk-snapshot`: overlay
    mount over the layer store, or extraction plus a baseline walk). For each
-   instruction compute the cache key; on a hit add the cached layer; on a miss
+   instruction, on a hit of its key add the cached layer; on a miss
    execute it (`RUN` through `rnk-sandbox`, `COPY`/`ADD` through `rnk-rootfs`)
    and take the diff (upper directory, or walk and hash). Update the image
    config.
@@ -361,8 +369,8 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 - ranikust never fills or empties a directory the operator names: the root is
   `/` in a container (kaniko mode) or a directory it makes in its state
   directory. The state directory is owned by the user running ranikust, not
-  writable by others, made `0700`, below directories only root may write,
-  checked by descriptor before anything is created (ADR-0050).
+  writable by others, made `0700`, below directories only root or that user
+  may write, checked by descriptor before anything is created (ADR-0050).
 - In kaniko mode on `/` the state directory is on the ignore list: never
   walked, snapshotted or deleted.
 - `RUN` enters its root with `pivot_root` (or `MS_MOVE`), never a bare `chroot`

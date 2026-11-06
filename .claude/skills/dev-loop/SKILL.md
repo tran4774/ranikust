@@ -50,9 +50,9 @@ Fix a failure at the narrowest level that shows it, then widen again.
   Anything that needs user namespaces, mounts or root belongs to tier T1,
   T2c or T2 and carries its `#[ignore = "..."]` marker
   (`docs/testing.md#rules`). Run it only through its harness
-  (`just test-container unit-c`, ADR-0063; `just test-vm unit`, the
-  `vm-test` skill, which runs both), or say in your report that it was not
-  run. Never run it on the host to "just check".
+  (`just test-rootless` for T1; `just test-container unit-c`, ADR-0063;
+  `just test-vm unit`, the `vm-test` skill, which runs T2 and T2c), or say
+  in your report that it was not run. Never run it on the host to "just check".
 
 ## Debugging
 

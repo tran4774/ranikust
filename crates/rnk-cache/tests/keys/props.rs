@@ -7,8 +7,8 @@ use proptest::collection::vec;
 use proptest::option;
 use proptest::prelude::*;
 use rnk_cache::{
-    CacheKey, ContentHasher, CopyFrom, Encoding, File, FileKind, KeyInputs, Mount, Network,
-    Sharing, TimePolicy,
+    CacheKey, ContentHasher, CopyFrom, Encoding, File, FileKind, KEY_VERSION, KeyInputs, Mount,
+    Network, Sharing, TimePolicy,
 };
 use rnk_oci::{Compression, Platform};
 
@@ -113,6 +113,7 @@ fn spec() -> impl Strategy<Value = Spec> {
         vec(mount(), 0..3),
         option::of(from),
         vec(a_file(), 0..6),
+        vec((name(), bytes()), 0..3),
     )
         .prop_map(
             |(
@@ -127,6 +128,7 @@ fn spec() -> impl Strategy<Value = Spec> {
                 mounts,
                 from,
                 files,
+                heredocs,
             )| Spec {
                 epoch,
                 instruction,
@@ -139,6 +141,7 @@ fn spec() -> impl Strategy<Value = Spec> {
                 mounts,
                 from,
                 files,
+                heredocs,
             },
         )
 }
@@ -390,6 +393,20 @@ fn mutations() -> Vec<Change<Spec>> {
                 }
             }
         }),
+        ("heredoc added", |s| {
+            s.heredocs.push((String::new(), Vec::new()));
+        }),
+        ("heredocs reordered", |s| s.heredocs.reverse()),
+        ("heredoc name", |s| {
+            if let Some(h) = s.heredocs.first_mut() {
+                h.0.push('x');
+            }
+        }),
+        ("heredoc body", |s| {
+            if let Some(h) = s.heredocs.first_mut() {
+                h.1.push(b'x');
+            }
+        }),
         ("char device made a block device", |s| {
             for f in &mut s.files {
                 if let FileKind::CharDevice { major, minor } = f.kind {
@@ -599,7 +616,8 @@ fn a_tag_is_an_oci_tag_naming_the_version() {
         level: 6,
         times: TimePolicy::Kept,
     });
-    let hex = tag.strip_prefix("rnk-v1-").expect("the rnk-v1- prefix");
+    let prefix = format!("rnk-v{KEY_VERSION}-");
+    let hex = tag.strip_prefix(&prefix).expect("the version prefix");
     assert_eq!(hex.len(), 64, "{tag}");
     assert!(
         hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
@@ -706,7 +724,7 @@ proptest! {
     fn field_boundaries_cannot_shift(a in text(), b in "\\PC{1,3}", c in text()) {
         // ("ab", "c") against ("a", "bc"), for each pair of fields that meet.
         let (ab, bc) = (format!("{a}{b}"), format!("{b}{c}"));
-        let pair = |left: &str, right: &str| -> [Spec; 7] {
+        let pair = |left: &str, right: &str| -> [Spec; 9] {
             let (l, r) = (left.to_owned(), right.to_owned());
             [
                 Spec { instruction: l.clone(), user: r.clone(), ..Spec::default() },
@@ -719,7 +737,13 @@ proptest! {
                     ..Spec::default()
                 },
                 Spec {
-                    files: vec![file(&l, FileKind::Symlink(r.into_bytes()))],
+                    files: vec![file(&l, FileKind::Symlink(r.clone().into_bytes()))],
+                    ..Spec::default()
+                },
+                Spec { heredocs: vec![(l.clone(), r.clone().into_bytes())], ..Spec::default() },
+                Spec {
+                    instruction: l.clone(),
+                    heredocs: vec![(r.clone(), Vec::new())],
                     ..Spec::default()
                 },
             ]

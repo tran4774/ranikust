@@ -191,9 +191,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `OutputDir` writes; rounds of 3000 writes, the victim checked after each,
   until one round saw swaps land, let some writes through and refused some
   (no new round after 60 s).
-- **T1** (`#[ignore = "T1: ..."]`, `RNK_T1_ROOT`): extraction and live
-  extraction never write below or skip-wrongly real mounts; foreign owners
-  and setuid kept raw in `extract`.
+- **T1** (`just test-rootless`): extraction and live extraction never
+  write below or skip-wrongly real mounts (profile `privileged`, with the
+  lane's `RNK_T1_ROOT`); foreign owners and setuid kept raw in `extract`
+  (profile `default`).
 - **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
   and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
   directory on the same filesystem and a tmpfs inside a root, with links to

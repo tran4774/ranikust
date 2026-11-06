@@ -57,11 +57,12 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
                                 stage roots are stages/<n>/rootfs (ADR-0059)
 ```
 
-The store lives in the state directory: `/var/lib/ranikust` in every mode
-unless `--state-dir` names another
+The store lives in the state directory: `/var/lib/ranikust` as root in every
+mode, `~/.local/share/ranikust` for another user, unless `--state-dir` names
+another
 ([ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It is the private directory of every build root: owned by the user running
-ranikust, `0700`, below directories only root may write
+ranikust, `0700`, below directories only root or that user may write
 ([kaniko-mode](kaniko-mode.md#host-safety-checks)). Kaniko mode on `/` keeps
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
@@ -164,10 +165,12 @@ unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 
 ## Cache keys
 
-The keys are built in `rnk-cache`; nothing computes or looks them up during
-a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
-the inputs the step depends on, chained to the previous key (ADR-0005; the
-fields are
+The keys are hashed in `rnk-cache`; `rnk-builder`'s key plan computes every
+step's key before any stage runs
+([ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)),
+but no build looks them up yet (Phase 4). Each step's key is a SHA-256
+over a version field and the inputs the step depends on, chained to the
+previous key (ADR-0005; the fields are
 [ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
 BuildKit's):
 
@@ -178,37 +181,51 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
   entries are simply never matched again.
 - **chain root:** the base image's platform manifest digest (none for
-  `FROM scratch`) and the platform.
+  `FROM scratch`) and the platform; for `FROM <stage>`, that stage's final
+  key. Every step is looked up even after a miss, so the chain alone does
+  not stop reuse: the caller treats a miss in the base stage as a miss for
+  every step built on it (`StageKeys::base_stage`, ADR-0114's stop rule: no
+  cached layer on a lower it was not made on).
 - **instruction:** the instruction after variable expansion, with its flags.
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
-    and `SHELL`;
-  - for a `RUN`, its `--network`, each secret mount's id, target, mode and
-    owner, given or not (below), and each cache mount's id and sharing,
-    marked as dropped where
+    and `SHELL`; an owner name as written, after expansion, never the ids
+    it resolves to (the `USER` that owns what a `WORKDIR` creates, a
+    `--chown`): it resolves in the stage's root, which under the stop rule
+    the previous key fixes, and which does not exist before the build
+    ([ADR-0124](../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md));
+  - for a `RUN`, its network as BuildKit keys it (its `--network`, or
+    `none` for one without it under the build's `--network=none`), each
+    secret mount's id, target, mode and owner, given or not (below), and
+    each cache mount's id and sharing, marked as dropped where
     [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
     drops it;
   - for `COPY` and `ADD` from the build context, each file read (after
     `.dockerignore`): its path relative to the context, content, mode, owner
-    after `--chown` (planned: the owner as written, in the instruction,
-    [ADR-0124](../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md),
-    [#126](https://github.com/tran4774/ranikust/issues/126)), type, link target, `security.capability` and, under
-    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
-    file older than the epoch counts;
+    (`0:0`, the `--chown` being in the instruction, ADR-0124), type, link
+    target,
+    `security.capability` and, under `--reproducible`, its mtime clamped to
+    the epoch, so only the mtime of a file older than the epoch counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (a forced miss when
     that stage ran in this build,
     [ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)).
 
-  The instruction holds no heredoc body: `rnk-builder` adds each one (of a
-  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
-  that task 3 (#126) adds.
+  The instruction holds no heredoc body: each one (of a `RUN`, `#!` or
+  not, a `COPY` or an `ADD`) is an input of its own, after the expansion
+  BuildKit does. An `ADD` of a local archive is keyed as one file, the
+  archive, as BuildKit keys it, though the build refuses it until Phase 5
+  ([ADR-0125](../adr/0125-cache-copy-layers-covers-copy-and-a-local-add.md)):
+  no build pushes a layer under that key before then, and a change to how
+  an archive is extracted is keyed or bumps `KEY_VERSION`.
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
   unordered collection.
 
 `ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
-features. How the fields are written into the hash:
+features; until then, as for any step the plan cannot key as the build runs
+it, that step and every step after it have no key: a miss. How the fields
+are written into the hash:
 [the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
 
 A secret mount is keyed whether or not the build is given the secret, as

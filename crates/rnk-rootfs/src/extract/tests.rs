@@ -705,7 +705,7 @@ fn entries_on_a_mount_point_are_refused() {
 /// as for the deletion test (`bind/`, `tmpfs/`, the `.rnk-t1-root` marker):
 /// extraction never writes below a mount inside the root.
 #[test]
-#[ignore = "T1: needs a bind mount and a tmpfs inside the root (mount namespace)"]
+#[ignore = "T1: privileged: needs a bind mount and a tmpfs inside the root (mount namespace)"]
 fn extraction_never_writes_below_a_mount() {
     let dir = std::env::var_os("RNK_T1_ROOT").expect("RNK_T1_ROOT is set by the T1 harness");
     let marker = fs::symlink_metadata(Path::new(&dir).join(".rnk-t1-root"));
@@ -732,7 +732,7 @@ fn extraction_never_writes_below_a_mount() {
 /// Run by the T1 harness inside a user namespace mapping a range of ids:
 /// foreign owners, and setuid surviving the chown.
 #[test]
-#[ignore = "T1: chown to foreign ids needs a user namespace with an id map"]
+#[ignore = "T1: default: chown to foreign ids needs a user namespace with an id map"]
 fn foreign_owners_are_kept_raw() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
@@ -1247,7 +1247,7 @@ fn live_extraction_skips_entries_on_a_mount_point() {
 /// Run by the T1 harness as [`extraction_never_writes_below_a_mount`]: a live
 /// extraction skips the mounts, whether or not they are on the list.
 #[test]
-#[ignore = "T1: needs a bind mount and a tmpfs inside the root (mount namespace)"]
+#[ignore = "T1: privileged: needs a bind mount and a tmpfs inside the root (mount namespace)"]
 fn live_extraction_skips_real_mounts() {
     let dir = std::env::var_os("RNK_T1_ROOT").expect("RNK_T1_ROOT is set by the T1 harness");
     let marker = fs::symlink_metadata(Path::new(&dir).join(".rnk-t1-root"));

@@ -263,12 +263,13 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 | `rnk_builder.assemble` | `bytes_out` | Config and manifest, their sizes; kaniko's `stage.finalize`. |
 | `rnk_builder.upload` | `bytes` | One built layer pushed to every destination while the build runs (ADR-0055); `rnk_registry.push_blob` nested per destination. |
 | `rnk_builder.output` | `layers`, `bytes_out` | One per OCI layout, Docker tar and push destination; `bytes_out` is what was written to disk, or the blobs uploaded (not mounted or already there) plus the manifest; kaniko's `push.total`. |
+| `rnk_builder.key_plan` | `stages`, `steps`, `keyed` | Every step's cache key before the build (ADR-0114), one `rnk_cache.key` nested per step it tries: the stages the build runs, their instructions, and those with a key (the rest fail closed). |
 
 ### `rnk-cache`
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next`: the regular files it holds and their content bytes; kaniko's `cache.key`. |
+| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next`: the regular files it holds and their content bytes, plus its heredoc bodies' bytes; kaniko's `cache.key`. |
 | `rnk_cache.lookup` | `hit` | Phase 4: misses = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
 | `rnk_cache.push` | `bytes_out` | Phase 4: background push, parented to `rnk_sched.run`; kaniko's `cache.push`. |
 

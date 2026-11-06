@@ -1117,6 +1117,7 @@ name = "ranikust"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "libc",
  "mimalloc",
  "rnk-builder",
  "rnk-context",
@@ -1251,6 +1252,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rnk-cache",
  "rnk-context",
  "rnk-dockerfile",
  "rnk-ignore",
