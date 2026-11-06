@@ -326,14 +326,6 @@ After red-team's tests of these cgroups, the maintainer answered one more on
   unconfined `RUN` of the same test made. Under 22.04 unconfined
   `RUN`s met the limits as above (31 levels, 4062 more nested and 4063
   single, `EAGAIN` past them), `nsdelegate` or not.
-- [measured] T1 (rootless podman 5.7 `--privileged` on the development
-  host, kernel 7.0, nested), 2026-11-06, the `run-cgroup-escape` smoke case
-  with each refusal checked for its exact error: the `setns` into the
-  init's cgroup namespace was refused at the open of `/proc/1/ns/cgroup`
-  (`EACCES`), before the `setns`, as root under the default profile and
-  unconfined, and from a user namespace an unconfined `RUN` made; under the
-  default profile the `RUN`'s `unshare(CLONE_NEWUSER)` was refused
-  (`EPERM`).
 
 ## More Information
 
