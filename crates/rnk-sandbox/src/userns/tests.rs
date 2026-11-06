@@ -498,6 +498,12 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
     assert!(after.unwrap().is_some());
 }
 
+/// [`probe_in`] in the directory at `dir`, opened as a caller that did
+/// not make it would.
+fn probe_at(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport> {
+    probe_in(&RootPath::open(dir)?, subordinate)
+}
+
 /// The records the witnesses in a closure's child send: the panic hook's,
 /// the subscriber's.
 const HOOK_RAN: u8 = 100;
@@ -636,7 +642,7 @@ fn a_probes_child_holds_only_stdio_and_its_own_descriptors() {
 fn a_failure_making_the_probes_files_removes_what_it_made() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("sys"), b"").unwrap();
-    assert!(probe_in(dir.path(), None).is_err());
+    assert!(probe_at(dir.path(), None).is_err());
     let left: Vec<_> = fs::read_dir(dir.path())
         .unwrap()
         .map(|e| e.unwrap().file_name())
@@ -710,7 +716,7 @@ fn is_eperm(r: &StepResult) -> bool {
 fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let dir = tempfile::tempdir().unwrap();
-    let report = probe_in(dir.path(), None).unwrap();
+    let report = probe_at(dir.path(), None).unwrap();
     measured(&format!("user namespace as root: {report}"));
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     assert_eq!(report.cut_short, None);
@@ -828,9 +834,9 @@ fn the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts() {
         Err(e) => format!("error\t\t{e}\n"),
     };
     let out = as_user(uid, gid, || {
-        let mut out = line(probe_in(&path, None));
+        let mut out = line(probe_at(&path, None));
         if let Some(sub) = sub {
-            out.push_str(&line(probe_in(&path, Some(sub))));
+            out.push_str(&line(probe_at(&path, Some(sub))));
         }
         out
     });
@@ -994,7 +1000,7 @@ fn mount_tmpfs(path: &Path) -> std::result::Result<String, String> {
 /// One probe in `dir`, then, with a map that worked, a closure that mounts
 /// a tmpfs in its namespace on `dir/closure`, removed after.
 fn probe_once(dir: &Path) -> String {
-    let report = match probe_in(dir, None) {
+    let report = match probe_at(dir, None) {
         Ok(r) => r,
         Err(e) => return format!("probe error: {e}"),
     };
@@ -1094,7 +1100,7 @@ fn planted_names_are_never_followed(base: &Path) -> Vec<String> {
         let d = dir.clone();
         // A FIFO opened to write would block: the probe runs on a thread.
         std::thread::spawn(move || {
-            let _ = done.send(probe_in(&d, None).map(|r| r.to_string()));
+            let _ = done.send(probe_at(&d, None).map(|r| r.to_string()));
         });
         let got = wait.recv_timeout(Duration::from_secs(60));
         let got = match got {
@@ -1114,7 +1120,8 @@ fn planted_names_are_never_followed(base: &Path) -> Vec<String> {
             ));
         }
     }
-    // The probe's directory itself a symlink out, or a FIFO.
+    // The probe's directory itself a symlink out, or a FIFO, given by path:
+    // refused when opened as a root.
     let link = base.join("probe-link");
     symlink(outside.join("dir"), &link).unwrap();
     let fifo_dir = base.join("probe-fifo");
@@ -1123,7 +1130,7 @@ fn planted_names_are_never_followed(base: &Path) -> Vec<String> {
         let (done, wait) = std::sync::mpsc::channel();
         let d = dir.clone();
         std::thread::spawn(move || {
-            let _ = done.send(probe_in(&d, None).is_ok());
+            let _ = done.send(probe_at(&d, None).is_ok());
         });
         match wait.recv_timeout(Duration::from_secs(60)) {
             Ok(false) => {}
@@ -1301,7 +1308,7 @@ fn red_team_a_prober_killed_mid_probe_leaves_no_process_or_mount() {
     assert!(!out.contains("LEFT") && !out.contains("error"), "{out}");
     // Where `unshare` is refused the probe's children end too fast to catch.
     let base = tempfile::tempdir().unwrap();
-    let stop = probe_in(base.path(), None).unwrap().stop();
+    let stop = probe_at(base.path(), None).unwrap().stop();
     assert!(
         stop == Some("unshare") || !out.contains("caught 0 of"),
         "no kill found a child: {out}"

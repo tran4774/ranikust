@@ -297,7 +297,9 @@ impl UsernsReport {
     ///
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate; and before any credential is
-    /// read, as for [`probe_user_namespace`].
+    /// read, as for [`probe_user_namespace`]. `f` must not fork: nothing
+    /// here kills or reaps a process it starts, which would outlive the
+    /// child, holding its namespaces and mounts.
     pub fn in_namespace(
         &self,
         // A function, not a closure: it captures no descriptor of this
@@ -350,8 +352,8 @@ impl fmt::Display for UsernsReport {
 }
 
 /// Probes the user-namespace steps in `dir`, an empty directory the caller
-/// made for it, on the state directory's filesystem; what this makes there
-/// is removed before it returns. Root gets a map of every id it has
+/// made for it on the state directory's filesystem, held from where it was
+/// made; what this makes there is removed before it returns. Root gets a map of every id it has
 /// ([`IdMap::Ranges`]), else one id; another user gets `newuidmap` with
 /// `subordinate`, else one id. Each map is one attempt, in its own child,
 /// until one works or `unshare` itself is refused.
@@ -367,7 +369,7 @@ impl fmt::Display for UsernsReport {
 /// error: the probe's files, a pipe, the fork. A refused step is not an
 /// error: it is in the report.
 pub fn probe_user_namespace(
-    dir: &Path,
+    dir: &RootPath,
     subordinate: Option<SubordinateIds>,
 ) -> Result<UsernsReport> {
     crate::setup::require_single_thread()?;
@@ -386,11 +388,10 @@ struct Targets {
     chown: OwnedFd,
 }
 
-fn probe_in(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport> {
+fn probe_in(root: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport> {
     let span = tracing::debug_span!("rnk_sandbox.probe_userns", ok = Empty, map = Empty);
     let _entered = span.enter();
-    let root = RootPath::open(dir)?;
-    let targets = make_targets(&root)?;
+    let targets = make_targets(root)?;
     let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
     let mut maps = Vec::new();
@@ -409,7 +410,7 @@ fn probe_in(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsRep
             // A child still there may still work in the directory.
             Err(e @ Error::ProbeChildLeft { .. }) => return Err(e),
             Err(e) => {
-                remove_targets(&root, targets);
+                remove_targets(root, targets);
                 return Err(e);
             }
         };
@@ -420,7 +421,7 @@ fn probe_in(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsRep
             break;
         }
     }
-    remove_targets(&root, targets);
+    remove_targets(root, targets);
     let report = report_of(maps, last);
     span.record("ok", report.stop().is_none());
     if let Some(m) = report.map() {

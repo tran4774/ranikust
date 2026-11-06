@@ -549,7 +549,7 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
 /// ([`keeps_dir`]; never when `overlay` cannot be made in it, before any
 /// child of the overlay probe).
 fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), String>, bool) {
-    let report = match rnk_sandbox::probe_user_namespace(path, None) {
+    let report = match rnk_sandbox::probe_user_namespace(scratch, None) {
         Ok(report) => report,
         Err(e) => return (Err(e.to_string()), keeps_dir(Some(&e), None)),
     };

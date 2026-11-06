@@ -91,7 +91,7 @@ pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before sta
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
-pub fn probe_user_namespace(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, left empty
+pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
 pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
@@ -368,7 +368,8 @@ What a change here must keep, with where it lives:
   fork the child closes every descriptor but stdio and those it uses (the
   pipes, the probe's directory, the `chown` target), then makes system
   calls only, then `_exit`. `in_namespace`'s function may allocate (it
-  checks for one thread first) and runs with an empty panic hook and, on
+  checks for one thread first) but must not fork (a process it starts
+  would outlive the child), and runs with an empty panic hook and, on
   its thread, no `tracing` subscriber: the inherited ones write ranikust's
   metrics report and log (a thread the function starts carries its
   dispatcher over, as `rnk-snapshot`'s mount thread does). Each
