@@ -1,6 +1,6 @@
 //! Layer cache: cache keys, lookup and push.
 //!
-//! Computes the versioned cache key of each step (ADR-0005, ADR-0113) and
+//! Computes the versioned cache key of each step (ADR-0005, [ADR-0113]) and
 //! the tag its cached layer is looked up and pushed under; lookup and push
 //! in a registry or an OCI layout are not built yet.
 //!
@@ -24,15 +24,18 @@
 //! - Key computation opens no file and no connection: file content arrives
 //!   as bytes the caller read through `rnk-rootfs`. The cache in an OCI
 //!   layout (planned) reaches its directory only through `rnk-rootfs`, and
-//!   a registry only through `rnk-registry` (ADR-0115).
+//!   a registry only through `rnk-registry` ([ADR-0115]).
 //! - Depends on `rnk-oci` for digests and platforms, never on
 //!   `rnk-dockerfile`, `rnk-ignore` or `rnk-layer`: `rnk-builder` builds
 //!   [`KeyInputs`] from parsed instructions and the context walk
-//!   (ADR-0115). The instruction holds no heredoc body: `rnk-builder` adds
+//!   ([ADR-0115]). The instruction holds no heredoc body: `rnk-builder` adds
 //!   each one (of a `RUN`, `#!` or not, a `COPY` or an `ADD`) through a
 //!   `KeyInputs` method that task 3 (#126) adds.
 //! - Does not own the local store: pulled cache layers enter it through
 //!   `rnk-store`.
+//!
+//! [ADR-0113]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md
+//! [ADR-0115]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md
 
 mod canonical;
 mod inputs;
