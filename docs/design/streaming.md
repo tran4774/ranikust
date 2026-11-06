@@ -151,7 +151,7 @@ layers uploading or waiting to is bounded by twice `--jobs`.
   retries.
   - **A cache hit is the exception**: a connection dropped after the first byte
     is resumed with a Range request, and a hit that still fails is a miss, not a
-    failed build ([cache keys](cache-and-store.md#cache-keys),
+    failed build ([cache entries](cache-and-store.md#cache-entries),
     [ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md);
     decided, planned in [#130](https://github.com/tran4774/ranikust/issues/130),
     not built yet).

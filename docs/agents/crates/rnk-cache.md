@@ -198,9 +198,11 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shift, that every encoding field changes the tag, that a key ignores the
   compression and its level (`a_key_ignores_the_compression_and_its_level`),
   and that an entry names the encoding its inputs were made for.
-  `golden.rs` also pins the encoding annotation, and `src/entry.rs` what a
-  push writes (a manifest and config in canonical bytes, the layer type per
-  compression); `src/error.rs` checks excerpts and that a refusal names an
+  `golden.rs` also pins the encoding annotation, `src/key.rs` the tag hash
+  of one key under encodings its inputs were not made for (which only that
+  module can pair), and `src/entry.rs` what a push writes (a manifest and
+  config in canonical bytes, the layer type per compression);
+  `src/error.rs` checks excerpts and that a refusal names an
   empty media type in words. `tests/registry/` runs `RegistryCache` against
   `rnk-registry`'s fake registry (compiled in through `#[path]`): a push
   then a lookup is a hit with the same digests, carrying the layer's type,
@@ -262,11 +264,13 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   many.
 - Warn on `Miss::Failed`, `Pushed::Failed` and a hit's blob found bad,
   never on `Miss::Expired` (kaniko's expired entry is a plain miss too), and
-  never change the exit status for any of them. A blob is found bad as
+  never change the exit status for any of them, apart from ADR-0123's
+  open cases [open: #171] [open: #172]. A blob is found bad as
   [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) says: a decompression error, a bad tar header, a `--limit`
-  overrun, or a digest or diff ID mismatch. A connection dropped in the
-  middle of a hit is not a bad blob: it is resumed with Range requests, and
-  only when that fails is the entry a miss
+  overrun, or a digest or diff ID mismatch; ADR-0123 adds an entry refused
+  under the base-layer rules. A connection dropped in the middle of a hit is
+  not a bad blob: it is resumed with Range requests, and only when that
+  fails is the entry a miss
   ([ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md); planned in
   [#130](https://github.com/tran4774/ranikust/issues/130)).
 - The `LayerCache` futures are not `Send` (the registry client's are not):
