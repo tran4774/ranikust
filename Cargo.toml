@@ -31,7 +31,7 @@ rnk-store = { path = "crates/rnk-store" }
 # that adds it.
 #
 # `base64`: the `auth` field of docker `config.json`.
-base64 = "0.22.1"
+base64 = "0.23.1"
 # `bytes`: the body type `oci-client` and `reqwest` stream.
 bytes = "1.10"
 # `clap`: the command line (Q-012); no colour, so help and errors are the
