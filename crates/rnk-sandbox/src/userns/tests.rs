@@ -437,6 +437,71 @@ fn a_closure_is_not_run_beside_other_threads() {
     }
 }
 
+/// The records the witnesses in a closure's child send: the panic hook's,
+/// the subscriber's.
+const HOOK_RAN: u8 = 100;
+const LOGGED: u8 = 101;
+
+/// A subscriber that sends [`LOGGED`] for each event.
+struct Witness(RawFd);
+
+impl tracing::Subscriber for Witness {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        // SAFETY: the report pipe's write end, open in the child.
+        send(unsafe { BorrowedFd::borrow_raw(self.0) }, LOGGED, Ok(()));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The closure's child inherits ranikust's panic hook, which writes the
+/// metrics report, and its subscriber, which writes the build's log: the
+/// closure runs with neither. Here the inherited ones are witnesses that
+/// send a record; the closure logs, then panics. The child allocates
+/// beside the harness's threads, as [`as_user`]'s does: the C library's
+/// allocator is safe after a fork.
+#[test]
+fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
+    let run = supervise(
+        &ranges(),
+        false,
+        None,
+        -1,
+        Duration::from_secs(20),
+        |args| {
+            let report = args.report;
+            std::panic::set_hook(Box::new(move |_| {
+                // SAFETY: the report pipe's write end, open in the child.
+                send(unsafe { BorrowedFd::borrow_raw(report) }, HOOK_RAN, Ok(()));
+            }));
+            let (status, text) = tracing::subscriber::with_default(Witness(report), || {
+                run_silenced(|| {
+                    tracing::info!("from the closure");
+                    panic!("in the closure")
+                })
+            });
+            // SAFETY: as above.
+            let report = unsafe { BorrowedFd::borrow_raw(report) };
+            let _ = write_all(report, &result_frame(status, &text));
+        },
+    )
+    .unwrap();
+    assert!(!run.records.timed_out);
+    assert_eq!(run.records.list, []);
+    assert_eq!(
+        run.records.payload,
+        Some((CLOSURE_PANICKED, b"panicked".to_vec()))
+    );
+}
+
 /// A failure part-way through making the probe's files leaves the
 /// directory as it was given: here a `sys` already there.
 #[test]

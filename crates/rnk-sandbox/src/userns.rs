@@ -1384,16 +1384,32 @@ unsafe fn closure_child(
     // SAFETY: the report pipe's write end, open in this process.
     let report = unsafe { BorrowedFd::borrow_raw(a.report) };
     if enter(a, report) && enter_mount_namespace(report) {
-        let (status, text) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-            Ok(Ok(t)) => (CLOSURE_OK, t),
-            Ok(Err(t)) => (CLOSURE_REFUSED, t),
-            Err(_) => (CLOSURE_PANICKED, "panicked".to_owned()),
-        };
+        let (status, text) = run_silenced(f);
         // A parent gone reads nothing; one still here sees no result.
         let _ = write_all(report, &result_frame(status, &text));
     }
     // SAFETY: `_exit` ends this process at once, running no destructor.
     unsafe { libc::_exit(0) }
+}
+
+/// Runs `f` in a probe's child without the panic hook and the `tracing`
+/// subscriber it inherited: they write ranikust's metrics report and the
+/// build's log, which are the parent's to write. Its [`RESULT`] status and
+/// text; a panic is reported there only.
+fn run_silenced(f: impl FnOnce() -> std::result::Result<String, String>) -> (u8, String) {
+    // Leaked, not dropped: dropping the parent's hook would run its
+    // destructors in this copy of the parent.
+    std::mem::forget(std::panic::take_hook());
+    std::panic::set_hook(Box::new(|_| {}));
+    let none = tracing::Dispatch::none();
+    let ran = tracing::dispatcher::with_default(&none, || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+    });
+    match ran {
+        Ok(Ok(t)) => (CLOSURE_OK, t),
+        Ok(Err(t)) => (CLOSURE_REFUSED, t),
+        Err(_) => (CLOSURE_PANICKED, "panicked".to_owned()),
+    }
 }
 
 /// The closure's [`RESULT`] statuses, from [`closure_child`] to
