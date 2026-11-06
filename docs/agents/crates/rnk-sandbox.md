@@ -37,9 +37,9 @@ path is built, reported only
   `newuidmap`/`newgidmap` with the subordinate ids the caller read, else one
   id); `chown` to a mapped id other than 0; `unshare(CLONE_NEWNS)`, a second
   call after the map, so that the mount namespace is owned by the new user
-  namespace and a refusal names its step (Ubuntu 24.04 stops a ranged map
-  there); a new `proc` in a new PID namespace,
-  else an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
+  namespace and a refusal names its step (with a ranged map Ubuntu 24.04
+  refuses it too, after `chown`); a new `proc` in a new PID namespace, else
+  an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
   `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
   closure as root of a namespace with the map that worked, for the overlay
   probe. The `newuidmap` path has no caller but the T2 test: `ranikust`
@@ -373,9 +373,9 @@ What a change here must keep, with where it lives:
   before it returns. `newuidmap` is looked for in `/usr/bin` and `/bin`
   only, run with an empty environment. A child of a user other than root
   is dumpable only around its map write, which the kernel's owner check of
-  `/proc/<pid>/uid_map` needs: from just before it to just after, before
-  any other step. `ranikust` probes as root, whose children never change
-  it.
+  `/proc/<pid>/uid_map` needs: made dumpable after `unshare`, not dumpable
+  again right after the map, before `chown`. `ranikust` probes as root,
+  whose children never change it.
 
 ## Refs
 
@@ -478,7 +478,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `chown`), records across split reads and the deadline, the report's line
   and stop, a map this process fails to write ending the waiting child at
   once, a failure part-way through making the probe's files removing what
-  it made, and `in_namespace` not running its closure beside other threads.
+  it made, `in_namespace` not running its closure beside other threads, and
+  a panic in the closure reported as not finishing, never as its refusal.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
@@ -486,9 +487,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `nodev` root and `/dev`; read-only `/proc/sys` and `/dev/null`; masked
   kernel files; no terminal; only stdio descriptors; no stub in the
   layer); `sealed-exe`: a `RUN` reaches no thread of ranikust's or its
-  init's (ADR-0101). Not yet: the fallbacks.
-  `kaniko-flags` in the kaniko leg: the user-namespace probe passes under
-  rootless Podman's defaults, with an rbind of `/proc` (#74).
+  init's (ADR-0101). `kaniko-flags` in the kaniko leg: the user-namespace
+  probe passes under rootless Podman's defaults, with an rbind of `/proc`
+  (#74). Not yet: the sandbox's fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`);
@@ -497,8 +498,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `newuidmap` with that user's ranges; where AppArmor restricts user
   namespaces, Ubuntu 24.04, one id stops at the `uid_map` write and ranges
   at `chown`, elsewhere both pass; both harnesses install `newuidmap`, and
-  the user must have subordinate ids; prints `measured:` lines); `a_device_node_planted_as_a_journal_is_never_opened`
-  (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
+  the user must have subordinate ids; prints `measured:` lines);
+  `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;

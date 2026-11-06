@@ -128,9 +128,7 @@ Each step before the next; design in
    way at debug after step 3, or a warning when no way worked (the build
    goes on).
    `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd, `seal-none` both
-   ways; `overlay-refused` takes overlay mode's probe, once it passed, as
-   refused by the kernel (`set_up`), so that `--mode=auto` routes as on
-   NFS.
+   ways.
 3. `--metrics-file` refused in the build context or through a symlink
    (`check_metrics_file`, ADR-0076); `rnk_metrics::init` (no thread);
    `--metrics-file` over `RANIKUST_METRICS_FILE` (ADR-0037).
@@ -153,7 +151,9 @@ Each step before the next; design in
    thread may still be counted) → `rnk_sandbox::probe` in
    `<state-dir>/sandbox` → `rnk_snapshot::probe` in
    `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (journal replay,
-   spawner thread).
+   spawner thread). `RANIKUST_DEBUG_FAULT=overlay-refused` takes a passed
+   overlay probe as a failed probe check, which routes as NFS's refused
+   mount does.
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
@@ -363,10 +363,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   never builds on `/`, `--mode=auto` with `--ignore-path` refused after
   overlay mode's set-up leaves nothing, a ramfs state directory refused or
   built with a directory per stage, root without `CAP_SYS_ADMIN` refused
-  before the state directory exists; the user-namespace probe logged
-  exactly once on the overlayfs route and on the route where the overlay
-  probe is refused after it ran, `auto_overlay_refused_after_probe` with
-  `RANIKUST_DEBUG_FAULT=overlay-refused`, at most once on ramfs);
+  before the state directory exists); `auto_routes_to_stages` and
+  `auto_overlay_refused_after_probe` (`--mode=auto` routes, one probe line
+  each: [testing](../../testing.md#quick-smoke-cases));
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
   from a sealed memfd (ADR-0101);
   `seccomp_on_slash` (every `--seccomp` refused, exit 2, in kaniko mode on

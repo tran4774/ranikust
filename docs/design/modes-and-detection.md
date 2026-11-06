@@ -106,8 +106,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    logs one line (whether the path passes or where it stops, each step with
    its errno, the map, the overlay, the AppArmor switch below); nothing
    routes on it until rootless overlay mode (Phase 3). A process that is not
-   root does not probe, as it never reaches a set-up (fail-closed); task 8
-   ([#79](https://github.com/tran4774/ranikust/issues/79)) routes there.
+   root is not probed (`report_user_namespace` checks the effective uid);
+   task 8 ([#79](https://github.com/tran4774/ranikust/issues/79)) routes
+   there.
    `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
    a directory of the build under the state directory (`userns-probe`, or a
    name the next start removes when the store is anonymous), removed after.
