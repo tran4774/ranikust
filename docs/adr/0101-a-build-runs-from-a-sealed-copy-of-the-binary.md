@@ -601,16 +601,16 @@ The decision:
   it is refused before any `RUN`, ranikust started from `sh` (before the
   state directory exists) or exec'd, the only process of the namespace it
   started in [measured]. These steps pass under rootful Docker in the VM's
-  quick suite too [measured]. The steps added after the red team (T1,
-  rootless podman 5.7.0, Linux 7.0): with a root peer that has a
-  capability ranikust lacks (`NET_ADMIN`) and a writable bind, and
-  `half_entered` with no peer, ranikust started from `sh` or exec'd, the
-  build goes ahead, and its `RUN` goes through every process, reaches no
-  peer and holds only its standard streams; with no peer, a `sleep` of the
-  container itself unshared into a mount namespace of its own just before
-  ranikust starts is refused before the state directory exists and before
-  any `RUN` [measured]. They have not run under Docker in the VM's quick
-  suite yet. T2 (the VM's `unit`, Ubuntu noble, Linux 6.8)
+  quick suite too [measured]. Its builds with `RUN`s that go ahead (T1,
+  rootless podman 5.7.0, Linux 7.0), with a root peer that has a
+  capability ranikust lacks (`NET_ADMIN`) and a writable bind, or
+  `half_entered` with no peer, ranikust started from `sh` or exec'd: one
+  `RUN` goes through every process and, with the root peer, sees its
+  `sleep` as PID 1 and does not reach it; another holds only its standard
+  streams [measured]. With no peer, a `sleep` of the container itself
+  unshared into a mount namespace of its own just before ranikust starts
+  is refused before the state directory exists and before any `RUN`
+  [measured]. T2 (the VM's `unit`, Ubuntu noble, Linux 6.8)
   `a_namespace_left_but_held_keeps_its_number_from_new_ones`: a mount
   namespace no process is in, held by the handle, keeps its number from
   64 new ones in each of three rounds; without the handle the number comes

@@ -325,14 +325,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `binary-mounts-made` its mount tables made inside the container (covered
   and stacked binds, a mount added during the walk, a container told only
   once ranikust started); `pid-peers` the test of `refuse_reachable_peers`
-  (`--pid container:<peer>`: a root peer refused before any `RUN`, a peer
-  of another user and no peer build; `half_entered`: a set-up that failed
-  after its `unshare` builds with no peer and still refuses a root peer,
-  ranikust started from `sh` or exec'd; where a build goes ahead, with a
-  root peer that has a capability ranikust lacks and a writable bind, or
-  `half_entered` with no peer, its `RUN` reaches no peer and holds only its
-  standard streams; with no peer, a `sleep` of the container itself
-  unshared just before ranikust starts is refused).
+  ([its steps](../../testing.md#quick-smoke-cases)).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

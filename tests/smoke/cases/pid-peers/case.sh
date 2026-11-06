@@ -1,16 +1,6 @@
-# ADR-0101 (T21): kaniko mode on `/` in a container that shares its PID
-# namespace with another one (`--pid container:<peer>`). A root peer with a
-# writable bind of its own, which ranikust reaches through /proc when it
-# starts, is refused before the state directory exists and before any RUN
-# (the red team's configuration, with a RUN that only looks); a peer of
-# another user, which ranikust does not reach, and no peer build. A set-up
-# that failed after its `unshare` (`half_entered`) builds with no peer and
-# still refuses a root peer, ranikust started from `sh` or exec'd. Where a
-# build goes ahead with a root peer that has a capability ranikust lacks,
-# or with no peer after a half-entered set-up, its RUN reaches no peer and
-# holds no descriptor of ranikust's; a process of the container itself
-# unshared into a mount namespace of its own just before ranikust starts
-# is refused too.
+# ADR-0101 (T21): kaniko mode on `/` refuses a PID namespace shared with a
+# process of another mount namespace that it reaches as it starts; what
+# each step checks is in docs/testing.md (`pid-peers`).
 case_run() {
   local d
   d="$(out peers)"
@@ -18,7 +8,7 @@ case_run() {
   printf 'FROM scratch\nCOPY Dockerfile /d\n' >"$d/ctx/Dockerfile"
   # Four descriptors: the standard streams and the directory `ls` lists.
   printf '%s\n' "FROM $BASE" \
-    'RUN n=0; for p in /proc/[0-9]*; do n=$((n + 1)); [ -d "$p/root/w" ] && echo "RUN reached $p"; done; echo "RUN looked at $n processes"' \
+    'RUN n=0; for p in /proc/[0-9]*; do n=$((n + 1)); [ -d "$p/root/w" ] && echo "RUN reached $p"; done; echo "RUN looked at $n processes"; echo "RUN saw PID 1 as $(cat /proc/1/comm)"' \
     'RUN ls -l /proc/self/fd; test "$(ls /proc/self/fd | wc -l)" -le 4' \
     >"$d/look/Dockerfile"
   printf '%s\n' '{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{"names": ["mount"],
@@ -80,7 +70,7 @@ peer() {
     rc=$?; test -e /var/lib/rnk-peers && echo STATE-MADE; exit $rc' 2>&1)" || rc=$?
   [ -z "$name" ] || stop_peer "$name"
   if [ "$want" = built ]; then
-    built "$ctx" "$rc" "$got"
+    built "$ctx" "$rc" "$got" "$name"
   else
     refused "$rc" "$got"
   fi || {
@@ -134,7 +124,7 @@ half_entered() {
   [ -z "$name" ] || stop_peer "$name"
   grep -qF 'RUN without the full sandbox: make / a recursive slave mount' <<<"$got" &&
     if [ "$want" = built ]; then
-      built "$ctx" "$rc" "$got"
+      built "$ctx" "$rc" "$got" "$name"
     else
       refused "$rc" "$got"
     fi || {
@@ -143,19 +133,21 @@ half_entered() {
   }
 }
 
-# built CTX RC GOT: a build of CTX that exited RC, printing GOT, made an
-# image; with the `look` context its first RUN went through every process
-# and reached no peer, and its second held only the standard streams.
+# built CTX RC GOT PEER: a build of CTX that exited RC, printing GOT, made
+# an image; with the `look` context its first RUN went through every
+# process, saw PID 1 as the `sleep` of PEER when one runs, and reached no
+# peer, and its second held only the standard streams.
 built() {
   [ "$2" = 0 ] && grep -q '^sha256:' <<<"$3" && ! grep -q 'RUN reached /proc/[0-9]' <<<"$3" &&
-    { [ "$1" != "$(out peers)/look" ] || grep -qE 'RUN looked at [0-9]+ processes' <<<"$3"; }
+    { [ "$1" != "$(out peers)/look" ] || { grep -qE 'RUN looked at [0-9]+ processes' <<<"$3" &&
+      { [ -z "$4" ] || grep -q 'RUN saw PID 1 as sleep$' <<<"$3"; }; }; }
 }
 
 # refused RC GOT: a build that exited RC, printing GOT, was refused for a
-# peer's `sleep`, with no RUN reaching the peer and no state directory said
-# to be made (STATE-MADE).
+# peer's `sleep` before any RUN, and no state directory was said to be made
+# (STATE-MADE).
 refused() {
   [ "$1" = 1 ] && grep -qE 'sharing its PID namespace with process [0-9]+ \(sleep\)' <<<"$2" &&
     grep -qF 'shareProcessNamespace' <<<"$2" &&
-    ! grep -q -e STATE-MADE -e 'RUN reached' <<<"$2"
+    ! grep -q -e STATE-MADE -e 'RUN reached' -e 'RUN looked at' <<<"$2"
 }

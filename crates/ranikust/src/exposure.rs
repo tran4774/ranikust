@@ -913,7 +913,7 @@ mod tests {
                 // In M1, `mount_namespace()` on it, then into M2: M1 has no
                 // process left, only the handle when `hold`, kept open in
                 // the same process across its exec.
-                // SAFETY: unshares, an open, a stat, an fcntl and a write.
+                // SAFETY: system calls only; no lock, no allocation.
                 let m1 = unsafe {
                     sleeper(&mut sleepers, move || {
                         unshare_mounts()?;
@@ -930,7 +930,7 @@ mod tests {
                 };
                 let mut ids = Vec::new();
                 while ids.len() < NEW && !ids.contains(&m1) {
-                    // SAFETY: an unshare, an open, a stat and a write.
+                    // SAFETY: system calls only; no lock, no allocation.
                     ids.push(unsafe {
                         sleeper(&mut sleepers, || {
                             unshare_mounts()?;
@@ -999,7 +999,7 @@ mod tests {
     fn a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone() {
         let now = mount_namespace().unwrap().id;
         let mut sleeping = Sleepers::default();
-        // SAFETY: an unshare, an open, a stat and a write.
+        // SAFETY: system calls only; no lock, no allocation.
         let theirs = unsafe {
             sleeper(&mut sleeping, || {
                 unshare_mounts()?;
