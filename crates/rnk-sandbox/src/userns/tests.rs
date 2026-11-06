@@ -827,3 +827,557 @@ fn the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts() {
         assert_eq!((ranged[0], ranged[1]), ("none", "newuidmap"), "{out}");
     }
 }
+
+// Red team of the user-namespace probe (#74): a probe directory with names
+// planted in it, odd filesystems under it, and the prober killed mid-way.
+// Each helper runs as any user (T0, where an AppArmor restriction may stop
+// the steps at the map) and as root (T2c, the whole path).
+
+/// Runs `f` in a forked child made a subreaper, so that a process the probe
+/// orphans becomes its child, and returns what `f` printed. The child
+/// closes every descriptor but stdio and its pipe first: a copy of another
+/// test's pipe end would keep that test from seeing its end.
+fn in_subreaper(f: impl FnOnce() -> String) -> String {
+    let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+    let keep = w.as_raw_fd();
+    // SAFETY: the child closes what it does not own, runs `f`, which
+    // allocates (the C library's allocator is safe after a fork), and ends
+    // with `_exit`; it drops no owner of a descriptor it closed.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        let mut kept = [0, 1, 2, keep];
+        kept.sort_unstable();
+        // SAFETY: this forked child ends with `_exit` and uses only `keep`.
+        unsafe { child::close_all_except(&kept) };
+        let text = match rustix::process::set_child_subreaper(Some(rustix::process::getpid())) {
+            Ok(()) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                .unwrap_or_else(|_| "error: panicked".to_owned()),
+            Err(e) => format!("error: PR_SET_CHILD_SUBREAPER: {e}"),
+        };
+        // SAFETY: the pipe's write end, open in this child.
+        let _ = write_all(unsafe { BorrowedFd::borrow_raw(keep) }, text.as_bytes());
+        // SAFETY: `_exit` ends this process at once.
+        unsafe { libc::_exit(0) }
+    }
+    assert!(pid > 0);
+    drop(w);
+    let mut out = String::new();
+    std::fs::File::from(r).read_to_string(&mut out).unwrap();
+    let mut status = 0;
+    // SAFETY: `waitpid` writes the status, which lives across the call.
+    assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+    assert!(libc::WIFEXITED(status), "status {status:#x}: {out}");
+    out
+}
+
+/// The children of `pid`, live or not yet reaped.
+fn children_of(pid: i32) -> Vec<i32> {
+    fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect()
+}
+
+/// Reaps every child that ended for up to `grace`, and names those still
+/// alive then.
+fn settle(grace: Duration) -> Vec<String> {
+    let me = i32::try_from(std::process::id()).unwrap();
+    let deadline = Instant::now() + grace;
+    loop {
+        loop {
+            let mut status = 0;
+            // SAFETY: `waitpid` writes the status, which lives across the call.
+            if unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) } <= 0 {
+                break;
+            }
+        }
+        let live = children_of(me);
+        if live.is_empty() {
+            return Vec::new();
+        }
+        if Instant::now() >= deadline {
+            return live
+                .iter()
+                .map(|p| {
+                    let comm = fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default();
+                    let ns = |p: &str| fs::read_link(format!("/proc/{p}/ns/user")).ok();
+                    let other = if ns(&p.to_string()) == ns("self") {
+                        ""
+                    } else {
+                        ", another user namespace"
+                    };
+                    format!("{p} ({}{other})", comm.trim())
+                })
+                .collect();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The mount points at or below `dir` in `/proc/<who>/mountinfo` (none
+/// when it cannot be read).
+fn mounts_below(who: &str, dir: &Path) -> Vec<String> {
+    let dir = dir.to_str().unwrap();
+    let below = format!("{dir}/");
+    fs::read_to_string(format!("/proc/{who}/mountinfo"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split(' ').nth(4))
+        .filter(|m| *m == dir || m.starts_with(&below))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// This process's descriptors and what each is.
+fn descriptors() -> Vec<String> {
+    let mut fds: Vec<String> = fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let to = fs::read_link(e.path()).ok()?;
+            Some(format!(
+                "{} {}",
+                e.file_name().to_string_lossy(),
+                to.display()
+            ))
+        })
+        .collect();
+    fds.sort();
+    fds
+}
+
+/// A closure for [`run_closure`]: a tmpfs on `path`, in its own namespace.
+fn mount_tmpfs(path: &Path) -> std::result::Result<String, String> {
+    rustix::mount::mount(c"tmpfs", path, c"tmpfs", MountFlags::empty(), None)
+        .map(|()| "mounted".to_owned())
+        .map_err(|e| e.to_string())
+}
+
+/// One probe in `dir`, then, with a map that worked, a closure that mounts
+/// a tmpfs in its namespace on `dir/closure`, removed after.
+fn probe_once(dir: &Path) -> String {
+    let report = match probe_in(dir, None) {
+        Ok(r) => r,
+        Err(e) => return format!("probe error: {e}"),
+    };
+    let Some(plan) = report.plan.as_ref() else {
+        return format!("probe: {report}");
+    };
+    let target = dir.join("closure");
+    if let Err(e) = fs::create_dir(&target) {
+        return format!("probe: {report}; closure: {e}");
+    }
+    let ran = run_closure(plan, mount_tmpfs, &target);
+    let removed = fs::remove_dir(&target);
+    format!("probe: {report}; closure: {ran:?}; its directory removed: {removed:?}")
+}
+
+/// What `ls -l` would say of each entry below `dir`, contents included.
+fn tree(dir: &Path) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let m = fs::symlink_metadata(&p).unwrap();
+            let body = if m.is_file() {
+                format!("{:?}", fs::read(&p).unwrap())
+            } else if m.is_symlink() {
+                fs::read_link(&p).unwrap().display().to_string()
+            } else {
+                String::new()
+            };
+            out.push(format!(
+                "{} {:o} {}:{} {} {}.{} {body}",
+                p.strip_prefix(dir).unwrap().display(),
+                m.mode(),
+                m.uid(),
+                m.gid(),
+                m.size(),
+                m.mtime(),
+                m.mtime_nsec()
+            ));
+            if m.is_dir() {
+                todo.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Plants one name in a fresh probe directory, aimed at a file and a
+/// directory outside it, for each attack; probes; and names what went
+/// wrong: a probe that did not return, a change outside, or a planted name
+/// the probe removed or replaced (`mknod`, whose node the probe removes
+/// whatever made it, excepted: there only the outside counts).
+fn planted_names_are_never_followed(base: &Path) -> Vec<String> {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    let outside = base.join("outside");
+    fs::create_dir(&outside).unwrap();
+    let file = outside.join("file");
+    fs::write(&file, b"keep").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::create_dir(outside.join("dir")).unwrap();
+    let before = tree(&outside);
+    let fifo = |p: &Path| {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p,
+            FileType::Fifo,
+            Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+    };
+    let link_dir = |p: &Path| symlink(outside.join("dir"), p).unwrap();
+    let link_file = |p: &Path| symlink(&file, p).unwrap();
+    let hard = |p: &Path| fs::hard_link(&file, p).unwrap();
+    type Plant<'a> = &'a dyn Fn(&Path);
+    let attacks: [(&str, &str, Plant<'_>); 9] = [
+        ("proc", "a symlink to a directory outside", &link_dir),
+        ("proc", "a FIFO", &fifo),
+        ("sys", "a symlink to a directory outside", &link_dir),
+        ("chown", "a symlink to a file outside", &link_file),
+        ("chown", "a hard link of a file outside", &hard),
+        ("chown", "a FIFO", &fifo),
+        ("mknod", "a symlink to a file outside", &link_file),
+        ("mknod", "a hard link of a file outside", &hard),
+        ("mknod", "a FIFO", &fifo),
+    ];
+    let mut bad = Vec::new();
+    for (i, (name, what, plant)) in attacks.iter().enumerate() {
+        let dir = base.join(format!("probe-{i}"));
+        fs::create_dir(&dir).unwrap();
+        plant(&dir.join(name));
+        let planted = tree(&dir);
+        let (done, wait) = std::sync::mpsc::channel();
+        let d = dir.clone();
+        // A FIFO opened to write would block: the probe runs on a thread.
+        std::thread::spawn(move || {
+            let _ = done.send(probe_in(&d, None).map(|r| r.to_string()));
+        });
+        let got = wait.recv_timeout(Duration::from_secs(60));
+        let got = match got {
+            Ok(r) => format!("{r:?}"),
+            Err(_) => {
+                bad.push(format!("{name} as {what}: the probe did not return"));
+                continue;
+            }
+        };
+        if tree(&outside) != before {
+            bad.push(format!("{name} as {what}: changed outside: {got}"));
+        }
+        if *name != "mknod" && tree(&dir) != planted {
+            bad.push(format!(
+                "{name} as {what}: the directory was {planted:?}, is {:?}: {got}",
+                tree(&dir)
+            ));
+        }
+    }
+    // The probe's directory itself a symlink out, or a FIFO.
+    let link = base.join("probe-link");
+    symlink(outside.join("dir"), &link).unwrap();
+    let fifo_dir = base.join("probe-fifo");
+    fifo(&fifo_dir);
+    for (dir, what) in [(&link, "a symlink out"), (&fifo_dir, "a FIFO")] {
+        let (done, wait) = std::sync::mpsc::channel();
+        let d = dir.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(probe_in(&d, None).is_ok());
+        });
+        match wait.recv_timeout(Duration::from_secs(60)) {
+            Ok(false) => {}
+            Ok(true) => bad.push(format!("the probe's directory as {what}: probed")),
+            Err(_) => bad.push(format!("the probe's directory as {what}: did not return")),
+        }
+        if tree(&outside) != before {
+            bad.push(format!("the probe's directory as {what}: changed outside"));
+        }
+    }
+    bad
+}
+
+/// Red team (#74; T22, T4): names planted in the probe's directory, or as it.
+#[test]
+fn red_team_names_planted_in_the_probes_directory_are_never_followed() {
+    let base = tempfile::tempdir().unwrap();
+    let bad = planted_names_are_never_followed(base.path());
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Red team (#74; T22, T4): the same as root, `mknodat` and the mounts reached.
+#[test]
+#[ignore = "T2c: sysadmin: the user-namespace probe as root, with names planted in its directory"]
+fn red_team_as_root_names_planted_in_the_probes_directory_are_never_followed() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let base = tempfile::tempdir().unwrap();
+    let bad = planted_names_are_never_followed(base.path());
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// [`probe_once`] in a subreaper, then what is left of it after a grace:
+/// processes, descriptors, mounts below the directory (here and in PID 1's
+/// table), entries in the probe's directory. A line `LEFT ...` for each.
+fn probe_leaves_nothing() -> String {
+    in_subreaper(|| {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("probe");
+        fs::create_dir(&dir).unwrap();
+        let fds = descriptors();
+        let mut out = vec![probe_once(&dir)];
+        let left = settle(Duration::from_secs(3));
+        if !left.is_empty() {
+            out.push(format!("LEFT processes: {left:?}"));
+        }
+        let now = descriptors();
+        if now != fds {
+            out.push(format!("LEFT descriptors: {now:?}, before {fds:?}"));
+        }
+        let mut mounted = false;
+        for who in ["self", "1"] {
+            let m = mounts_below(who, base.path());
+            if !m.is_empty() {
+                mounted = true;
+                out.push(format!("LEFT mounts in {who}'s table: {m:?}"));
+            }
+        }
+        let entries: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        if !entries.is_empty() {
+            out.push(format!("LEFT entries: {entries:?}"));
+        }
+        if mounted {
+            // Never delete through a mount.
+            let _ = base.keep();
+        }
+        out.join("\n")
+    })
+}
+
+/// Red team (#74; T7, T8, T9): what a probe and a closure that mounts leave.
+#[test]
+fn red_team_the_probe_leaves_no_process_mount_descriptor_or_file() {
+    let out = probe_leaves_nothing();
+    assert!(!out.contains("LEFT") && !out.contains("error"), "{out}");
+}
+
+/// Red team (#74; T7, T8, T9): the same as root, through the whole path.
+#[test]
+#[ignore = "T2c: sysadmin: the user-namespace probe as root, then a closure that mounts"]
+fn red_team_as_root_the_probe_leaves_no_process_mount_descriptor_or_file() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = probe_leaves_nothing();
+    measured(&format!("user namespace probe, nothing left: {out}"));
+    assert!(!out.contains("LEFT") && !out.contains("error"), "{out}");
+    assert!(
+        out.contains("closure: Ok(Ok(\"mounted\"))") || !out.contains("map: multi-range"),
+        "{out}"
+    );
+}
+
+/// Probes in a loop in a child of a subreaper, killed in `rounds` rounds
+/// once the probe has a child of its own: `SIGKILL`, `SIGINT` to the prober
+/// alone, then `SIGINT` to its process group (a terminal's Ctrl-C), each
+/// after a short wait that grows with the round. Names any process alive
+/// after a grace, any mount below the directory, and how many kills found a
+/// child of the probe there.
+fn killed_mid_probe_leaves_nothing(rounds: u32) -> String {
+    in_subreaper(|| {
+        let base = tempfile::tempdir().unwrap();
+        let mut out = Vec::new();
+        let mut caught = 0;
+        for round in 0..rounds {
+            let sub = base.path().join(round.to_string());
+            fs::create_dir(&sub).unwrap();
+            // SAFETY: this process is single-threaded; the child probes,
+            // then ends with `_exit` unless killed first.
+            let prober = unsafe { libc::fork() };
+            if prober == 0 {
+                // SAFETY: plain system calls. A shell's background job starts
+                // with SIGINT ignored, and the attack is one that ends it.
+                unsafe {
+                    libc::setpgid(0, 0);
+                    libc::signal(libc::SIGINT, libc::SIG_DFL);
+                }
+                let start = Instant::now();
+                for i in 0..10_000 {
+                    let d = sub.join(i.to_string());
+                    if start.elapsed() > Duration::from_secs(30) || fs::create_dir(&d).is_err() {
+                        break;
+                    }
+                    let _ = probe_once(&d);
+                }
+                // SAFETY: `_exit` ends this process at once.
+                unsafe { libc::_exit(0) }
+            }
+            if prober < 0 {
+                out.push(format!("error: fork: {}", io::Error::last_os_error()));
+                break;
+            }
+            // SAFETY: plain system call; either side's `setpgid` wins.
+            unsafe { libc::setpgid(prober, prober) };
+            let start = Instant::now();
+            while children_of(prober).is_empty() && start.elapsed() < Duration::from_secs(5) {
+                std::hint::spin_loop();
+            }
+            let wait = Duration::from_micros(u64::from(round / 3 % 8) * 300);
+            let start = Instant::now();
+            while start.elapsed() < wait {
+                std::hint::spin_loop();
+            }
+            if !children_of(prober).is_empty() {
+                caught += 1;
+            }
+            let (sig, to, how) = match round % 3 {
+                0 => (libc::SIGKILL, prober, "SIGKILL"),
+                1 => (libc::SIGINT, prober, "SIGINT"),
+                _ => (libc::SIGINT, -prober, "SIGINT to the group"),
+            };
+            // SAFETY: plain system call, to the prober or its group.
+            unsafe { libc::kill(to, sig) };
+            let left = settle(Duration::from_secs(3));
+            if !left.is_empty() {
+                out.push(format!("LEFT after {how} in round {round}: {left:?}"));
+            }
+            let m = mounts_below("self", base.path());
+            if !m.is_empty() {
+                out.push(format!("LEFT mounts after {how} in round {round}: {m:?}"));
+                // Never delete through a mount.
+                let _ = base.keep();
+                break;
+            }
+        }
+        out.push(format!("caught {caught} of {rounds}"));
+        out.join("\n")
+    })
+}
+
+/// Red team (#74; T8, T9): the prober killed while a child of the probe runs.
+#[test]
+fn red_team_a_prober_killed_mid_probe_leaves_no_process_or_mount() {
+    let out = killed_mid_probe_leaves_nothing(24);
+    assert!(!out.contains("LEFT") && !out.contains("error"), "{out}");
+    // Where `unshare` is refused the probe's children end too fast to catch.
+    let base = tempfile::tempdir().unwrap();
+    let stop = probe_in(base.path(), None).unwrap().stop();
+    assert!(
+        stop == Some("unshare") || !out.contains("caught 0 of"),
+        "no kill found a child: {out}"
+    );
+}
+
+/// Red team (#74; T8, T9): the same as root, kills landing in the mounts.
+#[test]
+#[ignore = "T2c: sysadmin: the user-namespace probe as root, killed mid-way"]
+fn red_team_as_root_a_prober_killed_mid_probe_leaves_no_process_or_mount() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = killed_mid_probe_leaves_nothing(48);
+    measured(&format!(
+        "user namespace probe killed mid-way: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("LEFT") && !out.contains("error"), "{out}");
+    assert!(!out.contains("caught 0 of"), "no kill found a child: {out}");
+}
+
+/// The probe in a directory on each filesystem: a plain tmpfs, one with
+/// inodes for the directory and two entries only (the probe runs out
+/// part-way), a read-only tmpfs and a ramfs, each mounted in a mount
+/// namespace of the child's own. A line `LEFT ...` for each process, mount
+/// or entry left.
+fn odd_filesystems_leave_nothing() -> String {
+    in_subreaper(|| {
+        let mut out = Vec::new();
+        // SAFETY: `NEWNS` does not unshare the descriptor table, the only
+        // flag `unshare_unsafe` is unsafe for; this child is single-threaded.
+        let private =
+            unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS) }
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    rustix::mount::mount_change(
+                        "/",
+                        rustix::mount::MountPropagationFlags::PRIVATE
+                            | rustix::mount::MountPropagationFlags::REC,
+                    )
+                    .map_err(|e| e.to_string())
+                });
+        if let Err(e) = private {
+            return format!("error: a private mount namespace: {e}");
+        }
+        let base = tempfile::tempdir().unwrap();
+        for (i, (fs_type, data, read_only)) in [
+            (c"tmpfs", c"", false),
+            (c"tmpfs", c"nr_inodes=4", false),
+            (c"tmpfs", c"", true),
+            (c"ramfs", c"", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let what = format!(
+                "{fs_type:?} {data:?}{}",
+                if read_only { " read-only" } else { "" }
+            );
+            let fs_dir = base.path().join(i.to_string());
+            fs::create_dir(&fs_dir).unwrap();
+            if let Err(e) =
+                rustix::mount::mount(fs_type, &fs_dir, fs_type, MountFlags::empty(), data)
+            {
+                out.push(format!("error: {what}: mount: {e}"));
+                continue;
+            }
+            let dir = fs_dir.join("probe");
+            fs::create_dir(&dir).unwrap();
+            if read_only {
+                let ro = rustix::mount::mount_remount(&fs_dir, MountFlags::RDONLY, c"");
+                if let Err(e) = ro {
+                    out.push(format!("error: {what}: remount read-only: {e}"));
+                    continue;
+                }
+            }
+            out.push(format!("{what}: {}", probe_once(&dir)));
+            let left = settle(Duration::from_secs(3));
+            if !left.is_empty() {
+                out.push(format!("LEFT processes on {what}: {left:?}"));
+            }
+            let m = mounts_below("self", &dir);
+            if !m.is_empty() {
+                out.push(format!("LEFT mounts on {what}: {m:?}"));
+            }
+            let entries: Vec<_> = fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            if !entries.is_empty() {
+                out.push(format!("LEFT entries on {what}: {entries:?}"));
+            }
+        }
+        // The mounts end with this child's mount namespace.
+        let _ = base.keep();
+        out.join("\n")
+    })
+}
+
+/// Red team (#74; T4, T9): the probe's directory on odd filesystems.
+#[test]
+#[ignore = "T2c: sysadmin: the user-namespace probe as root, on filesystems it mounts"]
+fn red_team_as_root_the_probe_on_odd_filesystems_leaves_nothing() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = odd_filesystems_leave_nothing();
+    measured(&format!(
+        "user namespace probe on odd filesystems: {}",
+        out.replace('\n', "; ")
+    ));
+    // The harness's errors start a line; the probe's are expected here.
+    assert!(
+        !out.contains("LEFT") && !out.lines().any(|l| l.starts_with("error: ")),
+        "{out}"
+    );
+    assert!(out.contains("\"nr_inodes=4\": probe error: "), "{out}");
+    assert!(out.contains("read-only: probe error: "), "{out}");
+}

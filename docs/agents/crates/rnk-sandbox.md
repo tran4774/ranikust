@@ -496,7 +496,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   through the parent's panic hook, and a log line of the closure not
   through its subscriber; a child holding only stdio and its own
   descriptors; a child reaped within its grace, else killed, else reported
-  left; a tool reaped elsewhere (`ECHILD`) not killed.
+  left; a tool reaped elsewhere (`ECHILD`) not killed. Its red team
+  (`red_team_*`, as any user; T22, T4, T7, T8, T9): names planted where it
+  makes its files (a symlink out, a hard link of a file outside, a FIFO;
+  the directory itself a symlink or a FIFO) never followed, opened or
+  removed; nothing left after a probe and a closure that mounts (no
+  process, orphan included, no descriptor, mount or entry); the prober
+  killed while a child of the probe runs (`SIGKILL`, `SIGINT`, `SIGINT` to
+  its group) leaves no process or mount.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
@@ -506,7 +513,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   layer); `sealed-exe`: a `RUN` reaches no thread of ranikust's or its
   init's (ADR-0101). `kaniko-flags` in the kaniko leg: the user-namespace
   probe passes under rootless Podman's defaults, with an rbind of `/proc`
-  (#74). Not yet: the sandbox's fallbacks.
+  (#74); `userns-probe`, its red team at the binary's level
+  ([its steps](../../testing.md#quick-smoke-cases)). Not yet: the
+  sandbox's fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`);
@@ -613,7 +622,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/userns/tests.rs`, profile `default`, also in the T2 unit suite on the
   VM: every step passes with root's own ranges on a host, `unshare` is
   refused under Docker's defaults, and nothing is left in the probe's
-  directory); in `src/journal.rs`, a block device where a directory
+  directory); the probe's red team as root (`red_team_as_root_*`, profile
+  `sysadmin`: the T0 attacks with the whole path, `proc` and `sysfs`
+  mounts and `mknodat` reached, and the probe on a tmpfs, one that runs
+  out of inodes part-way, a read-only one and a ramfs, each leaving
+  nothing; prints `measured:` lines); in `src/journal.rs`, a block device where a directory
   is needed or as the target
   (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`).
 
