@@ -375,7 +375,9 @@ What a change here must keep, with where it lives:
   within 2 s (one that closed its report but is not reaped then is killed,
   and given 2 s more); its namespaces and mounts go with it. One still
   there after is `Error::ProbeChildLeft`: the probe's directory stays, and
-  `ranikust` leaves its own too, until the end of the build removes them.
+  `ranikust` leaves its own too, until the build's directory is removed: at
+  the end of the build, or at once when `--mode=auto` falls back to kaniko
+  mode.
   `newuidmap` and `newgidmap` each get 10 s, then are killed and given 2 s
   to be reaped; one whose wait fails is too, except after `ECHILD`. The
   child waits for them, so an attempt can run past its 10 s: it is then

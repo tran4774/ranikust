@@ -116,8 +116,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    a directory of the build under the state directory (`userns-probe`, or a
    name the next start removes when the store is anonymous), removed after;
    if a child could not be reaped, which may still work in it, it stays
-   until the end of the build removes the build directory (or empties the
-   state directory).
+   until the build directory is removed (or the state directory emptied):
+   at the end of the build, or at once when `--mode=auto` falls back to
+   kaniko mode.
    - `unshare(CLONE_NEWUSER)`, then write `uid_map` and `gid_map`. Root
      writes a map of every id it has, each to itself; inside a container
      that is several ranges (each must fit inside one range of the parent
