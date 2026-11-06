@@ -96,7 +96,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), SetupKilled { signal, seccomp }, .. }  // SetupKilled: the init killed before the command's status; seccomp: SIGSYS under a profile
+pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), SetupKilled { signal, seccomp }, InitExited { code }, .. }  // the init killed (seccomp: SIGSYS under a profile) or exited with no record before the command's status
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve (Cgroup: before the clone): no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -409,11 +409,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   rules that disagree, the kernel's 4096 instructions, `names` read as a
   list of strings); a 1 MiB profile of 5.5 million instructions refused
   within 8 MiB (`tests/seccomp_memory.rs`, a counting allocator);
-  `errno_0_reads_as_eproto`; a killed set-up's message, its signal and,
-  for `SIGSYS` under a profile, the profile (`src/error.rs`); how a `RUN`
-  ends (`a_runs_end_is_its_status_its_record_or_its_killed_set_up` in
-  `src/spawner.rs`: its status, a failure record, a killed set-up winning
-  over an init's record and losing to any other). Moby's
+  `errno_0_reads_as_eproto`; a killed init's message, its signal and,
+  for `SIGSYS` under a profile, the profile, and an init's own exit code
+  named as the init's (`src/error.rs`); how a `RUN` ends
+  (`a_runs_end_is_its_status_its_record_or_its_inits_end` in
+  `src/spawner.rs`: its status, a failure record, a killed init winning
+  over an init's record and losing to any other, an init's own code
+  losing to every record and never passed off as the command's). Moby's
   profile's argument-rule form
   (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
   of `clone3` and `io_uring_*`
@@ -472,7 +474,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the same filters as its command;
   `a_set_up_its_profile_kills_is_reported_as_killed`: a default action of
   `SCMP_ACT_KILL_PROCESS` or `SCMP_ACT_TRAP` fails the `RUN` as
-  `Error::SetupKilled` by `SIGSYS` under its profile;
+  `Error::SetupKilled` (the init killed) by `SIGSYS` under its profile;
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
   that fails one of the init's last steps, or its closes (all, or one
   with `close_range`, refused with `EPERM` or `EBADF`), the `RUN` fails as

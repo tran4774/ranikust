@@ -383,7 +383,8 @@ The steps, in order:
      ran, reported as `Step::Init` or as the filter's step; the init also
      kills the command. An init that cannot write the byte closes its end,
      and the command fails at its read, which is what is reported (the
-     error pipe is closed by then); one that can do neither ends with 125.
+     error pipe is closed by then); one that can do neither ends with 125,
+     never read as the command's code (`Error::InitExited`, below).
      A command already gone fails only the write: the init, PID 1 of its
      namespace, gets no `SIGPIPE` it has no handler for.
    - A read of the init's or the command's answered with `EINTR` (the
@@ -397,7 +398,8 @@ The steps, in order:
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits; a `waitpid`
      back with no child (0, or an error, `EINTR` included: with no handler,
-     the kernel restarts one a signal interrupts) ends it with 125.
+     the kernel restarts one a signal interrupts) ends it with 125, the
+     init's own code (`Error::InitExited`).
    - Every child of ranikust resets every signal disposition to the default
      first, so the init has no handler and the kernel drops every signal a
      process of the namespace sends it. A `RUN` cannot signal, stop, trace or
@@ -458,18 +460,23 @@ failing step writes the step and the errno to a close-on-exec pipe and exits
 the command exits, the init reports its status and exits, and the kernel kills
 everything left in the namespace, so no `tini` and no process-group kill are
 needed; exit codes and signals read as they would from the command itself. An
-init killed by a signal before it wrote that status (a profile's kill or trap
-of a call the init makes: its own steps after its filters, or its wait) is no
-status of the command's, which may not have run: the `RUN` fails as
-`Error::SetupKilled`, which names the signal and, for `SIGSYS` under a
-profile, the profile as the likely cause, and is not one that ran no command.
-It wins over a failure record of `Step::Init`, which the init's end may cause
-(the go pipe ended under a command still waiting), and loses to any other
-record, the more precise; the one not returned is logged. A kill or trap
-of a call only the command makes after its filters and before `execve` (its
-go read, `setsid`, the `USER` switch) leaves the init alive, and the `RUN`
-fails with the command's status (`SIGSYS`, code 159), as one killed after
-`execve` does: nothing tells the two apart. A
+init that ended before it wrote that status, before its go byte or after it,
+leaves no status of the command's, which may or may not have started; its own
+status is never passed off as the command's. Killed by a signal (a profile's
+kill or trap of a call the init makes: its own steps after its filters, its
+closes, its wait, its status write; or a `SIGKILL` from outside), the `RUN`
+fails as `Error::SetupKilled`, which names the signal and, for `SIGSYS` under
+a profile, the profile as the likely cause. Exited with a code and no failure
+record (125 where its go or its wait cannot go on, 127 where its filters
+refused the record), it fails as `Error::InitExited`, which names the code as
+the init's own. Neither is one that ran no command. `SetupKilled` wins over a
+failure record of `Step::Init`, which the init's end may cause (the go pipe
+ended under a command still waiting), and loses to any other record, the more
+precise, the one not returned logged; `InitExited` loses to every record. A
+kill or trap of a call only the command makes after its filters and before
+`execve` (its go read, `setsid`, the `USER` switch) leaves the init alive, and
+the `RUN` fails with the command's status (`SIGSYS`, code 159), as one killed
+after `execve` does: nothing tells the two apart. A
 cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit kills the
 process on a cancel; the child is forgotten only once it has exited and before
 it is reaped, so the kill never reaches a reused pid. The command is PID 2, as

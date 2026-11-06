@@ -1890,11 +1890,11 @@ fn execute(
     let (status, usage) = reaped?;
     killed?;
     // A full-sandbox child is the `RUN`'s init: the command's own status is
-    // what it wrote, if it lived to write it (a cancel, or a set-up step
-    // that failed before the command was forked, leaves the init's own). An
-    // init that exited 0 always wrote one: without it, the command's end is
+    // what it wrote, if it lived to write it; without it, `status` is the
+    // init's own, which `ending` never returns as the command's. An init
+    // that exited 0 always wrote one: without it, the command's end is
     // unknown.
-    let mut init_killed_by = None;
+    let mut unreported = false;
     let status = match command_status {
         Some(fd) => match read_status(&fd)? {
             Some(raw) => ExitStatus::from_raw(raw),
@@ -1908,7 +1908,7 @@ fn execute(
                 ));
             }
             None => {
-                init_killed_by = status.signal();
+                unreported = true;
                 status
             }
         },
@@ -1921,25 +1921,26 @@ fn execute(
     // returned only here, after the tree is reaped and swept (`killed?`):
     // `Error::ran_no_command` relies on it (ADR-0056). Keep it so.
     let failure = failure.inspect_err(|_| {
-        if let Some(signal) = init_killed_by {
+        if unreported {
             tracing::debug!(
-                signal,
-                "rnk-sandbox: a RUN's init was killed by a signal; its set-up record could not be read"
+                %status,
+                "rnk-sandbox: a RUN's init ended without the command's status; its set-up record could not be read"
             );
         }
     })?;
-    ending(status, init_killed_by, failure, profile, program).map(|s| (s, usage))
+    ending(status, unreported, failure, profile, program).map(|s| (s, usage))
 }
 
 /// How a reaped `RUN` that was not cancelled ended: its status, the
-/// failure the child recorded before `execve`, or, where a signal killed the
-/// full sandbox's init before it wrote the command's status
-/// (`init_killed_by`), [`Error::SetupKilled`], which names a profile behind
-/// a `SIGSYS`. Where there are both, the more precise one is returned and the
-/// other logged.
+/// failure the child recorded before `execve`, or, where the full sandbox's
+/// init ended before it wrote the command's status (`unreported`: `status`
+/// is then the init's own), [`Error::SetupKilled`] for a signal, which
+/// names a profile behind a `SIGSYS`, or [`Error::InitExited`] for a code.
+/// A record wins over the init's code; between a record and the init's
+/// signal, the more precise one is returned and the other logged.
 fn ending(
     status: ExitStatus,
-    init_killed_by: Option<i32>,
+    unreported: bool,
     failure: Option<(Step, i32)>,
     profile: bool,
     program: &str,
@@ -1948,7 +1949,12 @@ fn ending(
         signal,
         seccomp: profile && signal == libc::SIGSYS,
     };
+    let init_killed_by = status.signal().filter(|_| unreported);
     match (failure, init_killed_by) {
+        (None, None) if unreported => Err(Error::InitExited {
+            // Not killed, so exited: `reap` waits for nothing else.
+            code: libc::WEXITSTATUS(status.into_raw()),
+        }),
         (None, None) => Ok(status),
         (None, Some(signal)) => Err(killed(signal)),
         // The init's end ends the go pipe, which a command still waiting
@@ -2315,54 +2321,86 @@ mod tests {
     }
 
     /// A `RUN`'s end: its status, or the child's record from before
-    /// `execve`; an init a signal killed before it wrote the command's
-    /// status is `SetupKilled`, naming the profile only for `SIGSYS` under
-    /// one. It wins over a record of `Step::Init`, which its end may cause,
-    /// and loses to any other, which is more precise.
+    /// `execve`. An init that ended before it wrote the command's status
+    /// (`unreported`) never passes its own status off as the command's: a
+    /// signal is `SetupKilled`, naming the profile only for `SIGSYS` under
+    /// one, which wins over a record of `Step::Init`, which its end may
+    /// cause, and loses to any other, which is more precise; a code is
+    /// `InitExited`, which every record wins over.
     #[test]
-    fn a_runs_end_is_its_status_its_record_or_its_killed_set_up() {
-        let status = ExitStatus::from_raw(3 << 8);
-        let end = |killed, failure, profile| ending(status, killed, failure, profile, "prog");
-        assert_eq!(end(None, None, true).unwrap().code(), Some(3));
-        let sigsys = Some(libc::SIGSYS);
-        for (killed, failure, profile, seccomp) in [
+    fn a_runs_end_is_its_status_its_record_or_its_inits_end() {
+        let exited = |code: i32| ExitStatus::from_raw(code << 8);
+        let killed_by = ExitStatus::from_raw;
+        let end = |status, unreported, failure, profile| {
+            ending(status, unreported, failure, profile, "prog")
+        };
+        // The command's own status, as the init wrote it.
+        assert_eq!(end(exited(3), false, None, true).unwrap().code(), Some(3));
+        for code in [125, 127] {
+            assert_eq!(
+                end(exited(code), false, None, true).unwrap().code(),
+                Some(code)
+            );
+        }
+        let sigsys = killed_by(libc::SIGSYS);
+        assert_eq!(
+            end(sigsys, false, None, true).unwrap().signal(),
+            Some(libc::SIGSYS)
+        );
+        for (status, failure, profile, seccomp) in [
             (sigsys, None, true, true),
             (sigsys, None, false, false),
-            (Some(libc::SIGKILL), None, true, false),
+            (killed_by(libc::SIGKILL), None, true, false),
             (sigsys, Some((Step::Init, libc::EPIPE)), true, true),
             (sigsys, Some((Step::Init, libc::EPERM)), true, true),
         ] {
-            let r = end(killed, failure, profile);
+            let r = end(status, true, failure, profile);
             assert!(
                 matches!(r, Err(Error::SetupKilled { signal, seccomp: s })
-                    if Some(signal) == killed && s == seccomp),
-                "{killed:?} {failure:?} {profile}: {r:?}"
+                    if Some(signal) == status.signal() && s == seccomp),
+                "{status:?} {failure:?} {profile}: {r:?}"
             );
         }
-        for killed in [None, sigsys] {
-            let r = end(killed, Some((Step::Seccomp, libc::EINVAL)), true);
+        // The init's own code, from `_exit(125)` after its go or in its
+        // wait, or `_exit(127)` with its record refused.
+        for code in [125, 127, 1] {
+            let r = end(exited(code), true, None, true);
+            assert!(
+                matches!(r, Err(Error::InitExited { code: c }) if c == code),
+                "{code}: {r:?}"
+            );
+        }
+        for (status, unreported) in [(exited(3), false), (sigsys, true), (exited(127), true)] {
+            let r = end(
+                status,
+                unreported,
+                Some((Step::Seccomp, libc::EINVAL)),
+                true,
+            );
             assert!(
                 matches!(&r, Err(Error::Setup { step: Step::Seccomp, source })
                     if source.raw_os_error() == Some(libc::EINVAL)),
-                "{killed:?}: {r:?}"
+                "{status:?}: {r:?}"
             );
-            let r = end(killed, Some((Step::Exec, libc::ENOENT)), true);
+            let r = end(status, unreported, Some((Step::Exec, libc::ENOENT)), true);
             assert!(
                 matches!(&r, Err(Error::Exec { program, .. }) if program == "prog"),
-                "{killed:?}: {r:?}"
+                "{status:?}: {r:?}"
             );
         }
-        let r = end(None, Some((Step::Init, libc::EPIPE)), true);
-        assert!(
-            matches!(
-                r,
-                Err(Error::Setup {
-                    step: Step::Init,
-                    ..
-                })
-            ),
-            "{r:?}"
-        );
+        for (status, unreported) in [(exited(3), false), (exited(127), true)] {
+            let r = end(status, unreported, Some((Step::Init, libc::EPIPE)), true);
+            assert!(
+                matches!(
+                    r,
+                    Err(Error::Setup {
+                        step: Step::Init,
+                        ..
+                    })
+                ),
+                "{status:?}: {r:?}"
+            );
+        }
     }
 
     /// The init's status record: none (it died or failed before writing),

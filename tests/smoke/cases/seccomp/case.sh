@@ -3,10 +3,10 @@
 # --seccomp=unconfined, with or without --seccomp=default, and the profile
 # refuses personality(ADDR_NO_RANDOMIZE) that unconfined allows; a profile
 # file's rule takes effect; a profile whose default action kills or traps
-# fails the build as a set-up killed by SIGSYS, naming the profile, not as
-# an exit code of the command. In the T1 kaniko leg, on the container's
-# `/`, every --seccomp is refused (exit 2) and a RUN runs under the
-# container's own profile.
+# fails the build as a RUN whose init was killed by SIGSYS, naming the
+# profile, not as an exit code of the command. In the T1 kaniko leg, on the
+# container's `/`, every --seccomp is refused (exit 2) and a RUN runs under
+# the container's own profile.
 
 case_run() {
   if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
@@ -38,7 +38,7 @@ case_run() {
       "--seccomp=$(rnk_ctx "$SMOKE_CASES_DIR/$CASE")/$action.json" 2>&1)" || rc=$?
     printf '%s\n' "$log" >"$o/build.log"
     expect "$rc" 1 "a profile whose default action is $action" || return 1
-    grep -qF "set-up was killed by signal" <<<"$log" && grep -qF "(SIGSYS)" <<<"$log" &&
+    grep -qF "init was killed by signal" <<<"$log" && grep -qF "(SIGSYS)" <<<"$log" &&
       grep -qF "seccomp profile is the likely cause" <<<"$log" &&
       ! grep -qF "non-zero code" <<<"$log" ||
       fail "a profile whose default action is $action: $log"

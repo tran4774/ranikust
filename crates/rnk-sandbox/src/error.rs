@@ -360,15 +360,16 @@ pub enum Error {
     SeccompProfile(String),
     /// The full sandbox's init, which sets the `RUN` up and then waits for
     /// its command, was killed by a signal before it wrote the command's
-    /// status: the command may not have run, and how it ended is unknown.
-    /// Under a seccomp profile, `SIGSYS` is most likely the profile's kill
-    /// or trap of a call the set-up makes.
+    /// status: before or after the go byte, so the command may have run,
+    /// and how it ended is unknown. Under a seccomp profile, `SIGSYS` is
+    /// most likely the profile's kill or trap of a call the init makes.
     #[error(
-        "RUN sandbox: the RUN's set-up was killed by {} before the command's end was known{}",
+        "RUN sandbox: the RUN's init was killed by {} before it reported the command's end, \
+         so the command may have started{}",
         signal_text(*signal),
         if *seccomp {
             "; the RUN's seccomp profile is the likely cause: it kills or traps a call \
-             the set-up makes"
+             the init makes"
         } else {
             ""
         }
@@ -378,6 +379,19 @@ pub enum Error {
         signal: i32,
         /// The signal is `SIGSYS` and the `RUN` had a seccomp profile.
         seccomp: bool,
+    },
+    /// The full sandbox's init exited with a code other than 0 before it
+    /// wrote the command's status, and left no failure record: a step that
+    /// could not go on (its go byte, its wait), or a record its filters
+    /// refused. The code is the init's own; the command may have run.
+    #[error(
+        "RUN sandbox: the RUN's init exited with code {code} before it reported the \
+         command's end, so the command may have started; the code is the init's own, \
+         not the command's"
+    )]
+    InitExited {
+        /// The init's exit code.
+        code: i32,
     },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
@@ -538,16 +552,17 @@ mod tests {
         assert!(!keyring.contains("--seccomp"), "{keyring}");
     }
 
-    /// A set-up a signal killed is named with the signal, by number and
+    /// An init a signal killed is named with the signal, by number and
     /// name; the profile is named as the likely cause only for `SIGSYS`
-    /// under one. Nothing reads as the command's exit code.
+    /// under one. Nothing reads as the command's exit code, nor says
+    /// whether the command ran.
     #[test]
-    fn a_killed_set_up_names_its_signal_and_the_likely_cause() {
+    fn a_killed_init_names_its_signal_and_the_likely_cause() {
         let text = |signal, seccomp| Error::SetupKilled { signal, seccomp }.to_string();
         let by_profile = text(libc::SIGSYS, true);
         assert!(
             by_profile.contains(&format!(
-                "set-up was killed by signal {} (SIGSYS)",
+                "init was killed by signal {} (SIGSYS) before it reported the command's end",
                 libc::SIGSYS
             )),
             "{by_profile}"
@@ -569,11 +584,25 @@ mod tests {
         );
         for t in [by_profile, other, unnamed] {
             assert!(!t.contains("code"), "{t}");
+            assert!(t.contains("the command may have started"), "{t}");
         }
         let e = Error::SetupKilled {
             signal: libc::SIGSYS,
             seccomp: true,
         };
+        assert!(!e.ran_no_command(), "the command may have run");
+    }
+
+    /// An init's own exit code is named as the init's, never as the
+    /// command's, and says nothing of whether the command ran.
+    #[test]
+    fn an_inits_own_code_is_not_the_commands() {
+        let e = Error::InitExited { code: 125 };
+        let t = e.to_string();
+        assert!(t.contains("init exited with code 125"), "{t}");
+        assert!(t.contains("the command may have started"), "{t}");
+        assert!(t.contains("the code is the init's own"), "{t}");
+        assert!(!t.contains("non-zero code"), "{t}");
         assert!(!e.ran_no_command(), "the command may have run");
     }
 }
