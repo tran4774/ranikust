@@ -181,23 +181,22 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shift, and that every encoding field changes the tag. `golden.rs` also
   pins the encoding annotation, and `src/entry.rs` what a push writes (a
   manifest and config in canonical bytes, the layer type per compression);
-  `src/error.rs` checks excerpts and that a refusal names a missing media
-  type in words.
-  `tests/registry/` runs `RegistryCache` against `rnk-registry`'s fake
-  registry (compiled in through `#[path]`): a push then a lookup is a hit
-  with the same digests, carrying the layer's type, digest and size only,
-  and the pushed config names the platform;
-  an unknown key is a miss after one request; a 500, a stall past
+  `src/error.rs` checks excerpts and that a refusal names an empty media
+  type in words. `tests/registry/` runs `RegistryCache` against
+  `rnk-registry`'s fake registry (compiled in through `#[path]`): a push
+  then a lookup is a hit with the same digests, carrying the layer's type,
+  digest and size only, and the pushed config names the platform; an
+  unknown key is a miss after one request; a 500, a stall past
   `registry-idle` and bad credentials are `Miss::Failed`; an expired entry
-  is `Miss::Expired`; another encoding misses, and an entry copied under
-  its tag is refused; hostile entries (an index, a Docker manifest, a
-  manifest with no media type, zero or two layers, another layer or config
-  type, an artifact, annotations of another key, version or encoding, two
-  diff IDs, a bad `created`) and documents over `--limit` are refused, and
-  a config naming another platform is still a hit; a
-  held blob is not uploaded again and one in a destination is mounted; a
-  failed push publishes nothing; a cache repository with a tag or digest
-  is refused. `tests/spans.rs` checks the three spans.
+  is `Miss::Expired`; another encoding misses, and an entry copied under its
+  tag is refused; hostile entries (an index, a Docker manifest, a manifest
+  with no media type, zero or two layers, another layer or config type, an
+  artifact, annotations of another key, version or encoding, two diff IDs,
+  a bad `created`) and documents over `--limit` are refused, and a config
+  naming another platform is still a hit; a held blob is not uploaded again
+  and one in a destination is mounted; a failed push publishes nothing; a
+  cache repository with a tag or digest is refused. `tests/spans.rs` checks
+  the three spans.
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
   against a real registry (T2); W2 cold, warm and partial; a layer cached in
   one mode reused by the other, checked against the ADR-0012 list.

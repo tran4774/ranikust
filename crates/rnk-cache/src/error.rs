@@ -177,7 +177,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_refusal_names_a_missing_media_type_in_words() {
+    fn a_refusal_names_an_empty_media_type_in_words() {
         let none = String::new;
         let shown = [
             Refusal::NotAnImageManifest { media_type: none() },

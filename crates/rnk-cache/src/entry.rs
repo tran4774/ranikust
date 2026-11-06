@@ -222,9 +222,8 @@ mod tests {
         let manifest = manifest(&entry, config.descriptor, blob).unwrap();
         let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
         let bump = format!(
-            "what a push writes changed: bump KEY_VERSION (now {KEY_VERSION}) if a lookup \
-             checks it (annotations, layer or config type, rootfs, created); the platform \
-             fields need none"
+            "what a push writes changed: bump KEY_VERSION (now {KEY_VERSION}) if \
+             check_manifest or check_config reads it; the platform fields need none"
         );
         assert_eq!(
             text(&config.bytes),
