@@ -567,9 +567,10 @@ What runs, by event:
   `ci:full` or clicks "Run workflow" (whose gates, `... (manual run)`, report
   the run but do not count for the pull request). Agents use the
   maintainer's account, so GitHub cannot tell them apart: an agent asks
-  before marking a pull request ready (`gh pr ready` is an ask rule), and
-  adds `ci:full` only when the maintainer asks or to verify a pull request
-  that changes CI itself ([workflow.md](agents/workflow.md#github-flow)).
+  before marking a pull request ready (the rule alone, no prompt enforces
+  it, `ADR-0112`), and adds `ci:full` only when the maintainer asks or to
+  verify a pull request that changes CI itself
+  ([workflow.md](agents/workflow.md#github-flow)).
 - **A re-run** ("Re-run jobs") repeats the lanes of the run it repeats: the
   draft state and labels of that event, and the workflow files of that
   commit.
