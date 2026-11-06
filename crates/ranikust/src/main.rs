@@ -526,6 +526,7 @@ fn build(
                         setup::set_up(&config.state_dir, config.allow_network_none_userns)
                     }) {
                         Ok(setup) => {
+                            // Only kaniko mode on `/` looks at it.
                             drop(started_in);
                             let warnings = match flags {
                                 Ok(warnings) => warnings,
@@ -688,7 +689,7 @@ fn kaniko(
         let started_in = started_in.as_ref().map_err(|&e| e);
         refuse_unsafe_slash(config, how, can_mount, binary, started_in)?;
     }
-    // The scan is over: the build keeps no hold on another mount namespace.
+    // Only the scan needs it.
     drop(started_in);
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),

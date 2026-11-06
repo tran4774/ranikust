@@ -320,8 +320,8 @@ The decision:
   the one it started in, opened before the set-up and held open until the
   scan ends, and the one it is in when it looks: a set-up that failed
   after its `unshare` left it in a copy no other process is in. The scan
-  counts only the processes ranikust can
-  open as it starts, an accepted residual risk with the same guidance.
+  counts only the processes ranikust can open as it starts, an accepted
+  residual risk with the same guidance.
 - **Test hook.** `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd,
   `seal-none` both ways.
 - Q-451's answer stands: the init is still a copy-on-write copy of
@@ -578,8 +578,8 @@ The decision:
   `a_denied_ns_mnt_is_a_thread_gone_only_once_its_ns_is_gone`,
   `ranikusts_own_namespaces_are_the_one_it_started_in_and_the_one_it_is_in`,
   `a_mount_namespace_is_held_by_an_open_descriptor_of_its_own_file` (an
-  open, close-on-exec descriptor of the namespace's nsfs file, whose
-  device and inode the handle names),
+  open `O_PATH`, close-on-exec descriptor of the namespace's nsfs file,
+  whose device and inode the handle names),
   `a_process_name_is_trimmed_and_escaped`,
   `a_process_is_named_by_its_pid_and_its_name_when_read` and the binary's
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
@@ -599,7 +599,7 @@ The decision:
   it is refused before any `RUN`, ranikust started from `sh` (before the
   state directory exists) or exec'd, the only process of the namespace it
   started in [measured]. These steps pass under rootful Docker in the VM's
-  quick suite too (Linux 6.8, Docker 29.1.3, AppArmor enabled) [measured].
+  quick suite too [measured].
 - The overlay's limits [measured] (option (x), not taken; T2, the VM,
   Linux 6.8, Docker 29.1.3 with runc 1.3.4, AppArmor enabled):
   - as root on the VM, while a binary runs from such an overlay, its

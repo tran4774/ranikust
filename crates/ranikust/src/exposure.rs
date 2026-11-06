@@ -518,8 +518,8 @@ fn own(
 /// identity: that file's device and inode.
 #[derive(Debug)]
 pub(crate) struct MountNamespace {
-    /// An open `ns` descriptor keeps its namespace alive, so its inode
-    /// number cannot pass to a namespace made later (namespaces(7)).
+    /// Keeps the namespace alive with the handle, so that `id` names only it
+    /// (namespaces(7)).
     _held: OwnedFd,
     id: (u64, u64),
 }
@@ -822,12 +822,15 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         const NSFS_MAGIC: rustix::fs::FsWord = 0x6e73_6673;
         let ns = mount_namespace().unwrap();
-        // The namespace's file, not the link's, and not handed to a `RUN`.
+        // The namespace's file, not the link's.
         assert_eq!(rustix::fs::fstatfs(&ns._held).unwrap().f_type, NSFS_MAGIC);
         let held = rustix::fs::fstat(&ns._held).unwrap();
         assert_eq!((held.st_dev, held.st_ino), ns.id);
         let link = fs::metadata("/proc/self/ns/mnt").unwrap();
         assert_eq!((link.dev(), link.ino()), ns.id);
+        let opened = rustix::fs::fcntl_getfl(&ns._held).unwrap();
+        assert!(opened.contains(OFlags::PATH), "{opened:?}");
+        // T7: every descriptor is close-on-exec.
         let flags = rustix::io::fcntl_getfd(&ns._held).unwrap();
         assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
     }

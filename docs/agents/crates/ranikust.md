@@ -140,31 +140,29 @@ Each step before the next; design in
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
    `refuse_unsafe_slash` runs in `main.rs`, before anything is written: `/`
-   is refused where root may mount (ADR-0054), with `--network=none`
-   (ADR-0057), with a writable `/proc/sys`
-   (`exposure::proc_sys_read_only`, ADR-0054) and with ranikust's binary on
-   a writable mount other than `/`'s, reached by one (its tree bound
-   read-write too, another hard link; in a root that is not an overlay
-   (overlayfs or fuse-overlayfs), a binary in the root too), or one whose
-   mount cannot be told (`refuse_writable_binary` on `Sealing::binary()`,
-   ADR-0101: qemu-user, a memfd, a mount table that does not place it or
-   changed during the walk, a writable directory whose name was removed, a
-   writable mount that is covered or cannot be reached at its mount point,
-   a binary not weighed because no container was found at the start
-   (`NotWeighed`), or a failed call, each with its own guidance; a link of
-   it bound read-write, even a removed one, is a reach), and with a
-   process of its PID namespace that has a thread in
-   another mount namespace whose root it opens (`refuse_reachable_peers`
-   on `exposure::scan_peers`, ADR-0101: once as it starts, each thread of
-   `/proc/<pid>/task` through one descriptor of `/proc/<pid>`, the process
-   as one where its threads may not be listed; ranikust's own namespaces
-   are the one `build` opens before `setup::enter_namespace`, held open
-   until the scan returns, and the one it is in; it counts only what it
-   opens then (`EACCES`/`EPERM`: not opened), gone skipped (an `ns/mnt`
-   denied once its `ns` is gone too),
-   any other error (with its step) or more than `PEER_SCAN_LIMIT` threads
-   refused, each with its own guidance); then the warnings for
-   secret-looking build arguments and file secrets.
+   is refused where root may mount (ADR-0054), with `--network=none` (ADR-0057),
+   with a writable `/proc/sys` (`exposure::proc_sys_read_only`, ADR-0054) and
+   with ranikust's binary on a writable mount other than `/`'s, reached by one
+   (its tree bound read-write too, another hard link; in a root that is not an
+   overlay (overlayfs or fuse-overlayfs), a binary in the root too), or one
+   whose mount cannot be told (`refuse_writable_binary` on `Sealing::binary()`,
+   ADR-0101: qemu-user, a memfd, a mount table that does not place it or changed
+   during the walk, a writable directory whose name was removed, a writable
+   mount that is covered or cannot be reached at its mount point, a binary not
+   weighed because no container was found at the start (`NotWeighed`), or a
+   failed call, each with its own guidance; a link of it bound read-write, even
+   a removed one, is a reach), and with a process of its PID namespace that has
+   a thread in another mount namespace whose root it opens
+   (`refuse_reachable_peers` on `exposure::scan_peers`, ADR-0101: once as it
+   starts, each thread of `/proc/<pid>/task` through one descriptor of
+   `/proc/<pid>`, the process as one where its threads may not be listed;
+   ranikust's own namespaces are the one `build` opens before
+   `setup::enter_namespace`, held open until the scan returns, and the one it is
+   in; it counts only what it opens then (`EACCES`/`EPERM`: not opened), gone
+   skipped (an `ns/mnt` denied once its `ns` is gone too), any other error (with
+   its step) or more than `PEER_SCAN_LIMIT` threads refused, each with its own
+   guidance); then the warnings for secret-looking build arguments and file
+   secrets.
    `RLIMIT_NOFILE` is raised (`statedir::raise_nofile_limit`); on `/`, with
    `--jobs` a warning that stages run one at a time and `--jobs` only
    bounds the uploads, and `rnk_sandbox::block_stop_signals`. Then
@@ -286,8 +284,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   as one, on its `/proc/self`, either of its two namespaces its own, and
   on a fake directory: the step a failure names, a thread gone or out of
   reach; a denied `ns/mnt` gone only with its `ns`; the handle on a
-  namespace, an open close-on-exec descriptor of its nsfs file; escaped
-  names, a process named by its pid alone; the credential warning's
+  namespace, an open `O_PATH`, close-on-exec descriptor of its nsfs file;
+  escaped names, a process named by its pid alone; the credential warning's
   text).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
