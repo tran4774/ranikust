@@ -257,7 +257,8 @@ began makes the stage start again from its base without that entry; on `/` a
 hit is verified before extraction
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
 how often a stage may restart is not settled, decided before
-[#130](https://github.com/tran4774/ranikust/issues/130)).
+[#130](https://github.com/tran4774/ranikust/issues/130)). How kaniko mode
+applies a hit: [kaniko-mode](kaniko-mode.md#a-cache-hit).
 
 A push refuses a layer of another compression than its entry's, then sends
 the layer blob (skipped when the repository holds it, mounted from a
