@@ -1494,7 +1494,7 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
 
     // From the store it is never spooled: the extraction refuses the entry,
     // and `/` is broken. Made after the walk above, which would see it.
-    let blobs = tempfile::tempdir().unwrap();
+    let blobs = tempfile::tempdir_in(host).unwrap();
     let stored = blob(&kaniko, blobs.path(), "climbs", &climbs);
     assert!(
         root.apply_layer(&stored).is_err(),

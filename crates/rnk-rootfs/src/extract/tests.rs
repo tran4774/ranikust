@@ -1705,24 +1705,24 @@ fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
                 let h = t.header(b"g", EntryType::XGlobalHeader, 0o644, 0);
                 t.push(h, b"")
             }
-            11 | 12 => {
-                let (etype, data) = if kind % 17 == 11 {
-                    (EntryType::GNULongName, name)
-                } else {
-                    (EntryType::GNULongLink, target)
-                };
-                let size = u64::try_from(data.len()).unwrap();
-                let h = t.header(b"././@LongLink", etype, 0o644, size);
-                t.push(h, data.as_bytes())
-            }
-            13 => t.pax(&[("path", name.as_bytes())]),
-            14 => t.pax(&[("linkpath", target.as_bytes())]),
-            15 => t.pax(&[("size", GEN_SIZES[value % GEN_SIZES.len()])]),
             10 => {
                 let h = t.header(name.as_bytes(), EntryType::GNUSparse, 0o644, 0);
                 t.push(h, b"")
             }
-            _ => {
+            11 => {
+                let size = u64::try_from(name.len()).unwrap();
+                let h = t.header(b"././@LongLink", EntryType::GNULongName, 0o644, size);
+                t.push(h, name.as_bytes())
+            }
+            12 => {
+                let size = u64::try_from(target.len()).unwrap();
+                let h = t.header(b"././@LongLink", EntryType::GNULongLink, 0o644, size);
+                t.push(h, target.as_bytes())
+            }
+            13 => t.pax(&[("path", name.as_bytes())]),
+            14 => t.pax(&[("linkpath", target.as_bytes())]),
+            15 => t.pax(&[("size", GEN_SIZES[value % GEN_SIZES.len()])]),
+            16 => {
                 let uid = match value % 4 {
                     0 => t.uid.to_string(),
                     1 => "x".to_owned(),
@@ -1731,6 +1731,7 @@ fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
                 };
                 t.pax(&[("uid", uid.as_bytes())])
             }
+            _ => unreachable!("a kind modulo 17"),
         };
     }
     t.bytes()
