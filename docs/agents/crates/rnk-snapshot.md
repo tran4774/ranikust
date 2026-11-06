@@ -186,8 +186,8 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   failure after the first entry may have landed marks the root broken
   (`broken`): every later layer, applied layer, view, keep and child stage
   is refused. The shared root is usable again once a new base empties it;
-  a broken stage root is only released. Running a stage directory's stage
-  again from its base, the bad entry a miss, is the builder's
+  a broken stage root is only released. Running the stage of a broken stage
+  directory again from its base, the bad entry a miss, is the builder's
   ([ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
   [#130](https://github.com/tran4774/ranikust/issues/130);
   [cache hit](../../design/kaniko-mode.md#a-cache-hit)); what the builder

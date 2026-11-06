@@ -234,7 +234,7 @@ In kaniko mode with a directory per stage, a hit streams into the stage root,
 and a blob found bad after extraction began makes the stage start again from its
 base without that entry; on `/` a hit is verified before extraction
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
-how often a stage may restart is not settled, decided before
+how often a stage may restart is decided before
 [#130](https://github.com/tran4774/ranikust/issues/130)). What a hit on `/`
 does when it fails after its first entry reached `/` is not decided
 [open: #167].
