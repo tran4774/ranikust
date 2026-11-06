@@ -1826,6 +1826,9 @@ fn execute(
     killer: Option<Killer>,
 ) -> Result<(ExitStatus, libc::rusage)> {
     let isolation = job.isolation;
+    // ranikust's own filters answer with an errno: a `SIGSYS` comes from a
+    // profile's kill or trap.
+    let profile = job.args.profile.is_some();
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
@@ -1891,6 +1894,7 @@ fn execute(
     // that failed before the command was forked, leaves the init's own). An
     // init that exited 0 always wrote one: without it, the command's end is
     // unknown.
+    let mut init_killed_by = None;
     let status = match command_status {
         Some(fd) => match read_status(&fd)? {
             Some(raw) => ExitStatus::from_raw(raw),
@@ -1903,17 +1907,31 @@ fn execute(
                     ),
                 ));
             }
-            None => status,
+            None => {
+                init_killed_by = status.signal();
+                status
+            }
         },
         None => status,
     };
     if cancelled {
         return Err(Error::Cancelled);
     }
+    let failure = failure?;
+    // The init's signal is no status of the command's, which may not have
+    // run. It comes before the child's record, which may only follow from
+    // it: the init's end ends the go pipe, which a command still waiting
+    // reports (`Step::Init`, `EPIPE`).
+    if let Some(signal) = init_killed_by {
+        return Err(Error::SetupKilled {
+            signal,
+            seccomp: profile && signal == libc::SIGSYS,
+        });
+    }
     // `Setup` and `Exec` come from the child before `execve` and are
     // returned only here, after the tree is reaped and swept (`killed?`):
     // `Error::ran_no_command` relies on it (ADR-0056). Keep it so.
-    match failure? {
+    match failure {
         None => Ok((status, usage)),
         Some((Step::Exec, errno)) => Err(Error::Exec {
             program: program.to_owned(),
@@ -3503,6 +3521,47 @@ mod tests {
                 } else {
                     assert_eq!(keyring, Some(-1), "{name}: keyctl refused: {text}");
                 }
+            }
+        });
+    }
+
+    /// T2: a profile whose default action kills (`SCMP_ACT_KILL_PROCESS`)
+    /// or traps (`SCMP_ACT_TRAP`) kills the `RUN`'s set-up at its first call
+    /// after the filters. The `RUN` fails as a set-up killed by `SIGSYS`
+    /// under its profile, never with an exit status of the command, which
+    /// never ran.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_set_up_its_profile_kills_is_reported_as_killed() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let mut got = Vec::new();
+            for action in ["SCMP_ACT_KILL_PROCESS", "SCMP_ACT_TRAP"] {
+                let json = format!(r#"{{"defaultAction": "{action}"}}"#);
+                runner.seccomp = Some(SeccompProfile::from_json(json.as_bytes()).unwrap());
+                let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
+                got.push((
+                    action,
+                    runner.run(spec, None, |job| clone_child(job, parent)),
+                ));
+            }
+            drop(mounts);
+            for (action, r) in got {
+                assert!(
+                    matches!(
+                        r,
+                        Err(Error::SetupKilled {
+                            signal: libc::SIGSYS,
+                            seccomp: true
+                        })
+                    ),
+                    "{action}: {r:?}"
+                );
             }
         });
     }

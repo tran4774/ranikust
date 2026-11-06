@@ -358,6 +358,27 @@ pub enum Error {
     /// support (ADR-0109); nothing ran.
     #[error("seccomp profile: {0}")]
     SeccompProfile(String),
+    /// The full sandbox's init, which sets the `RUN` up and then waits for
+    /// its command, was killed by a signal before it wrote the command's
+    /// status: the command may not have run, and how it ended is unknown.
+    /// Under a seccomp profile, `SIGSYS` is most likely the profile's kill
+    /// or trap of a call the set-up makes.
+    #[error(
+        "RUN sandbox: the RUN's set-up was killed by {} before the command's end was known{}",
+        signal_text(*signal),
+        if *seccomp {
+            "; the RUN's seccomp profile is the likely cause: it kills or traps a call \
+             the set-up makes"
+        } else {
+            ""
+        }
+    )]
+    SetupKilled {
+        /// The signal.
+        signal: i32,
+        /// The signal is `SIGSYS` and the `RUN` had a seccomp profile.
+        seccomp: bool,
+    },
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,
@@ -426,6 +447,33 @@ impl Error {
 /// The crate's result type.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// `signal 31 (SIGSYS)`: the number, and the name of a signal that ends a
+/// process by default.
+fn signal_text(signal: i32) -> String {
+    let name = match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGILL => "SIGILL",
+        libc::SIGTRAP => "SIGTRAP",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGALRM => "SIGALRM",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGXCPU => "SIGXCPU",
+        libc::SIGXFSZ => "SIGXFSZ",
+        libc::SIGSYS => "SIGSYS",
+        _ => return format!("signal {signal}"),
+    };
+    format!("signal {signal} ({name})")
+}
+
 pub(crate) fn io_err(op: &'static str, path: impl Into<PathBuf>, source: io::Error) -> Error {
     Error::Io {
         op,
@@ -488,5 +536,44 @@ mod tests {
         assert!(refused.contains("--seccomp=default"), "{refused}");
         let keyring = text(Step::SessionKeyring);
         assert!(!keyring.contains("--seccomp"), "{keyring}");
+    }
+
+    /// A set-up a signal killed is named with the signal, by number and
+    /// name; the profile is named as the likely cause only for `SIGSYS`
+    /// under one. Nothing reads as the command's exit code.
+    #[test]
+    fn a_killed_set_up_names_its_signal_and_the_likely_cause() {
+        let text = |signal, seccomp| Error::SetupKilled { signal, seccomp }.to_string();
+        let by_profile = text(libc::SIGSYS, true);
+        assert!(
+            by_profile.contains(&format!(
+                "set-up was killed by signal {} (SIGSYS)",
+                libc::SIGSYS
+            )),
+            "{by_profile}"
+        );
+        assert!(
+            by_profile.contains("seccomp profile is the likely cause"),
+            "{by_profile}"
+        );
+        let other = text(libc::SIGKILL, false);
+        assert!(
+            other.contains(&format!("killed by signal {} (SIGKILL)", libc::SIGKILL)),
+            "{other}"
+        );
+        assert!(!other.contains("seccomp"), "{other}");
+        let unnamed = text(libc::SIGRTMIN() + 1, false);
+        assert!(
+            unnamed.contains(&format!("killed by signal {} before", libc::SIGRTMIN() + 1)),
+            "{unnamed}"
+        );
+        for t in [by_profile, other, unnamed] {
+            assert!(!t.contains("code"), "{t}");
+        }
+        let e = Error::SetupKilled {
+            signal: libc::SIGSYS,
+            seccomp: true,
+        };
+        assert!(!e.ran_no_command(), "the command may have run");
     }
 }
