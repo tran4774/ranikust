@@ -399,9 +399,9 @@ fn docker_default_allows_and_refuses_what_moby_says() {
     assert_eq!(verdict(&new, libc::SYS_ptrace, a0(0)), ALLOW);
 }
 
-/// Whether `json` restricts arguments as the threat model advises (section
-/// 6): its default action refuses, and each rule with conditions allows,
-/// with `EQ`, `LT`, `LE` or `MASKED_EQ` ones.
+/// Whether the argument rules of `json` have the form threat model section 6
+/// advises: its default action refuses, and each rule with conditions
+/// allows, with `EQ`, `LT`, `LE` or `MASKED_EQ` ones.
 fn restricts_arguments_by_allowing(json: &[u8]) -> bool {
     let p: Json = serde_json::from_slice(json).unwrap();
     let default = p.default_action.as_deref().unwrap();
@@ -417,12 +417,21 @@ fn restricts_arguments_by_allowing(json: &[u8]) -> bool {
         })
 }
 
-/// Docker's default profile restricts arguments as the threat model advises,
-/// so that its residual on argument rules does not reach it; the controls
-/// show the check tells the profiles that do otherwise.
+/// Docker's default profile has the argument-rule form threat model section
+/// 6 advises and gives a `RUN` neither `clone3` nor the `io_uring_*` calls.
+/// The controls show the form check tells the profiles that do otherwise.
 #[test]
 fn docker_default_restricts_arguments_by_allowing_values() {
     assert!(restricts_arguments_by_allowing(DOCKER_DEFAULT));
+    let p = compile(DOCKER_DEFAULT, &cx((6, 8))).unwrap().program;
+    for call in [
+        libc::SYS_clone3,
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
+    ] {
+        assert_ne!(verdict(&p, call, a0(0)), ALLOW, "call {call}");
+    }
     let with = |default: &str, act: &str, op: &str| {
         format!(
             r#"{{"defaultAction":"{default}","syscalls":[
@@ -1718,8 +1727,9 @@ fn rules_that_disagree_settle_on_the_strictest_in_any_order() {
 /// A profile that compiles to exactly `want` instructions, with an errno
 /// rule on `getppid` whose first argument is 0 (`EPERM`) among them.
 fn profile_of_length(want: usize) -> Option<(String, Program)> {
-    // An EQ rule is 5 instructions, a MASKED_EQ one 7: some mix of them
-    // lands on every length past the fixed part.
+    // An EQ rule is 5 instructions, a MASKED_EQ one 7: one to five
+    // MASKED_EQ rules, the first of which also adds `getpid`'s branch, give
+    // every length modulo 5, and EQ rules fill the rest.
     let eq = |i: usize| {
         format!(
             r#"{{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":{},
@@ -1736,7 +1746,7 @@ fn profile_of_length(want: usize) -> Option<(String, Program)> {
             i
         )
     };
-    for m in 0..=5 {
+    for m in 1..=5 {
         let mut lo = 0usize;
         let mut hi = 1000;
         while lo < hi {
@@ -2056,7 +2066,9 @@ mod kernel {
     ///
     /// The kernel runs the call if no filter stops it, reading any pointer
     /// argument as an i386 address. The caller must be a forked child and
-    /// pass a call that, if it runs, changes nothing outside that child.
+    /// pass a call that, if it runs, changes nothing outside that child but
+    /// kernel state the child's user may create for itself, such as its own
+    /// keyrings.
     #[cfg(target_arch = "x86_64")]
     unsafe fn int80(nr: u32, a: u32, b: u32, c: u32) -> i32 {
         let ret: u32;
@@ -2135,7 +2147,8 @@ mod kernel {
                     // SAFETY: in this forked child, each call of `I386`
                     // changes at most the child if it runs: a pid read,
                     // its own personality or user namespace, a keyring
-                    // lookup with create 0, a socket its exit closes.
+                    // lookup with create 0, which at most makes the user's
+                    // own keyrings exist, a socket its exit closes.
                     if i386 && unsafe { int80(n, a, b, 0) } != -libc::EPERM {
                         return i;
                     }

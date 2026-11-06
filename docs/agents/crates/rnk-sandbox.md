@@ -284,12 +284,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
-  aarch64 and restricting arguments only by allowing values,
-  `includes`/`excludes`, refused profiles, errno 0, every errno from 512 to
-  600, 4095 and above included, which ones refuse `keyctl`, `add_key`
-  and `request_key`; random profiles against a reference, x32 numbers, keys
-  given twice, nesting and odd bytes, numbers in other forms, rules that
-  disagree, the kernel's 4096 instructions); `errno_0_reads_as_eproto`. The
+  aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno
+  from 512 to 600, 4095 and above included, which ones refuse `keyctl`,
+  `add_key` and `request_key`; random profiles against a reference, x32
+  numbers, keys given twice, nesting and odd bytes, numbers in other forms,
+  rules that disagree, the kernel's 4096 instructions); `errno_0_reads_as_eproto`. The
   `tests::kernel` modules, skipped under qemu-user, install filters in forked
   children: `seccomp::profile`'s (compiled profiles; random ones answering as
   their rules say; 4096 instructions; on x86_64, x32 and, where the kernel
