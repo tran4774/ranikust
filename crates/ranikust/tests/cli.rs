@@ -17,6 +17,7 @@ fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
+        .env_remove("RANIKUST_SEALED_COPY")
         .env_remove("DOCKER_CONFIG")
         .env_remove("DOCKER_AUTH_CONFIG")
         .env_remove("SOURCE_DATE_EPOCH")
@@ -521,6 +522,139 @@ fn logging_flags_change_what_is_written() {
     assert!(value["time"].is_string());
 }
 
+/// ADR-0101: a build runs again from a sealed copy of the binary, once,
+/// with the same arguments: a sealed memfd, first tried, so no way is
+/// logged as passed over; the test hook makes the `O_TMPFILE` copy the
+/// first, or leaves none, and the build then goes on with a warning. A
+/// marker set from outside makes no copy and passes for none: the run
+/// warns.
+#[test]
+fn a_build_runs_from_a_sealed_copy_made_once() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmpdir = tmp.path().to_str().expect("UTF-8 temp dir");
+    let args = [
+        "--no-push",
+        "--mode=overlay",
+        "--log-format=text",
+        "-v",
+        "debug",
+    ];
+    let run = |env: &[(&str, &str)]| {
+        let mut env = env.to_vec();
+        env.push(("TMPDIR", tmpdir));
+        let out = ranikust(tmp.path(), &args, &env);
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        // The copy got `-v debug`: the stop's debug lines are there.
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        assert!(err.contains("build settings validated"), "{err}");
+        err
+    };
+    let sealed = |err: &str| -> Vec<String> {
+        err.lines()
+            .filter(|l| l.contains("running from a sealed copy"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let unsealed = "running from the binary as installed";
+    for (fault, way) in [(None, "memfd"), (Some("seal-tmpfile"), "tmpfile")] {
+        let env: Vec<_> = fault
+            .map(|f| ("RANIKUST_DEBUG_FAULT", f))
+            .into_iter()
+            .collect();
+        let err = run(&env);
+        let lines = sealed(&err);
+        assert_eq!(lines.len(), 1, "{fault:?}: {err}");
+        assert!(lines[0].contains(&format!("way={way}")), "{fault:?}: {err}");
+        assert!(!lines[0].contains("passed_over"), "{fault:?}: {err}");
+        // The binary's mount, measured before the copy, reached it.
+        assert!(lines[0].contains(" binary="), "{fault:?}: {err}");
+        assert!(!err.contains(unsealed), "{fault:?}: {err}");
+    }
+    // The O_TMPFILE copy left nothing behind.
+    assert_eq!(fs::read_dir(tmp.path()).expect("ls").count(), 0);
+    let err = run(&[("RANIKUST_DEBUG_FAULT", "seal-none")]);
+    assert!(sealed(&err).is_empty(), "{err}");
+    assert!(err.contains(unsealed), "{err}");
+    assert!(err.contains("no way was tried"), "{err}");
+    for marker in ["memfd root", "memfd"] {
+        let err = run(&[("RANIKUST_SEALED_COPY", marker)]);
+        assert!(sealed(&err).is_empty(), "{marker}: {err}");
+        assert!(err.contains(unsealed), "{marker}: {err}");
+        let why = if marker == "memfd" {
+            "names no way"
+        } else {
+            "is no such copy"
+        };
+        assert!(err.contains(why), "{marker}: {err}");
+    }
+}
+
+/// Red team (ADR-0101, T21): a hostile `TMPDIR` loses only the `O_TMPFILE` copy.
+#[test]
+fn red_team_a_hostile_tmpdir_only_loses_the_tmpfile_copy() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let file = tmp.path().join("file");
+    fs::write(&file, b"x").expect("a file");
+    let fifo = tmp.path().join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .expect("a FIFO");
+    let dir = tmp.path().join("dir");
+    fs::create_dir(&dir).expect("a directory");
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&dir, &link).expect("a symlink");
+    let missing = tmp.path().join("missing");
+    let args = [
+        "--no-push",
+        "--mode=overlay",
+        "--log-format=text",
+        "-v",
+        "debug",
+    ];
+    let run = |tmpdir: &Path| {
+        let tmpdir = tmpdir.to_str().expect("UTF-8");
+        let env = [("RANIKUST_DEBUG_FAULT", "seal-tmpfile"), ("TMPDIR", tmpdir)];
+        let out = ranikust(tmp.path(), &args, &env);
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{tmpdir}: {err}");
+        assert!(err.contains(STOPS_AS_A_USER), "{tmpdir}: {err}");
+        err
+    };
+    for lost in [&file, &fifo, &missing] {
+        let err = run(lost);
+        assert!(
+            err.contains("running from the binary as installed") && err.contains("tmpfile: "),
+            "{}: {err}",
+            lost.display()
+        );
+    }
+    let err = run(&link);
+    assert!(
+        err.contains("running from a sealed copy") && err.contains("way=tmpfile"),
+        "{err}"
+    );
+    assert_eq!(fs::read_dir(&dir).expect("ls").count(), 0);
+    let mut names: Vec<_> = fs::read_dir(tmp.path())
+        .expect("ls")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["dir", "fifo", "file", "link"]);
+    assert_eq!(fs::read(&file).expect("read"), b"x");
+}
+
 /// ADR-0049: kaniko's variables are not read, so a mirror variable changes
 /// nothing: the run stops where it would without it.
 #[test]
@@ -601,6 +735,7 @@ fn ranikust_os(cwd: &Path, args: &[std::ffi::OsString]) -> Output {
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
+        .env_remove("RANIKUST_SEALED_COPY")
         .env("RUST_BACKTRACE", "0");
     cmd.output().expect("run ranikust")
 }

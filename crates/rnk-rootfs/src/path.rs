@@ -58,6 +58,19 @@ pub(crate) fn target(p: &Path) -> Result<Target<'_>> {
     }
 }
 
+/// `p`, refused when it holds a `..` anywhere: a physical path, as the
+/// kernel prints one, has none, and `RESOLVE_IN_ROOT` would clamp one at the
+/// root instead of refusing it.
+pub(crate) fn physical(p: &Path) -> Result<&Path> {
+    if p.components().any(|c| c == Component::ParentDir) {
+        return Err(Error::InvalidPath {
+            path: p.to_owned(),
+            reason: "a physical path has no `..`",
+        });
+    }
+    Ok(p)
+}
+
 /// Like [`target`], but the root itself is refused.
 pub(crate) fn entry(p: &Path) -> Result<(PathBuf, &OsStr)> {
     match target(p)? {

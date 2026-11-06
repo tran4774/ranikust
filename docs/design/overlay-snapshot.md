@@ -13,8 +13,10 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 ## Invariants
 
 - Every byte ranikust writes is under the state directory (store and build
-  areas; by default `/var/lib/ranikust`, ADR-0050) or in the requested output.
-  Nothing is written to the host's `/`.
+  areas; by default `/var/lib/ranikust`, ADR-0050) or in the requested
+  output. One exception: the `O_TMPFILE` fallback of the sealed copy of the
+  binary, a file with no name in `TMPDIR`
+  ([host safety](../../ARCHITECTURE.md#host-safety), ADR-0101).
 - Extracted layers in `layers/` are immutable once published and are only
   ever used as lower directories.
 - Every overlay mount uses the option set of ADR-0016, so `layers/` has one

@@ -24,6 +24,74 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 
 ## Process set-up, once per build
 
+0. **A sealed copy of the binary**
+   ([ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
+   `seal.rs`): right after the flags and the kernel check, a build runs
+   again from a copy of its binary no `RUN` can write, as runc does (the
+   first two copies of runc 1.2.0's `CloneBinary`; runc tries a read-only
+   overlay first, which ranikust does not, ADR-0101), so every process it
+   forks, the `RUN` child until `execve` and the init, has that copy as
+   `/proc/self/exe`, in every mode. The ways, in order:
+   - a memfd made with `MFD_EXEC` (without it before Linux 6.3), the binary
+     copied in, sealed `SEAL|SHRINK|GROW|WRITE`; `vm.memfd_noexec=2`
+     refuses it. It costs the binary's size in memory;
+   - an `O_TMPFILE` file in `TMPDIR` (else `/tmp`), never made directly
+     on FUSE (the check reads `TMPDIR`'s own file system type, so an
+     overlay over FUSE passes it), `O_EXCL` so it never gets a name, run
+     from a read-only descriptor. No seal: only `ETXTBSY` guards it while
+     it runs. Some file systems refuse `O_TMPFILE` (a container's
+     overlayfs `/tmp` on Ubuntu's Linux 6.8).
+
+   First, the mount of the binary as installed is measured against `/`'s
+   (`statx` `STATX_MNT_ID`, `statvfs` `ST_RDONLY`: `BinaryMount`; a mount
+   id of 0, which qemu-user's `statx` gives for every file and the kernel
+   for a memfd, is `NoMountId`; a fallback through `/proc/self/fdinfo` is
+   [#95](https://github.com/tran4774/ranikust/issues/95)). On another
+   read-only mount, and on a root that is not an overlay (`copies_up`:
+   overlayfs by `fstatfs` magic, or FUSE whose own mountinfo line has the
+   type `fuse.fuse-overlayfs`; `verdict`), a file with other hard links is
+   `Linked`, and one that another writable mount of the same `major:minor`
+   in `/proc/self/mountinfo` reaches is `Exposed` (`reached_writable`): a
+   directory root that contains the file's path in its file system
+   (compared by component), or a file root that is the binary's inode
+   whatever its name (mount points and the binary's name reached from `/`
+   through `RootPath::statx_physical`, never opened, with no symlink on
+   the way, each mount point checked to be its mount's root by its id and
+   `STATX_ATTR_MOUNT_ROOT`; a mount another one covers, at its mount point
+   or above it and not one it lies on, told from the table alone and not
+   looked up; `//deleted` is read as a mark, `MountInfo::root_deleted`).
+   The table is read again once the walk is done: one that changed
+   meanwhile (mount ids are reused) places nothing. A table that cannot be
+   parsed or that changed, that does not place the file (its own name
+   removed among them) or does not type a FUSE root (`root_type`), a
+   writable directory of its file system whose name was removed, a
+   writable mount of it that is covered or whose mount point leads
+   nowhere, to another mount or inside its mount, or a file with no link
+   left, is `Unplaced`; a lookup of the binary's name or of a mount point
+   that fails otherwise (`openat2`, `statx`; an error with no errno as
+   `EIO`) is `Unknown` unless a writable mount was found to reach the
+   binary (`Exposed`), and a table that cannot be read, the first time or
+   once the walk is done, is `Unknown` whatever the walk found. Only
+   kaniko mode on a container's `/` uses the answer, so `ranikust` asks
+   for the walk only where that mode may follow (`may_be_kaniko_on_slash`,
+   before the copy: as root, without `--mode=overlay`, where
+   `container::detect` finds a container, ADR-0048): a host build looks up
+   no mount point, and a binary the walk would weigh is `NotWeighed`,
+   refused should kaniko mode on `/` follow all the same.
+   The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
+   close-on-exec descriptor, with the same arguments, environment and
+   descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file
+   limit ranikust started with (`forbid_core_dumps` records it again). A copy
+   that needs an interpreter (binfmt_misc, with or without `O`; a `#!` line)
+   is refused before the exec (`ENOENT`), and the next way is tried. The
+   copy's run makes no copy, checks `/proc/self/exe` (the memfd's seals,
+   or no link), takes its name from `argv[0]` again and logs at debug the
+   way, the binary's mount and why each way before it failed. When no way
+   works, or the check fails, the build goes on with a warning, the
+   binary's mount then measured on the file it runs from. `ranikust`
+   refuses kaniko mode on `/` with the binary on a writable mount other
+   than `/`'s, reached by one, or on one it cannot tell
+   ([kaniko mode](kaniko-mode.md#invariants)).
 1. While the process is still **single-threaded** (before tokio or rayon
    start), `unshare(CLONE_NEWNS)` and make `/` a slave mount
    (`--make-rslave`). From then on every build mount disappears with the
@@ -262,11 +330,9 @@ The steps, in order:
      host); `execve`. The check covers the candidate's path only: the kernel
      opens a `#!` script's interpreter itself, so a `#!/proc/self/exe` line, or
      a symlink swapped in after the check, still runs ranikust's binary in the
-     sandbox, which then refuses its arguments (threat-model section 6).
-     [ADR-0082](../adr/0082-full-sandbox-binds-the-binary-read-only-over-itself.md)
-     has the full sandbox bind the binary read-only over itself (not built yet,
-     [#32](https://github.com/tran4774/ranikust/issues/32)); `Direct` on `/`
-     keeps these barriers.
+     sandbox, which then refuses its arguments (threat-model section 6). That
+     binary is the sealed copy of the process set-up (step 0), so the `RUN`
+     cannot write it, in the full sandbox and in `Direct` alike.
 
 Between `clone` and `execve` the child of a multi-threaded process only makes
 system calls on arguments built before the clone: no allocation, no lock. A

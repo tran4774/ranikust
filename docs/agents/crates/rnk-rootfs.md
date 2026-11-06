@@ -24,6 +24,9 @@ never delete across a mount: compare `mnt_id`, not `st_dev`.
   (ADR-0076): `OutputDir`, `Fence`, `reach`.
 - The kernel check `probe_support` (Linux 5.8, ADR-0028): `openat2` and the
   `statx` mount id, no string-based fallback (`Error::Unsupported`).
+- The parser of `/proc/self/mountinfo` (`parse_mountinfo`), shared by
+  `rnk-snapshot`'s ignore list and `rnk-sandbox`'s measurement of the
+  binary's mount (ADR-0101); text only, it opens nothing.
 
 ## Must not
 
@@ -54,8 +57,9 @@ impl RootPath {
     pub fn create_sub_root(&self, p, mode) -> Result<RootPath>; // mkdirat + openat on one parent fd; empty, euid's, parent's mount, else refused (ADR-0059)
     pub fn move_sub_root(&self, name, moved: &RootPath, to: &RootPath, to_name) -> Result<RootPath>; // renameat2(RENAME_NOREPLACE) of one plain name between two roots' fds; identity (dev, ino, mount) checked before and after (ADR-0061)
     pub fn statx(&self, p) -> Result<Stat>;              // no-follow; carries mnt_id, mount_root
+    pub fn statx_physical(&self, p) -> Result<Stat>;     // statx with no symlink in a parent (RESOLVE_NO_SYMLINKS; the last name not followed) or `..`, across mounts unless stay_on_mount: a path the kernel printed (rnk-sandbox's mount walk, ADR-0101)
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // a directory's names, mount points included
-    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in any component, root's mount only (the kaniko exporter)
+    pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, no `..`, root's mount only (the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device
@@ -78,6 +82,7 @@ pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Resul
 pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
+pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>, MountInfoError>; // proc(5) lines, \NNN unescaped; MountInfo { mount_id, parent_id, device, fs_root, mount_point, fs_type, read_only (ro first in the mount's or the file system's options), root_deleted (the kernel's `//deleted` mark, read off fs_root) }; fields after the file system's options ignored (a value spilled past a space); a line of another shape, or file-system options not starting ro or rw, is an error, never skipped
 pub fn probe_support() -> Result<(), Unsupported>;             // start-up check (ADR-0028); Cause::{Missing, Blocked, Hidden}, kernel release
 ```
 
@@ -141,6 +146,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ADR-0059): sparse, empty and dense files copy exactly, a source holding
   more than its size is refused, and one cut short between `SEEK_DATA` calls
   is refused rather than zero-filled (a red-team finding, fixed).
+  `src/mountinfo.rs`: read-only by a mount's or its file system's first
+  option, an option spilled past a space kept out, `\040` escapes, a line
+  missing its file system's options, or whose file system's options do not
+  start with `ro` or `rw` (a source shifted by a space), refused, and a
+  root's `//deleted` read as a mark, never a component (ADR-0101).
 - **T0, red team:** `/var/run` (ADR-0052 D4, `src/extract/tests.rs`): through
   a container's `/var/run -> ../run`, ignored `/run/secrets` and
   `/run/.containerenv` skipped at their physical path, an opaque marker below
