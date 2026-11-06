@@ -181,8 +181,10 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   block instead of returning the refusal), either named in the message as
   `syscalls[N]` or `defaultErrnoRet`, two conditions on one argument in a
   rule, a rule without names (the message names the rule, `syscalls[N]`;
-  ADR-0109), a filter longer than the kernel's 4096 instructions, and anything
-  malformed; a file that is not a regular file or is over 1 MiB.
+  ADR-0109), a filter longer than the kernel's 4096 instructions (past them
+  the compiler only counts, so a profile describing millions takes memory
+  linear in its size, not in theirs), and anything malformed; a file that is
+  not a regular file or is over 1 MiB.
 - The limits of a profile's rules are in the
   [threat model](../security/threat-model.md#6-accepted-risks).
 - The profile is the operator's and may refuse any call with any errno
@@ -213,7 +215,8 @@ The steps, in order:
    - Close every descriptor the clone copied from ranikust except stdio, the
      error and status pipes, that `stat` file, the network namespace to join,
      the stdio sources and a `#!` script (`close_range`, else the list in
-     `/proc/self/fd`, else every number up to the hard limit), in
+     `/proc/self/fd`, past a `close` refused, then, unless the list closed
+     them all, every number up to the hard limit), in
      `Isolation::Direct` too. ranikust holds directories outside the root, and
      close-on-exec acts only at `execve`: until then `/proc/self/fd/<n>` of the
      `RUN`'s `proc` would lead a `WORKDIR`, a `PATH` entry or a mount target to
@@ -369,7 +372,9 @@ The steps, in order:
      raw syscall (musl's `close` turns `EINTR` into success) and checked.
      A refused `close`, whatever its errno, or a list that cannot be read
      or does not shrink, fails the `RUN` as `Step::Init`, its command
-     killed; the cost is bounded by the descriptors open. Last, it writes
+     killed, with the listing's own errno where it has one (before
+     Linux 5.9, `close_range`'s `ENOSYS` would hide it); the cost is
+     bounded by the descriptors open. Last, it writes
      the go byte on the go pipe and closes its end, `close_range` first.
    - The command goes on only on that byte, never on the end of the pipe:
      the end (`EPIPE`, a read a filter around ranikust faked with no error
@@ -378,19 +383,24 @@ The steps, in order:
      ran, reported as `Step::Init` or as the filter's step; the init also
      kills the command. An init that cannot write the byte closes its end,
      and the command fails at its read, which is what is reported (the
-     error pipe is closed by then); one that can do neither ends with 125.
+     error pipe is closed by then); one that can do neither ends with 125,
+     never read as the command's code (`Error::InitExited`, or the
+     command's `Step::Init` record, below).
      A command already gone fails only the write: the init, PID 1 of its
      namespace, gets no `SIGPIPE` it has no handler for.
    - A read of the init's or the command's answered with `EINTR` (the
      argument areas', the parent check's, the go pipe's) fails the `RUN` as
      `Step::Init` instead of reading again: with no handler, the kernel
      restarts a read a signal interrupts, so only a filter answers so, and
-     it could forever.
+     it could forever. The parent check fails with its read's errno, `EINVAL`
+     for a line that does not parse (a read faked with no bytes); only
+     another parent is `ESRCH`.
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits; a `waitpid`
      back with no child (0, or an error, `EINTR` included: with no handler,
-     the kernel restarts one a signal interrupts) ends it with 125.
+     the kernel restarts one a signal interrupts) ends it with 125, the
+     init's own code (`Error::InitExited`).
    - Every child of ranikust resets every signal disposition to the default
      first, so the init has no handler and the kernel drops every signal a
      process of the namespace sends it. A `RUN` cannot signal, stop, trace or
@@ -450,7 +460,24 @@ failing step writes the step and the errno to a close-on-exec pipe and exits
 **Waiting.** The parent waits for the child, in the full sandbox the init. When
 the command exits, the init reports its status and exits, and the kernel kills
 everything left in the namespace, so no `tini` and no process-group kill are
-needed; exit codes and signals read as they would from the command itself. A
+needed; exit codes and signals read as they would from the command itself. An
+init that ended before it wrote that status, before its go byte or after it,
+leaves no status of the command's, which may or may not have started; its own
+status is never passed off as the command's. Killed by a signal (a profile's
+kill or trap of a call the init makes: its own steps after its filters, its
+closes, its wait, its status write; or a `SIGKILL` from outside), the `RUN`
+fails as `Error::SetupKilled`, which names the signal and, for `SIGSYS` under
+a profile, the profile as the likely cause. Exited with a code and no failure
+record (125 where its go or its wait cannot go on, 127 where its filters
+refused the record), it fails as `Error::InitExited`, which names the code as
+the init's own. Neither is one that ran no command. `SetupKilled` wins over a
+failure record of `Step::Init`, which the init's end may cause (the go pipe
+ended under a command still waiting), and loses to any other record, the more
+precise, the one not returned logged; `InitExited` loses to every record, its
+code logged. A kill or trap of a call only the command makes after its filters
+and before `execve` (its go read, `setsid`, the `USER` switch) leaves the init
+alive, and the `RUN` fails with the command's status (`SIGSYS`, code 159), as
+one killed after `execve` does: nothing tells the two apart. A
 cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit kills the
 process on a cancel; the child is forgotten only once it has exited and before
 it is reaped, so the kill never reaches a reused pid. The command is PID 2, as
@@ -471,7 +498,10 @@ So, as in BuildKit's `executor/stubs.go`, with one journal per `RUN` in
 
 1. write the stub's path to the journal in the state directory, then create it;
 2. remove stubs after the `RUN`, before the diff, and restore the parent's
-   metadata;
+   metadata; a stub counts as gone only where its lookup says nothing can be
+   at its path (`ENOENT`, or `ENOTDIR` for a parent the `RUN` made a file),
+   and any other lookup error fails the clean-up with its step and errno,
+   the journal kept, once the older stubs are undone all the same;
 3. on start-up, remove any stub left in the journal.
 
 Because all other mounts live in the child's namespace, no ignore-list entry is

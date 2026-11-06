@@ -873,8 +873,8 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args
     if signal != libc::SIGKILL {
         fail_init(Errno::INVAL);
     }
-    if !parent_alive(parent) {
-        fail_init(Errno::SRCH);
+    if let Err(e) = check_parent(parent) {
+        fail_init(e);
     }
 }
 
@@ -887,17 +887,23 @@ fn kill_and_fail(err: RawFd, command: libc::pid_t, step: Step, e: Errno) -> ! {
     fail(err, step, e)
 }
 
-/// Whether the process that cloned this one is still its parent, from the
-/// outer `stat` file [`ParentCheck`] holds.
-fn parent_alive(parent: ParentCheck) -> bool {
-    // SAFETY: `stat` is open in this process until it is closed below.
+/// Checks that the process that cloned this one is still its parent, from
+/// the outer `stat` file [`ParentCheck`] holds: another parent is `ESRCH`.
+/// A failed read is its errno, never a parent gone: a filter may refuse it.
+/// A line that does not parse (a read faked with no bytes) is `EINVAL`, as
+/// for [`arm_death_signal`].
+fn check_parent(parent: ParentCheck) -> Result<(), Errno> {
+    // SAFETY: `stat` is open in this process until `run_init` closes it
+    // with `close_all_except_checked`, after this check.
     let stat = unsafe { BorrowedFd::borrow_raw(parent.stat) };
     let mut buf = [0u8; 256];
     // One read: an `EINTR` comes only from a filter (`wait_for_go`).
-    let Ok(len) = rustix::io::pread(stat, &mut buf, 0) else {
-        return false;
-    };
-    matches!(buf.get(..len).and_then(stat_pid_and_ppid), Some((_, ppid)) if ppid == parent.parent)
+    let len = rustix::io::pread(stat, &mut buf, 0)?;
+    match buf.get(..len).and_then(stat_pid_and_ppid) {
+        Some((_, ppid)) if ppid == parent.parent => Ok(()),
+        Some(_) => Err(Errno::SRCH),
+        None => Err(Errno::INVAL),
+    }
 }
 
 /// The kernel's `struct sigaction` for `rt_sigaction`: handler, flags,
@@ -2045,13 +2051,15 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// Closes every descriptor not in `keep`, which is sorted ascending and may
 /// hold duplicates and negative entries (ignored), before the `RUN`'s
 /// filters, as best it can: with `close_range` over the gaps, else those
-/// `/proc/self/fd` lists, else every number up to the hard limit. The init
+/// `/proc/self/fd` lists, a refused `close` passed over, then, unless the
+/// listing closed them all, every number up to the hard limit. The init
 /// closes with [`close_all_except_checked`] instead.
 ///
 /// Limits, known and accepted: the last fallback stops at 2^20, so a
 /// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
 /// stay open where neither `close_range` (Linux 5.9) nor a readable
-/// `/proc/self/fd` is there; and a filter around ranikust that answers
+/// `/proc/self/fd` is there; a descriptor whose every `close` is refused
+/// stays open; and a filter around ranikust that answers
 /// `close_range` with success without running it, or refuses both calls,
 /// leaves descriptors open, as nothing here checks that they are gone (a
 /// `RUN`'s profile cannot answer with success, ADR-0109, and the init
@@ -2060,9 +2068,9 @@ fn close_all_except(keep: &[RawFd]) {
     if close_gaps(keep).is_ok() {
         return;
     }
-    match close_listed(keep) {
+    match close_listed(keep, OnRefusal::GoOn) {
         Listed::Closed => {}
-        Listed::Unreadable | Listed::Refused(_) => {
+        Listed::Unreadable(_) | Listed::Refused(_) => {
             let limit = nofile_bound(true, 1 << 20);
             for fd in (0..=limit).filter(|fd| !keep.contains(fd)) {
                 // Best effort before the `RUN`'s filters; the init checks
@@ -2079,7 +2087,10 @@ fn close_all_except(keep: &[RawFd]) {
 /// lists, each `close` checked. A refused `close` fails it with its
 /// errno, whatever that is: in this single-threaded process a listed
 /// descriptor is open, so even `EBADF` is a refusal. Where the list cannot
-/// be read or does not shrink, `close_range`'s errno. There is no pass over
+/// be read, the errno of the call that failed: before Linux 5.9 the
+/// listing is the only way, and `close_range`'s `ENOSYS` would hide it.
+/// Where it is not on procfs or does not shrink, `close_range`'s errno.
+/// There is no pass over
 /// every number: the cost is bounded by the descriptors open. A
 /// `close_range` answered with success is trusted, which only a filter
 /// around ranikust can fake (ADR-0109); a `close` so faked is caught by
@@ -2088,10 +2099,10 @@ fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
     let Err(range) = close_gaps(keep) else {
         return Ok(());
     };
-    match close_listed(keep) {
+    match close_listed(keep, OnRefusal::Stop) {
         Listed::Closed => Ok(()),
         Listed::Refused(e) => Err(e),
-        Listed::Unreadable => Err(range),
+        Listed::Unreadable(e) => Err(e.unwrap_or(range)),
     }
 }
 
@@ -2181,39 +2192,59 @@ fn nofile_bound(hard: bool, cap: u32) -> RawFd {
 enum Listed {
     /// Every descriptor it found closed, and each pass's listing.
     Closed,
-    /// The list cannot be read, or a pass found no fewer descriptors than
-    /// the one before: closes answered with success that closed nothing.
-    Unreadable,
-    /// A `close` refused, with its errno.
+    /// The list cannot be read, with the errno of the call that failed
+    /// where there is one, or (`None`) is not on procfs, or a pass found no
+    /// fewer descriptors than the one before: closes answered with success
+    /// that closed nothing.
+    Unreadable(Option<Errno>),
+    /// A `close` refused, with its errno: under [`OnRefusal::GoOn`], the
+    /// first, once the passes that shrank are done.
     Refused(Errno),
+}
+
+/// What [`close_listed`] does at a refused `close`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OnRefusal {
+    /// Ends there: the init, which fails at a descriptor it cannot close.
+    Stop,
+    /// Records the first and closes the rest of the pass: the best effort
+    /// before the filters, which then falls back to every number.
+    GoOn,
 }
 
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
 /// passing again until a pass finds none; each `close`, the listing's
-/// included, counts only as the kernel answers it ([`close_raw`]), and the
-/// first refused one ends it. A pass that finds no fewer descriptors than
-/// the one before ends it too, as [`Listed::Unreadable`].
-fn close_listed(keep: &[RawFd]) -> Listed {
+/// included, counts only as the kernel answers it ([`close_raw`]), and a
+/// refused one ends it or not as `on_refusal` says. A pass that finds no
+/// fewer descriptors than the one before ends it too.
+fn close_listed(keep: &[RawFd], on_refusal: OnRefusal) -> Listed {
     let mut before = usize::MAX;
+    let mut refused = None;
+    // A refusal recorded says more than how the passes then ended.
+    let ended = |refused: Option<Errno>, unreadable: Option<Errno>| {
+        refused.map_or(Listed::Unreadable(unreadable), Listed::Refused)
+    };
     loop {
-        let Ok(dir) = rustix::fs::openat(
+        let dir = match rustix::fs::openat(
             CWD,
             c"/proc/self/fd",
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
-        ) else {
-            return Listed::Unreadable;
+        ) {
+            Ok(dir) => dir,
+            Err(e) => return ended(refused, Some(e)),
         };
         if !on_procfs(dir.as_fd()) {
-            return Listed::Unreadable;
+            return ended(refused, None);
         }
         let own = dir.as_raw_fd();
         let mut found = 0;
         let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
         let mut entries = RawDir::new(&dir, &mut buf);
         while let Some(entry) = entries.next() {
-            let Ok(entry) = entry else {
-                return Listed::Unreadable;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => return ended(refused, Some(e)),
             };
             if let Some(fd) = parse_fd(entry.file_name().to_bytes())
                 && !keep.contains(&fd)
@@ -2221,18 +2252,29 @@ fn close_listed(keep: &[RawFd]) -> Listed {
             {
                 found += 1;
                 if let Err(e) = close_raw(fd) {
-                    return Listed::Refused(e);
+                    match on_refusal {
+                        OnRefusal::Stop => return Listed::Refused(e),
+                        OnRefusal::GoOn => {
+                            refused.get_or_insert(e);
+                        }
+                    }
                 }
             }
         }
         if let Err(e) = close_raw(dir.into_raw_fd()) {
-            return Listed::Refused(e);
+            match on_refusal {
+                OnRefusal::Stop => return Listed::Refused(e),
+                // Left open, the next pass finds and closes it.
+                OnRefusal::GoOn => {
+                    refused.get_or_insert(e);
+                }
+            }
         }
         if found == 0 {
             return Listed::Closed;
         }
         if found >= before {
-            return Listed::Unreadable;
+            return ended(refused, None);
         }
         before = found;
     }
@@ -2896,13 +2938,52 @@ mod tests {
             let alive = |rule: &str| {
                 failure_under(rule, |w| {
                     alarm();
-                    if !parent_alive(parent) {
-                        fail(w, Step::Init, Errno::SRCH);
-                    }
+                    parent_check_as_the_init(w, parent);
                 })
             };
             assert_eq!(alive(""), None, "parent check, unfiltered");
-            assert_eq!(alive(&eintr("pread64")), init(libc::ESRCH), "parent check");
+            assert_eq!(alive(&eintr("pread64")), init(libc::EINTR), "parent check");
+        }
+
+        /// The init's parent check, failing as `init_keep_nothing` does.
+        fn parent_check_as_the_init(err: RawFd, parent: ParentCheck) {
+            if let Err(e) = check_parent(parent) {
+                fail(err, Step::Init, e);
+            }
+        }
+
+        /// The init's parent check fails a `RUN` with the errno of its
+        /// read, never as a parent gone: a read the profile refuses, or one
+        /// a filter around ranikust fakes with no bytes (`EINVAL`, a line
+        /// that does not parse). Only another parent is `ESRCH`. It reads
+        /// this process's `stat`, whose parent holds unfiltered.
+        #[test]
+        fn a_refused_parent_check_fails_with_its_errno() {
+            let stat = rustix::fs::open(
+                c"/proc/self/stat",
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .unwrap();
+            let ppid = i32::try_from(std::os::unix::process::parent_id()).unwrap();
+            let check = |rule: &str, parent: i32| {
+                let parent = ParentCheck {
+                    stat: stat.as_raw_fd(),
+                    parent,
+                };
+                failure_under(rule, |w| parent_check_as_the_init(w, parent))
+            };
+            let pread = |errno: i32| {
+                format!(
+                    r#"{{"names": ["pread64"], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                )
+            };
+            let init = |e| Some((Step::Init, e));
+            assert_eq!(check("", ppid), None, "unfiltered");
+            assert_eq!(check(&pread(libc::EPERM), ppid), init(libc::EPERM));
+            assert_eq!(check(&pread(libc::EACCES), ppid), init(libc::EACCES));
+            assert_eq!(check(&pread(0), ppid), init(libc::EINVAL), "faked");
+            assert_eq!(check("", ppid + 1), init(libc::ESRCH), "another parent");
         }
 
         /// The command starts only on its init's go byte, never on the end
@@ -3059,6 +3140,98 @@ mod tests {
                     "{rules}, keep all {keep_all}"
                 );
             }
+        }
+
+        /// The best-effort closing before the filters goes on past a
+        /// refused `close`: with `close_range` refused and the `close` of
+        /// one listed descriptor too, that one stays open and every other
+        /// is closed, one numbered past the hard limit, where the last
+        /// fallback stops, included.
+        #[test]
+        fn the_best_effort_closing_goes_on_past_a_refused_close() {
+            const STUCK: RawFd = 500;
+            const HIGH: RawFd = 900;
+            let json = format!(
+                r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                    {{"names": ["close_range"], "action": "SCMP_ACT_ERRNO", "errnoRet": {e}}},
+                    {{"names": ["close"], "action": "SCMP_ACT_ERRNO", "errnoRet": {e},
+                      "args": [{{"index": 0, "value": {STUCK}, "op": "SCMP_CMP_EQ"}}]}}]}}"#,
+                e = libc::EPERM
+            );
+            let prog = crate::SeccompProfile::faking(json.as_bytes())
+                .unwrap()
+                .program;
+            // The child exits 0, or with the number of the check that
+            // failed.
+            let status = crate::seccomp::under_filter(&prog, || {
+                // SAFETY: `F_GETFD` on a descriptor number only reads.
+                let is_open = |fd: RawFd| unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;
+                // SAFETY: `F_DUPFD` makes a new descriptor, the lowest free
+                // one from its argument.
+                let dup_at = |fd: RawFd| unsafe { libc::fcntl(0, libc::F_DUPFD, fd) } == fd;
+                if !dup_at(STUCK) || !dup_at(HIGH) {
+                    return 1;
+                }
+                // Extra descriptors on both sides of the refused one.
+                for _ in 0..3 {
+                    // SAFETY: `dup` makes a new descriptor.
+                    if unsafe { libc::dup(0) } < 0 {
+                        return 2;
+                    }
+                }
+                // SAFETY: `F_DUPFD` as above.
+                if unsafe { libc::fcntl(0, libc::F_DUPFD, STUCK + 1) } <= STUCK {
+                    return 3;
+                }
+                let bound = libc::rlim_t::from((STUCK + 50).unsigned_abs());
+                let lim = libc::rlimit {
+                    rlim_cur: bound,
+                    rlim_max: bound,
+                };
+                // SAFETY: `setrlimit` reads one `rlimit`; lowering is
+                // allowed, and leaves `HIGH` open.
+                if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) } != 0 {
+                    return 4;
+                }
+                close_all_except(&[0, 1, 2]);
+                if !is_open(STUCK) {
+                    return 5;
+                }
+                if is_open(HIGH) {
+                    return 6;
+                }
+                if (3..=HIGH).any(|fd| fd != STUCK && is_open(fd)) {
+                    return 7;
+                }
+                0
+            });
+            assert!(libc::WIFEXITED(status), "status {status:#x}");
+            assert_eq!(libc::WEXITSTATUS(status), 0);
+        }
+
+        /// Before Linux 5.9 the init's closing rests on the listing: one
+        /// that cannot be read fails it with the listing's errno, not with
+        /// `close_range`'s `ENOSYS`.
+        #[test]
+        fn a_listing_that_fails_gives_its_own_errno() {
+            let json = format!(
+                r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [
+                    {{"names": ["close_range"], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}},
+                    {{"names": ["openat"], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}]}}"#,
+                libc::ENOSYS,
+                libc::EACCES
+            );
+            let prog = crate::SeccompProfile::faking(json.as_bytes())
+                .unwrap()
+                .program;
+            let status = crate::seccomp::under_filter(&prog, || {
+                match close_all_except_checked(&[0, 1, 2]) {
+                    Ok(()) => 100,
+                    Err(e) => e.raw_os_error(),
+                }
+            });
+            assert!(libc::WIFEXITED(status), "status {status:#x}");
+            assert_eq!(libc::WEXITSTATUS(status), libc::EACCES);
         }
 
         /// A `#!` heredoc's `execveat` answered with no error fails the
