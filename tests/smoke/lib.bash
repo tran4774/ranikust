@@ -17,6 +17,10 @@ smoke_checks=(
   '! test -t 0'                                                      # T19
   'test "$(ls /proc/self/fd | wc -l)" -le 4'                          # stdio and ls's own, T7
 )
+# The first checks read the RUN's init through /proc/1: an rbind of the
+# container's /proc (a fallback of the build's user namespace, #78) shows
+# the container's PID 1 there instead.
+smoke_checks_own_proc=3
 
 # The sandbox's stubs must not reach a layer of the OCI layout in $1:
 # /etc/resolv.conf, which alpine lacks, not at all; /etc/hosts and

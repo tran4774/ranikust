@@ -5,11 +5,15 @@
 //! (`rnk-layer`, `rnk-oci`).
 //!
 //! Not a builder: no diff per instruction, no cache, one squashed layer,
-//! xattrs dropped. It needs `CAP_SYS_ADMIN`, so it runs inside rootless
-//! `podman run --privileged` (`just smoke`), never directly on a host.
+//! xattrs dropped. Without `--userns` it needs `CAP_SYS_ADMIN`, so it runs
+//! inside rootless `podman run --privileged` (`just smoke`), never directly
+//! on a host. With `--userns` it works in the build's user namespace
+//! (`rnk_sandbox::enter_build_user_namespace`) of the user it runs as,
+//! with the `proc` and `sysfs` fallbacks the user-namespace probe found:
+//! root of a default `podman run`, or a regular user on the T2 VM.
 //!
 //! ```sh
-//! smoke-build --out DIR [--image REF] [--work DIR] [--tag NAME] [--run CMD]...
+//! smoke-build --out DIR [--image REF] [--work DIR] [--tag NAME] [--userns] [--run CMD]...
 //! ```
 
 use std::collections::BTreeMap;
@@ -29,8 +33,16 @@ use rnk_oci::{
 };
 use rnk_registry::{Client, ClientOptions, Credentials, TrustStore};
 use rnk_rootfs::{FileType, OpenHow, RootPath, Whiteouts};
-use rnk_sandbox::{RunSpec, Sandbox};
+use rnk_sandbox::{Fallbacks, RunSpec, Sandbox};
 use sha2::Digest as _;
+
+// The binary's lookup, so that `--userns` maps what `ranikust` would; an
+// inline module, so that its own `mod tests` resolves as in the binary.
+#[path = "../src"]
+mod src {
+    pub(crate) mod subids;
+}
+use src::subids;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -39,6 +51,7 @@ struct Args {
     out: PathBuf,
     work: PathBuf,
     tag: String,
+    userns: bool,
     runs: Vec<String>,
 }
 
@@ -58,10 +71,15 @@ fn parse_args() -> Result<Args, BoxError> {
         out: PathBuf::new(),
         work: "/work".into(),
         tag: "smoke".into(),
+        userns: false,
         runs: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
+        if flag == "--userns" {
+            args.userns = true;
+            continue;
+        }
         let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--image" => args.image = value,
@@ -82,11 +100,16 @@ fn run() -> Result<(), BoxError> {
     let args = parse_args()?;
     rnk_rootfs::probe_support()?;
     // Before any thread exists.
-    rnk_sandbox::enter_build_namespace()?;
+    let fallbacks = if args.userns {
+        enter_user_namespace(&args.work)?
+    } else {
+        rnk_sandbox::enter_build_namespace()?;
+        Fallbacks::default()
+    };
     fs::create_dir_all(&args.work)?;
     let work = args.work.canonicalize()?;
     let sandbox_dir = work.join("sandbox");
-    let caps = rnk_sandbox::probe(&sandbox_dir)?;
+    let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, fallbacks)?;
     println!("probe: {caps:?}");
 
     let reference = Reference::parse(&args.image)?.with_default_tag();
@@ -109,6 +132,21 @@ fn run() -> Result<(), BoxError> {
     drop(sandbox);
 
     write_layout(&root, &base, &args)
+}
+
+/// `--userns`: the user-namespace probe in a directory of `work`, then the
+/// build's user namespace with the subordinate ids `ranikust` would use;
+/// returns the fallbacks the probe found, which the sandbox's probe may
+/// then choose.
+fn enter_user_namespace(work: &Path) -> Result<Fallbacks, BoxError> {
+    let subordinate = subids::lookup(rustix::process::geteuid().as_raw())?;
+    let scratch = work.join("userns-probe");
+    fs::create_dir_all(&scratch)?;
+    let report = rnk_sandbox::probe_user_namespace(&RootPath::open(&scratch)?, subordinate)?;
+    println!("userns probe: {report}");
+    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)?;
+    println!("userns: {userns}");
+    Ok(report.fallbacks())
 }
 
 async fn pull(reference: &Reference, work: &Path) -> Result<(ImageConfig, Vec<PathBuf>), BoxError> {
