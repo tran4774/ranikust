@@ -448,8 +448,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   not, each `KeyringJoin`; an `execve` or `execveat` back without an error; a
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
   the init's and the command's reads, the parent check's against an unfiltered
-  control; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
-  `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
+  control; the command's go only on its init's go byte, never on an ended
+  pipe, another byte or a read faked with no error, and the init's go byte
+  sent, or the pipe ended without it, or the init ended where neither can
+  be done; the init's closing: a refused `close` reported with its errno,
+  `EBADF` and `EINTR` included (also run for the musl target), whether
+  there are descriptors to close (at most the pass's listing left open) or
+  only the listing; a pass that does not shrink ends it; nothing left where
+  `close_range` alone is refused; a refused `umask` after the profile; a
+  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
+  last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
   overwrites that stack).
@@ -466,11 +474,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   it made, and `in_namespace` not running its closure beside other threads.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
-  (PID 2 under `ranikust-init`, host name, capability sets `a80425fb` with
-  empty inheritable and ambient, `nodev` root and `/dev`, read-only
-  `/proc/sys` and `/dev/null`, masked kernel files, no terminal, only stdio
-  descriptors, no stub in the layer); `sealed-exe`: a `RUN` reaches no
-  thread of ranikust's or its init's (ADR-0101). Not yet: the fallbacks.
+  (PID 2 under `ranikust-init`; the init under the command's filters; host
+  name; capability sets `a80425fb` with empty inheritable and ambient;
+  `nodev` root and `/dev`; read-only `/proc/sys` and `/dev/null`; masked
+  kernel files; no terminal; only stdio descriptors; no stub in the
+  layer); `sealed-exe`: a `RUN` reaches no thread of ranikust's or its
+  init's (ADR-0101). Not yet: the fallbacks.
   `kaniko-flags` in the kaniko leg: the user-namespace probe passes under
   rootless Podman's defaults, with an rbind of `/proc` (#74).
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
@@ -490,8 +499,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_run_can_slow_its_inits_death_but_not_stop_it`, which prints the
   delays, threat model section 6;
   `a_running_binary_cannot_be_opened_for_writing`;
-  `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
-  profile that refuses the keyring join; each `RUN` in a keyring of its own;
+  `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, a
+  profile that refuses the keyring join, and unconfined with a held network
+  (ADR-0033's filter); each `RUN` in a keyring of its own, its init under
+  the same filters as its command;
+  `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
+  that fails one of the init's last steps, or its closes (all, or one
+  with `close_range`, refused with `EPERM` or `EBADF`), the `RUN` fails as
+  `Step::Init` with that errno and its command leaves no mark, which it
+  leaves under a control profile; a profile refusing `close` alone still
+  starts the command, whose status ends the `RUN`;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
   `--seccomp` refuses; compiled for the test) leave the bounding set, the
@@ -515,8 +532,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   probe, a planted `run-` name, a scope without `Delegate=` and the ssh
   session's, and what a `RUN` under Docker's default profile reads in
   `/proc/self/cgroup` and `/proc/1/cgroup`, with Docker's capabilities
-  alone and its init with none, and the same reads for a later unconfined
-  `RUN`; the default profile refuses the first a user namespace, which an
+  alone and its init with none, both under the profile's filter, and the
+  same reads for a later unconfined `RUN`, both under ranikust's filters
+  alone; the default profile refuses the first a user namespace, which an
   unconfined `RUN` gets (the control); the `RUN`s that make a user
   namespace, there and below, are unconfined, as `--seccomp=unconfined`;
   `run_cgroup_limits_on_a_cgroupfs_without_nsdelegate`, the same `RUN`s with

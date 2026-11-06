@@ -298,11 +298,13 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   A filter around ranikust, which the operator's runtime installs and
   ranikust does not control, may still fake one, for ranikust's own calls
   and every step of the `RUN`'s set-up. The child checks what it can: a
-  faked fork of the init, `execve`, `execveat` or blocking `waitpid` fails
-  the `RUN`, and a read goes into a value set beforehand. The other steps
-  trust the answer, such as the capability cut, the command's session and
-  `USER` switch and the `PATH` search. Docker's default profile fakes no
-  call.
+  faked fork of the init, read of the init's go byte, `close` in the
+  init's closing (a pass over `/proc/self/fd` that does not shrink),
+  `execve`, `execveat` or blocking `waitpid` fails the `RUN`, and a read
+  goes into a value set beforehand. The other steps trust the answer, such
+  as the capability cut, the init's `close_range`, the command's session
+  and `USER` switch and the `PATH` search. Docker's default profile fakes
+  no call.
 - A `RUN`'s seccomp profile rule that refuses particular values of an
   argument may not catch every way of passing them. ranikust accepts this
   as a residual risk ([ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),
@@ -312,14 +314,6 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   `SCMP_CMP_MASKED_EQ` conditions, and allow neither `clone3` nor the
   `io_uring_*` calls, as the default profile does for a `RUN`; the default
   profile is not affected.
-- A `RUN`'s profile that refuses `close` with an errno (a kill or a trap
-  fails the `RUN` instead) hangs that `RUN` until the build is cancelled, a
-  limit of reliability, not of security: the go pipe that starts the
-  command stays open. If it refuses `close_range` too, the init first
-  busy-loops, holding up to ranikust's own soft `RLIMIT_NOFILE`, not the
-  `RUN`'s (ranikust's hard limit in kaniko mode), in descriptors, with work
-  that grows with the square of that limit, then waits. Docker's default
-  profile allows `close`.
 - A `RUN`'s profile that refuses `exit` and `exit_group`, or every call,
   with an errno (`SCMP_ACT_KILL_PROCESS`, `SCMP_ACT_KILL` in a
   single-threaded program, or a trap in a program without a `SIGSYS`
