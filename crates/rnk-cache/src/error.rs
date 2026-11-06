@@ -178,11 +178,17 @@ mod tests {
 
     #[test]
     fn a_refusal_names_an_empty_media_type_in_words() {
-        let none = String::new;
+        let empty = String::new;
         let shown = [
-            Refusal::NotAnImageManifest { media_type: none() },
-            Refusal::LayerType { media_type: none() },
-            Refusal::ConfigType { media_type: none() },
+            Refusal::NotAnImageManifest {
+                media_type: empty(),
+            },
+            Refusal::LayerType {
+                media_type: empty(),
+            },
+            Refusal::ConfigType {
+                media_type: empty(),
+            },
         ]
         .map(|r| r.to_string());
         assert_eq!(
