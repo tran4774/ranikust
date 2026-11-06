@@ -166,26 +166,20 @@ pub struct StepKey { pub key: CacheKey, pub reads_stage: Option<usize> }  // a C
 - Fail closed: a step the build refuses (the Phase 5 features, `ONBUILD`
   triggers, a `Direct` refusal) or whose expansion or read fails has no
   key, and neither has a later step of its stage nor a stage built on or
-  reading it.
-  The one exception: an `ADD` of a local archive is keyed, as one file, the
-  archive (BuildKit's way), though the build refuses it until Phase 5; no
-  build pushes a layer under that key before then, and Phase 5 keys any
-  rule its extraction adds to the archive's bytes, or bumps `KEY_VERSION`.
-- An owner name is keyed as written, never resolved: a `--chown` in the
-  instruction, and the `USER` that owns what a `WORKDIR` creates. It
-  resolves in the stage's root, which the previous key fixes
-  (#168, decided 2026-11-07, option (a)).
+  reading it. The one exception, an `ADD` of a local archive, and the
+  owner names keyed as written (`--chown`, a `WORKDIR`'s `USER`):
+  [cache-and-store](../../design/cache-and-store.md#cache-keys).
 - A file is keyed as the copy writes it: under the name it is copied under,
   owned by `0:0` (its `--chown` is in the instruction), with `--chmod`
-  applied; hardlinks inside one directory
-  source as links to the first; a socket as an empty file; under
-  `Isolation::Direct` special files left out, as the copy leaves them. A
-  FIFO, socket or device is described, never opened.
+  applied; hardlinks inside one directory source as links to the first; a
+  socket as an empty file; special files left out under any isolation but
+  `Full`, as the copy leaves them. A FIFO, socket or device is described,
+  never opened.
 - `base_stage()`: a stage built on another chains from its final key.
   ADR-0114's stop rule holds across it: the caller treats a miss on any
   step of the base stage as a miss for every step built on it, or a cached
-  layer would sit on a lower it was not made on, and an owner name resolve
-  in another root than its key names.
+  layer would sit on a lower it was not made on, and an owner name would
+  resolve in another root than its key names.
 - A `RUN` without `--network` is keyed with the network BuildKit gives it:
   `none` under the build's `--network=none`, else the default.
 

@@ -391,7 +391,7 @@ fn tar(content: &[u8]) -> Vec<u8> {
 }
 
 /// A `--chown` is keyed as written, never resolved: the previous key fixes
-/// the root its names resolve in (#168, decided 2026-11-07, option (a)).
+/// the root its names resolve in.
 #[test]
 fn a_chown_is_keyed_as_written() {
     let ctx = context(&[("run.sh", b"#!/bin/sh\n")]);
@@ -415,7 +415,8 @@ fn a_chown_is_keyed_as_written() {
 }
 
 /// The `USER` that owns the directories a `WORKDIR` makes is keyed as
-/// written, whether the Dockerfile or the base image sets it.
+/// written: a Dockerfile's through the chain, the base image's as an input
+/// of the `WORKDIR` step itself.
 #[test]
 fn a_changed_user_name_changes_the_workdir_key() {
     let ctx = context(&[]);

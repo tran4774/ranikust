@@ -160,15 +160,18 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   entries are simply never matched again.
 - **chain root:** the base image's platform manifest digest (none for
   `FROM scratch`) and the platform; for `FROM <stage>`, that stage's final
-  key, so a miss there is a miss for every step built on it (ADR-0114's
-  stop rule: no cached layer on a lower it was not made on).
+  key. Every step is looked up even after a miss, so the chain alone does
+  not stop reuse: the caller treats a miss in the base stage as a miss for
+  every step built on it (`StageKeys::base_stage`, ADR-0114's stop rule: no
+  cached layer on a lower it was not made on).
 - **instruction:** the instruction after variable expansion, with its flags.
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
     and `SHELL`; an owner name as written, never the ids it resolves to
     (the `USER` that owns what a `WORKDIR` creates, a `--chown`): it
-    resolves in the stage's root, which the previous key fixes
-    (#168, decided 2026-11-07, option (a));
+    resolves in the stage's root, which under the stop rule the previous
+    key fixes, and which does not exist before the build (#168, decided
+    2026-11-07, option (a));
   - for a `RUN`, its network as BuildKit keys it (its `--network`, or
     `none` for one without it under the build's `--network=none`), each
     secret mount's id, target, mode and owner, given or not (below), and
@@ -188,9 +191,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   The instruction holds no heredoc body: each one (of a `RUN`, `#!` or
   not, a `COPY` or an `ADD`) is an input of its own, after the expansion
   BuildKit does. An `ADD` of a local archive is keyed as one file, the
-  archive, as BuildKit keys it, though the build refuses it until Phase 5,
-  which keys any rule its extraction adds to the archive's bytes, or bumps
-  `KEY_VERSION`.
+  archive, as BuildKit keys it, though the build refuses it until Phase 5:
+  no build pushes a layer under that key before then, and a change to how
+  an archive is extracted is keyed or bumps `KEY_VERSION`.
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
   unordered collection.

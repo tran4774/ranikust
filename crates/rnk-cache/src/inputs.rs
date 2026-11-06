@@ -399,9 +399,11 @@ pub struct File {
     pub kind: FileKind,
     /// Permission bits with setuid, setgid and sticky, after `--chmod`.
     pub mode: u32,
-    /// Owner after `--chown`.
+    /// Owner the copy writes before any `--chown` (`0` for a context
+    /// file); a `--chown` is keyed as written, in the instruction, since its
+    /// names resolve in a root the key cannot read.
     pub uid: u32,
-    /// Group after `--chown`.
+    /// Group, as `uid`.
     pub gid: u32,
     /// The raw `security.capability` extended attribute.
     pub capability: Option<Vec<u8>>,
