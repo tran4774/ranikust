@@ -91,10 +91,10 @@ OCI and Docker v2 schema 2 types (digests, descriptors, manifests, indexes,
 configs, image references), the canonical JSON of every config and manifest
 ranikust writes (so equal values give equal digests), the config edits of the
 metadata instructions, the RFC 3339 times of a config, and the file names of
-a docker-save tarball and an OCI layout. Owns its types instead of taking `oci-spec`'s, whose hash-map order
-would change digests and which drops Docker-only config fields; `oci-spec`
-comes in only with `oci-client`, inside `rnk-registry`. **Must not** access the
-network or filesystem.
+a docker-save tarball and an OCI layout. Owns its types instead of taking
+`oci-spec`'s, whose hash-map order would change digests and which drops
+Docker-only config fields; `oci-spec` comes in only with `oci-client`, inside
+`rnk-registry`. **Must not** access the network or filesystem.
 
 ### `rnk-registry`
 
@@ -264,9 +264,8 @@ depend on higher ones. Besides the chain:
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
 declares `rnk-oci` and `rnk-registry`.
 [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
-fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`, now
-declared, and `rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` →
-`rnk-layer`) and
+fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`,
+`rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
 the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
 `rnk-layer`; `rnk-context` → `rnk-registry`);
 `rnk-cache` → `rnk-store` is [ADR-0021](docs/adr/0021-rnk-store-crate.md)'s.

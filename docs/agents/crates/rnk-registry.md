@@ -196,8 +196,9 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   `Error::Registry`'s `refused`, set from the status (401, 403) and the
   envelope's `UNAUTHORIZED` and `DENIED` codes
   (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
-  `retryable` is, and `not_found` from a pull's 404 alone
-  (`find_manifest_is_none_only_for_a_404`).
+  `retryable` is, and `not_found` from a pull's 404 alone, never retried
+  (`find_manifest_is_none_only_for_a_404`,
+  `a_404_is_not_found_and_never_retried`).
 - The test fake answers `HEAD` and `GET` of a blob only in repositories that
   hold it, checks the source scope of a mount under bearer authentication,
   and stores a pushed manifest with its `Content-Type`: without these,

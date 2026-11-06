@@ -119,10 +119,7 @@ pub(crate) fn check_manifest(
     })?;
     if manifest.media_type.as_ref() != Some(&MediaType::OCI_MANIFEST) {
         return Err(Refusal::NotAnImageManifest {
-            media_type: manifest
-                .media_type
-                .as_ref()
-                .map_or_else(|| "(no mediaType)".to_owned(), |m| excerpt(m.as_str())),
+            media_type: excerpt(manifest.media_type.as_ref().map_or("", MediaType::as_str)),
         });
     }
     if manifest.artifact_type.is_some() || manifest.subject.is_some() {
@@ -179,11 +176,12 @@ pub(crate) fn check_config(bytes: &[u8]) -> Result<(Digest, Timestamp), Refusal>
         Some(diff_id) if diff_ids.is_empty() && kind == "layers" => diff_id,
         _ => return Err(Refusal::DiffIds),
     };
-    let created = created.as_deref().ok_or(Refusal::Created {
+    let created = created.as_deref().ok_or_else(|| Refusal::Created {
         reason: "missing".to_owned(),
     })?;
+    // rnk-oci's message already quotes the input as a short excerpt.
     let created = Timestamp::parse_rfc3339(created).map_err(|e| Refusal::Created {
-        reason: excerpt(&e.to_string()),
+        reason: e.to_string(),
     })?;
     Ok((diff_id, created))
 }

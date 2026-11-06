@@ -420,6 +420,23 @@ mod tests {
         }
     }
 
+    /// A 404 is "not found" from its status, and never retried, even when
+    /// its envelope asks for it.
+    #[test]
+    fn a_404_is_not_found_and_never_retried() {
+        let envelope = |code: &str| OciDistributionError::RegistryError {
+            envelope: serde_json::from_str(&format!(r#"{{"errors":[{{"code":"{code}"}}]}}"#))
+                .unwrap(),
+            url: "https://r.example/v2/".to_owned(),
+        };
+        let e = op().error_for_status(404, envelope("TOOMANYREQUESTS"));
+        assert!(e.is_not_found() && !e.is_retryable(), "{e:?}");
+        let e = op().error_for_status(429, envelope("TOOMANYREQUESTS"));
+        assert!(!e.is_not_found() && e.is_retryable(), "{e:?}");
+        let e = op().error_for_status(404, envelope("MANIFEST_UNKNOWN"));
+        assert!(e.is_not_found() && !e.is_retryable(), "{e:?}");
+    }
+
     #[test]
     fn digest_errors_map_to_mismatch() {
         let err = op().error(OciDistributionError::DigestError(

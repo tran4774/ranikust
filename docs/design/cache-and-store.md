@@ -156,8 +156,10 @@ BuildKit's):
 key(k) = H(version, key(k-1), instruction, inputs(k))
 ```
 
-- **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
-  entries are simply never matched again.
+- **version:** `KEY_VERSION`, bumped whenever the algorithm changes, or
+  the [entry form](#cache-entries) a lookup checks; old entries are simply
+  never matched again (without the bump, each would be refused with a
+  warning).
 - **chain root:** the base image's platform manifest digest (none for
   `FROM scratch`) and the platform.
 - **instruction:** the instruction after variable expansion, with its flags.

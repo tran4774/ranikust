@@ -74,7 +74,7 @@ pub enum Refusal {
     /// Under the tag is not an OCI image manifest: an index, a Docker
     /// manifest.
     NotAnImageManifest {
-        /// Its media type, cut to an excerpt.
+        /// Its media type, cut to an excerpt; empty when it names none.
         media_type: String,
     },
     /// The manifest or its config does not parse.
@@ -111,7 +111,8 @@ pub enum Refusal {
     DiffIds,
     /// The config's `created` is missing or not an RFC 3339 time.
     Created {
-        /// Why, cut to an excerpt.
+        /// Why: `missing`, or the parser's message, which quotes the value
+        /// as an excerpt.
         reason: String,
     },
 }
@@ -119,6 +120,9 @@ pub enum Refusal {
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotAnImageManifest { media_type } if media_type.is_empty() => {
+                f.write_str("a document with no media type, not an OCI image manifest")
+            }
             Self::NotAnImageManifest { media_type } => {
                 write!(f, "a {media_type}, not an OCI image manifest")
             }

@@ -376,13 +376,22 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
         store(&registry, &tag, manifest.clone(), &config);
         assert_eq!(refusal(cache.lookup(&entry).await), want, "{what}");
     }
-    let mut yesterday = config.clone();
-    yesterday["created"] = json!("yesterday");
-    store(&registry, &tag, manifest.clone(), &yesterday);
-    let Refusal::Created { reason } = refusal(cache.lookup(&entry).await) else {
-        panic!("a created that is not RFC 3339 was not refused as such");
-    };
-    assert!(reason.contains("yesterday"), "{reason}");
+    // Go's `time.Time.String()` form, and one too long to quote whole:
+    // each refusal keeps the parser's reason.
+    for created in [
+        "2026-11-07 03:25:10.123456789 +0700 +07".to_owned(),
+        format!("2026-11-07T03:25:10Z{}", " ".repeat(10_000)),
+    ] {
+        let mut bad = config.clone();
+        bad["created"] = json!(created);
+        store(&registry, &tag, manifest.clone(), &bad);
+        let Refusal::Created { reason } = refusal(cache.lookup(&entry).await) else {
+            panic!("a created that is not RFC 3339 was not refused as such");
+        };
+        assert!(reason.starts_with("invalid timestamp"), "{reason}");
+        assert!(reason.len() < 200, "{reason}");
+        assert!(!reason.ends_with('…'), "the reason was cut: {reason}");
+    }
     let mut not_json = config.clone();
     not_json["rootfs"] = json!("layers");
     store(&registry, &tag, manifest.clone(), &not_json);
@@ -430,12 +439,14 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
         m.as_object_mut().unwrap().remove("mediaType");
     });
     store(&registry, &tag, untyped, &config);
+    let untyped = refusal(cache.lookup(&entry).await);
     assert_eq!(
-        refusal(cache.lookup(&entry).await),
+        untyped,
         Refusal::NotAnImageManifest {
-            media_type: "(no mediaType)".to_owned()
+            media_type: String::new()
         }
     );
+    assert!(untyped.to_string().contains("no media type"), "{untyped}");
     // Not a manifest at all: the client refuses it.
     store_manifest(&registry, &tag, b"not json");
     assert!(matches!(

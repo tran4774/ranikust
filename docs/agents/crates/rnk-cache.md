@@ -49,7 +49,7 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 Built (keys, tags and the registry cache):
 
 ```rust
-pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how, or to an entry's annotations
+pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how, or to the entry form
 pub struct CacheKey;                 // version + SHA-256; Copy, Eq, Hash; version(), hash()
 impl CacheKey {
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self; // platform manifest digest; None: FROM scratch
@@ -124,8 +124,11 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 
 ## Invariants
 
-- A new algorithm bumps `KEY_VERSION`; old entries are never matched again
-  and never rewritten. The goldens fail on any change to the byte form.
+- A new algorithm, or a change to the entry form a lookup checks
+  ([design](../../design/cache-and-store.md#cache-keys)), bumps
+  `KEY_VERSION`; old entries are never matched again and never rewritten.
+  The goldens fail on any change to the byte form or the encoding
+  annotation.
 - A change to the layer format bumps `KEY_VERSION` too (ADR-0005): an
   `Encoding` has no encoder version.
 - Same inputs, same key, in either mode, with any `--jobs`, whatever the
@@ -180,7 +183,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   after one request; a 500, a stall past `registry-idle` and bad credentials
   are `Miss::Failed`; an expired entry is `Miss::Expired`; another encoding
   misses, and an entry copied under its tag is refused; hostile entries (an
-  index, a Docker manifest, zero or two layers, another layer or config
+  index, a Docker manifest, a manifest with no media type, zero or two
+  layers, another layer or config
   type, an artifact, annotations of another key, version or encoding, two
   diff IDs, a bad `created`) and documents over `--limit` are refused; a
   held blob is not uploaded again and one in a destination is mounted; a
