@@ -27,18 +27,20 @@ use rustix::fs::{FileType, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::mount::{MountFlags, MountPropagationFlags};
 use rustix::pipe::PipeFlags;
-use rustix::process::{DumpableBehavior, Pid, Signal, WaitOptions};
+use rustix::process::{DumpableBehavior, Pid, Signal, WaitOptions, WaitStatus};
 use rustix::thread::UnshareFlags;
 use tracing::field::Empty;
 
 use crate::child::{self, FdPath};
-use crate::error::{Result, sys_err};
+use crate::error::{Error, Result, sys_err};
 
 /// How long one attempt may take before its child is killed.
 const ATTEMPT_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long [`UsernsReport::in_namespace`]'s closure may run.
 const CLOSURE_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a child that ended, or was killed, has to be reaped.
+const REAP_GRACE: Duration = Duration::from_secs(2);
 
 /// The most bytes of a closure's result kept.
 const RESULT_LIMIT: usize = 2048;
@@ -288,10 +290,10 @@ impl UsernsReport {
 
     /// Runs `f` as root of a new user and mount namespace with the map this
     /// probe got, in a forked child. `None` when no map worked; `Err` with
-    /// why `f` did not run or finish (other threads, a host-side error, the
-    /// namespace refused this time, the deadline, the child's death, a
-    /// panic); else what `f` returned. Like the steps, whatever `f` mounts
-    /// goes with the child.
+    /// why `f` did not run or finish ([`Error::NotSingleThreaded`], a
+    /// host-side error, [`Error::ProbeChildLeft`], else
+    /// [`Error::ProbeClosure`]); else what `f` returned. Like the steps,
+    /// whatever `f` mounts goes with the child.
     ///
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate; and before any credential is
@@ -300,13 +302,9 @@ impl UsernsReport {
     pub fn in_namespace(
         &self,
         f: impl FnOnce() -> std::result::Result<String, String>,
-    ) -> Option<std::result::Result<std::result::Result<String, String>, String>> {
+    ) -> Option<Result<std::result::Result<String, String>>> {
         let plan = self.plan.as_ref()?;
-        Some(
-            crate::setup::require_single_thread()
-                .map_err(|e| e.to_string())
-                .and_then(|()| run_closure(plan, f)),
-        )
+        Some(crate::setup::require_single_thread().and_then(|()| run_closure(plan, f)))
     }
 }
 
@@ -406,6 +404,8 @@ fn probe_in(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsRep
         let attempt = attempt(&plan, &targets, euid != 0);
         let attempt = match attempt {
             Ok(a) => a,
+            // A child still there may still work in the directory.
+            Err(e @ Error::ProbeChildLeft { .. }) => return Err(e),
             Err(e) => {
                 remove_targets(&root, targets);
                 return Err(e);
@@ -737,7 +737,8 @@ struct Supervised {
 
 /// Forks a child that runs `child`, writes its map when it asks
 /// ([`READY`]), reads its report until it closes it or `deadline` passes,
-/// kills it then, and reaps it.
+/// kills it then, and reaps it ([`reap`]); [`Error::ProbeChildLeft`] when
+/// it is still there after that.
 ///
 /// `child` runs in the forked process, which ends with `_exit` when it
 /// returns; it may allocate only when this process is single-threaded. It
@@ -802,20 +803,19 @@ fn supervise(
     });
     // Closed without a byte, the child stops instead of going on unmapped.
     drop(go);
-    if read.as_ref().map_or(true, |r| r.timed_out) {
+    let killed = read.as_ref().map_or(true, |r| r.timed_out);
+    if killed {
         // `ESRCH` when it already exited.
         let _ = rustix::process::kill_process(pid, Signal::KILL);
     }
-    let reaped = loop {
-        match rustix::process::waitpid(Some(pid), WaitOptions::empty()) {
-            Err(Errno::INTR) => {}
-            r => break r,
-        }
-    };
+    let reaped = reap(pid, killed, REAP_GRACE);
+    if let Ok(None) = reaped {
+        return Err(Error::ProbeChildLeft {
+            pid: pid.as_raw_nonzero().get(),
+        });
+    }
     let records = read?;
-    let status = reaped
-        .map_err(|e| sys_err("reap the probe's child", e))?
-        .map(|(_, st)| st);
+    let status = reaped.map_err(|e| sys_err("reap the probe's child", e))?;
     let cut_short = if records.timed_out {
         Some(format!(
             "the probe's child was killed after {} s",
@@ -831,6 +831,31 @@ fn supervise(
         parent_map,
         cut_short,
     })
+}
+
+/// Reaps `pid`, polling for `grace`: one not `killed` yet that is still
+/// there then is killed, and polled for as long again. `None` when it is
+/// still there after, in the kernel (`SIGKILL` cannot be caught), where it
+/// may still finish a call that writes.
+fn reap(pid: Pid, mut killed: bool, grace: Duration) -> rustix::io::Result<Option<WaitStatus>> {
+    let mut deadline = Instant::now() + grace;
+    loop {
+        match rustix::process::waitpid(Some(pid), WaitOptions::NOHANG) {
+            Ok(Some((_, st))) => return Ok(Some(st)),
+            Ok(None) | Err(Errno::INTR) => {}
+            Err(e) => return Err(e),
+        }
+        if Instant::now() >= deadline {
+            if killed {
+                return Ok(None);
+            }
+            // `ESRCH` when it exited meanwhile; the next poll reaps it.
+            let _ = rustix::process::kill_process(pid, Signal::KILL);
+            killed = true;
+            deadline = Instant::now() + grace;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Closes, right after the fork, every descriptor the child copied from
@@ -918,13 +943,13 @@ fn run_tool(
             Ok(Some(st)) => break st,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             Ok(None) => {
-                // A tool that exited meanwhile makes these fail; the
-                // attempt fails either way.
-                let _ = child.kill();
-                let _ = child.wait();
+                end_tool(&mut child);
                 return Err(StepFailure::other(op, "did not finish"));
             }
-            Err(e) => return Err(StepFailure::other(op, format!("cannot be waited for: {e}"))),
+            Err(e) => {
+                end_tool(&mut child);
+                return Err(StepFailure::other(op, format!("cannot be waited for: {e}")));
+            }
         }
     };
     if status.success() {
@@ -945,6 +970,18 @@ fn run_tool(
         .take(200)
         .collect();
     Err(StepFailure::other(op, format!("{status}: {line}")))
+}
+
+/// Kills a tool that did not end, and reaps it within [`REAP_GRACE`]; one
+/// still there after is left, as it holds nothing of the probe's.
+fn end_tool(child: &mut std::process::Child) {
+    // A tool that exited meanwhile makes `kill` fail; the attempt fails
+    // either way.
+    let _ = child.kill();
+    let deadline = Instant::now() + REAP_GRACE;
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The records read, and whether the deadline came first.
@@ -1351,21 +1388,20 @@ fn last_errno() -> Errno {
 fn run_closure(
     plan: &Plan,
     f: impl FnOnce() -> std::result::Result<String, String>,
-) -> std::result::Result<std::result::Result<String, String>, String> {
+) -> Result<std::result::Result<String, String>> {
     let user = !rustix::process::geteuid().is_root();
     let run = supervise(plan, user, None, -1, CLOSURE_DEADLINE, |args| {
         // SAFETY: the child of the fork, right after it returned 0, of a
         // single-threaded process (the caller's contract): it may run `f`.
         unsafe { closure_child(args, f) }
-    })
-    .map_err(|e| e.to_string())?;
+    })?;
     if let Some((status, text)) = run.records.payload {
         return closure_outcome(status, String::from_utf8_lossy(&text).into_owned());
     }
     // No result: the child died, or a step before `f` was refused this
     // time.
     if let Some(c) = run.cut_short {
-        return Err(c);
+        return Err(Error::ProbeClosure(c));
     }
     let a = assemble(plan, &run.records.list, run.parent_map, None);
     let slave = run
@@ -1381,10 +1417,10 @@ fn run_closure(
             StepResult::Ok | StepResult::NotRun(_) => None,
         })
         .or(slave);
-    Err(refused.map_or_else(
+    Err(Error::ProbeClosure(refused.map_or_else(
         || "the probe's child stopped before it ran".to_owned(),
         |f| f.to_string(),
-    ))
+    )))
 }
 
 /// The closure's child: the user namespace and the map, the mount
@@ -1437,16 +1473,15 @@ const CLOSURE_PANICKED: u8 = 2;
 
 /// What [`UsernsReport::in_namespace`] returns for the closure's status and
 /// text.
-fn closure_outcome(
-    status: u8,
-    text: String,
-) -> std::result::Result<std::result::Result<String, String>, String> {
+fn closure_outcome(status: u8, text: String) -> Result<std::result::Result<String, String>> {
     match status {
         CLOSURE_OK => Ok(Ok(text)),
         CLOSURE_REFUSED => Ok(Err(text)),
         // A panic did not finish `f`, as under `panic = "abort"`.
-        CLOSURE_PANICKED => Err(text),
-        other => Err(format!("unknown closure status {other}: {text}")),
+        CLOSURE_PANICKED => Err(Error::ProbeClosure(text)),
+        other => Err(Error::ProbeClosure(format!(
+            "unknown closure status {other}: {text}"
+        ))),
     }
 }
 

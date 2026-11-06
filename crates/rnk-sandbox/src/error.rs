@@ -379,6 +379,23 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    /// A child of the user-namespace probe was still there after
+    /// `SIGKILL` and a grace period, blocked in the kernel, where it may
+    /// still finish a call that writes: its directory is left in place,
+    /// and the caller leaves what the child may work on in place too.
+    #[error(
+        "the user namespace probe's child {pid} did not end after SIGKILL; what it \
+         works on is left in place"
+    )]
+    ProbeChildLeft {
+        /// Its process ID.
+        pid: i32,
+    },
+    /// Why [`crate::UsernsReport::in_namespace`]'s closure did not run or
+    /// finish: a step refused this time, the deadline, the child's death,
+    /// a panic.
+    #[error("{0}")]
+    ProbeClosure(String),
     /// A system call of the parent failed.
     #[error("{op}: {source}")]
     Sys {

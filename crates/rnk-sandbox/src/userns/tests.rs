@@ -396,20 +396,27 @@ fn a_result_is_cut_at_its_limit_on_a_character_boundary() {
     assert_eq!(frame.len(), 5 + RESULT_LIMIT - 1);
 }
 
-/// A closure that panicked did not finish: not its own refusal.
+/// A closure that panicked did not finish: not its own refusal; nor did
+/// one whose status is unknown.
 #[test]
 fn a_closure_that_panicked_did_not_finish() {
+    let outcome = |status, text: &str| match closure_outcome(status, text.to_owned()) {
+        Ok(r) => Ok(r),
+        Err(Error::ProbeClosure(t)) => Err(t),
+        Err(e) => panic!("{e:?}"),
+    };
+    assert_eq!(outcome(CLOSURE_OK, "api"), Ok(Ok("api".to_owned())));
     assert_eq!(
-        closure_outcome(CLOSURE_OK, "api".into()),
-        Ok(Ok("api".to_owned()))
-    );
-    assert_eq!(
-        closure_outcome(CLOSURE_REFUSED, "EINVAL".into()),
+        outcome(CLOSURE_REFUSED, "EINVAL"),
         Ok(Err("EINVAL".to_owned()))
     );
     assert_eq!(
-        closure_outcome(CLOSURE_PANICKED, "panicked".into()),
+        outcome(CLOSURE_PANICKED, "panicked"),
         Err("panicked".to_owned())
+    );
+    assert_eq!(
+        outcome(9, "api"),
+        Err("unknown closure status 9: api".to_owned())
     );
 }
 
@@ -432,9 +439,44 @@ fn a_closure_is_not_run_beside_other_threads() {
     drop(done);
     spare.join().unwrap();
     match ran {
-        Some(Err(e)) => assert!(e.contains("must be single-threaded"), "{e}"),
+        Some(Err(Error::NotSingleThreaded { threads })) => assert!(threads > 1),
         other => panic!("{other:?}"),
     }
+}
+
+/// A child that ends is reaped; one still there after the grace is killed,
+/// then reaped; one still there after the kill's grace is reported, and
+/// left (here never sent the kill, as one blocked in the kernel would be
+/// untouched by it).
+#[test]
+fn a_child_is_reaped_within_its_grace_else_reported_left() {
+    let fork = |ends: bool| {
+        // SAFETY: the child makes system calls only, and ends with `_exit`
+        // or `SIGKILL`.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            if !ends {
+                loop {
+                    // SAFETY: a plain system call.
+                    unsafe { libc::pause() };
+                }
+            }
+            // SAFETY: `_exit` ends this process at once.
+            unsafe { libc::_exit(3) }
+        }
+        Pid::from_raw(pid).unwrap()
+    };
+    let grace = Duration::from_millis(100);
+    let ended = reap(fork(true), false, grace).unwrap().unwrap();
+    assert_eq!(ended.exit_status(), Some(3));
+    let killed = reap(fork(false), false, grace).unwrap().unwrap();
+    assert_eq!(killed.terminating_signal(), Some(libc::SIGKILL));
+    let pid = fork(false);
+    let left = reap(pid, true, grace);
+    let _ = rustix::process::kill_process(pid, Signal::KILL);
+    let after = reap(pid, true, grace);
+    assert!(left.unwrap().is_none());
+    assert!(after.unwrap().is_some());
 }
 
 /// The records the witnesses in a closure's child send: the panic hook's,

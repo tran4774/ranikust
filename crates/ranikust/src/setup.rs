@@ -513,7 +513,8 @@ fn report_user_namespace(store: &Store) {
 }
 
 /// [`report_user_namespace`]'s probes in a directory made for them and
-/// removed after: whether the path passes, and the line to log.
+/// removed after, unless a child of the probe was left there: whether the
+/// path passes, and the line to log.
 fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
     // An anonymous store has no build directory: a name its next start
     // removes if this build leaves it, made while no `RUN` runs.
@@ -528,7 +529,11 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
     let scratch = root
         .create_sub_root(&name, 0o700)
         .map_err(|e| e.to_string())?;
-    let r = probe_in_scratch(&scratch, &parent.join(&name));
+    let (r, left) = probe_in_scratch(&scratch, &parent.join(&name));
+    if left {
+        // The child may still write there; the error in the line says so.
+        return r;
+    }
     let removed = rnk_rootfs::delete_contents(&scratch, &rnk_rootfs::IgnoreList::new())
         .and_then(|()| root.remove_dir(&name));
     if let Err(e) = removed {
@@ -540,13 +545,19 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
     r
 }
 
-fn probe_in_scratch(scratch: &RootPath, path: &Path) -> Result<(bool, String), String> {
-    let report = rnk_sandbox::probe_user_namespace(path, None).map_err(|e| e.to_string())?;
+/// The probes in `scratch`, at `path`; and whether a child of theirs was
+/// left there ([`rnk_sandbox::Error::ProbeChildLeft`]).
+fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), String>, bool) {
+    let left = |e: &rnk_sandbox::Error| matches!(e, rnk_sandbox::Error::ProbeChildLeft { .. });
+    let report = match rnk_sandbox::probe_user_namespace(path, None) {
+        Ok(report) => report,
+        Err(e) => return (Err(e.to_string()), left(&e)),
+    };
     let overlay = match report.map() {
         Some(_) => {
-            scratch
-                .create_dir("overlay", 0o700)
-                .map_err(|e| e.to_string())?;
+            if let Err(e) = scratch.create_dir("overlay", 0o700) {
+                return (Err(e.to_string()), false);
+            }
             let dir = path.join("overlay");
             report.in_namespace(|| {
                 rnk_snapshot::probe(&dir)
@@ -556,17 +567,15 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> Result<(bool, String), S
         }
         None => None,
     };
+    let overlay_left = matches!(&overlay, Some(Err(e)) if left(e));
+    let overlay = overlay.map(|r| r.map_err(|e| e.to_string()));
     let apparmor = match std::fs::read_to_string(APPARMOR_USERNS) {
         Ok(v) => v.trim().to_owned(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
         Err(e) => format!("unreadable: {e}"),
     };
-    Ok(userns_summary(
-        report.stop(),
-        &report.to_string(),
-        overlay,
-        &apparmor,
-    ))
+    let line = userns_summary(report.stop(), &report.to_string(), overlay, &apparmor);
+    (Ok(line), overlay_left)
 }
 
 /// Ubuntu's switch that gives an unprivileged user namespace no
