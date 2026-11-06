@@ -312,6 +312,10 @@ test-vm *suites:
 test-container *suites:
     bash tests/container/remote.sh "$@"
 
+# Tier T1: the `#[ignore = "T1: <profile>: ..."]` tests as root of rootless Podman containers (default; --privileged), on this machine as a regular user: static test binaries mounted read-only, the tests writing only in the container's tmpfs, no network. Requires zig, cargo-zigbuild, jq, rootless podman and subordinate ids for the user.
+test-rootless:
+    bash tests/rootless/lane.sh
+
 # Start the test registries (tests/registry/compose.yaml): plain HTTP on 127.0.0.1:5000 and HTTPS with a self-signed CA and basic auth on 127.0.0.1:5443, data in tests/registry/_data; then push and read back an image in each. Requires podman (compose), openssl, python3-bcrypt, skopeo.
 registry-up:
     tests/registry/setup.sh

@@ -14,7 +14,7 @@ the rules that hold across all of them.
 | Tier | Where | Use for |
 |---|---|---|
 | T0 | `cargo test`, `just check` | everything that needs no privilege: parsers, encoders, path handling on temp dirs, the CLI as a black box |
-| T1 | `just smoke-case [name]`, `just smoke` (rootless podman) | the binary in a container without root |
+| T1 | `just test-rootless` (the `T1: <profile>:` tests), `just smoke-case [name]`, `just smoke` (rootless podman) | a library test as root of a rootless container (user namespaces, its id ranges, mounts with `--privileged`); the binary in a container without root |
 | T2 | `just test-vm [unit\|smoke\|quick\|secrets\|push\|e2e]` | real root, mounts, `pivot_root`, rootful Docker; never on the host |
 | T2c | `just test-container unit-c` (ADR-0063) | root tests that mean the same in a throwaway rootful Docker container, on the test machine only |
 

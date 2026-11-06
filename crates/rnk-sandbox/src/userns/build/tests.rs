@@ -387,7 +387,7 @@ fn red_team_the_build_user_namespace_is_whole_or_not_entered() {
 /// several ranges, written by the helper from outside the namespace; and
 /// `setgroups` is allowed.
 #[test]
-#[ignore = "T1: root writing its own multi-range map in a rootless Podman container"]
+#[ignore = "T1: default: root writing its own multi-range map in a rootless Podman container"]
 fn the_build_user_namespace_of_root_maps_every_id_it_has() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let mirrored = |name: &str| {

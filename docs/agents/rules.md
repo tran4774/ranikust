@@ -98,7 +98,7 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
 - A bug fix comes with a test that fails without it.
 - T0 tests need no privileges or network and write only below a fresh temp
   dir, cleaned up on failure too. Tests needing user namespaces or root are
-  `#[ignore = "T1: ..."]`, `"T2c: <profile>: ..."` or `"T2: ..."`; never
+  `#[ignore = "T1: <profile>: ..."]`, `"T2c: <profile>: ..."` or `"T2: ..."`; never
   un-ignore them or run T2 or T2c on the host. See
   [`docs/testing.md`](../testing.md#rules).
 

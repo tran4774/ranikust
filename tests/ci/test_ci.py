@@ -100,7 +100,8 @@ class Classify(unittest.TestCase):
                     "scripts/review-pack.py", "tests/ci/test_ci.py",
                     "scripts/prune-worktrees.sh", "tests/agents/prune-worktrees-test.sh",
                     "tests/bench/walk-hash/Cargo.toml", "tests/e2e/run.sh",
-                    "tests/registry/compose.yaml", ".github/release.yml", ".gitignore",
+                    "tests/registry/compose.yaml", "tests/rootless/lane.sh",
+                    ".github/release.yml", ".gitignore",
                     ".github/ISSUE_TEMPLATE/task.yml", ".github/dependabot.yml"], set())
 
     def test_an_unknown_path_runs_everything(self):
