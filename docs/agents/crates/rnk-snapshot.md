@@ -256,8 +256,8 @@ that found a bug stay as its regression test.
   (`mknod`): a device node swapped in during the walk is never opened
   (`src/kaniko/walk/tests.rs`), a child never gets the device nodes a
   parent made nor a hand-over gives them (`src/kaniko/stages/tests.rs`), and
-  a cached layer with foreign owners and device nodes gives the root the same
-  layer gives as a base layer (`tests/apply.rs`).
+  a cached layer with foreign owners and device nodes gives the root what the
+  same layer gives as a base layer (`tests/apply.rs`).
 - **T2** (VM; `just test-vm unit`): the reference before a merge touching
   overlay mounts or deletion; kaniko mode on `/`, flattened content against
   kaniko, BuildKit and the other mode; a hostile cached layer on the `/` of a

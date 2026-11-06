@@ -522,10 +522,15 @@ fn the_next_diff_holds_only_the_next_steps_changes<S>(
 
     root.begin_layer().unwrap();
     fs::write(h.join("step"), b"x").unwrap();
+    // What a cached layer brought is in the new baseline: its deletion shows.
+    fs::remove_file(h.join("app/a")).unwrap();
     let d = root.end_layer().unwrap();
     assert_eq!(
         changes(S::Root::walked(&d)),
-        (vec!["step".to_owned()], vec![])
+        (
+            vec!["app".to_owned(), "step".to_owned()],
+            vec!["app/a".to_owned()]
+        )
     );
     drop(d);
     root.release().unwrap();
@@ -716,7 +721,7 @@ fn step_two(h: &Path) {
     fs::write(h.join("srv/new"), b"two").unwrap();
     fs::write(h.join("opt/app/bin/run"), b"run v2").unwrap();
     fs::remove_file(h.join("link")).unwrap();
-    // What the cached layer brought, deleted: the new baseline holds it.
+    // What the cached layer brought, deleted.
     fs::remove_file(h.join("opt/app/current")).unwrap();
 }
 
@@ -1276,9 +1281,8 @@ fn hostile_on_slash() -> Vec<u8> {
 /// `mounts`): a hostile cached layer, streamed as from a registry cache,
 /// writes nothing into the state directory, `/proc`, an ignored path, a
 /// volume or the marker of `/`, links nothing of them into the root, and
-/// the walk after it reports
-/// nothing; a layer whose names climb out of the root is refused, breaks
-/// the root and reaches nothing.
+/// the walk after it reports nothing; a layer whose names climb out of the
+/// root is refused, breaks the root and reaches nothing.
 fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     fs::create_dir_all(host.join("ignored")).unwrap();
     fs::write(host.join("ignored/canary"), b"IGNORED").unwrap();
@@ -1303,7 +1307,10 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
         assert!(!host.join(p).exists(), "{p}");
     }
     assert!(
-        fs::symlink_metadata(host.join("hl-state")).is_err(),
+        matches!(
+            fs::symlink_metadata(host.join("hl-state")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        ),
         "a hardlink into the state directory"
     );
     root.begin_layer().unwrap();
@@ -1356,7 +1363,7 @@ fn red_team_a_hostile_cached_layer_on_slash_touches_no_ignored_path() {
 // Root: foreign owners and device nodes (T2c), a default container's `/` (T2).
 
 /// A cached layer as root, with foreign owners, a setuid file and device
-/// nodes, gives the root the same layer gives as a base layer, owners and
+/// nodes, gives the root what the same layer gives as a base layer, owners and
 /// modes kept and no device node made where root could make one, and the
 /// next diff is empty.
 fn owners_and_nodes_as_a_base_layer<S>(snap: &S, blobs: &Path, host: impl Fn(&S::Root) -> PathBuf)

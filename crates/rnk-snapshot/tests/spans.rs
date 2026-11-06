@@ -173,6 +173,65 @@ fn a_kaniko_stage_directory_records_prepare_and_release() {
     assert_eq!(phases["rnk_rootfs.delete"]["count"], 1);
 }
 
+/// A step walked, a cached layer whose blob is gone, then the step run in
+/// its place.
+fn step_after_a_layer_that_fails_to_open<R: StageRootfs>(
+    root: &mut R,
+    apply: impl FnOnce(&mut R) -> rnk_snapshot::Result<()>,
+) {
+    root.set_layers_needed(true);
+    root.begin_layer().unwrap();
+    drop(root.end_layer().unwrap());
+    assert!(apply(root).is_err());
+    root.begin_layer().unwrap();
+    drop(root.end_layer().unwrap());
+}
+
+/// A cached layer that fails to open changed nothing: the walk's record
+/// still holds, so the step run in its place takes no second baseline.
+#[test]
+fn a_cached_layer_that_fails_to_open_takes_no_new_baseline() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let top = fs::canonicalize(dir.path()).unwrap();
+    let store = Store::open(&BuildPaths::new(&top, top.join("state"))).unwrap();
+    let (_, id) = empty_layer();
+    let missing = top.join("missing.tar");
+    let root = top.join("root");
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(top.join("kept")).unwrap();
+    capture.run(|| {
+        let stages = rnk_snapshot::KanikoStages::new(
+            &store,
+            rnk_rootfs::IgnoreList::new(),
+            rnk_snapshot::WalkOptions::default(),
+        )
+        .unwrap();
+        let gone = stages.base_layer(&id, &missing, &[]).unwrap();
+        let mut stage = stages.prepare(Base::Scratch).unwrap();
+        step_after_a_layer_that_fails_to_open(&mut stage, |s| s.apply_layer(&gone));
+        stage.release().unwrap();
+
+        let shared = rnk_snapshot::Kaniko::new(
+            rnk_rootfs::RootPath::open(&root).unwrap(),
+            root.clone(),
+            rnk_rootfs::IgnoreList::new(),
+            rnk_snapshot::WalkOptions::default(),
+            rnk_rootfs::RootPath::open(top.join("kept")).unwrap(),
+        );
+        let gone = shared.base_layer(&id, &missing, &[]).unwrap();
+        let mut held = shared.prepare(Base::Scratch).unwrap();
+        step_after_a_layer_that_fails_to_open(&mut held, |r| r.apply_layer(&gone));
+        held.release().unwrap();
+    });
+    let report = capture.report();
+    let phases = &report["phases"];
+    assert_eq!(phases["rnk_snapshot.apply"]["count"], 2);
+    assert_eq!(phases["rnk_snapshot.baseline"]["count"], 2, "one per root");
+}
+
 #[test]
 fn a_cached_layer_applied_to_a_kaniko_stage_is_recorded() {
     let capture = Capture::new();
