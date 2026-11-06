@@ -399,6 +399,55 @@ fn docker_default_allows_and_refuses_what_moby_says() {
     assert_eq!(verdict(&new, libc::SYS_ptrace, a0(0)), ALLOW);
 }
 
+/// Whether `json` restricts arguments as the threat model advises (section
+/// 6): its default action refuses, and each rule with conditions allows,
+/// with `EQ`, `LT`, `LE` or `MASKED_EQ` ones.
+fn restricts_arguments_by_allowing(json: &[u8]) -> bool {
+    let p: Json = serde_json::from_slice(json).unwrap();
+    let default = p.default_action.as_deref().unwrap();
+    let default = action(default, p.default_errno_ret, "", "", false).unwrap();
+    !default.runs()
+        && p.syscalls.iter().flatten().all(|r| {
+            let (r, _) = rule(r, "", false).unwrap();
+            r.conds.is_empty()
+                || (r.action == Action::Allow
+                    && r.conds
+                        .iter()
+                        .all(|c| matches!(c.op, Cmp::Eq | Cmp::Lt | Cmp::Le | Cmp::MaskedEq)))
+        })
+}
+
+/// Docker's default profile restricts arguments as the threat model advises,
+/// so that its residual on argument rules does not reach it; the controls
+/// show the check tells the profiles that do otherwise.
+#[test]
+fn docker_default_restricts_arguments_by_allowing_values() {
+    assert!(restricts_arguments_by_allowing(DOCKER_DEFAULT));
+    let with = |default: &str, act: &str, op: &str| {
+        format!(
+            r#"{{"defaultAction":"{default}","syscalls":[
+            {{"names":["getppid"],"action":"{act}","args":[{{"index":0,"value":1,"op":"{op}"}}]}},
+            {{"names":["getpid"],"action":"SCMP_ACT_ERRNO","errnoRet":38}}]}}"#
+        )
+    };
+    let (allow, errno) = ("SCMP_ACT_ALLOW", "SCMP_ACT_ERRNO");
+    for op in ["EQ", "LT", "LE", "MASKED_EQ"] {
+        let json = with(errno, allow, &format!("SCMP_CMP_{op}"));
+        assert!(restricts_arguments_by_allowing(json.as_bytes()), "{json}");
+    }
+    for json in [
+        with(allow, allow, "SCMP_CMP_EQ"),
+        with("SCMP_ACT_LOG", allow, "SCMP_CMP_EQ"),
+        with(errno, errno, "SCMP_CMP_EQ"),
+        with(errno, "SCMP_ACT_KILL_PROCESS", "SCMP_CMP_EQ"),
+        with(errno, allow, "SCMP_CMP_NE"),
+        with(errno, allow, "SCMP_CMP_GT"),
+        with(errno, allow, "SCMP_CMP_GE"),
+    ] {
+        assert!(!restricts_arguments_by_allowing(json.as_bytes()), "{json}");
+    }
+}
+
 #[test]
 fn includes_and_excludes_follow_moby() {
     let rule = |filter: &str| {
@@ -1552,6 +1601,16 @@ fn nesting_and_bytes_around_a_profile_are_refused() {
     ] {
         cases.push(extra.to_vec());
     }
+    // The control: the same profiles, without the nesting or odd bytes,
+    // are read.
+    for json in [
+        &br#"{"defaultAction":"SCMP_ACT_ERRNO"}"#[..],
+        br#"{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[{"names":["keyctl"],"action":"SCMP_ACT_ALLOW"}]}"#,
+        br#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["keyctl"],"action":"SCMP_ACT_ERRNO",
+            "comment":"x","includes":{"caps":["CAP_SYS_ADMIN"]}}]}"#,
+    ] {
+        SeccompProfile::from_json(json).unwrap();
+    }
     for json in cases {
         let shown = String::from_utf8_lossy(&json[..json.len().min(80)]).into_owned();
         let m = refused_live(&json);
@@ -1603,6 +1662,7 @@ fn numbers_in_other_forms_are_refused() {
     // The control: a plain number is read in each of those places.
     for json in [
         errno_rule("1"),
+        r#"{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":1}"#.to_owned(),
         arg("index", "1"),
         arg("value", "1"),
         arg("valueTwo", "1"),
@@ -1676,7 +1736,7 @@ fn profile_of_length(want: usize) -> Option<(String, Program)> {
             i
         )
     };
-    for m in 0..5 {
+    for m in 0..=5 {
         let mut lo = 0usize;
         let mut hi = 1000;
         while lo < hi {
@@ -1966,18 +2026,21 @@ mod kernel {
     /// A forked child under no filter of the test's: the control.
     #[cfg(target_arch = "x86_64")]
     fn unfiltered(check: impl Fn() -> i32) -> i32 {
-        // SAFETY: the child only makes syscalls and exits with `_exit`.
+        // SAFETY: the child only makes syscalls and exits with `_exit`, as
+        // in `under_filter`, whose note on a panicking `check` holds here.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
-            // SAFETY: as above.
+            // SAFETY: plain syscalls in the forked child.
             unsafe {
                 // A SIGSEGV of `int 0x80` without i386 emulation dumps no
                 // core.
                 if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
                     libc::_exit(200);
                 }
-                libc::_exit(check());
+                libc::_exit(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(&check)).unwrap_or(201),
+                );
             }
         }
         let mut status = 0;
@@ -2072,7 +2135,7 @@ mod kernel {
                     // SAFETY: in this forked child, each call of `I386`
                     // changes at most the child if it runs: a pid read,
                     // its own personality or user namespace, a keyring
-                    // lookup that creates nothing, a socket its exit closes.
+                    // lookup with create 0, a socket its exit closes.
                     if i386 && unsafe { int80(n, a, b, 0) } != -libc::EPERM {
                         return i;
                     }
