@@ -431,4 +431,6 @@ fn helper_main(plan: &Plan, parent: Pid, go: BorrowedFd<'_>, result: BorrowedFd<
 }
 
 #[cfg(test)]
+mod run_tests;
+#[cfg(test)]
 mod tests;

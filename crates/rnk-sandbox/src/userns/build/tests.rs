@@ -485,7 +485,7 @@ fn the_build_user_namespace_of_root_maps_every_id_it_has() {
 /// Moves this (forked, single-threaded) process into a user namespace of
 /// its own whose map is its own uid and gid as 0, `setgroups` denied, as
 /// `unshare -r` makes it.
-fn one_id_parent() -> std::result::Result<(), String> {
+pub(super) fn one_id_parent() -> std::result::Result<(), String> {
     let uid = rustix::process::geteuid().as_raw();
     let gid = rustix::process::getegid().as_raw();
     // SAFETY: `NEWUSER` does not unshare the descriptor table; this forked
