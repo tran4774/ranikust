@@ -91,9 +91,10 @@ just test-aarch64     # static-pie aarch64 binary, then the T0 tests under qemu-
 ## 3. Rootless containers (T1 smoke tests, test registries)
 
 ```sh
-sudo apt install podman podman-compose skopeo openssl python3-bcrypt
+sudo apt install podman podman-compose skopeo openssl python3-bcrypt jq
 just smoke            # smoke-build and the tests/smoke/e2e build, in rootless podman
 just smoke-case       # the quick smoke cases (tests/smoke/cases)
+just test-rootless    # the "T1: <profile>:" tests, as root of rootless podman containers
 just registry-up      # HTTP and self-signed HTTPS test registries (tests/registry)
 just registry-down
 ```
@@ -150,6 +151,7 @@ copied into the VM per ultra run.
 | `just build-static` | static-pie x86_64 binary |
 | `just test-aarch64` | static-pie aarch64 binary and its tests |
 | `just smoke` | rootless podman (T1) |
+| `just test-rootless` | rootless podman, `jq` and `cargo-zigbuild` for the T1 lane |
 | `just test-vm unit` | KVM access and the VM harness (T2) |
 | `just ci` | everything CI's full run does (`.github/workflows/ci.yml`) |
 

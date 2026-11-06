@@ -123,9 +123,13 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 `CLONE_NEWIPC`, plus `CLONE_NEWNET` for `--network=none` (`clone_flags` in
 `spawner.rs`; a `Direct` `RUN` is cloned with no namespace flag). It is never
 cloned with `CLONE_NEWUSER`: a `RUN` stays in the user namespace ranikust runs
-in, with the uid and gid of its `USER` as the image gives them. The only user
-namespace ranikust creates is the helper's for `--allow network.none-userns`
-(below). User namespaces for rootless mode and `--userns` are planned for Phase 3
+in, with the uid and gid of its `USER` as the image gives them. The user
+namespaces ranikust creates are the helper's for `--allow network.none-userns`
+(below), the probe's children (`--mode=auto`, reported only), and the build's
+own, which `rnk_sandbox::enter_build_user_namespace` makes for the whole
+process but no build calls yet
+([#75](https://github.com/tran4774/ranikust/issues/75)). Rootless builds
+and `--userns` are planned for Phase 3
 ([#41](https://github.com/tran4774/ranikust/issues/41)), see
 [Hardening planned for Phase 3](#hardening-planned-for-phase-3); the parts that
 belong to them are marked *planned*.
@@ -659,7 +663,7 @@ ranikust never removes them, and they go with the unit or container
 |---|---|
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root, keeping Docker's 14 capabilities: the old root stays mounted underneath, and `..` stops at the moved root only then [measured] (the `sysadmin` variant of `tests/vm/guest/smoke.sh`, kernels 5.15 and 6.8). Inside a plain `chroot` ranikust refuses before changing anything ([modes-and-detection](modes-and-detection.md#refusal-and-guidance)) |
-| Rootless (user namespace) | Planned, Phase 3: multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail. Today ranikust creates no user namespace; started inside one that something else made (rootless `podman run --privileged`), it runs the sequence above as written (T1, `just smoke`) |
+| Rootless (user namespace) | Planned, Phase 3: multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail. Today no build enters a user namespace ranikust makes (`enter_build_user_namespace`, #75, is called by no build yet); started inside one that something else made (rootless `podman run --privileged`), it runs the sequence above as written (T1, `just smoke`) |
 | kaniko mode, cannot mount | `Isolation::Direct`: no sandbox, `RUN` runs on `/` like kaniko (below) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 

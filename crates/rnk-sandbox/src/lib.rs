@@ -15,7 +15,9 @@
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
 //! user namespace would need, and only reports them: nothing routes on it
-//! yet.
+//! yet. [`enter_build_user_namespace`] moves the process into the build's
+//! user namespace, each id map tried in a forked child first; no build of
+//! the binary calls it yet.
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused
@@ -39,7 +41,9 @@
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
 //! says root may not mount), then [`trim_to_run_capabilities`], still
 //! single-threaded; in `--mode=auto` then [`probe_user_namespace`]; then
-//! [`Sandbox::start_direct`] (ADR-0078).
+//! [`Sandbox::start_direct`] (ADR-0078). A build in its own user namespace
+//! calls [`enter_build_user_namespace`] in place of
+//! [`enter_build_namespace`], before any thread.
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
 //! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. A `RUN` in a
@@ -81,7 +85,7 @@ pub use error::{Error, Result, Step};
 pub use probe::{Caps, probe};
 pub use seal::{BinaryMount, SealedCopy, Sealing, run_from_sealed_copy};
 pub use seccomp::SeccompProfile;
-pub use setup::{enter_build_namespace, trim_to_run_capabilities};
+pub use setup::{enter_build_namespace, enter_build_user_namespace, trim_to_run_capabilities};
 pub use spawner::Sandbox;
 pub use spec::{
     BindMount, Isolation, MountKind, Network, NofileLimit, RunSpec, SecretFile, Stdio,
@@ -89,6 +93,6 @@ pub use spec::{
 };
 pub use stop::{StopSignal, StopSignals, block_stop_signals};
 pub use userns::{
-    IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds, UsernsReport,
-    probe_user_namespace,
+    BuildUserNamespace, IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds,
+    UsernsReport, probe_user_namespace,
 };

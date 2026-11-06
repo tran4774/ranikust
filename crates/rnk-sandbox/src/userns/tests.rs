@@ -686,7 +686,7 @@ fn a_map_the_parent_cannot_write_ends_the_waiting_child() {
 
 /// Writes `measured: <line>` to stderr past libtest's capture, for the T2
 /// suite's log.
-fn measured(line: &str) {
+pub(super) fn measured(line: &str) {
     use std::io::Write as _;
     // A lost line loses only what the assertions already checked.
     let _ = writeln!(std::io::stderr().lock(), "measured: {line}");
@@ -757,7 +757,7 @@ fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker
 
 /// The first range of `file` (`/etc/subuid` or `/etc/subgid`) for `name`
 /// or `id`.
-fn subordinate_range(file: &str, name: &str, id: u32) -> Option<IdRange> {
+pub(super) fn subordinate_range(file: &str, name: &str, id: u32) -> Option<IdRange> {
     let text = fs::read_to_string(file).ok()?;
     text.lines().find_map(|l| {
         let mut f = l.split(':');
@@ -772,7 +772,7 @@ fn subordinate_range(file: &str, name: &str, id: u32) -> Option<IdRange> {
 
 /// Runs `f` in a child that dropped root for `uid` and `gid`, and returns
 /// what it printed.
-fn as_user(uid: u32, gid: u32, f: impl FnOnce() -> String) -> String {
+pub(super) fn as_user(uid: u32, gid: u32, f: impl FnOnce() -> String) -> String {
     let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
     // SAFETY: the child makes system calls, then runs `f`, which allocates:
     // the C library's allocator is safe after a fork. It ends with `_exit`.
@@ -892,7 +892,7 @@ fn the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts() {
 /// orphans becomes its child, and returns what `f` printed. The child
 /// closes every descriptor but stdio and its pipe first: a copy of another
 /// test's pipe end would keep that test from seeing its end.
-fn in_subreaper(f: impl FnOnce() -> String) -> String {
+pub(super) fn in_subreaper(f: impl FnOnce() -> String) -> String {
     let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
     let keep = w.as_raw_fd();
     // SAFETY: the child closes what it does not own, runs `f`, which

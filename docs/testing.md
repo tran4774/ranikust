@@ -16,7 +16,7 @@ from that.
 | Tier | Contents | Privileges | Runs on | Command | Status |
 |---|---|---|---|---|---|
 | T0 | Unit and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
-| T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, rootless Podman | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine; on Ubuntu 24.04 an AppArmor restriction leaves an unconfined binary's user namespace without capabilities **[measured]** ([ADR-0099](adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)), and later releases probably the same **[inferred]**; which legs run in which tier is in [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned) | `just smoke`, `just smoke-case` ([below](#smoke-tests-tier-t1)); `just test-rootless` is a TODO | Smoke tests only |
+| T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, rootless Podman | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine; on Ubuntu 24.04 an AppArmor restriction leaves an unconfined binary's user namespace without capabilities **[measured]** ([ADR-0099](adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)), and later releases probably the same **[inferred]**; which legs run in which tier is in [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned) | `just test-rootless` ([below](#the-rootless-lane-tier-t1)); `just smoke`, `just smoke-case` ([below](#smoke-tests-tier-t1)) | The rootless lane (profiles `default`, `privileged`); smoke tests |
 | T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, rootful Docker, kaniko mode on `/`, host-safety attacks | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | Suites `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push`, `ultra` |
 | T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), and in CI a GitHub-hosted runner; never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)); CI's `t2.yml` | Suite `unit-c` |
 | T3 | CI, in lanes chosen by what a pull request changes ([below](#ci-lanes)): rustfmt, clippy, T0 on x86_64, cargo-deny, rustdoc, mdBook and docs-lint; a full run adds the static musl build and the native aarch64 T0 (the T2 and T2c jobs are in their rows). The `Release` workflow dry-runs on a pull request that changes how a release is made ([CONTRIBUTING](../CONTRIBUTING.md#releasing)) | None | GitHub Actions (`.github/workflows/ci.yml`, `t2.yml`, `release.yml`) | `just ci` (everything `ci.yml` runs on a full run); `just test-release` (the release scripts) | In use |
@@ -25,7 +25,7 @@ from that.
 
 - T0 tests need no privileges and no network, and write only below a fresh
   temporary directory, which they remove on failure too.
-- A test that needs more is marked `#[ignore = "T1: <reason>"]`,
+- A test that needs more is marked `#[ignore = "T1: <profile>: <reason>"]`,
   `#[ignore = "T2c: <profile>: <reason>"]` or `#[ignore = "T2: <reason>"]`.
   Its harness runs it with `cargo test -- --ignored` in the right
   environment. A test marked `#[ignore = "inner: ..."]` is a step a T2 test
@@ -99,8 +99,6 @@ The plan comes from the verification plan of
   decides which of these Phase 3 covers (planned) and which wait for Phase 6.
 - Kernels before 5.11 (an older `..` walk; Debian 11 has 5.10) and an aarch64
   guest.
-- Tier T1 beyond the smoke tests: `just test-rootless`, with the same rule
-  that tests write only below a temporary directory.
 
 ## The VM harness (tier T2)
 
@@ -697,9 +695,13 @@ Exceptions, all from emulation (the native CI job runs them all):
   that guard deletion (T4 of the threat model) are therefore not exercised
   under emulation; the native CI job covers them.
 - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
-  `kaniko_variables_are_not_read` and `logging_flags_change_what_is_written`
-  are skipped: qemu-user runs a thread of its own, so the set-up stops at its
-  single-thread check before the privilege refusal the tests expect.
+  `without_root_the_set_up_never_makes_the_default_state_dir`,
+  `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
+  `the_store_opens_inside_the_user_namespace_or_not_at_all` and
+  `red_team_the_build_user_namespace_is_whole_or_not_entered` are skipped:
+  qemu-user runs a thread of its own, so the set-up, or
+  `enter_build_user_namespace`, stops at its single-thread check before the
+  privilege refusal or the user namespace the tests expect.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` and
   the tests of every `tests::kernel` module (rnk-sandbox's seccomp profiles,
   capability drops and keyring join under a filter) are skipped: their
@@ -718,6 +720,41 @@ Exceptions, all from emulation (the native CI job runs them all):
 Real aarch64 hardware is Phase 6.
 
 <a name="smoke-test-until-the-builder-exists-tier-t1"></a>
+
+## The rootless lane (tier T1)
+
+`just test-rootless` (`tests/rootless/lane.sh`) runs the `#[ignore = "T1:
+<profile>: ..."]` tests as root of rootless Podman containers on the
+developer's machine: root there is the user's own uid, with the user's
+subordinate ids, so nothing runs as real root. It refuses to run as root,
+with Podman that is not rootless, or on a machine other than x86_64 (the
+binaries it builds), then:
+
+1. lists the tests of each profile from the markers (every T1 test must name
+   one, and no name may be in both lists: tests are selected by name) and
+   builds the test binaries of their crates as static musl binaries
+   (`cargo-zigbuild test --no-run`) into `stage/` of a directory the run
+   makes for itself, `target/rootless.XXXXXX/`; the stage is removed when
+   the lane ends;
+2. runs one container per profile from Ubuntu 24.04 by digest, `--rm
+   --network none`, the stage mounted read-only at `/t1` and a tmpfs at
+   `/work` (`TMPDIR`), the only place the tests write:
+   - `default`: as Podman starts a container; the control checks require no
+     `CAP_SYS_ADMIN`, a seccomp filter, and no mount namespace without a user
+     namespace;
+   - `privileged`: `--privileged`, as `just smoke`; `tests/rootless/run-profile.sh`
+     prepares `RNK_T1_ROOT` (a bind mount and a tmpfs inside it, and the
+     `.rnk-t1-root` marker) for the mount tests of `rnk-rootfs`;
+3. checks in each container, before the tests, that root there is another
+   uid outside, that a range of ids is mapped (the user needs entries in
+   `/etc/subuid` and `/etc/subgid`) and that `chown` to another id works;
+   then runs each listed test once and fails unless every one ran and
+   passed. Logs go to `<profile>.log` in the run's directory, which is
+   removed when every profile passed or the lane stopped before any log,
+   and kept, its path printed, when a profile failed.
+
+CI does not run this lane, and the VM's `unit` suite runs only T2 and T2c
+tests: T1 tests run only here.
 
 ## Smoke tests (tier T1)
 

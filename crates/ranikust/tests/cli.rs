@@ -242,6 +242,34 @@ fn without_root_the_set_up_refuses_before_touching_the_state_dir() {
     assert!(report["phases"]["ranikust.probe"].is_null(), "{report}");
 }
 
+/// The same with the default state directory, `~/.local/share/ranikust`.
+#[test]
+fn without_root_the_set_up_never_makes_the_default_state_dir() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).expect("home");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    for (mode, says) in [
+        ("--mode=auto", STOPS_AS_A_USER),
+        ("--mode=overlay", STOPS_AS_A_USER),
+        ("--mode=kaniko", "needs root"),
+    ] {
+        let out = ranikust(
+            tmp.path(),
+            &["--no-push", "--context", "ctx", mode],
+            &[("HOME", home.to_str().expect("utf-8 temp dir"))],
+        );
+        assert_eq!(out.status.code(), Some(1), "{mode}: {}", stderr(&out));
+        let err = stderr(&out);
+        assert!(err.contains(says), "{mode}: {err}");
+        let made: Vec<_> = fs::read_dir(&home).expect("home").collect();
+        assert!(made.is_empty(), "{mode}: {made:?}");
+    }
+}
+
 #[test]
 fn kaniko_validation_is_a_usage_error() {
     let tmp = tempfile::tempdir().expect("tempdir");

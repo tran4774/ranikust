@@ -363,7 +363,7 @@ pub(crate) struct BuildArgs {
 
     /// State directory holding the store and every build root ranikust
     /// makes; kaniko's `--kaniko-dir` (ADR-0050) [default:
-    /// /var/lib/ranikust].
+    /// /var/lib/ranikust as root, else ~/.local/share/ranikust].
     #[arg(long, value_name = "DIR", help_heading = "ranikust")]
     pub(crate) state_dir: Option<PathBuf>,
 
