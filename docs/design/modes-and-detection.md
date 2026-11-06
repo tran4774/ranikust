@@ -105,13 +105,17 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    as root probes it during the set-up, before the spawner starts, and
    logs one line (whether the path passes or where it stops, each step with
    its errno, the map, the overlay, the AppArmor switch below); nothing
-   routes on it until rootless overlay mode (Phase 3). A process that is not
+   routes on it until rootless overlay mode (Phase 3). Root's map gives each
+   of its ids to itself, so uid 0 in that namespace is host uid 0: a line
+   that passes says these steps work here, not that a `RUN` may get this
+   map. A process that is not
    root is not probed (`report_user_namespace` checks the effective uid);
    task 8 ([#79](https://github.com/tran4774/ranikust/issues/79)) routes
    there.
    `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
    a directory of the build under the state directory (`userns-probe`, or a
-   name the next start removes when the store is anonymous), removed after.
+   name the next start removes when the store is anonymous), removed after
+   unless a child could not be reaped, which may still work in it.
    - `unshare(CLONE_NEWUSER)`, then write `uid_map` and `gid_map`. Root
      writes a map of every id it has, each to itself; inside a container
      that is several ranges (each must fit inside one range of the parent

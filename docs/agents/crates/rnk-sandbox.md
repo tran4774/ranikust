@@ -92,7 +92,7 @@ pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
 pub fn probe_user_namespace(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, left empty
-pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f) -> Option<Result<Result<String, String>, String>>: f as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish; else what f returned); Display: the log line
+pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f) -> Option<Result<Result<String, String>>>: f as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
 pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
 pub struct IdRange { pub start: u32, pub count: u32 }
@@ -364,11 +364,19 @@ What a change here must keep, with where it lives:
   used, never by kernel version; a command that does not exist fails at
   `execve` with `ENOENT`, which proves every step before it.
 - **The user-namespace probe** forks one child per map from a
-  single-threaded caller; the child makes system calls only, then `_exit`
-  (`in_namespace`'s closure, which may allocate, checks for one thread
-  first). Each child is killed at its deadline (10 s, the closure 60 s) and
-  reaped; its namespaces and mounts go with it. Its mount namespace makes
-  `/` a recursive slave before any mount. The files the steps need are made
+  single-threaded caller, before any credential is read; right after the
+  fork the child closes every descriptor but stdio and those it uses (the
+  pipes, the probe's directory, the `chown` target), then makes system
+  calls only, then `_exit`. `in_namespace`'s closure may allocate (it
+  checks for one thread first) and runs with an empty panic hook and no
+  `tracing` subscriber: the inherited ones write ranikust's metrics report
+  and log. Each child is killed at its deadline (10 s, the closure 60 s)
+  and reaped within 2 s (one that ended without the kill is killed then,
+  and given 2 s more); its namespaces and mounts go with it. One still
+  there after is `Error::ProbeChildLeft`: the probe's directory stays, and
+  `ranikust` leaves its own too. `newuidmap` is killed and reaped on every
+  failure. Its mount namespace makes `/` a recursive slave before any
+  mount. The files the steps need are made
   by the caller in the probe's directory through `RootPath` and removed
   before it returns. `newuidmap` is looked for in `/usr/bin` and `/bin`
   only, run with an empty environment. A child of a user other than root
@@ -478,8 +486,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `chown`), records across split reads and the deadline, the report's line
   and stop, a map this process fails to write ending the waiting child at
   once, a failure part-way through making the probe's files removing what
-  it made, `in_namespace` not running its closure beside other threads, and
-  a panic in the closure reported as not finishing, never as its refusal.
+  it made, `in_namespace` not running its closure beside other threads, a
+  panic in the closure reported as not finishing, never as its refusal, nor
+  through the parent's panic hook, and a log line of the closure not
+  through its subscriber; a child holding only stdio and its own
+  descriptors; a child reaped within its grace, else killed, else reported
+  left.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host

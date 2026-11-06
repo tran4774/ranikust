@@ -21,7 +21,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
   of `rnk-sandbox` and `rnk-snapshot` in order, the outcome; with
   `--mode=auto` as root, the user-namespace probe, logged and reported only
-  (`report_user_namespace`); in kaniko mode
+  (`report_user_namespace`; its directory left in place when a child of the
+  probe was not reaped); in kaniko mode
   the root (`/` in a container, `flock`ed; else a directory per stage,
   `KanikoStages`, ADR-0059). Then the hand-off to the libraries. `prune`
   only calls `rnk-store`.
