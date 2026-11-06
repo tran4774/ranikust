@@ -127,6 +127,13 @@ The maintainer answered three times on 2026-11-06, in the working session:
   nhánh (khuyến nghị)" (add deny rules for branch-ref writes; the
   recommended option). The other option was "Không thêm, chỉ ghi vào ADR"
   (add none, only record it in the ADR).
+- (d) To a fourth question, whether to deny deleting a branch with `git
+  push` (`--delete`, `-d`, a `:<ref>` refspec), the maintainer answered:
+  "không review + hỏi nữa, làm theo những gì tôi muốn đi. Tạm thời repo này
+  chỉ có mỗi mình tôi nên cứ auto càng nhiều càng tốt" (no more reviews or
+  questions, do what I want; for now I am the only one on this repository,
+  so automate as much as possible). No deny rule is added for it, and the
+  review stopped after round 3, which found no blocker.
 
 What this sets:
 
@@ -174,7 +181,9 @@ What this sets:
   `repos/<o>/<r>`) and of `gh repo deploy-key` (`POST …/keys`), merges (`PUT
   …/merge`), writes to rulesets and environments, among them the approval of
   the `release` environment (`POST …/actions/runs/<id>/pending_deployments`),
-  and the misses above.
+  deleting a branch, `main` included, with `git push` (`--delete`, `-d`,
+  `:<ref>`), branch writes through the contents, merges and rename
+  endpoints or GraphQL `createCommitOnBranch`, and the misses above.
 - **Allow:** unchanged.
 - **Written rules:** unchanged. An agent still asks the maintainer, in the
   conversation, before it marks a pull request ready, merges, pushes
