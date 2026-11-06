@@ -2000,7 +2000,9 @@ fn send_ready(chan: RawFd, fd: Option<RawFd>) {
 
 /// Closes every descriptor except `keep`, from 0, as [`close_all_except`].
 fn close_all_but(keep: RawFd) {
-    close_all_except(&[keep]);
+    // SAFETY: called only in a forked child that ends with `_exit` or
+    // `execve`, which drops no owner of a descriptor this closes.
+    unsafe { close_all_except(&[keep]) };
 }
 
 /// Closes, right after the clone, every descriptor the child copied from
@@ -2039,7 +2041,9 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
             j -= 1;
         }
     }
-    close_all_except(&keep);
+    // SAFETY: right after the clone, in the child, which ends with `_exit`
+    // or `execve` and drops no owner of a descriptor this closes.
+    unsafe { close_all_except(&keep) };
 }
 
 /// Closes every descriptor not in `keep`, which is sorted ascending and may
@@ -2057,7 +2061,12 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// leaves descriptors open, as nothing here checks that they are gone (a
 /// `RUN`'s profile cannot answer with success, ADR-0109, and the init
 /// checks every refusal).
-pub(crate) fn close_all_except(keep: &[RawFd]) {
+///
+/// # Safety
+///
+/// Only in a forked child that ends with `_exit` or `execve` and drops no
+/// owner (`OwnedFd`, `File`) of a descriptor this closes.
+pub(crate) unsafe fn close_all_except(keep: &[RawFd]) {
     if close_gaps(keep).is_ok() {
         return;
     }

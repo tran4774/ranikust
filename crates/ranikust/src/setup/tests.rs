@@ -63,6 +63,22 @@ fn a_refused_overlay_mount_routes_root_to_kaniko_stages_but_a_host_error_does_no
     assert_eq!(route(&r, false), Route::KanikoStages);
 }
 
+/// Only a child of the user-namespace probe left behind keeps the probe's
+/// directory; any other failure of the probe or of its closure removes it.
+#[test]
+fn only_a_probe_child_left_behind_keeps_the_probes_directory() {
+    assert!(left_a_child(&rnk_sandbox::Error::ProbeChildLeft {
+        pid: 42
+    }));
+    let others = [
+        rnk_sandbox::Error::ProbeClosure("the probe's child was killed after 60 s".to_owned()),
+        rnk_sandbox::Error::NotSingleThreaded { threads: 2 },
+    ];
+    for e in &others {
+        assert!(!left_a_child(e), "{e}");
+    }
+}
+
 /// A probe mount that never reached the kernel (its thread could not start,
 /// `EAGAIN`) or ran out of memory or descriptors says nothing about
 /// overlayfs: no routing to kaniko mode (host-safety round 1, item 5).

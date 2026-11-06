@@ -298,7 +298,7 @@ impl UsernsReport {
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate; and before any credential is
     /// read, as for [`probe_user_namespace`]. `f` gets no descriptor of this
-    /// process but stdio: it opens what it uses.
+    /// process but stdio and the probe's pipes: it opens what it uses.
     pub fn in_namespace(
         &self,
         f: impl FnOnce() -> std::result::Result<String, String>,
@@ -768,13 +768,14 @@ fn supervise(
     // is the caller's contract above.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
-        // Closed below with every other descriptor the child does not use,
-        // not dropped: their numbers may be reused. With its own copy of the
-        // go pipe's write end, a child would never read the end of a map
-        // this process failed to write.
-        std::mem::forget(go_w);
-        std::mem::forget(report_r);
-        close_unused(&args);
+        // This process's ends first, whatever `close_unused` manages: with
+        // its own copy of the go pipe's write end, a child would never read
+        // the end of a map this process failed to write.
+        drop(go_w);
+        drop(report_r);
+        // SAFETY: the child of the fork, which ends with `_exit` and drops
+        // no owner of a descriptor this closes.
+        unsafe { close_unused(&args) };
         child(&args);
         // SAFETY: `_exit` ends this process at once, after `child` if it
         // returns.
@@ -862,10 +863,16 @@ fn reap(pid: Pid, mut killed: bool, grace: Duration) -> rustix::io::Result<Optio
 /// this process but those `a` names and stdio, which a later `open` must
 /// not take: ranikust's others (the state directory, the build context, a
 /// registry connection) are not the child's to use.
-fn close_unused(a: &ChildArgs<'_>) {
+///
+/// # Safety
+///
+/// As [`child::close_all_except`]: only in a forked child that ends with
+/// `_exit` and drops no owner of a descriptor this closes.
+unsafe fn close_unused(a: &ChildArgs<'_>) {
     let mut keep = [0, 1, 2, a.report, a.go, a.dir, a.chown.map_or(-1, |c| c.0)];
     keep.sort_unstable();
-    child::close_all_except(&keep);
+    // SAFETY: the caller's contract.
+    unsafe { child::close_all_except(&keep) };
 }
 
 /// Writes the child's map from here: [`Plan::Ranges`] directly, as root
@@ -947,7 +954,11 @@ fn run_tool(
                 return Err(StepFailure::other(op, "did not finish"));
             }
             Err(e) => {
-                end_tool(&mut child);
+                // `ECHILD`: already reaped elsewhere, so its number may be
+                // another process's by now.
+                if e.raw_os_error() != Some(libc::ECHILD) {
+                    end_tool(&mut child);
+                }
                 return Err(StepFailure::other(op, format!("cannot be waited for: {e}")));
             }
         }
@@ -1437,18 +1448,25 @@ unsafe fn closure_child(
     // SAFETY: the report pipe's write end, open in this process.
     let report = unsafe { BorrowedFd::borrow_raw(a.report) };
     if enter(a, report) && enter_mount_namespace(report) {
-        let (status, text) = run_silenced(f);
-        // A parent gone reads nothing; one still here sees no result.
-        let _ = write_all(report, &result_frame(status, &text));
+        finish_closure(report, f);
     }
     // SAFETY: `_exit` ends this process at once, running no destructor.
     unsafe { libc::_exit(0) }
 }
 
-/// Runs `f` in a probe's child without the panic hook and the `tracing`
-/// subscriber it inherited: they write ranikust's metrics report and the
-/// build's log, which are the parent's to write. Its [`RESULT`] status and
-/// text; a panic is reported there only.
+/// Runs `f` silenced ([`run_silenced`]) and sends its [`RESULT`] record.
+fn finish_closure(report: BorrowedFd<'_>, f: impl FnOnce() -> std::result::Result<String, String>) {
+    let (status, text) = run_silenced(f);
+    // A parent gone reads nothing; one still here sees no result.
+    let _ = write_all(report, &result_frame(status, &text));
+}
+
+/// Runs `f` in a probe's child without the panic hook it inherited, and,
+/// on this thread, without the `tracing` subscriber: they write ranikust's
+/// metrics report and the build's log, which are the parent's to write (a
+/// thread `f` starts still has the global subscriber: such a thread must
+/// not log). Its [`RESULT`] status and text; a panic is reported there
+/// only.
 fn run_silenced(f: impl FnOnce() -> std::result::Result<String, String>) -> (u8, String) {
     // Leaked, not dropped: dropping the parent's hook would run its
     // destructors in this copy of the parent.

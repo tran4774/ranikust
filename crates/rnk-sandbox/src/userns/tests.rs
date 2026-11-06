@@ -466,15 +466,17 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
         }
         Pid::from_raw(pid).unwrap()
     };
-    let grace = Duration::from_millis(100);
-    let ended = reap(fork(true), false, grace).unwrap().unwrap();
-    assert_eq!(ended.exit_status(), Some(3));
-    let killed = reap(fork(false), false, grace).unwrap().unwrap();
-    assert_eq!(killed.terminating_signal(), Some(libc::SIGKILL));
+    // Graces long enough on a loaded machine where the child is to be
+    // reaped (`reap` returns once it is); short where it is not.
+    let ended = reap(fork(true), false, Duration::from_secs(10)).unwrap();
+    assert_eq!(ended.unwrap().exit_status(), Some(3));
+    let killed = reap(fork(false), false, Duration::from_secs(1)).unwrap();
+    assert_eq!(killed.unwrap().terminating_signal(), Some(libc::SIGKILL));
     let pid = fork(false);
-    let left = reap(pid, true, grace);
+    let left = reap(pid, true, Duration::from_millis(100));
+    // An error is the next `reap`'s to show.
     let _ = rustix::process::kill_process(pid, Signal::KILL);
-    let after = reap(pid, true, grace);
+    let after = reap(pid, true, Duration::from_secs(10));
     assert!(left.unwrap().is_none());
     assert!(after.unwrap().is_some());
 }
@@ -524,15 +526,14 @@ fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
                 // SAFETY: the report pipe's write end, open in the child.
                 send(unsafe { BorrowedFd::borrow_raw(report) }, HOOK_RAN, Ok(()));
             }));
-            let (status, text) = tracing::subscriber::with_default(Witness(report), || {
-                run_silenced(|| {
+            tracing::subscriber::with_default(Witness(report), || {
+                // SAFETY: as above.
+                let fd = unsafe { BorrowedFd::borrow_raw(report) };
+                finish_closure(fd, || {
                     tracing::info!("from the closure");
                     panic!("in the closure")
-                })
+                });
             });
-            // SAFETY: as above.
-            let report = unsafe { BorrowedFd::borrow_raw(report) };
-            let _ = write_all(report, &result_frame(status, &text));
         },
     )
     .unwrap();
