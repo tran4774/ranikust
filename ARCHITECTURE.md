@@ -349,8 +349,8 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 - ranikust never fills or empties a directory the operator names: the root is
   `/` in a container (kaniko mode) or a directory it makes in its state
   directory. The state directory is owned by the user running ranikust, not
-  writable by others, made `0700`, below directories only root may write,
-  checked by descriptor before anything is created (ADR-0050).
+  writable by others, made `0700`, below directories only root or that user
+  may write, checked by descriptor before anything is created (ADR-0050).
 - In kaniko mode on `/` the state directory is on the ignore list: never
   walked, snapshotted or deleted.
 - `RUN` enters its root with `pivot_root` (or `MS_MOVE`), never a bare `chroot`

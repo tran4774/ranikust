@@ -13,12 +13,13 @@ choice; ranikust still checks that the mode works and stops with the reason if
 it does not ([ADR-0023]).
 
 ranikust keeps downloaded and unpacked layers between builds in a **state
-directory**: `/var/lib/ranikust` unless `--state-dir` names another. Builds
+directory**: `/var/lib/ranikust` for root, `~/.local/share/ranikust` for
+another user, unless `--state-dir` names another. Builds
 running at the same time share it. Every root a build fills lies in it, except
 the container's own `/` in kaniko mode: you never point ranikust at a
 directory to fill and empty ([ADR-0050]). The directory is private: owned by
-the user running ranikust, mode `0700`, below directories only root may write,
-because the image's setuid programs land there.
+the user running ranikust, mode `0700`, below directories only root or that
+user may write, because the image's setuid programs land there.
 
 ## Overlay mode
 

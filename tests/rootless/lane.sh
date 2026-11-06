@@ -24,8 +24,12 @@ export SUPPRESS_BOLTDB_WARNING=1
 [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = true ] ||
   die "podman here is not rootless; T1 needs rootless Podman"
 
+[ "$(uname -m)" = x86_64 ] || die "the T1 lane builds for x86_64 only; this machine is $(uname -m)"
+
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-TARGET="${CARGO_TARGET_DIR:-$REPO/target}"
+# Absolute, as podman's -v needs; cargo, run from $REPO, gets the same.
+TARGET="$(realpath -m "${CARGO_TARGET_DIR:-$REPO/target}")"
+export CARGO_TARGET_DIR="$TARGET"
 OUT="$TARGET/rootless"
 STAGE="$OUT/stage"
 MUSL=x86_64-unknown-linux-musl
