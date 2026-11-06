@@ -16,8 +16,10 @@ computes every key before any stage runs, when the stage's root, and so its
 in that root (`rnk_rootfs::lookup_owner`, which tries a name first, even for a
 numeric value), so the key plan
 ([#126](https://github.com/tran4774/ranikust/issues/126)) cannot hold the ids as
-ADR-0113 words it. The same lookup happens for the directories a `WORKDIR` makes
-for the active `USER`, which ADR-0113's list keys by the `USER` string.
+ADR-0113 words it. A like lookup happens for the directories a `WORKDIR` makes
+for the active `USER`: the same root, but `rnk_rootfs::lookup_user`
+(`crates/rnk-builder/src/stage.rs:1230-1235`), which ADR-0113's list keys by the
+`USER` string.
 [#168](https://github.com/tran4774/ranikust/issues/168) asks which owner the key
 holds.
 
@@ -39,17 +41,18 @@ The option letters are those of #168.
 ## Decision Outcome
 
 The key of a `COPY` or `ADD --chown=<user>[:<group>]` holds the owner string as
-written, not the ids it resolves to, and the previous key fixes the root the name
-resolves in.
+written, after expansion, not the ids it resolves to, and the previous key fixes
+the root the name resolves in.
 
 The maintainer's answer (2026-11-07: "Owner như viết, dựa vào chuỗi key (khuyến
 nghị)", "The owner as written, relying on the chain of keys (recommended)") stood
 for option (a) of #168. His comment on #168 adds that the answer also covers the
 directories a `WORKDIR` creates for a named `USER`.
 
-- **As written.** A numeric owner is keyed as written too, since the lookup tries
-  a name first. `app` and `1000` are two keys even if they resolve to one id:
-  only a miss.
+- **As written, after expansion.** The owner is part of the instruction, which
+  ADR-0113 keys after variable expansion. A numeric owner is keyed as written too,
+  since the lookup tries a name first. `app` and `1000` are two keys even if they
+  resolve to one id: only a miss.
 - **Across `FROM <stage>`.** ADR-0114's stop rule (a stage uses its hits up to its
   first miss) applies across stages: a miss in the base stage is a miss for every
   step of a stage built on it. The key plan tells which stage a stage is built on.
@@ -57,7 +60,10 @@ directories a `WORKDIR` creates for a named `USER`.
   by the `USER` string, as ADR-0113 lists, and the chain fixes the root it
   resolves in.
 - **Replaces** ADR-0113's wording "uid and gid after `--chown`" for a `COPY` or an
-  `ADD`; the rest of its field list stands.
+  `ADD`; the rest of its field list stands. Whether each file's key still holds a
+  uid and a gid is #126's choice, safe either way, since the instruction carries
+  the owner. `rnk_cache::File` (`uid`, `gid`) and its byte form change with that
+  choice, in #126.
 - **Security.** A hit carries ids from another `/etc/passwd` only if one key names
   two different lowers, the assumption every `RUN`'s key already makes.
 

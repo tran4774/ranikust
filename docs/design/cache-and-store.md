@@ -190,7 +190,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     drops it;
   - for `COPY` and `ADD` from the build context, each file read (after
     `.dockerignore`): its path relative to the context, content, mode, owner
-    after `--chown`, type, link target, `security.capability` and, under
+    after `--chown` (planned: the owner as written, in the instruction,
+    [ADR-0124](../adr/0124-a-chown-owner-is-keyed-as-written-and-the-chain-fixes-the-root-it-resolves-in.md),
+    [#126](https://github.com/tran4774/ranikust/issues/126)), type, link target, `security.capability` and, under
     `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
     file older than the epoch counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
@@ -230,25 +232,34 @@ layout. A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
 
-A hit that fails never fails the build
+A bad cache entry costs a miss and a restart, not a failed build
 ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
 decided and planned in [#130](https://github.com/tran4774/ranikust/issues/130)
-and [#132](https://github.com/tran4774/ranikust/issues/132), not built yet). In
-kaniko mode with a directory per stage a hit streams into the stage root; on `/`
-it is verified before extraction. A blob found bad at any point, on `/` even
-after its first entry reached `/`, makes the stage start again from its base
-([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
-at most once and with no cache at all: every step runs, and its layers are pushed
-under their keys, replacing the bad entries.
+and [#132](https://github.com/tran4774/ranikust/issues/132), not built yet).
+What a restart does when a layer of its chain is held by neither the store nor a
+registry is not decided [open: #171], nor are four more cases of the restart
+[open: #172].
 
-- With the parent's directory handed over or released early, the restart rebuilds
-  its base by extracting the layers of its chain by digest, from the store, else
-  from the registry that holds them.
-- A connection dropped in the middle of a hit is retried within the registry
-  client's retry rules, then the entry is a miss.
+- In kaniko mode with a directory per stage a hit streams into the stage root; on
+  `/` it is spooled and verified before extraction. A hit found bad before its
+  first entry reached the root is a plain miss. One found bad after extraction
+  began (on `/`, only a failure while writing: the spool pass also checks the tar
+  headers and `--limit`) makes the stage start again from its base
+  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
+  at most once and with no cache at all: every step runs, and its layers are
+  pushed under their keys.
+- A restart always rebuilds its base by extracting the layers of its chain by
+  digest, from the store, else from the registry that holds them, whether or not
+  the parent's directory is still there.
+- A connection dropped after the first byte of a hit is re-requested from the
+  offset with a Range request, about 3 attempts without progress; then the entry
+  is a miss and the stage starts again. On `/`, a drop during the spool is a
+  plain miss.
 - A bad blob found while pushing the layers of a skipped, fully cached stage
-  makes it stop being skipped: it is built with no cache, and its manifest is
-  pushed last. A blob mounted across repositories is not read.
+  makes it stop being skipped: it is built with no cache. A blob mounted across
+  repositories
+  ([ADR-0055](../adr/0055-stream-layers-keep-nothing-proportional-to-the-image.md))
+  is not read.
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
