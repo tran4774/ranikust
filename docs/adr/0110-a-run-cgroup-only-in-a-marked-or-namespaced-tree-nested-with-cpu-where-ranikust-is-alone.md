@@ -322,7 +322,8 @@ After red-team's tests of these cgroups, the maintainer answered one more on
   22.04, kernel 5.15), 2026-11-06, `cgroup_tests.rs`, after the same
   change: in a delegated scope and in a `--privileged` container, nested
   and single, a `RUN` under the default profile read `0::/` and its init's
-  cgroup as before and was refused a user namespace. Under 22.04 unconfined
+  cgroup as before and was refused a user namespace, which a later
+  unconfined `RUN` of the same test made. Under 22.04 unconfined
   `RUN`s met the limits as above (31 levels, 4062 more nested and 4063
   single, `EAGAIN` past them), `nsdelegate` or not.
 
