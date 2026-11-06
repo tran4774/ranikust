@@ -361,10 +361,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   included (`RANIKUST_DEBUG_FAULT=panic|error`); a refused flag exits 2 before
   any work (no state directory, the value never echoed, no `RANIKUST_*`
   variable read); a `--seccomp` file that cannot be read or compiled, or an
-  empty value, exits 2 in every mode before any work. `kaniko_mode_needs_root` and
-  `without_root_the_set_up_refuses_before_touching_the_state_dir` run only
-  as a normal user (skipped as root): nothing is created, the state
-  directory is left empty and `ranikust.setup` is in the report.
+  empty value, exits 2 in every mode before any work. `kaniko_mode_needs_root`,
+  `without_root_the_set_up_refuses_before_touching_the_state_dir` and
+  `without_root_the_set_up_never_makes_the_default_state_dir` run only
+  as a normal user (skipped as root): nothing is created, a `--state-dir`
+  is left empty with `ranikust.setup` in the report, and without one no
+  `~/.local` is made.
 - **T1** (`just smoke`, `RANIKUST_CASE_MODE=kaniko just smoke-case`): the
   release binary's set-up and builds in rootless podman (overlay as root in
   a user namespace; kaniko mode on the container's `/`, `RUN` `Direct`);

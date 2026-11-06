@@ -64,6 +64,7 @@ check-aarch64:
 #   statx leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id
 #   they assert is not seen (a fallback through /proc/self/fdinfo is #95);
 # - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
+#   `without_root_the_set_up_never_makes_the_default_state_dir`,
 #   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
 #   `the_store_opens_inside_the_user_namespace_or_not_at_all`,
 #   `red_team_the_build_user_namespace_is_whole_or_not_entered`:
@@ -160,6 +161,7 @@ test-aarch64 *args:
       --skip seal::tests::a_file_in_the_root_is_weighed_by_the_roots_file_system
       --skip seal::tests::a_mount_root_is_reached_at_its_mount_point
       --skip without_root_the_set_up_refuses_before_touching_the_state_dir
+      --skip without_root_the_set_up_never_makes_the_default_state_dir
       --skip kaniko_variables_are_not_read
       --skip logging_flags_change_what_is_written
       --skip setup::tests::userns::the_store_opens_inside_the_user_namespace_or_not_at_all

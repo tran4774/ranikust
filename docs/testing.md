@@ -695,6 +695,7 @@ Exceptions, all from emulation (the native CI job runs them all):
   that guard deletion (T4 of the threat model) are therefore not exercised
   under emulation; the native CI job covers them.
 - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
+  `without_root_the_set_up_never_makes_the_default_state_dir`,
   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
   `the_store_opens_inside_the_user_namespace_or_not_at_all` and
   `red_team_the_build_user_namespace_is_whole_or_not_entered` are skipped:
