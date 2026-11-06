@@ -297,8 +297,10 @@ impl UsernsReport {
     ///
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate; and before any credential is
-    /// read, as for [`probe_user_namespace`]. `f` gets no descriptor of this
-    /// process but stdio and the probe's pipes: it opens what it uses.
+    /// read, as for [`probe_user_namespace`]. `f` must capture and reach no
+    /// owner of a descriptor of this process (`OwnedFd`, `File`): every one
+    /// but stdio and the probe's pipes is closed in the child before `f`
+    /// runs, so `f` opens what it uses.
     pub fn in_namespace(
         &self,
         f: impl FnOnce() -> std::result::Result<String, String>,
@@ -742,7 +744,8 @@ struct Supervised {
 ///
 /// `child` runs in the forked process, which ends with `_exit` when it
 /// returns; it may allocate only when this process is single-threaded. It
-/// holds only stdio and the descriptors in [`ChildArgs`].
+/// must use and drop no owner of a descriptor of this process: every one
+/// but stdio and those in [`ChildArgs`] is closed before it runs.
 fn supervise(
     plan: &Plan,
     user: bool,
@@ -773,8 +776,9 @@ fn supervise(
         // the end of a map this process failed to write.
         drop(go_w);
         drop(report_r);
-        // SAFETY: the child of the fork, which ends with `_exit` and drops
-        // no owner of a descriptor this closes.
+        // SAFETY: the child of the fork, which ends with `_exit`; `child`
+        // uses and drops no owner of a descriptor this closes (the contract
+        // above).
         unsafe { close_unused(&args) };
         child(&args);
         // SAFETY: `_exit` ends this process at once, after `child` if it
@@ -954,9 +958,7 @@ fn run_tool(
                 return Err(StepFailure::other(op, "did not finish"));
             }
             Err(e) => {
-                // `ECHILD`: already reaped elsewhere, so its number may be
-                // another process's by now.
-                if e.raw_os_error() != Some(libc::ECHILD) {
+                if kill_after_wait_error(&e) {
                     end_tool(&mut child);
                 }
                 return Err(StepFailure::other(op, format!("cannot be waited for: {e}")));
@@ -981,6 +983,13 @@ fn run_tool(
         .take(200)
         .collect();
     Err(StepFailure::other(op, format!("{status}: {line}")))
+}
+
+/// Whether a tool whose wait failed with `e` is killed: not after `ECHILD`,
+/// as it was reaped elsewhere and its number may be another process's by
+/// now.
+fn kill_after_wait_error(e: &io::Error) -> bool {
+    e.raw_os_error() != Some(Errno::CHILD.raw_os_error())
 }
 
 /// Kills a tool that did not end, and reaps it within [`REAP_GRACE`]; one

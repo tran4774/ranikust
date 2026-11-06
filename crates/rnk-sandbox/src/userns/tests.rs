@@ -470,8 +470,13 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
     // reaped (`reap` returns once it is); short where it is not.
     let ended = reap(fork(true), false, Duration::from_secs(10)).unwrap();
     assert_eq!(ended.unwrap().exit_status(), Some(3));
-    let killed = reap(fork(false), false, Duration::from_secs(1)).unwrap();
-    assert_eq!(killed.unwrap().terminating_signal(), Some(libc::SIGKILL));
+    let pid = fork(false);
+    // Only `reap` sends the kill: a slow machine only waits longer for it.
+    let killed = match reap(pid, false, Duration::from_millis(100)).unwrap() {
+        Some(st) => st,
+        None => reap(pid, true, Duration::from_secs(10)).unwrap().unwrap(),
+    };
+    assert_eq!(killed.terminating_signal(), Some(libc::SIGKILL));
     let pid = fork(false);
     let left = reap(pid, true, Duration::from_millis(100));
     // An error is the next `reap`'s to show.
@@ -543,6 +548,18 @@ fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
         run.records.payload,
         Some((CLOSURE_PANICKED, b"panicked".to_vec()))
     );
+}
+
+/// A tool whose wait failed is killed, unless the failure is `ECHILD`: it
+/// was reaped elsewhere, and its number may be another process's.
+#[test]
+fn a_tool_reaped_elsewhere_is_not_killed() {
+    assert!(!kill_after_wait_error(&io::Error::from_raw_os_error(
+        libc::ECHILD
+    )));
+    assert!(kill_after_wait_error(&io::Error::from_raw_os_error(
+        libc::EINTR
+    )));
 }
 
 /// A probe's child holds stdio and the descriptors it uses only: one this

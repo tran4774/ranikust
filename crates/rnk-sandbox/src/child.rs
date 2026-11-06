@@ -2064,8 +2064,8 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 ///
 /// # Safety
 ///
-/// Only in a forked child that ends with `_exit` or `execve` and drops no
-/// owner (`OwnedFd`, `File`) of a descriptor this closes.
+/// Only in a forked child that ends with `_exit` or `execve` and uses or
+/// drops no owner (`OwnedFd`, `File`) of a descriptor this closes.
 pub(crate) unsafe fn close_all_except(keep: &[RawFd]) {
     if close_gaps(keep).is_ok() {
         return;

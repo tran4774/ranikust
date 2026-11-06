@@ -63,19 +63,21 @@ fn a_refused_overlay_mount_routes_root_to_kaniko_stages_but_a_host_error_does_no
     assert_eq!(route(&r, false), Route::KanikoStages);
 }
 
-/// Only a child of the user-namespace probe left behind keeps the probe's
-/// directory; any other failure of the probe or of its closure removes it.
+/// The user-namespace probe's directory stays when a child was left by
+/// the steps or by the overlay probe in the namespace, and only then.
 #[test]
 fn only_a_probe_child_left_behind_keeps_the_probes_directory() {
-    assert!(left_a_child(&rnk_sandbox::Error::ProbeChildLeft {
-        pid: 42
-    }));
+    let left = rnk_sandbox::Error::ProbeChildLeft { pid: 42 };
+    assert!(keeps_dir(Some(&left), None));
+    assert!(keeps_dir(None, Some(&left)));
+    assert!(!keeps_dir(None, None));
     let others = [
         rnk_sandbox::Error::ProbeClosure("the probe's child was killed after 60 s".to_owned()),
         rnk_sandbox::Error::NotSingleThreaded { threads: 2 },
     ];
     for e in &others {
-        assert!(!left_a_child(e), "{e}");
+        assert!(!keeps_dir(Some(e), None), "{e}");
+        assert!(!keeps_dir(None, Some(e)), "{e}");
     }
 }
 

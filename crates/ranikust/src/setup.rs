@@ -545,12 +545,12 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
     r
 }
 
-/// The probes in `scratch`, at `path`; and whether a child of theirs was
-/// left there ([`rnk_sandbox::Error::ProbeChildLeft`]).
+/// The probes in `scratch`, at `path`; and whether their directory stays
+/// ([`keeps_dir`]).
 fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), String>, bool) {
     let report = match rnk_sandbox::probe_user_namespace(path, None) {
         Ok(report) => report,
-        Err(e) => return (Err(e.to_string()), left_a_child(&e)),
+        Err(e) => return (Err(e.to_string()), keeps_dir(Some(&e), None)),
     };
     let overlay = match report.map() {
         Some(_) => {
@@ -566,7 +566,7 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), 
         }
         None => None,
     };
-    let overlay_left = matches!(&overlay, Some(Err(e)) if left_a_child(e));
+    let keep = keeps_dir(None, overlay.as_ref().and_then(|r| r.as_ref().err()));
     let overlay = overlay.map(|r| r.map_err(|e| e.to_string()));
     let apparmor = match std::fs::read_to_string(APPARMOR_USERNS) {
         Ok(v) => v.trim().to_owned(),
@@ -574,13 +574,17 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), 
         Err(e) => format!("unreadable: {e}"),
     };
     let line = userns_summary(report.stop(), &report.to_string(), overlay, &apparmor);
-    (Ok(line), overlay_left)
+    (Ok(line), keep)
 }
 
-/// Whether `e`, from the steps or the overlay probe in the namespace, says
-/// a child of the probe was left: its directory stays.
-fn left_a_child(e: &rnk_sandbox::Error) -> bool {
-    matches!(e, rnk_sandbox::Error::ProbeChildLeft { .. })
+/// Whether the probe's directory stays: the steps' error or the overlay
+/// probe's in the namespace says a child of the probe was left there,
+/// which may still work in it.
+fn keeps_dir(steps: Option<&rnk_sandbox::Error>, overlay: Option<&rnk_sandbox::Error>) -> bool {
+    let left = |e: Option<&rnk_sandbox::Error>| {
+        matches!(e, Some(rnk_sandbox::Error::ProbeChildLeft { .. }))
+    };
+    left(steps) || left(overlay)
 }
 
 /// Ubuntu's switch that gives an unprivileged user namespace no
