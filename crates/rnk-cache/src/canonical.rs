@@ -2,6 +2,9 @@
 
 use sha2::{Digest as _, Sha256};
 
+// A length is written as a u64: a wider usize would make two lengths alike.
+const _: () = assert!(usize::BITS <= u64::BITS);
+
 /// SHA-256 fed with self-delimiting fields: a variable-length field carries
 /// its length, a list its count and an optional field a presence byte, all
 /// big-endian, so two different field sequences never feed the same bytes.
@@ -44,7 +47,7 @@ impl Canonical {
 
     /// The count of a list, or the length of a field.
     pub(crate) fn len(&mut self, len: usize) {
-        // usize is at most 64 bits on every supported target.
+        // Cannot saturate, by the assertion above: two lengths never encode alike.
         self.u64(u64::try_from(len).unwrap_or(u64::MAX));
     }
 

@@ -2,7 +2,7 @@
 
 > **Status:** in progress · **Phase:** 4 ·
 > **Depends on:** `rnk-oci`; `rnk-registry`, `rnk-rootfs` (planned) ·
-> **Used by:** `rnk-builder`, `rnk-sched` (up-front lookups) (planned) ·
+> **Used by:** `rnk-builder` (planned, ADR-0115) ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per step and the tag its
@@ -27,7 +27,9 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 - Read or write kaniko's cache or mimic its keys (ADR-0005).
 - Let a key depend on the snapshot mode, host, users, timestamps, thread
   count or the order of an unordered collection, or hold a secret's value.
-- Open files: content arrives as bytes the caller read through `rnk-rootfs`.
+- Open files to compute a key: content arrives as bytes the caller read
+  through `rnk-rootfs`. The layout cache reaches its directory only through
+  `rnk-rootfs`, the registry only through `rnk-registry` (ADR-0115).
 - Depend on `rnk-dockerfile`, `rnk-ignore` or `rnk-layer`: `rnk-builder`
   builds `KeyInputs` (ADR-0115).
 - Transfer blobs (`rnk-registry`), encode layers (`rnk-layer`), own the local
@@ -62,7 +64,7 @@ Planned (task 4 and task 11 of #123):
 
 ```rust
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
-    async fn lookup(&self, key: &CacheKey) -> Result<Option<CachedLayer>>;
+    async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>; // by tag, ADR-0113
     async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
 }
 ```
@@ -86,7 +88,7 @@ different inputs never feed the same bytes:
 |---|---|
 | root | `"rnk-cache root"`; `KEY_VERSION` (`u32`); the base digest string (optional); the platform's architecture, os, `os.version` (optional), `os.features` (optional list), variant (optional), features (optional list) |
 | step | `"rnk-cache step"`; `KEY_VERSION`; the previous key's version and hash; the instruction; the build arguments (name, optional value); the environment (name, value); `USER`; `WORKDIR`; `SHELL` (list); the network (optional name); the mounts (`secret`: id, target, mode, uid, gid; `cache`: id, sharing, a dropped byte); the copy source (optional: `image` and the digest string, or `stage` and the key's version and hash); the files (path; the type name, then the content's SHA-256 and size (`u64`), the link target, or the device's major and minor; mode, uid, gid; `security.capability` (optional)) |
-| tag | `"rnk-cache tag"`; the key's version and hash; the compression name; the level (`i32`); `kept`, or `clamped` and the epoch (`i64`) |
+| tag | `"rnk-cache tag"`; the key's version and hash; the compression name, then for `gzip` and `zstd` the level (`i32`); `kept`, or `clamped` and the epoch (`i64`) |
 
 The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 
@@ -100,9 +102,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   (ADR-0005, ADR-0012).
 - A `type=secret` mount adds its id, target, mode and owner, never its
   content (T11); cached layers are digest-checked when read (T13).
-- A tag carries the encoding, so a hit has the bytes this build would write
-  (ADR-0113). One compressed blob serves both the image and the cache;
-  pushes run asynchronously. Waiting for them before exit, as kaniko does,
+- A tag carries the encoding, so a hit was encoded with this build's
+  settings (ADR-0113). One compressed blob serves both the image and the
+  cache; pushes run asynchronously. Waiting for them before exit, as kaniko does,
   is [inferred].
 
 ## Refs
@@ -153,5 +155,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   the other mode's hardlink and copy-up differences (ADR-0012).
 - Users moving from kaniko start with a cold cache: decided, not a bug
   (ADR-0005).
-- A secret in a key or a cache tag leaks through the registry (T11).
+- A secret in a key or a cache tag leaks through the registry (T11): give
+  `KeyInputs::env` the stage's environment, never the variables a secret
+  mount's `env=` adds to a `RUN`.
+- A `File` path with a host or mode-specific prefix ties the key to the
+  host or the mode: paths are relative to the copy's source.
 - No cache measurement exists: claim no speed-up before W2 runs.

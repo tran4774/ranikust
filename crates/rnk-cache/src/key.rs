@@ -27,21 +27,30 @@ impl CacheKey {
     /// for `FROM scratch`) and the platform the stage is built for.
     #[must_use]
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self {
+        // Destructured so that a field added to `Platform` cannot be left out.
+        let Platform {
+            architecture,
+            os,
+            os_version,
+            os_features,
+            variant,
+            features,
+        } = platform;
         let mut c = Canonical::new("rnk-cache root");
         c.u32(KEY_VERSION);
         c.opt_str(base.map(Digest::as_str));
-        c.str(&platform.architecture);
-        c.str(&platform.os);
-        c.opt_str(platform.os_version.as_deref());
-        match &platform.os_features {
+        c.str(architecture);
+        c.str(os);
+        c.opt_str(os_version.as_deref());
+        match os_features {
             None => c.u8(0),
             Some(features) => {
                 c.u8(1);
                 c.strs(features);
             }
         }
-        c.opt_str(platform.variant.as_deref());
-        match &platform.features {
+        c.opt_str(variant.as_deref());
+        match features {
             None => c.u8(0),
             Some(features) => {
                 c.u8(1);
@@ -84,20 +93,31 @@ impl CacheKey {
 
     /// The tag this step's layer is looked up and pushed under when encoded
     /// as `encoding`: `rnk-v<version>-<hex>`, where `<hex>` is the SHA-256
-    /// of the key and the encoding, so a hit has the bytes this build would
-    /// write (ADR-0113).
+    /// of the key and the encoding, so a hit was encoded with this build's
+    /// settings (ADR-0113).
     #[must_use]
     pub fn tag(&self, encoding: &Encoding) -> String {
+        let Encoding {
+            compression,
+            level,
+            times,
+        } = *encoding;
         let mut c = Canonical::new("rnk-cache tag");
         c.u32(self.version);
         c.hash(&self.hash);
-        c.str(match encoding.compression {
-            Compression::Uncompressed => "uncompressed",
-            Compression::Gzip => "gzip",
-            Compression::Zstd => "zstd",
-        });
-        c.i32(encoding.level);
-        match encoding.times {
+        match compression {
+            // The encoder ignores the level of a plain tar.
+            Compression::Uncompressed => c.str("uncompressed"),
+            Compression::Gzip => {
+                c.str("gzip");
+                c.i32(level);
+            }
+            Compression::Zstd => {
+                c.str("zstd");
+                c.i32(level);
+            }
+        }
+        match times {
             TimePolicy::Kept => c.str("kept"),
             TimePolicy::Clamped { epoch } => {
                 c.str("clamped");
@@ -122,7 +142,8 @@ impl fmt::Debug for CacheKey {
 pub struct Encoding {
     /// The blob's compression.
     pub compression: Compression,
-    /// The compression level, as the encoder takes it.
+    /// The compression level, as the encoder takes it; ignored when
+    /// uncompressed.
     pub level: i32,
     /// The mtimes in the layer's headers.
     pub times: TimePolicy,

@@ -295,7 +295,12 @@ fn mutations() -> Vec<Change<Spec>> {
             if let Some(f) = s.files.first_mut() {
                 f.kind = match f.kind {
                     FileKind::Directory => FileKind::Fifo,
-                    _ => FileKind::Directory,
+                    FileKind::Regular(_)
+                    | FileKind::Symlink(_)
+                    | FileKind::Hardlink(_)
+                    | FileKind::Fifo
+                    | FileKind::CharDevice { .. }
+                    | FileKind::BlockDevice { .. } => FileKind::Directory,
                 };
             }
         }),
@@ -444,12 +449,13 @@ fn every_field_of_an_encoding_changes_the_tag() {
     let other = root().next("", KeyInputs::new());
     let mut seen = HashMap::new();
     for k in [key, other] {
-        for compression in [
-            Compression::Uncompressed,
-            Compression::Gzip,
-            Compression::Zstd,
+        for (compression, levels) in [
+            // The encoder ignores the level of a plain tar.
+            (Compression::Uncompressed, &[0][..]),
+            (Compression::Gzip, &[-1, 0, 1, 6, 9]),
+            (Compression::Zstd, &[-1, 0, 1, 3, 19]),
         ] {
-            for level in [-1, 0, 1, 3, 6, 9] {
+            for &level in levels {
                 for times in [
                     TimePolicy::Kept,
                     TimePolicy::Clamped { epoch: 0 },
@@ -468,6 +474,32 @@ fn every_field_of_an_encoding_changes_the_tag() {
             }
         }
     }
+}
+
+#[test]
+fn debug_names_arguments_and_variables_without_their_values() {
+    let mut inputs = KeyInputs::new();
+    inputs
+        .arg("ARG_NAME", Some("arg-value"))
+        .env("ENV_NAME", "env-value");
+    let shown = format!("{inputs:?}");
+    assert!(
+        shown.contains("ARG_NAME") && shown.contains("ENV_NAME"),
+        "{shown}"
+    );
+    assert!(!shown.contains("value"), "{shown}");
+}
+
+#[test]
+fn an_uncompressed_tag_ignores_the_level() {
+    let tag = |level| {
+        root().tag(&Encoding {
+            compression: Compression::Uncompressed,
+            level,
+            times: TimePolicy::Kept,
+        })
+    };
+    assert_eq!(tag(0), tag(6));
 }
 
 #[test]

@@ -172,10 +172,10 @@ features. How the fields are written into the hash:
 
 A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
 whose `<hex>` hashes the key with the layer's encoding: the compression, its
-level, and whether file times are kept or clamped to an epoch, with the
-epoch. A hit then has the bytes this build would write, so a warm build gives
-a cold build's digests; builds with another encoding share no entries
-(ADR-0113).
+level (none for a plain tar), and whether file times are kept or clamped to
+an epoch, with the epoch. A hit was then encoded with this build's settings,
+so under `--reproducible` a warm build gives a cold build's digests; builds
+with another encoding share no entries (ADR-0113).
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or

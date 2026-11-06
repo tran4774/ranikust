@@ -15,14 +15,16 @@ use crate::key::CacheKey;
 /// `USER`, `WORKDIR` and `SHELL` in effect, and what the step reads.
 ///
 /// Every input is a value the step's result depends on; there is no field
-/// for the snapshot mode, a host user or id map, the time, a thread count or
-/// a secret's value. The order of [`arg`](Self::arg), [`env`](Self::env) and
-/// [`file`](Self::file) calls does not change the key; the order of
-/// [`mount`](Self::mount) calls does, as the `RUN`'s does.
+/// for the snapshot mode, a host user or id map, the time or a thread
+/// count, and none meant for a secret's value. The order of
+/// [`arg`](Self::arg), [`env`](Self::env) and [`file`](Self::file) calls
+/// does not change the key; the order of [`mount`](Self::mount) calls
+/// does, as the `RUN`'s does.
 ///
 /// The `rnk_cache.key` span runs from [`KeyInputs::new`] to
 /// [`CacheKey::next`]: create the inputs before hashing the files they hold.
-#[derive(Debug)]
+/// `Debug` shows the names of build arguments and variables, never their
+/// values.
 pub struct KeyInputs {
     span: Span,
     args: Vec<(String, Option<String>)>,
@@ -66,7 +68,9 @@ impl KeyInputs {
         self
     }
 
-    /// A variable of the environment in effect.
+    /// A variable of the stage's environment in effect (`ENV` and the
+    /// base's config), never one a secret mount's `env=` adds (threat model
+    /// T11).
     pub fn env(&mut self, name: &str, value: &str) -> &mut Self {
         self.env.push((name.to_owned(), value.to_owned()));
         self
@@ -186,6 +190,25 @@ impl Default for KeyInputs {
     }
 }
 
+impl fmt::Debug for KeyInputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn names<V>(pairs: &[(String, V)]) -> Vec<&str> {
+            pairs.iter().map(|(name, _)| name.as_str()).collect()
+        }
+        f.debug_struct("KeyInputs")
+            .field("args", &names(&self.args))
+            .field("env", &names(&self.env))
+            .field("user", &self.user)
+            .field("workdir", &self.workdir)
+            .field("shell", &self.shell)
+            .field("network", &self.network)
+            .field("mounts", &self.mounts)
+            .field("from", &self.from)
+            .field("files", &self.files.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A `RUN`'s `--network`, as the Dockerfile gives it, never the network the
 /// `RUN` ends up with in one mode or another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -235,7 +258,8 @@ impl Sharing {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Mount {
     /// `type=secret`: what names and places the secret, never its value
-    /// (threat model T11).
+    /// (threat model T11). Only a secret the `RUN` is given: an optional
+    /// secret that is absent is no mount.
     Secret {
         /// `id=`.
         id: String,
@@ -296,7 +320,8 @@ impl Mount {
 pub enum CopyFrom {
     /// An image: its platform manifest digest.
     Image(Digest),
-    /// A stage: its final key (ADR-0114).
+    /// A stage: its final key, which stands for the files it holds, so the
+    /// step adds no [`File`] (ADR-0114).
     Stage(CacheKey),
 }
 
@@ -319,8 +344,9 @@ impl CopyFrom {
 /// A file a `COPY` or `ADD` writes, as it writes it; never its mtime.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct File {
-    /// The file's path in the copy. One path names one file: the caller
-    /// picks a form in which two files of the step never share one.
+    /// The file's path relative to the copy's source, with no host or
+    /// mode-specific prefix. One path names one file: the caller picks a
+    /// form in which two files of the step never share one.
     pub path: Vec<u8>,
     /// Its type, with its content or link target.
     pub kind: FileKind,
@@ -336,8 +362,17 @@ pub struct File {
 
 impl File {
     fn feed(&self, c: &mut Canonical) {
-        c.bytes(&self.path);
-        match &self.kind {
+        // Destructured so that a field added to `File` cannot be left out.
+        let Self {
+            path,
+            kind,
+            mode,
+            uid,
+            gid,
+            capability,
+        } = self;
+        c.bytes(path);
+        match kind {
             FileKind::Regular(content) => {
                 c.str("regular");
                 c.hash(&content.sha256);
@@ -364,10 +399,10 @@ impl File {
                 c.u32(*minor);
             }
         }
-        c.u32(self.mode);
-        c.u32(self.uid);
-        c.u32(self.gid);
-        c.opt_bytes(self.capability.as_deref());
+        c.u32(*mode);
+        c.u32(*uid);
+        c.u32(*gid);
+        c.opt_bytes(capability.as_deref());
     }
 }
 
@@ -450,7 +485,7 @@ impl ContentHasher {
     /// Hashes the next bytes of the content.
     pub fn update(&mut self, chunk: &[u8]) {
         self.sha.update(chunk);
-        // usize is at most 64 bits on every supported target.
+        // Cannot saturate: `canonical` asserts usize fits in u64.
         let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
         self.size = self.size.saturating_add(len);
     }

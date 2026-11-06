@@ -1,7 +1,9 @@
 //! Golden keys and tags: they pin the algorithm, so a change to what a key
 //! or a tag hashes, or how, fails here.
 
-use rnk_cache::{CacheKey, CopyFrom, Encoding, KEY_VERSION, KeyInputs, TimePolicy};
+use rnk_cache::{
+    CacheKey, CopyFrom, Encoding, KEY_VERSION, KeyInputs, Mount, Network, Sharing, TimePolicy,
+};
 use rnk_oci::{Compression, Digest, Platform};
 
 use crate::support::{content, digest, full, linux_amd64, root};
@@ -73,6 +75,28 @@ fn step_keys() {
         &hex(&root().next("COPY --from=build /out /", inputs)),
         "8f6939bab18a88c37a726427e7148abc691780763a76077017bf5b1a43bd5e5f",
     );
+    // The network and sharing names `full` does not use.
+    let mut inputs = KeyInputs::new();
+    inputs.network(Network::Default).mount(Mount::Cache {
+        id: "go".to_owned(),
+        sharing: Sharing::Private,
+        dropped: false,
+    });
+    golden(
+        "RUN step with the default network and a private cache",
+        &hex(&root().next(
+            "RUN --mount=type=cache,id=go,sharing=private go build",
+            inputs,
+        )),
+        "8e348f6b209e57f9edc39b6cb793d5e88d15ead23897273307e1ba307e1a26aa",
+    );
+    let mut inputs = KeyInputs::new();
+    inputs.network(Network::Host);
+    golden(
+        "RUN step with the host network",
+        &hex(&root().next("RUN --network=host true", inputs)),
+        "13a30b9e8e4acd874dcf74b1ea4f76dff5d597f980936b1a12b0ff8d8a762c92",
+    );
 }
 
 #[test]
@@ -104,7 +128,7 @@ fn tags() {
                 epoch: 1_700_000_000,
             },
         ),
-        "rnk-v1-d6c673f1453a9c68b2ae99ecffb460f02682cf1613083f9e1402282da44ef7de",
+        "rnk-v1-2651c67388fbd4c99afd1561b4603234b82500d25b1d6d43fc78fb5686d98e50",
     );
 }
 

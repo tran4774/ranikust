@@ -202,9 +202,9 @@ entries (built); lookup and push of cached layers in a registry or an OCI
 layout (planned). **Must not** be compatible with kaniko's cache, let a key
 depend on the snapshot mode, the host, the time or a thread count, or hold a
 secret's value: keys depend on the instruction, its inputs and the previous
-key only, and carry a format version. Opens no file; never depends on
-`rnk-dockerfile`, `rnk-ignore` or `rnk-layer`, since `rnk-builder` builds the
-key inputs (ADR-0115).
+key only, and carry a format version. Key computation opens no file; never
+depends on `rnk-dockerfile`, `rnk-ignore` or `rnk-layer`, since
+`rnk-builder` builds the key inputs (ADR-0115).
 
 ### `rnk-builder`
 

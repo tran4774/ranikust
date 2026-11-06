@@ -4,10 +4,10 @@
 //! the tag its cached layer is looked up and pushed under; lookup and push
 //! in a registry or an OCI layout are not built yet.
 //!
-//! A stage's chain starts at [`CacheKey::root`]; each step's key is
+//! A chain starts at [`CacheKey::root`]; each step's key is
 //! [`CacheKey::next`] of the previous one, over the step's expanded
 //! instruction and its [`KeyInputs`]. [`CacheKey::tag`] adds the layer's
-//! [`Encoding`], so a hit has the bytes this build would write. File
+//! [`Encoding`], so a hit was encoded with this build's settings. File
 //! content is hashed by a [`ContentHasher`] from bytes the caller reads.
 //!
 //! # Boundaries
@@ -17,10 +17,13 @@
 //! - A key depends on the step's instruction, its inputs and the previous
 //!   key only: never on the snapshot mode, a host user or id map, the time,
 //!   a thread count or the order of an unordered collection. The API takes
-//!   none of them, and has no field that can hold a secret's value (threat
+//!   none of them, and has no field meant for a secret's value; a secret's
+//!   `env=` variable is never part of the environment it is given (threat
 //!   model T11).
-//! - Opens no file and no connection: file content arrives as bytes the
-//!   caller read through `rnk-rootfs`.
+//! - Key computation opens no file and no connection: file content arrives
+//!   as bytes the caller read through `rnk-rootfs`. A cache in an OCI layout
+//!   will reach its directory only through `rnk-rootfs`, and a registry only
+//!   through `rnk-registry` (ADR-0115).
 //! - Depends on `rnk-oci` for digests and platforms, never on
 //!   `rnk-dockerfile`, `rnk-ignore` or `rnk-layer`: `rnk-builder` builds
 //!   [`KeyInputs`] from parsed instructions and the context walk
