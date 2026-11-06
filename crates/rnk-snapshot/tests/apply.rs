@@ -1161,6 +1161,11 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
             false,
         ),
         (
+            "a file as the layer's root",
+            first().file("./", b"").bytes(),
+            false,
+        ),
+        (
             "a malformed PAX time",
             entry(EntryType::XHeader, b"12 mtime=1x\n"),
             false,
@@ -1198,6 +1203,14 @@ fn on_slash_a_streamed_layer_with_a_bad_tar_header_changes_nothing() {
             "{what}: {e:?}"
         );
         assert_eq!(source.opens(), 1, "{what}");
+        assert!(!f.root.join("first").exists(), "{what}: / changed");
+        // A body its source finds wrong says so before its tar does.
+        let wrong = Source::failing_at_end(gzip(&tar));
+        let e = r.apply_layer(&streamed(&f.snap, &tar, &wrong)).unwrap_err();
+        assert!(
+            format!("{e:?}").contains("digest mismatch"),
+            "{what}: {e:?}"
+        );
         assert!(!f.root.join("first").exists(), "{what}: / changed");
         r.begin_layer().unwrap();
         assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
@@ -1425,7 +1438,7 @@ fn hostile_on_slash() -> Vec<u8> {
 /// writes nothing into the state directory, `/proc`, an ignored path, a
 /// volume or the marker of `/`, links nothing of them into the root, and
 /// the walk after it reports nothing; a layer whose names climb out of the
-/// root is refused, breaks the root and reaches nothing.
+/// root is refused before `/` changes and reaches nothing.
 fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     fs::create_dir_all(host.join("ignored")).unwrap();
     fs::write(host.join("ignored/canary"), b"IGNORED").unwrap();

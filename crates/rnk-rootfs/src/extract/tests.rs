@@ -1552,6 +1552,14 @@ fn bad_headers(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
             "a symlink without a target",
             first().symlink("s", "").bytes(),
         ),
+        (
+            "a file as the layer's root",
+            first().file("./", 0o644, b"").bytes(),
+        ),
+        (
+            "a symlink as the layer's root",
+            first().symlink("./", "d").bytes(),
+        ),
         ("a GNU sparse entry", sparse.bytes()),
         (
             "an unknown entry type",
@@ -1608,9 +1616,10 @@ fn check_headers_refuses_what_every_extraction_refuses_by_its_header() {
 }
 
 /// What only the root can refuse is left to the extraction: a hardlink to
-/// a name not in the root, a layer root that is not a directory, device
-/// nodes, and paths the ignore list covers. A good layer passes and is read
-/// up to its end-of-archive block, the next one left to the caller.
+/// a name not in the root, a hardlink or device node as the layer's root
+/// (a live root skips the node), and paths the ignore list covers. A good
+/// layer passes and is read up to its end-of-archive block, the next one
+/// left to the caller.
 #[test]
 fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
     let f = Fixture::new();
@@ -1619,9 +1628,10 @@ fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
     check_headers(t.bytes().as_slice()).unwrap();
     assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
     let mut t = Tar::new(&f);
-    t.file("./", 0o644, b"");
+    t.node("./", EntryType::Fifo, 0, 0);
     check_headers(t.bytes().as_slice()).unwrap();
     assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
+    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
 
     let mut t = Tar::new(&f);
     t.dir("d", 0o755)

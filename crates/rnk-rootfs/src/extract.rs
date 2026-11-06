@@ -180,18 +180,19 @@ pub struct Extracted {
     pub root_set: bool,
 }
 
-/// Reads the plain tar stream `tar` as an extraction that applies
-/// whiteouts reads it ([`extract`], [`extract_live`], [`extract_overlay`]),
-/// and writes nothing: the same framing, up to the end-of-archive block,
-/// the same `tar-header` limit (ADR-0079), and the same refusals of what an
-/// entry's header shows on its own (a name or hardlink target that leaves
-/// the root, a hardlink to itself, a GNU sparse or unknown entry type, a
-/// whiteout that names nothing, ids, modes and times that do not parse or
-/// are out of range). It refuses nothing such an extraction takes; what
-/// depends on the root or the ignore list (where an entry lands, a
-/// hardlink's target, the type of the layer's root entry) is left to the
-/// extraction. What follows the end-of-archive block is the caller's to
-/// read.
+/// Refuses what an extraction that applies whiteouts would refuse from
+/// the headers of the plain tar stream `tar` alone, and writes nothing.
+///
+/// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
+/// the same framing, up to the end-of-archive block, and the same
+/// `tar-header` limit (ADR-0079). It refuses a name or hardlink target that
+/// leaves the root, a hardlink to itself, a GNU sparse or unknown entry
+/// type, a whiteout that names nothing, a file or symlink as the layer's
+/// root, and ids, modes and times that do not parse or are out of range.
+/// It refuses nothing such an extraction takes: what depends on the root
+/// or the ignore list (where an entry lands, a hardlink's target, a
+/// hardlink or device node as the layer's root) is left to the extraction.
+/// What follows the end-of-archive block is the caller's to read.
 ///
 /// Public for `rnk-snapshot`'s spool pass on `/` (ADR-0123): the pass that
 /// decompresses a streamed layer to check its diff ID calls this on the
@@ -365,13 +366,21 @@ enum Kind {
     Node(RawFileType, u32, u32),
 }
 
+/// Why a layer's root entry (`./`) that is not a directory is refused.
+const ROOT_NOT_DIR: &str = "the root of a layer must be a directory";
+
 /// What an entry's header shows on its own, before the root is looked at
 /// ([`read_header`]).
 enum Header {
     /// A PAX global header, which sets nothing here.
     Global,
-    /// A whiteout: its name in the layer and its cleaned path.
-    Whiteout { raw: PathBuf, path: PathBuf },
+    /// A whiteout: its name in the layer, its cleaned path and what its
+    /// name stands for.
+    Whiteout {
+        raw: PathBuf,
+        path: PathBuf,
+        name: WhiteoutName,
+    },
     /// Any other entry: its name in the layer, its cleaned path, what it
     /// asks for and its metadata.
     Entry {
@@ -402,11 +411,12 @@ fn for_each_entry<R: Read>(
 /// Reads `entry`'s header and PAX records, and refuses what no root can
 /// make right: a GNU sparse entry, a name or hardlink target that leaves
 /// the root, a hardlink to itself or to the root, a link without a target,
-/// a whiteout that names nothing, an unknown entry type, and ids, modes,
-/// device numbers and times that do not parse or are out of range. The
-/// first step of every extraction, and all of [`check_headers`]. `wh` tells
-/// what a whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`])
-/// are counted in `skipped`, the first of them kept in `first_skipped`.
+/// a whiteout that names nothing, an unknown entry type, a file or symlink
+/// as the layer's root, and ids, modes, device numbers and times that do
+/// not parse or are out of range. The first step of every extraction, and
+/// all of [`check_headers`]. `wh` tells what a whiteout is; the `trusted.*`
+/// xattrs left out ([`SKIPPED_XATTR`]) are counted in `skipped`, the first
+/// of them kept in `first_skipped`.
 fn read_header<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     wh: Whiteouts,
@@ -434,8 +444,8 @@ fn read_header<R: Read>(
         && wh != Whiteouts::Literal
         && name.as_bytes().starts_with(WHITEOUT_PREFIX)
     {
-        whiteout_name(name.as_bytes(), &raw)?;
-        return Ok(Header::Whiteout { raw, path });
+        let name = whiteout_name(name.as_bytes(), &raw)?;
+        return Ok(Header::Whiteout { raw, path, name });
     }
 
     let kind = match etype {
@@ -482,6 +492,11 @@ fn read_header<R: Read>(
         }
     };
     let meta = header_meta(entry, &raw, wh, skipped, first_skipped)?;
+    // A hardlink or a device node there is refused later: a live root may
+    // skip it first.
+    if path.as_os_str().is_empty() && matches!(kind, Kind::File | Kind::Symlink(_)) {
+        return Err(refuse(ROOT_NOT_DIR));
+    }
     Ok(Header::Entry {
         raw,
         path,
@@ -568,19 +583,19 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
 }
 
 /// What a whiteout's name (`.wh.` and more) stands for.
-enum WhiteoutName<'a> {
+enum WhiteoutName {
     /// The opaque marker: what the layers below have in its directory is
     /// hidden.
     Opaque,
     /// Other AUFS metadata (`.wh..wh.*`), which hides nothing.
     Meta,
     /// The name of the entry hidden.
-    Hides(&'a OsStr),
+    Hides(OsString),
 }
 
 /// Reads the whiteout name `name` of the entry `raw`: refused when it
 /// names no entry.
-fn whiteout_name<'a>(name: &'a [u8], raw: &Path) -> Result<WhiteoutName<'a>> {
+fn whiteout_name(name: &[u8], raw: &Path) -> Result<WhiteoutName> {
     if name == OPAQUE {
         return Ok(WhiteoutName::Opaque);
     }
@@ -594,7 +609,7 @@ fn whiteout_name<'a>(name: &'a [u8], raw: &Path) -> Result<WhiteoutName<'a>> {
             reason: "a whiteout must name an entry".to_owned(),
         });
     }
-    Ok(WhiteoutName::Hides(hidden))
+    Ok(WhiteoutName::Hides(hidden.to_owned()))
 }
 
 impl Extractor<'_> {
@@ -615,10 +630,7 @@ impl Extractor<'_> {
         )?;
         let (raw, path, kind, meta) = match header {
             Header::Global => return Ok(()),
-            Header::Whiteout { raw, path } => {
-                let name = path.file_name().unwrap_or_default();
-                return self.whiteout(&path, name.as_bytes(), &raw);
-            }
+            Header::Whiteout { raw, path, name } => return self.whiteout(&path, name, &raw),
             Header::Entry {
                 raw,
                 path,
@@ -663,7 +675,7 @@ impl Extractor<'_> {
             return match kind {
                 Kind::Dir => self.dir_meta(&path, None, meta),
                 Kind::File | Kind::Symlink(_) | Kind::Hardlink(_) | Kind::Node(..) => {
-                    Err(refuse("the root of a layer must be a directory"))
+                    Err(refuse(ROOT_NOT_DIR))
                 }
             };
         }
@@ -1077,9 +1089,9 @@ impl Extractor<'_> {
             .collect()
     }
 
-    fn whiteout(&mut self, path: &Path, name: &[u8], raw: &Path) -> Result<()> {
+    fn whiteout(&mut self, path: &Path, name: WhiteoutName, raw: &Path) -> Result<()> {
         let dir = path.parent().unwrap_or(Path::new("")).to_owned();
-        let hidden = match whiteout_name(name, raw)? {
+        let hidden = match name {
             WhiteoutName::Meta => return Ok(()),
             WhiteoutName::Hides(hidden) => hidden,
             WhiteoutName::Opaque => {
@@ -1106,6 +1118,7 @@ impl Extractor<'_> {
                 };
             }
         };
+        let hidden = hidden.as_os_str();
         let target = dir.join(hidden);
         self.stats.whiteouts += 1;
         match self.wh {

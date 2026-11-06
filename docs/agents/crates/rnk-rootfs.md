@@ -176,10 +176,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changes what the `tar` crate hands on and never lets a name or PAX record
   over the bound through. `check_headers` (`src/extract/tests.rs`,
   ADR-0123): each header an extraction refuses alone (names and hardlinks out,
-  sparse, unknown types, empty whiteouts, bad PAX times, ids out of range, a
-  bad checksum, a cut stream, a long name over the limit) refused with the
-  extraction's very error; a missing hardlink target, a file as the layer's
-  root, device nodes and ignored paths left to the extraction;
+  sparse, unknown types, empty whiteouts, a file or symlink as the layer's
+  root, bad PAX times, ids out of range, a bad checksum, a cut stream, a long
+  name over the limit) refused with the extraction's very error; a missing
+  hardlink target, a hardlink or device node as the layer's root, and ignored
+  paths left to the extraction;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest):
   it refuses no generated layer that an extraction takes, and passes none whose
   framing an extraction refuses. `red_team_names_swapped_during_an_output_never_redirect_it`

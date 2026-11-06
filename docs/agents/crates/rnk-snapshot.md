@@ -194,8 +194,9 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   [#130](https://github.com/tran4774/ranikust/issues/130), decided, not built;
   [cache hit](../../design/kaniko-mode.md#a-cache-hit)). On `/` the spool pass
   (`Spooled::of`) also checks the tar headers and `--limit`, in the same
-  decompression, by `rnk_rootfs::check_headers` (ADR-0123), so only a failure
-  while writing breaks `/`; this crate has no tar parser of its own.
+  decompression, by `rnk_rootfs::check_headers` (ADR-0123), so for a streamed
+  layer only a failure while writing breaks `/`; this crate has no tar parser
+  of its own.
   A run of hits takes no walk, so a warm stage walks no more than a cold one
   ([ADR-0117](../../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md)).
 
@@ -271,7 +272,8 @@ that found a bug stay as its regression test.
   tar header is refused, breaking a per-stage root; a bad blob on `/` touches no
   ignored path. On `/` a streamed layer whose tar has a header every extraction
   refuses, or one over `--limit`, after a good first entry, changes nothing and
-  leaves `/` usable; the same layer from the store breaks `/` (the control).
+  leaves `/` usable, and a body its source refuses reports the source's error
+  first; the same layer from the store breaks `/` (the control).
   `tests/spans.rs`: on `/` a streamed layer is decoded once before its
   extraction, a refused one once and never extracted (ADR-0123).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused

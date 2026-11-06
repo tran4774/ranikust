@@ -134,8 +134,9 @@ never called.
   applies whiteouts does, through the same code (`for_each_entry`,
   `read_header`), and writes nothing: the framing, the `tar-header` limit and
   every refusal a header shows on its own (names and hardlink targets out of
-  the root, sparse and unknown types, whiteouts naming nothing, ids and times
-  that do not parse), with the extraction's errors. It refuses nothing such an
+  the root, sparse and unknown types, whiteouts naming nothing, a file or
+  symlink as the layer's root, ids and times that do not parse), with the
+  extraction's errors. It refuses nothing such an
   extraction takes; what the root or the ignore list decides is the
   extraction's. Kaniko mode's spool pass on `/` calls it on the bytes it
   already decompresses, so a bad header is refused before `/` changes
