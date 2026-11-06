@@ -260,7 +260,7 @@ impl Sharing {
     }
 }
 
-/// A `RUN --mount` the key names. The instruction text holds every flag;
+/// A `RUN --mount` the key names. The instruction holds every flag;
 /// these add the values defaults fill in, and whether a cache mount was
 /// given to the `RUN` at all.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

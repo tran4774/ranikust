@@ -61,9 +61,10 @@ pub struct Encoding { compression: rnk_oci::Compression, level: i32, times: Time
 pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp
 ```
 
-Planned (task 4 and task 11 of #123):
+Planned (tasks 3, 4 and 11 of #123):
 
 ```rust
+impl KeyInputs { pub fn heredoc(&mut self, name: &str, body: &[u8]) -> &mut Self; } // task 3 (#126): adds a field to the step hash, so KEY_VERSION is bumped then; its bytes count in bytes_hashed
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>; // by tag, ADR-0113
     async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &Descriptor) -> Result<()>; // rnk_oci; the new layer's blob, read from the store; asynchronous
@@ -168,9 +169,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 - A `File` path with a host or mode-specific prefix ties the key to the
   host or the mode, and one relative to each source operand lets two files
   share a path: paths are relative to the build context.
-- A heredoc's body that the instruction text leaves out (`COPY` and `ADD`
-  sources, a `#!` `RUN` script): `rnk-builder` hashes it into the key
-  (task 3 of #123).
+- The instruction holds no heredoc body: `rnk-builder` adds each one (of a
+  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
+  that task 3 (#126) adds.
 - Give `KeyInputs::new` and `CacheKey::tag` the same `Encoding`, or a
   `--reproducible` hit can carry other mtimes.
 - No cache measurement exists: claim no speed-up before W2 runs.
