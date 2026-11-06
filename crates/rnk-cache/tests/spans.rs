@@ -5,9 +5,9 @@
 //! process, and a test reaching it with no subscriber alive could race a
 //! `Capture` into caching "never".
 
-use rnk_cache::{CacheKey, ContentHasher, File, FileKind, KeyInputs, TimePolicy};
+use rnk_cache::{CacheKey, ContentHasher, Encoding, File, FileKind, KeyInputs, TimePolicy};
 use rnk_metrics::Capture;
-use rnk_oci::Platform;
+use rnk_oci::{Compression, Platform};
 
 fn file(path: &str, kind: FileKind) -> File {
     File {
@@ -21,6 +21,12 @@ fn file(path: &str, kind: FileKind) -> File {
     }
 }
 
+const ENCODING: Encoding = Encoding {
+    compression: Compression::Gzip,
+    level: 6,
+    times: TimePolicy::Kept,
+};
+
 fn regular(path: &str, bytes: &[u8]) -> File {
     let mut h = ContentHasher::new();
     h.update(bytes);
@@ -32,7 +38,7 @@ fn a_key_counts_the_files_and_bytes_it_hashed() {
     let capture = Capture::new();
     let root = CacheKey::root(None, &Platform::new("linux", "amd64"));
     capture.run(|| {
-        let mut inputs = KeyInputs::new(TimePolicy::Kept);
+        let mut inputs = KeyInputs::new(&ENCODING);
         inputs
             .file(regular("a", &[0; 10]))
             .file(regular("b", b"hello"))
@@ -40,7 +46,7 @@ fn a_key_counts_the_files_and_bytes_it_hashed() {
             .file(file("l", FileKind::Symlink(b"a".to_vec())));
         let copy = root.next("COPY . /", inputs);
         // A second step with files, so the report's sum shows.
-        let mut inputs = KeyInputs::new(TimePolicy::Kept);
+        let mut inputs = KeyInputs::new(&ENCODING);
         inputs.file(regular("c", b"abc"));
         (copy, root.next("COPY c /", inputs))
     });

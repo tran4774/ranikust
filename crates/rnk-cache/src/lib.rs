@@ -6,19 +6,19 @@
 //!
 //! A chain starts at [`CacheKey::root`]; each step's key is
 //! [`CacheKey::next`] of the previous one, over the step's expanded
-//! instruction and its [`KeyInputs`], which hold each file's mtime under
-//! `--reproducible` only. [`CacheKey::tag`] adds the layer's [`Encoding`],
-//! so a hit was encoded with this build's settings. File content is hashed
-//! by a [`ContentHasher`] from bytes the caller reads.
+//! instruction and its [`KeyInputs`]. [`CacheKey::tag`] adds the layer's
+//! [`Encoding`], so a hit was encoded with this build's settings. File
+//! content is hashed by a [`ContentHasher`] from bytes the caller reads.
 //!
 //! # Boundaries
 //!
 //! - Keys are ranikust's own and carry a format version, [`KEY_VERSION`];
 //!   they are not compatible with kaniko's cache (ADR-0005).
 //! - A key depends on the step's instruction, its inputs and the previous
-//!   key only: never on the snapshot mode, a host user or id map, the time,
-//!   a thread count or the order of an unordered collection. The API takes
-//!   none of them, and has no field meant for a secret's value; callers
+//!   key only: never on the snapshot mode, a host user or id map, the
+//!   build's time, an mtime outside `--reproducible`, a thread count or the
+//!   order of an unordered collection. The API takes no mode, user, time
+//!   or thread count, and has no field meant for a secret's value; callers
 //!   never pass a secret mount's `env=` variable to [`KeyInputs::env`]
 //!   (threat model T11).
 //! - Key computation opens no file and no connection: file content arrives

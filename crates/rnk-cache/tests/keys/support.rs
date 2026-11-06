@@ -1,10 +1,10 @@
 //! A step's key inputs as plain data, so tests can copy and change them.
 
 use rnk_cache::{
-    CacheKey, Content, ContentHasher, CopyFrom, File, FileKind, KeyInputs, Mount, Network, Sharing,
-    TimePolicy,
+    CacheKey, Content, ContentHasher, CopyFrom, Encoding, File, FileKind, KeyInputs, Mount,
+    Network, Sharing, TimePolicy,
 };
-use rnk_oci::{Digest, Platform};
+use rnk_oci::{Compression, Digest, Platform};
 
 /// Everything [`CacheKey::next`] takes, in the order the test gives it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub(crate) struct Spec {
 
 impl Spec {
     pub(crate) fn inputs(&self) -> KeyInputs {
-        let mut inputs = KeyInputs::new(times(self.epoch));
+        let mut inputs = KeyInputs::new(&encoding(self.epoch));
         for (name, value) in &self.args {
             inputs.arg(name, value.as_deref());
         }
@@ -56,8 +56,13 @@ impl Spec {
     }
 }
 
-pub(crate) fn times(epoch: Option<i64>) -> TimePolicy {
-    epoch.map_or(TimePolicy::Kept, |epoch| TimePolicy::Clamped { epoch })
+/// gzip at level 6, with mtimes clamped to `epoch` if there is one.
+pub(crate) fn encoding(epoch: Option<i64>) -> Encoding {
+    Encoding {
+        compression: Compression::Gzip,
+        level: 6,
+        times: epoch.map_or(TimePolicy::Kept, |epoch| TimePolicy::Clamped { epoch }),
+    }
 }
 
 /// The epoch of the fixtures' `--reproducible` builds.

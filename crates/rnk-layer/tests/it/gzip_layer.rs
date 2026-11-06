@@ -11,7 +11,8 @@ use crate::tar_props::{build, spec};
 
 /// sha256 of the sample tree as gzip level 6. Checked with GNU gzip 1.14
 /// (`gzip -t`; `zcat` gives the plain golden) when it was pinned. It changes
-/// with the tar bytes, zlib-rs, the level or the 128 KiB block size.
+/// with the tar bytes, zlib-rs, the level or the 128 KiB block size; a
+/// change bumps `rnk-cache`'s `KEY_VERSION` (ADR-0005).
 const SAMPLE_GZIP_SHA256: &str = "6897f043dc0d706aa58b3249a23a57f49a47cf404b9985802dc658712f04e88a";
 
 /// Decodes exactly one gzip member and checks nothing follows it.

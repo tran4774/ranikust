@@ -200,13 +200,13 @@ decide what goes into a layer or where it is sent, or write extracted files
 Phase 4, in progress. Versioned cache keys per step and the tags of their
 entries (built); lookup and push of cached layers in a registry or an OCI
 layout (planned). **Must not** be compatible with kaniko's cache, let a key
-depend on the snapshot mode, the host, the time or a thread count, or hold a
-secret's value: keys depend on the instruction, its inputs and the previous
-key only, and carry a format version. Key computation opens no file; the
-cache (planned) reaches an OCI layout only through `rnk-rootfs` and a
-registry only through `rnk-registry`. The crate never depends on
-`rnk-dockerfile`, `rnk-ignore` or `rnk-layer`, since `rnk-builder` builds the
-key inputs (ADR-0115).
+depend on the snapshot mode, the host, the build's time, an mtime outside
+`--reproducible` or a thread count, or hold a secret's value: keys depend on
+the instruction, its inputs and the previous key only, and carry a format
+version. Key computation opens no file; the cache (planned) reaches an OCI
+layout only through `rnk-rootfs` and a registry only through
+`rnk-registry`. The crate never depends on `rnk-dockerfile`, `rnk-ignore`
+or `rnk-layer`, since `rnk-builder` builds the key inputs (ADR-0115).
 
 ### `rnk-builder`
 

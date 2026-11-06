@@ -13,7 +13,7 @@ use crate::tar_props::{build, spec};
 /// sha256 of the sample tree as zstd level 6 (libzstd 1.5.7). Checked with
 /// the zstd 1.5.2 CLI (`zstd -t`; `zstd -dc` gives the plain golden) when it
 /// was pinned. It changes with the tar bytes, libzstd, the level or the
-/// 1 MiB frame size.
+/// 1 MiB frame size; a change bumps `rnk-cache`'s `KEY_VERSION` (ADR-0005).
 const SAMPLE_ZSTD_SHA256: &str = "9678199da88123e65e7901a2e53b2c43ca408011ea16e191174fb9601b7872fc";
 
 /// Decodes every frame with libzstd's streaming decoder.

@@ -25,8 +25,9 @@ flags until Phase 4 and accepts `--cache=false` (ADR-0036).
 Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 
 - Read or write kaniko's cache or mimic its keys (ADR-0005).
-- Let a key depend on the snapshot mode, host, users, timestamps, thread
-  count or the order of an unordered collection, or hold a secret's value.
+- Let a key depend on the snapshot mode, host, users, the build's time,
+  an mtime outside `--reproducible`, thread count or the order of an
+  unordered collection, or hold a secret's value.
 - Open files to compute a key: content arrives as bytes the caller read
   through `rnk-rootfs`. The layout cache reaches its directory only through
   `rnk-rootfs`, the registry only through `rnk-registry` (ADR-0115).
@@ -47,7 +48,7 @@ impl CacheKey {
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self; // instruction expanded, with its flags
     pub fn tag(&self, encoding: &Encoding) -> String;                 // "rnk-v<version>-<64 hex>"
 }
-pub struct KeyInputs;                // new(TimePolicy) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file
+pub struct KeyInputs;                // new(&Encoding) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file
 pub enum Network { Default, None, Host }               // the Dockerfile's --network, never what a mode gives
 pub enum Mount { Secret { id, target, mode, uid, gid }, Cache { id, sharing, dropped } } // no secret value; given or not
 pub enum Sharing { Shared, Private, Locked }
@@ -57,7 +58,7 @@ pub enum FileKind { Regular(Content), Directory, Symlink(Vec<u8>), Hardlink(Vec<
 pub struct Content;                  // sha256(), size(); only from ContentHasher; == compares copied bytes with hashed ones
 pub struct ContentHasher;            // update(chunk) or io::Write, then finish() -> Content
 pub struct Encoding { compression: rnk_oci::Compression, level: i32, times: TimePolicy }
-pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp, which also keys mtimes
+pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp
 ```
 
 Planned (task 4 and task 11 of #123):
@@ -166,9 +167,7 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   mount's `env=` adds to a `RUN`.
 - A `File` path with a host or mode-specific prefix ties the key to the
   host or the mode, and one relative to each source operand lets two files
-  share a path: paths are relative to the build context. A `COPY`
-  heredoc's body reaches the key only if `rnk-builder`
-  hashes it (task 3 of #123).
-- `KeyInputs::new` takes the layer's `TimePolicy`: give it the one the
-  `Encoding` has, or a `--reproducible` hit can carry other mtimes.
+  share a path: paths are relative to the build context.
+- A `COPY` heredoc's body reaches the key only as a `File` the builder adds
+  (task 3 of #123).
 - No cache measurement exists: claim no speed-up before W2 runs.

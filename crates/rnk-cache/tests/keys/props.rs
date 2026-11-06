@@ -12,7 +12,7 @@ use rnk_cache::{
 };
 use rnk_oci::{Compression, Platform};
 
-use crate::support::{EPOCH, Spec, content, digest, file, full, linux_amd64, root};
+use crate::support::{EPOCH, Spec, content, digest, encoding, file, full, linux_amd64, root};
 
 fn name() -> impl Strategy<Value = String> {
     "[A-Za-z_]{0,4}"
@@ -269,7 +269,7 @@ fn mutations() -> Vec<Change<Spec>> {
         }),
         ("source stage", |s| {
             if let Some(CopyFrom::Stage(k)) = &mut s.from {
-                *k = k.next("", KeyInputs::new(TimePolicy::Kept));
+                *k = k.next("", KeyInputs::new(&encoding(None)));
             }
         }),
         ("file added", |s| {
@@ -488,7 +488,7 @@ fn every_field_of_a_root_changes_its_key() {
 #[test]
 fn every_field_of_an_encoding_changes_the_tag() {
     let key = full().key(&root());
-    let other = root().next("", KeyInputs::new(TimePolicy::Kept));
+    let other = root().next("", KeyInputs::new(&encoding(None)));
     let mut seen = HashMap::new();
     for k in [key, other] {
         for (compression, levels) in [
@@ -520,7 +520,7 @@ fn every_field_of_an_encoding_changes_the_tag() {
 
 #[test]
 fn debug_names_arguments_and_variables_without_their_values() {
-    let mut inputs = KeyInputs::new(TimePolicy::Kept);
+    let mut inputs = KeyInputs::new(&encoding(None));
     inputs
         .arg("ARG_NAME", Some("arg-value"))
         .env("ENV_NAME", "env-value");

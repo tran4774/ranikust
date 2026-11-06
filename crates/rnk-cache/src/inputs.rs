@@ -9,14 +9,14 @@ use sha2::{Digest as _, Sha256};
 use tracing::Span;
 
 use crate::canonical::Canonical;
-use crate::key::{CacheKey, TimePolicy};
+use crate::key::{CacheKey, Encoding, TimePolicy};
 
 /// The inputs of one step's key: the build arguments, the environment,
 /// `USER`, `WORKDIR` and `SHELL` in effect, and what the step reads.
 ///
 /// Every input is a value the step's result depends on; there is no field
-/// for the snapshot mode, a host user or id map, the time or a thread
-/// count, and none meant for a secret's value. The order of
+/// for the snapshot mode, a host user or id map, the build's time or a
+/// thread count, and none meant for a secret's value. The order of
 /// [`arg`](Self::arg), [`env`](Self::env) and [`file`](Self::file) calls
 /// does not change the key; the order of [`mount`](Self::mount) calls
 /// does, as the `RUN`'s does.
@@ -40,20 +40,19 @@ pub struct KeyInputs {
 }
 
 impl KeyInputs {
-    /// Empty inputs of a step whose layer's headers carry `times`, the
-    /// policy of its [`Encoding`](crate::Encoding): under
-    /// [`TimePolicy::Clamped`], each file's mtime as its header carries it
-    /// is part of the key (ADR-0113). No argument, environment, mount or
-    /// file, and `USER`, `WORKDIR` and `SHELL` empty.
+    /// Empty inputs of a step whose layer is encoded as `encoding`, the
+    /// one its tag names: its time policy decides whether a file adds its
+    /// [`mtime`](File::mtime). No argument, environment, mount or file,
+    /// and `USER`, `WORKDIR` and `SHELL` empty.
     #[must_use]
-    pub fn new(times: TimePolicy) -> Self {
+    pub fn new(encoding: &Encoding) -> Self {
         Self {
             span: tracing::debug_span!(
                 "rnk_cache.key",
                 files_hashed = tracing::field::Empty,
                 bytes_hashed = tracing::field::Empty,
             ),
-            times,
+            times: encoding.times,
             args: Vec::new(),
             env: Vec::new(),
             user: String::new(),
@@ -274,7 +273,8 @@ pub enum Mount {
     /// A secret given only as an `env=` variable has no file: `target`
     /// empty, `mode`, `uid` and `gid` 0. BuildKit mounts nothing for it
     /// either, and keys its id and variable name
-    /// (`client/llb/exec.go:435-443`), which the instruction holds.
+    /// (`buildkit@cd8ee244 client/llb/exec.go:435-443`), which the
+    /// instruction holds.
     Secret {
         /// `id=`.
         id: String,
@@ -357,15 +357,13 @@ impl CopyFrom {
     }
 }
 
-/// A file a `COPY` or `ADD` writes, as it writes it; its mtime only under
-/// `--reproducible`.
+/// A file a `COPY` or `ADD` writes, as it writes it. A `COPY` heredoc's
+/// body is content as well: the caller adds it as a file.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct File {
     /// The file's path relative to the build context, with no host or
     /// mode-specific prefix: `dir1/x` and `dir2/x` stay apart. One path
-    /// names one file: two files of the step never share one. A `COPY`
-    /// heredoc's body is content too: `rnk-builder` hashes it (task 3 of
-    /// #123).
+    /// names one file: two files of the step never share one.
     pub path: Vec<u8>,
     /// Its type, with its content or link target.
     pub kind: FileKind,

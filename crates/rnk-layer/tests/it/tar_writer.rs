@@ -13,7 +13,7 @@ use crate::support::{
 /// sha256 of the sample tree as a plain tar. Listed with GNU tar 1.35
 /// (`tar --xattrs -tvvf`) when it was pinned: names, modes, owners, times,
 /// links, devices and the xattr all read back. A change here changes every
-/// layer digest.
+/// layer digest, and bumps `rnk-cache`'s `KEY_VERSION` (ADR-0005).
 const SAMPLE_TAR_SHA256: &str = "4c9b5fae31d8b4b308b2a35af3345654ed5ac2079361f45dcb261b75e62602d2";
 
 #[test]

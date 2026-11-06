@@ -149,12 +149,10 @@ pub struct Encoding {
     pub times: TimePolicy,
 }
 
-/// The mtimes a layer's headers carry: part of its [`Encoding`], and given
-/// to [`KeyInputs::new`](crate::KeyInputs::new).
+/// The mtimes a layer's headers carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimePolicy {
-    /// Each file keeps its own: a build without `--reproducible`. The key
-    /// holds no mtime.
+    /// Each file keeps its own: a build without `--reproducible`.
     Kept,
     /// `--reproducible`: an mtime later than `epoch`, in seconds since the
     /// Unix epoch, is clamped to it. The key holds each file's mtime as

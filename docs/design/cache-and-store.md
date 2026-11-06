@@ -157,18 +157,16 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
     and `SHELL`;
-  - for a `RUN`, its `--network`; each secret mount's id, target, mode and
-    owner, never its value, whether or not the build is given the secret,
-    as BuildKit's key (`buildkit@cd8ee244
-    solver/llbsolver/ops/exec.go:114-179`, ADR-0032); each cache mount's id
-    and sharing, marked as dropped where
+  - for a `RUN`, its `--network`, each secret mount's id, target, mode and
+    owner, given or not (below), and each cache mount's id and sharing,
+    marked as dropped where
     [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
     drops it;
   - for `COPY` and `ADD` from the build context, each file's path relative
-    to it, content, mode, owner after `--chown`, type, link target and
-    `security.capability`, and under `--reproducible` its mtime clamped to
-    the epoch, as the layer carries it;
-  - for `COPY --from=<image>`, the image's platform manifest digest, and for
+    to it, content (a heredoc's body too), mode, owner after `--chown`,
+    type, link target, `security.capability` and, under `--reproducible`,
+    its mtime clamped to the epoch;
+  - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (ADR-0114).
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
@@ -177,6 +175,12 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 `ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
 features. How the fields are written into the hash:
 [the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
+
+A secret mount is keyed whether or not the build is given the secret, as
+BuildKit, which builds the mount from the Dockerfile alone and hashes the
+whole exec op (ADR-0032;
+`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert_secrets.go:14-90`,
+`solver/llbsolver/ops/exec.go:114-179`).
 
 A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
 whose `<hex>` hashes the key with the layer's encoding: the compression, its

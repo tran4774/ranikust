@@ -7,7 +7,7 @@ use rnk_cache::{
 };
 use rnk_oci::{Compression, Digest, Platform};
 
-use crate::support::{EPOCH, Spec, content, digest, file, full, linux_amd64, root};
+use crate::support::{EPOCH, Spec, content, digest, encoding, file, full, linux_amd64, root};
 
 #[track_caller]
 fn golden(what: &str, got: &str, want: &str) {
@@ -58,7 +58,7 @@ fn root_keys() {
 
 #[test]
 fn step_keys() {
-    let empty = root().next("RUN true", KeyInputs::new(TimePolicy::Kept));
+    let empty = root().next("RUN true", KeyInputs::new(&encoding(None)));
     golden(
         "step with empty inputs",
         &hex(&empty),
@@ -69,7 +69,7 @@ fn step_keys() {
         &hex(&full().key(&root())),
         "a6f3004f53b56028173198b4e295c2e55cc907c27ac7f619391c095c30a12055",
     );
-    let mut inputs = KeyInputs::new(TimePolicy::Kept);
+    let mut inputs = KeyInputs::new(&encoding(None));
     inputs.copy_from(CopyFrom::Stage(empty));
     golden(
         "COPY --from=<stage> step",
@@ -77,7 +77,7 @@ fn step_keys() {
         "8f6939bab18a88c37a726427e7148abc691780763a76077017bf5b1a43bd5e5f",
     );
     // The network and sharing names `full` does not use.
-    let mut inputs = KeyInputs::new(TimePolicy::Kept);
+    let mut inputs = KeyInputs::new(&encoding(None));
     inputs.network(Network::Default).mount(Mount::Cache {
         id: "go".to_owned(),
         sharing: Sharing::Private,
@@ -91,7 +91,7 @@ fn step_keys() {
         )),
         "8e348f6b209e57f9edc39b6cb793d5e88d15ead23897273307e1ba307e1a26aa",
     );
-    let mut inputs = KeyInputs::new(TimePolicy::Kept);
+    let mut inputs = KeyInputs::new(&encoding(None));
     inputs.network(Network::Host);
     golden(
         "RUN step with the host network",
