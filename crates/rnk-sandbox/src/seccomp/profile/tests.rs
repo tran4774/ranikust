@@ -1184,6 +1184,516 @@ fn kernel_releases_parse_as_moby_reads_them() {
     assert_eq!(min_kernel("").unwrap(), (0, 0));
 }
 
+/// xorshift64*: deterministic, so that a failing case names its seed.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        usize::try_from(self.next() % u64::try_from(n).unwrap()).unwrap()
+    }
+
+    fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
+        xs[self.below(xs.len())]
+    }
+}
+
+/// A rule as [`reference`] reads it: names, return value, conditions as
+/// (index, operator, value, valueTwo).
+struct RefRule {
+    names: Vec<&'static str>,
+    ret: u32,
+    conds: Vec<(usize, &'static str, u64, u64)>,
+}
+
+/// The kernel's precedence of a return value: lower wins.
+fn precedence(ret: u32) -> i32 {
+    (ret & libc::SECCOMP_RET_ACTION_FULL).cast_signed()
+}
+
+fn holds(op: &str, arg: u64, v: u64, two: u64) -> bool {
+    match op {
+        "SCMP_CMP_NE" => arg != v,
+        "SCMP_CMP_LT" => arg < v,
+        "SCMP_CMP_LE" => arg <= v,
+        "SCMP_CMP_EQ" => arg == v,
+        "SCMP_CMP_GE" => arg >= v,
+        "SCMP_CMP_GT" => arg > v,
+        "SCMP_CMP_MASKED_EQ" => arg & v == two,
+        other => panic!("{other}"),
+    }
+}
+
+/// The verdict ADR-0109 and sandbox.md give, read from the profile alone:
+/// another architecture or an x32 number gets `EPERM`; a number `libc`
+/// does not name gets the default where it lets calls run, else `ENOSYS`;
+/// a named one gets the strictest rule matching it (the profile's first
+/// among equals), else the default.
+fn reference(rules: &[RefRule], default: u32, arch: u32, nr: u32, args: [u64; 6]) -> u32 {
+    let eperm = errno(libc::EPERM);
+    if arch != AUDIT_ARCH {
+        return eperm;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if nr >= super::super::X32_SYSCALL_BIT {
+        return eperm;
+    }
+    let runs = |r: u32| precedence(r) >= precedence(libc::SECCOMP_RET_LOG);
+    if syscalls::all().all(|(_, n)| n != nr) {
+        return if runs(default) {
+            default
+        } else {
+            errno(libc::ENOSYS)
+        };
+    }
+    rules
+        .iter()
+        .filter(|r| r.names.iter().any(|n| syscalls::number(n) == Some(nr)))
+        .filter(|r| {
+            r.conds
+                .iter()
+                .all(|&(i, op, v, two)| holds(op, args[i], v, two))
+        })
+        .map(|r| r.ret)
+        .min_by_key(|&r| precedence(r))
+        .unwrap_or(default)
+}
+
+/// Values around both 32-bit words, where a two-word compare can slip.
+const EDGES: [u64; 12] = [
+    0,
+    1,
+    5,
+    0x7fff_ffff,
+    0x8000_0000,
+    0xffff_ffff,
+    0x1_0000_0000,
+    0x1_0000_0005,
+    0x1_ffff_ffff,
+    0x8000_0000_0000_0000,
+    u64::MAX - 1,
+    u64::MAX,
+];
+
+const OPS: [&str; 7] = [
+    "SCMP_CMP_NE",
+    "SCMP_CMP_LT",
+    "SCMP_CMP_LE",
+    "SCMP_CMP_EQ",
+    "SCMP_CMP_GE",
+    "SCMP_CMP_GT",
+    "SCMP_CMP_MASKED_EQ",
+];
+
+/// The calls random profiles name; the forked checks make only the first
+/// two, which read no argument.
+const POOL: [&str; 7] = [
+    "getppid",
+    "getpid",
+    "keyctl",
+    "socket",
+    "personality",
+    "uname",
+    "gettid",
+];
+
+fn edge_or_random(rng: &mut Rng) -> u64 {
+    match rng.below(4) {
+        0 => rng.next(),
+        1 => rng.pick(&EDGES).wrapping_add(rng.pick(&[1, u64::MAX])),
+        _ => rng.pick(&EDGES),
+    }
+}
+
+/// A random action: its JSON (`"action":…` and maybe `"errnoRet":…`) and
+/// the return value it means.
+fn random_action(rng: &mut Rng, action: &str, errno_ret: &str) -> (String, u32) {
+    let named = |a: &str| format!(r#""{action}":"{a}""#);
+    match rng.below(7) {
+        0 => (named("SCMP_ACT_KILL"), libc::SECCOMP_RET_KILL_THREAD),
+        1 => (
+            named("SCMP_ACT_KILL_PROCESS"),
+            libc::SECCOMP_RET_KILL_PROCESS,
+        ),
+        2 => (named("SCMP_ACT_TRAP"), libc::SECCOMP_RET_TRAP),
+        3 => (named("SCMP_ACT_LOG"), libc::SECCOMP_RET_LOG),
+        4 => (named("SCMP_ACT_ALLOW"), ALLOW),
+        5 => (named("SCMP_ACT_ERRNO"), errno(libc::EPERM)),
+        _ => {
+            let e = 1 + rng.below(511);
+            (
+                format!(r#"{},"{errno_ret}":{e}"#, named("SCMP_ACT_ERRNO")),
+                errno(i32::try_from(e).unwrap()),
+            )
+        }
+    }
+}
+
+/// A random profile of rules on [`POOL`], `exit` and `exit_group` allowed
+/// first: its JSON, its rules and its default's return value.
+fn random_profile(rng: &mut Rng) -> (String, Vec<RefRule>, u32) {
+    let (default_json, default) = random_action(rng, "defaultAction", "defaultErrnoRet");
+    let mut json = vec![r#"{"names":["exit","exit_group"],"action":"SCMP_ACT_ALLOW"}"#.to_owned()];
+    let mut rules = vec![RefRule {
+        names: vec!["exit", "exit_group"],
+        ret: ALLOW,
+        conds: Vec::new(),
+    }];
+    for _ in 0..rng.below(10) {
+        let names: Vec<&str> = (0..=rng.below(2)).map(|_| rng.pick(&POOL)).collect();
+        let (action, ret) = random_action(rng, "action", "errnoRet");
+        let mut free = vec![0, 1, 2, 3, 4, 5];
+        let mut conds = Vec::new();
+        for _ in 0..rng.below(4) {
+            let index = free.remove(rng.below(free.len()));
+            conds.push((
+                index,
+                rng.pick(&OPS),
+                edge_or_random(rng),
+                edge_or_random(rng),
+            ));
+        }
+        let args: Vec<String> = conds
+            .iter()
+            .map(|(i, op, v, two)| {
+                format!(r#"{{"index":{i},"value":{v},"valueTwo":{two},"op":"{op}"}}"#)
+            })
+            .collect();
+        let quoted: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+        let named = if quoted.len() == 1 && rng.below(2) == 0 {
+            format!(r#""name":{}"#, quoted[0])
+        } else {
+            format!(r#""names":[{}]"#, quoted.join(","))
+        };
+        json.push(format!(
+            r#"{{{named},{action},"args":[{}]}}"#,
+            args.join(",")
+        ));
+        rules.push(RefRule { names, ret, conds });
+    }
+    let json = format!(r#"{{{default_json},"syscalls":[{}]}}"#, json.join(","));
+    (json, rules, default)
+}
+
+/// Arguments that often meet a rule's values, or miss them by one in
+/// either word.
+fn random_args(rng: &mut Rng, rules: &[RefRule]) -> [u64; 6] {
+    let near: Vec<u64> = rules
+        .iter()
+        .flat_map(|r| r.conds.iter().flat_map(|&(_, _, v, two)| [v, two]))
+        .collect();
+    std::array::from_fn(|_| match rng.below(5) {
+        0 if !near.is_empty() => rng.pick(&near),
+        1 if !near.is_empty() => rng
+            .pick(&near)
+            .wrapping_add(rng.pick(&[1, u64::MAX, 1 << 32])),
+        2 => rng.next(),
+        _ => edge_or_random(rng),
+    })
+}
+
+/// Random profiles: the compiled filter answers every call, from every
+/// architecture, as a reading of the profile alone does (ADR-0109),
+/// whatever its actions, conditions and their order.
+#[test]
+fn random_profiles_compile_to_what_the_profile_says() {
+    let numbers: Vec<u32> = syscalls::all().map(|(_, n)| n).collect();
+    for seed in 1..=400 {
+        let mut rng = Rng::new(seed);
+        let (json, rules, default) = random_profile(&mut rng);
+        let p = compiled(&json);
+        for _ in 0..300 {
+            let nr = match rng.below(6) {
+                0 => rng.pick(&numbers),
+                1 => u32::try_from(rng.next() >> 32).unwrap(),
+                2 => 1000 + u32::try_from(rng.below(64)).unwrap(),
+                _ => syscalls::number(rng.pick(&POOL)).unwrap(),
+            };
+            let arch = if rng.below(20) == 0 {
+                rng.pick(&[0x4000_0003, 0x4000_0028, 0xc000_003e, 0xc000_00b7])
+            } else {
+                AUDIT_ARCH
+            };
+            let args = random_args(&mut rng, &rules);
+            assert_eq!(
+                verdict_on(&p, arch, nr, args),
+                reference(&rules, default, arch, nr, args),
+                "seed {seed}: arch {arch:#x}, call {nr}, {args:x?}\n{json}"
+            );
+        }
+    }
+}
+
+/// The same calls of the same profile, from the x32 ABI, get `EPERM`
+/// whatever the profile says of the native call.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn x32_numbers_are_refused_whatever_the_profile_says() {
+    let x32 = super::super::X32_SYSCALL_BIT;
+    for default in ["SCMP_ACT_ALLOW", "SCMP_ACT_LOG", "SCMP_ACT_ERRNO"] {
+        let p = compiled(&format!(
+            r#"{{"defaultAction":"{default}","syscalls":[{{"names":["keyctl","getpid"],
+            "action":"SCMP_ACT_ALLOW"}}]}}"#
+        ));
+        for (name, n) in syscalls::all() {
+            for high in [x32, x32 | 0x8000_0000, 0xffff_ff00 | (n & 0xff)] {
+                assert_eq!(
+                    verdict_on(&p, AUDIT_ARCH, n | high, [0; 6]),
+                    errno(libc::EPERM),
+                    "{default}: {name} | {high:#x}"
+                );
+            }
+        }
+    }
+}
+
+/// [`SeccompProfile::from_json`] refuses `json`, never panics: the message.
+fn refused_live(json: &[u8]) -> String {
+    match SeccompProfile::from_json(json) {
+        Err(Error::SeccompProfile(m)) => m,
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("accepted: {}", String::from_utf8_lossy(json)),
+    }
+}
+
+/// A key given twice is refused, never read as its first or last value,
+/// which could loosen the profile (Go's `encoding/json` keeps the last).
+#[test]
+fn a_key_given_twice_is_refused() {
+    let rule = |r: &str| format!(r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{r}]}}"#);
+    for json in [
+        r#"{"defaultAction":"SCMP_ACT_ERRNO","defaultAction":"SCMP_ACT_ALLOW"}"#.to_owned(),
+        r#"{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":1,"defaultErrnoRet":1}"#.to_owned(),
+        r#"{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[],"syscalls":[{"names":["keyctl"],"action":"SCMP_ACT_ALLOW"}]}"#.to_owned(),
+        r#"{"defaultAction":"SCMP_ACT_ALLOW","flags":[],"flags":["SECCOMP_FILTER_FLAG_SPEC_ALLOW"]}"#.to_owned(),
+        rule(r#"{"names":["keyctl"],"action":"SCMP_ACT_ERRNO","action":"SCMP_ACT_ALLOW"}"#),
+        rule(r#"{"names":["keyctl"],"names":["getppid"],"action":"SCMP_ACT_ERRNO"}"#),
+        rule(r#"{"name":"keyctl","name":"getppid","action":"SCMP_ACT_ERRNO"}"#),
+        rule(r#"{"names":["keyctl"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"errnoRet":1}"#),
+        rule(
+            r#"{"names":["socket"],"action":"SCMP_ACT_ERRNO","args":[],
+            "args":[{"index":0,"value":2,"op":"SCMP_CMP_EQ"}]}"#,
+        ),
+        rule(
+            r#"{"names":["socket"],"action":"SCMP_ACT_ERRNO",
+            "args":[{"index":0,"value":2,"value":40,"op":"SCMP_CMP_EQ"}]}"#,
+        ),
+        rule(
+            r#"{"names":["socket"],"action":"SCMP_ACT_ERRNO",
+            "args":[{"index":0,"index":1,"value":2,"op":"SCMP_CMP_EQ"}]}"#,
+        ),
+        rule(
+            r#"{"names":["socket"],"action":"SCMP_ACT_ERRNO",
+            "args":[{"index":0,"value":2,"op":"SCMP_CMP_EQ","op":"SCMP_CMP_NE"}]}"#,
+        ),
+        rule(
+            r#"{"names":["keyctl"],"action":"SCMP_ACT_ERRNO",
+            "includes":{"caps":["CAP_CHOWN"],"caps":["CAP_SYS_ADMIN"]}}"#,
+        ),
+        rule(
+            r#"{"names":["keyctl"],"action":"SCMP_ACT_ERRNO",
+            "excludes":{},"excludes":{"arches":["amd64","arm64"]}}"#,
+        ),
+        r#"{"defaultAction":"SCMP_ACT_ALLOW","archMap":[{"architecture":"SCMP_ARCH_X86_64",
+        "architecture":"SCMP_ARCH_AARCH64"}]}"#
+            .to_owned(),
+    ] {
+        let m = refused_live(json.as_bytes());
+        assert!(m.contains("duplicate field"), "{json}: {m}");
+    }
+}
+
+/// Deep nesting, a megabyte of it, and anything around one profile are
+/// refused without a stack overflow.
+#[test]
+fn nesting_and_bytes_around_a_profile_are_refused() {
+    let deep = 1 << 20;
+    let mut cases: Vec<Vec<u8>> = vec![
+        b"[".repeat(deep),
+        b"{\"a\":".repeat(deep / 5),
+        [&br#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":"#[..], &b"[".repeat(deep)].concat(),
+        [
+            &br#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["keyctl"],"action":"SCMP_ACT_ERRNO","comment":"#[..],
+            &b"[".repeat(deep),
+        ]
+        .concat(),
+        [
+            &br#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["keyctl"],"action":"SCMP_ACT_ERRNO","includes":"#[..],
+            &b"{\"caps\":".repeat(deep / 8),
+        ]
+        .concat(),
+    ];
+    for extra in [
+        &br#"{"defaultAction":"SCMP_ACT_ERRNO"}{"defaultAction":"SCMP_ACT_ALLOW"}"#[..],
+        br#"{"defaultAction":"SCMP_ACT_ERRNO"},"#,
+        br#"{"defaultAction":"SCMP_ACT_ERRNO"} // allow"#,
+        b"\xef\xbb\xbf{\"defaultAction\":\"SCMP_ACT_ERRNO\"}",
+        b"{\"defaultAction\":\"SCMP_ACT_ERRNO\",\"syscalls\":[{\"names\":[\"key\xffctl\"],\"action\":\"SCMP_ACT_ALLOW\"}]}",
+        b"{\"defaultAction\":\"SCMP_ACT_ERRNO\",\"syscalls\":[{\"names\":[\"keyctl\x00\"],\"action\":\"SCMP_ACT_ALLOW\"}]}",
+        b"null",
+        b"[]",
+        b"\"SCMP_ACT_ALLOW\"",
+        b"",
+    ] {
+        cases.push(extra.to_vec());
+    }
+    for json in cases {
+        let shown = String::from_utf8_lossy(&json[..json.len().min(80)]).into_owned();
+        let m = refused_live(&json);
+        assert!(!m.is_empty(), "{shown}");
+    }
+}
+
+/// A number given in a form that is not a plain unsigned integer is
+/// refused, never read as 0 or truncated.
+#[test]
+fn numbers_in_other_forms_are_refused() {
+    let errno_rule = |e: &str| {
+        format!(
+            r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["keyctl"],
+            "action":"SCMP_ACT_ERRNO","errnoRet":{e}}}]}}"#
+        )
+    };
+    let arg = |field: &str, v: &str| {
+        let (index, value) = if field == "index" { (v, "0") } else { ("0", v) };
+        format!(
+            r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":["socket"],
+            "action":"SCMP_ACT_ERRNO","args":[{{"index":{index},"value":{value},"op":"SCMP_CMP_EQ"}}]}}]}}"#
+        )
+    };
+    let odd = [
+        "-0",
+        "0.0",
+        "1.0",
+        "1e0",
+        "1E2",
+        "\"1\"",
+        "true",
+        "18446744073709551616",
+        "1e400",
+        "-1",
+        "0x1",
+        "01",
+        "+1",
+        "NaN",
+        "[]",
+        "{}",
+    ];
+    for v in odd {
+        for json in [
+            errno_rule(v),
+            format!(r#"{{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":{v}}}"#),
+            arg("value", v),
+            arg("index", v),
+            arg("valueTwo", v).replace(r#""value":"#, r#""valueTwo":0,"value":"#),
+        ] {
+            refused_live(json.as_bytes());
+        }
+    }
+}
+
+/// Rules on one call that disagree, in either order, by `name` or
+/// `names`, or given twice: the strictest that matches wins (ADR-0109).
+#[test]
+fn rules_that_disagree_settle_on_the_strictest_in_any_order() {
+    let g = libc::SYS_getppid;
+    let allow = r#"{"names":["getppid"],"action":"SCMP_ACT_ALLOW"}"#;
+    let refuse = r#"{"name":"getppid","action":"SCMP_ACT_ERRNO","errnoRet":9}"#;
+    let log = r#"{"names":["getppid","getppid"],"action":"SCMP_ACT_LOG"}"#;
+    let kill_on_7 = r#"{"names":["getppid"],"action":"SCMP_ACT_KILL_PROCESS",
+        "args":[{"index":0,"value":7,"op":"SCMP_CMP_EQ"}]}"#;
+    let allow_on_7 = r#"{"names":["getppid"],"action":"SCMP_ACT_ALLOW",
+        "args":[{"index":0,"value":7,"op":"SCMP_CMP_EQ"}]}"#;
+    for rules in [
+        [allow, refuse, log, kill_on_7, allow_on_7],
+        [allow_on_7, kill_on_7, log, refuse, allow],
+        [log, allow_on_7, allow, kill_on_7, refuse],
+    ] {
+        for default in ["SCMP_ACT_ALLOW", "SCMP_ACT_ERRNO"] {
+            let p = compiled(&format!(
+                r#"{{"defaultAction":"{default}","syscalls":[{}]}}"#,
+                rules.join(",")
+            ));
+            assert_eq!(verdict(&p, g, a0(0)), errno(9), "{rules:?}");
+            assert_eq!(
+                verdict(&p, g, a0(7)),
+                libc::SECCOMP_RET_KILL_PROCESS,
+                "{rules:?}"
+            );
+            assert_eq!(verdict(&p, g, a0(0x1_0000_0007)), errno(9), "{rules:?}");
+        }
+    }
+}
+
+/// A profile that compiles to exactly `want` instructions, with an errno
+/// rule on `getppid` whose first argument is 0 (`EPERM`) among them.
+fn profile_of_length(want: usize) -> Option<(String, Program)> {
+    // An EQ rule is 5 instructions, a MASKED_EQ one 7: some mix of them
+    // lands on every length past the fixed part.
+    let eq = |i: usize| {
+        format!(
+            r#"{{"names":["getppid"],"action":"SCMP_ACT_ERRNO","errnoRet":{},
+            "args":[{{"index":0,"value":{i},"op":"SCMP_CMP_EQ"}}]}}"#,
+            1 + i % 500
+        )
+    };
+    let masked = |i: usize| {
+        format!(
+            r#"{{"names":["getpid"],"action":"SCMP_ACT_ERRNO","errnoRet":{},
+            "args":[{{"index":1,"value":{},"valueTwo":{},"op":"SCMP_CMP_MASKED_EQ"}}]}}"#,
+            1 + i % 500,
+            u64::MAX,
+            i
+        )
+    };
+    for m in 0..5 {
+        let mut lo = 0usize;
+        let mut hi = 1000;
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            let rules: Vec<String> = (0..mid).map(eq).chain((0..m).map(masked)).collect();
+            let json = format!(
+                r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{}]}}"#,
+                rules.join(",")
+            );
+            match compile(json.as_bytes(), &cx((6, 8))) {
+                Ok(p) if p.program.insns.len() == want => return Some((json, p.program)),
+                Ok(p) if p.program.insns.len() < want => lo = mid,
+                Ok(_) | Err(_) => hi = mid - 1,
+            }
+        }
+    }
+    None
+}
+
+/// The kernel's bound is the compiler's: 4096 instructions compile (the
+/// kernel installs them, `kernel::a_profile_of_4096_instructions_installs`),
+/// one rule more is refused.
+#[test]
+fn profiles_compile_up_to_the_kernels_4096_instructions() {
+    let (json, p) = profile_of_length(MAX_INSNS).expect("a profile of 4096 instructions");
+    assert_eq!(verdict(&p, libc::SYS_getppid, a0(0)), errno(1));
+    let one_more = json.replacen(
+        r#""syscalls":["#,
+        r#""syscalls":[{"names":["getppid"],"action":"SCMP_ACT_ERRNO","args":[{"index":2,"value":1,"op":"SCMP_CMP_EQ"}]},"#,
+        1,
+    );
+    let m = refusal(&one_more);
+    assert!(m.contains("more than the kernel's 4096"), "{m}");
+}
+
 /// The same filters run by the kernel, in a forked child. Skipped under
 /// qemu-user, which cannot install an aarch64 filter in an x86_64 kernel.
 mod kernel {
@@ -1355,5 +1865,183 @@ mod kernel {
                 .position(|ok| !ok)
                 .map_or(0, |i| i32::try_from(i + 1).unwrap_or(99))
         }));
+    }
+
+    /// Random profiles of [`super::random_profile`]: the kernel installs
+    /// each, and answers `getppid` and `getpid`, which read no argument, as
+    /// the profile says, a kill or a trap included.
+    #[test]
+    fn random_profiles_install_and_answer_as_the_profile_says() {
+        let fatal = |ret: u32| precedence(ret) < precedence(errno(1));
+        for seed in 1..=150 {
+            let mut rng = Rng::new(seed);
+            let (json, rules, default) = random_profile(&mut rng);
+            let p = compiled(&json);
+            let calls: Vec<(libc::c_long, [u64; 6], u32)> = (0..40)
+                .map(|_| {
+                    let call = rng.pick(&[libc::SYS_getppid, libc::SYS_getpid]);
+                    let args = random_args(&mut rng, &rules);
+                    let n = u32::try_from(call).unwrap();
+                    (call, args, reference(&rules, default, AUDIT_ARCH, n, args))
+                })
+                .collect();
+            let status = under(&p, || {
+                for (i, &(call, args, want)) in (1..).zip(&calls) {
+                    if fatal(want) {
+                        continue;
+                    }
+                    let [a, b, c, d, e, f] = args.map(u64::cast_signed);
+                    // SAFETY: `getppid` and `getpid` read no argument.
+                    let r = unsafe { libc::syscall(call, a, b, c, d, e, f) };
+                    let errno_ret = want & libc::SECCOMP_RET_ACTION_FULL == libc::SECCOMP_RET_ERRNO;
+                    let ok = if errno_ret {
+                        refused(r, i32::try_from(want & libc::SECCOMP_RET_DATA).unwrap_or(0))
+                    } else {
+                        r > 0
+                    };
+                    if !ok {
+                        return i;
+                    }
+                }
+                0
+            });
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "seed {seed}: {status:#x} (200: install refused)\n{json}"
+            );
+            if let Some(&(call, args, want)) = calls.iter().find(|c| fatal(c.2)) {
+                let status = under(&p, || {
+                    let [a, b, c, d, e, f] = args.map(u64::cast_signed);
+                    // SAFETY: as above.
+                    unsafe { libc::syscall(call, a, b, c, d, e, f) };
+                    1
+                });
+                assert!(
+                    libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSYS,
+                    "seed {seed}: {want:#x} gave {status:#x}\n{json}"
+                );
+            }
+        }
+    }
+
+    /// The longest profile `--seccomp` compiles is one the kernel installs.
+    #[test]
+    fn a_profile_of_4096_instructions_installs() {
+        let (_, p) = profile_of_length(MAX_INSNS).unwrap();
+        exited_ok(under(&p, || {
+            if !refused(getppid(a0(0)), libc::EPERM) {
+                return 1;
+            }
+            if getppid(a0(1 << 40)) <= 0 {
+                return 2;
+            }
+            0
+        }));
+    }
+
+    /// A forked child under no filter of the test's: the control.
+    #[cfg(target_arch = "x86_64")]
+    fn unfiltered(check: impl Fn() -> i32) -> i32 {
+        // SAFETY: the child only makes syscalls and exits with `_exit`.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: as above.
+            unsafe { libc::_exit(check()) };
+        }
+        let mut status = 0;
+        // SAFETY: reaping the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        status
+    }
+
+    /// An i386 system call through `int 0x80`: its result, `-errno` on a
+    /// failure.
+    #[cfg(target_arch = "x86_64")]
+    fn int80(nr: u32, a: u32, b: u32, c: u32) -> i32 {
+        let ret: u32;
+        // SAFETY: `int 0x80` with the i386 ABI's registers; `rbx`, which
+        // inline assembly cannot name, is swapped in and back, and the
+        // registers a 64-bit kernel may clobber on that path are marked.
+        unsafe {
+            std::arch::asm!(
+                "xchg {a:r}, rbx",
+                "int 0x80",
+                "xchg {a:r}, rbx",
+                a = inout(reg) u64::from(a) => _,
+                inlateout("eax") nr => ret,
+                in("ecx") b,
+                in("edx") c,
+                out("r8") _,
+                out("r9") _,
+                out("r10") _,
+                out("r11") _,
+            );
+        }
+        ret.cast_signed()
+    }
+
+    /// i386 calls and their first two arguments: `getpid`;
+    /// `personality(ADDR_NO_RANDOMIZE)`; `unshare(CLONE_NEWUSER)`;
+    /// `keyctl(KEYCTL_GET_KEYRING_ID, KEY_SPEC_SESSION_KEYRING)`;
+    /// `socket(AF_INET, SOCK_DGRAM)`.
+    #[cfg(target_arch = "x86_64")]
+    const I386: [(u32, u32, u32); 5] = [
+        (20, 0, 0),
+        (136, 0x4_0000, 0),
+        (310, 0x1000_0000, 0),
+        (288, 0, 0xffff_fffd),
+        (359, 2, 2),
+    ];
+
+    /// The i386 and x32 ABIs reach no call, under the default profile and
+    /// under one that refuses only the native `keyctl`: `getpid`, which
+    /// nothing refuses natively, gets `EPERM` there, where the control
+    /// without a filter gets its pid (i386) or `ENOSYS` (no x32 kernel).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn other_abis_reach_no_call() {
+        let x32 = libc::c_long::from(super::super::super::X32_SYSCALL_BIT);
+        let control = unfiltered(|| i32::from(int80(20, 0, 0, 0) <= 0));
+        let i386 = libc::WIFEXITED(control) && libc::WEXITSTATUS(control) == 0;
+        exited_ok(unfiltered(|| {
+            // SAFETY: an x32 `getpid`, which reads no argument.
+            let r = unsafe { libc::syscall(x32 | libc::SYS_getpid) };
+            i32::from(!(r > 0 || refused(r, libc::ENOSYS)))
+        }));
+        let denylist = compiled(
+            r#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[
+            {"names":["keyctl"],"action":"SCMP_ACT_ERRNO","errnoRet":77}]}"#,
+        );
+        for (name, p) in [
+            ("default", SeccompProfile::docker_default().unwrap().program),
+            ("denylist", denylist),
+        ] {
+            let status = under(&p, || {
+                for (i, (n, a, b)) in (1..).zip(I386) {
+                    if i386 && int80(n, a, b, 0) != -libc::EPERM {
+                        return i;
+                    }
+                }
+                let x32_calls = [libc::SYS_getpid, libc::SYS_keyctl, libc::SYS_unshare];
+                for (i, n) in (10..).zip(x32_calls) {
+                    // SAFETY: refused by the filter before the kernel runs it.
+                    let r = unsafe { libc::syscall(x32 | n, 0, -3, 0) };
+                    if !refused(r, libc::EPERM) {
+                        return i;
+                    }
+                }
+                // SAFETY: as above.
+                if !refused(unsafe { libc::syscall(-1) }, libc::EPERM) {
+                    return 20;
+                }
+                0
+            });
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "{name}: {status:#x}, i386 checked: {i386}"
+            );
+        }
+        assert!(i386, "no i386 emulation: the int 0x80 checks did not run");
     }
 }
