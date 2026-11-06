@@ -363,11 +363,16 @@ The steps, in order:
    - The init keeps the death signal of step 1, installs its filters (step
      4), drops every capability, names itself `ranikust-init`, checks the
      death signal is still armed and the parent alive, and closes every
-     descriptor but the status pipe's write end and the go pipe's, the
-     latter last: that lets the command go on (a failure before kills the
-     command unrun and is reported as `Step::Init`, or as the filter's
-     step, unless a filter around ranikust fakes the command's read of that
-     pipe).
+     descriptor but the status pipe's write end and the go pipe's. Last, it
+     writes the go byte on the go pipe and closes its end.
+   - The command goes on only on that byte, never on the end of the pipe:
+     the end (`EPIPE`, a read a filter around ranikust faked with no error
+     included), another byte (`EPROTO`) or an error fails the `RUN` as
+     `Step::Init`. So a failure of the init's steps comes before the command
+     ran, reported as `Step::Init` or as the filter's step; the init also
+     kills the command. An init that cannot write the byte closes its end,
+     and the command fails at its read; one that can do neither ends with
+     125.
    - A read of the init's or the command's answered with `EINTR` (the
      argument areas', the parent check's, the go pipe's) fails the `RUN` as
      `Step::Init` instead of reading again: with no handler, the kernel

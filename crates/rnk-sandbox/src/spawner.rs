@@ -3772,6 +3772,91 @@ mod tests {
         });
     }
 
+    /// T2 (ADR-0080): a `RUN`'s command starts only on its init's go byte,
+    /// written after every one of the init's steps. Under a profile that
+    /// fails one of the init's last steps, the `RUN` fails as that step,
+    /// before its command ran, and the command leaves no mark, which it
+    /// leaves under a control profile that lets the init finish. A profile
+    /// that refuses `close` holds nothing up: the command starts on the
+    /// byte, not on the end of the pipe.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_runs_command_starts_only_once_its_init_has_finished() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let pdeathsig = libc::PR_GET_PDEATHSIG.unsigned_abs();
+            // Calls only the init makes after its filters.
+            let init_steps = format!(
+                "{},{}",
+                errno_rule("prctl", libc::EPERM, Some(pdeathsig)),
+                errno_rule("kill", libc::EPERM, None)
+            );
+            let cases = [
+                ("control", errno_rule("kill", libc::EPERM, None)),
+                ("the init fails", init_steps),
+                ("close refused", errno_rule("close", libc::EPERM, None)),
+            ];
+            let mut got = Vec::new();
+            for (n, (name, rules)) in cases.into_iter().enumerate() {
+                runner.seccomp = Some(allow_but(&rules));
+                let mark = format!("mark-{n}");
+                let out = top.join(format!("out-{n}"));
+                let script = format!("echo ran > /{mark}");
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                output_to(&out, &mut spec);
+                // A `RUN` that waits for a go it never gets is cancelled,
+                // which fails the case rather than the whole suite.
+                let running = &Running::default();
+                let (done, wait) = std::sync::mpsc::channel::<()>();
+                let st = std::thread::scope(|s| {
+                    s.spawn(move || {
+                        let waited = wait.recv_timeout(std::time::Duration::from_secs(60));
+                        if waited == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                            running.cancel();
+                        }
+                    });
+                    let st = runner.run(spec, Some(running), |job| clone_child(job, parent));
+                    drop(done);
+                    st
+                });
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                let marked = fs::read_to_string(root.join(&mark)).ok();
+                println!("{name}: {st:?}, mark {marked:?}\n{text}");
+                got.push((name, st, marked, text));
+            }
+            drop(mounts);
+            let mut wrong = Vec::new();
+            for (name, st, marked, text) in &got {
+                let ok = match *name {
+                    "the init fails" => {
+                        marked.is_none()
+                            && text.is_empty()
+                            && matches!(
+                                st,
+                                Err(e @ Error::Setup { step: Step::Init, source })
+                                    if source.raw_os_error() == Some(libc::EPERM)
+                                        && e.ran_no_command()
+                            )
+                    }
+                    _ => {
+                        marked.as_deref() == Some("ran\n")
+                            && st.as_ref().is_ok_and(ExitStatus::success)
+                    }
+                };
+                if !ok {
+                    wrong.push(format!("{name}: {st:?}, mark {marked:?}, output {text:?}"));
+                }
+            }
+            assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        });
+    }
+
     /// T2 (ADR-0109): a refused join of the session keyring, by an LSM or
     /// a filter around ranikust (filters on this thread stand in for both),
     /// fails a `RUN` whose profile lets `keyctl`, `add_key` or `request_key` run

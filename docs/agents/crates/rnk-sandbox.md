@@ -416,7 +416,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   not, each `KeyringJoin`; an `execve` or `execveat` back without an error; a
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
   the init's and the command's reads, the parent check's against an unfiltered
-  control; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
+  control; the command's go only on its init's go byte, never on an ended
+  pipe, another byte or a read faked with no error, and the init's go byte
+  sent, or the pipe ended without it, or the init ended where neither can
+  be done; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
   `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
@@ -444,6 +447,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_running_binary_cannot_be_opened_for_writing`;
   `a_run_gets_its_seccomp_profile`: the default, unconfined, a file, and a
   profile that refuses the keyring join; each `RUN` in a keyring of its own;
+  `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
+  that fails one of the init's last steps the `RUN` fails as that step and
+  its command leaves no mark, which it leaves under a control profile; a
+  profile refusing `close` still runs the command;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
   `--seccomp` refuses; compiled for the test) leave the bounding set, the

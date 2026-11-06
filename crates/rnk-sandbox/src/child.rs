@@ -536,7 +536,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // ([`run_init`]), the command once in its cgroup namespace (ADR-0110).
     // After them come the capability cut, since the install needs
     // `CAP_SYS_ADMIN`, and the init's and the command's steps that must
-    // follow the fork; only a filter around ranikust could fake the fork
+    // follow the filters; only a filter around ranikust could fake the fork
     // (threat model, section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
@@ -586,11 +586,11 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// is the default), its copy of ranikust's argument and environment
 /// strings zeroed; [`run`] made it not dumpable and gave it a session of
 /// its own, so that no terminal signal reaches it, before the `RUN`'s
-/// profile. The command waits on the go pipe until the init has given all
-/// that up, so a failure of the init's own steps (`Step::Init`, or the
-/// filter's step) comes before the command ran, unless a filter around
-/// ranikust fakes the command's `read` of that pipe (threat model,
-/// section 6). The init reaps every process that reparents to it; when the
+/// profile. The command starts only on the init's go byte, written once
+/// the init has given all that up, never on the end of the go pipe
+/// ([`wait_for_go`]), so a failure of the init's own steps (`Step::Init`,
+/// or the filter's step) comes before the command ran, however the init
+/// ends. The init reaps every process that reparents to it; when the
 /// command exits, it writes the command's wait status on the status pipe
 /// and exits, and the kernel kills the rest, as when the command was PID 1
 /// itself.
@@ -605,8 +605,8 @@ fn run_init(
     // with (`--build-arg` values, `--secret` paths, the environment) must not
     // be readable there by the command.
     zero_args_and_environment(err, parent);
-    // The command blocks reading the go pipe until every write end is
-    // closed: the init's goes in `close_all_except`, after its own steps.
+    // The command blocks reading the go pipe until the init's go byte,
+    // which [`send_go`] writes after the init's own steps.
     let (go_r, go_w) = init_pipe(err);
     // A plain `fork`: no `CLONE_VM`, a null stack, the child continues on a
     // copy of this stack, as the spawner's clone.
@@ -658,13 +658,12 @@ fn run_init(
     drop(go_r);
     init_keep_nothing(err, parent, command, args);
     // Nothing is left to report on the error pipe: the command's own copy
-    // says whether it reached `execve`. Every other descriptor goes first;
-    // closing the go pipe's write end last lets the command go on only
-    // once the init holds nothing but the status pipe.
+    // says whether it reached `execve`. Every other descriptor goes first,
+    // so that the go byte lets the command go on only once the init holds
+    // nothing but the status pipe.
     let go_w = go_w.into_raw_fd();
     close_all_except(&[go_w.min(status_w), go_w.max(status_w)]);
-    // SAFETY: closing a descriptor number this process holds.
-    unsafe { libc::close(go_w) };
+    send_go(go_w);
     let status = reap_until(command);
     let bytes = status.to_le_bytes();
     // SAFETY: `status_w` is open in this process; the write is below
@@ -728,14 +727,41 @@ fn init_pipe(err: RawFd) -> (OwnedFd, OwnedFd) {
     unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) }
 }
 
-/// The command waits here until the init has closed its write end of the
-/// go pipe; any other outcome of the read fails the `RUN`, `EINTR`
-/// included: with no handler, the kernel restarts a read a signal
-/// interrupts, so only a filter answers so, and it could forever.
+/// The byte the init writes on the go pipe once it has done every one of
+/// its steps; the command starts on nothing else.
+const GO: u8 = b'G';
+
+/// The init's last step before it waits: the go byte, then its end of the
+/// go pipe closed. Without the byte, the command fails at its read once
+/// the pipe ends and reports it, and the init reaps it as any command;
+/// where the pipe cannot end either, the init ends (125) rather than leave
+/// both waiting.
+fn send_go(go_w: RawFd) {
+    // SAFETY: `go_w` is open in this process until the `close` below.
+    let sent = matches!(
+        rustix::io::write(unsafe { BorrowedFd::borrow_raw(go_w) }, &[GO]),
+        Ok(1)
+    );
+    // SAFETY: closing a descriptor number this process holds.
+    let closed = unsafe { libc::close(go_w) } == 0;
+    if !sent && !closed {
+        // SAFETY: `_exit` ends the process at once; the kernel then kills
+        // what is left of the namespace.
+        unsafe { libc::_exit(125) }
+    }
+}
+
+/// The command waits here for its init's go byte ([`send_go`]); any other
+/// outcome of the read fails the `RUN` as `Step::Init`: the end of the
+/// pipe (`EPIPE`, a read a filter around ranikust answered with no error
+/// included), another byte (`EPROTO`), or an error, `EINTR` included: with
+/// no handler, the kernel restarts a read a signal interrupts, so only a
+/// filter answers so, and it could forever.
 fn wait_for_go(err: RawFd, go: &OwnedFd) {
     let mut byte = [0u8; 1];
     match rustix::io::read(go, &mut byte) {
-        Ok(0) => {}
+        Ok(1) if byte == [GO] => {}
+        Ok(0) => fail(err, Step::Init, Errno::PIPE),
         Ok(_) => fail(err, Step::Init, Errno::PROTO),
         Err(e) => fail(err, Step::Init, e),
     }
@@ -805,8 +831,9 @@ pub(crate) fn arg_and_env_regions(stat: &[u8]) -> Option<[(usize, usize); 2]> {
 /// The init installs the `RUN`'s filters, as the command does, and gives up
 /// what the command still needs: every capability, its name. It checks its
 /// death signal is still armed and ranikust still alive. On a failure the
-/// command, still waiting on the go pipe, is killed, and the failure
-/// reported as a set-up step.
+/// command is killed, wherever it is in its own steps before the go (its
+/// cgroup, its filters, its wait), and the failure reported as a set-up
+/// step; the command never goes on without the go byte either.
 fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args: &ChildArgs) {
     let fail_as = |step: Step, e: Errno| -> ! {
         // SAFETY: a plain `kill` of this process's own child.
@@ -2780,6 +2807,61 @@ mod tests {
             };
             assert_eq!(alive(""), None, "parent check, unfiltered");
             assert_eq!(alive(&eintr("pread64")), init(libc::ESRCH), "parent check");
+        }
+
+        /// The command starts only on its init's go byte, never on the end
+        /// of the pipe: a pipe that ends first, another byte, or a read a
+        /// filter answers with no error fails the `RUN` as `Step::Init`.
+        #[test]
+        fn the_command_starts_only_on_its_inits_go_byte() {
+            let waits = |sent: &[u8], rule: &str| {
+                let (go, go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+                assert_eq!(rustix::io::write(&go_w, sent).unwrap(), sent.len());
+                drop(go_w);
+                failure_under(rule, |w| wait_for_go(w, &go))
+            };
+            let faked = r#"{"names": ["read"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            let init = |e| Some((Step::Init, e));
+            assert_eq!(waits(&[], ""), init(libc::EPIPE), "an ended pipe");
+            assert_eq!(waits(&[GO], ""), None, "the go byte");
+            assert_eq!(waits(b"x", ""), init(libc::EPROTO), "another byte");
+            assert_eq!(waits(&[GO], faked), init(libc::EPIPE), "a faked read");
+        }
+
+        /// The init's go: the byte, then the end of the pipe. A write
+        /// refused leaves the end alone, on which the command fails; a
+        /// write and a `close` refused end the init (125) rather than leave
+        /// it and the command waiting.
+        #[test]
+        fn the_init_sends_its_go_byte_or_ends_the_pipe() {
+            let refused = |names: &str| {
+                format!(
+                    r#"{{"names": [{names}], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}"#,
+                    libc::EPERM
+                )
+            };
+            for (rule, want, exit) in [
+                (String::new(), vec![GO], 0),
+                (refused(r#""write""#), vec![], 0),
+                (refused(r#""write", "close""#), vec![], 125),
+            ] {
+                let (go, go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+                let json =
+                    format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
+                let prog = crate::SeccompProfile::faking(json.as_bytes())
+                    .unwrap()
+                    .program;
+                let status = crate::seccomp::under_filter(&prog, || {
+                    send_go(go_w.as_raw_fd());
+                    0
+                });
+                drop(go_w);
+                let mut got = [0u8; 2];
+                let n = rustix::io::read(&go, &mut got).unwrap();
+                assert_eq!(got.get(..n), Some(&want[..]), "{rule}");
+                assert!(libc::WIFEXITED(status), "{rule}: status {status:#x}");
+                assert_eq!(libc::WEXITSTATUS(status), exit, "{rule}");
+            }
         }
 
         /// A `#!` heredoc's `execveat` answered with no error fails the
