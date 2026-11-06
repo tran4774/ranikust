@@ -87,13 +87,13 @@ pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
 pub fn probe_user_namespace(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, left empty
-pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // #[non_exhaustive]; map(); stop(): the first step a RUN needs that failed; in_namespace(f) -> Option<Result<String, String>>: f as root of a new user and mount namespace with that map, in a child; Display: the log line
+pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f) -> Option<Result<Result<String, String>, String>>: f as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish; else what f returned); Display: the log line
 pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
 pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
 pub struct IdRange { pub start: u32, pub count: u32 }
-pub enum StepResult { Ok, Failed(Failure), NotRun(&'static str) }   // #[non_exhaustive]
-pub enum MountResult { Fresh, Rbind { fresh: Failure }, Failed { fresh: Failure, rbind: Option<Failure> }, NotRun(&'static str) } // #[non_exhaustive]
-pub struct Failure { pub op: &'static str, pub errno: Option<i32>, pub detail: Option<String> }
+pub enum StepResult { Ok, Failed(StepFailure), NotRun(&'static str) }   // #[non_exhaustive]
+pub enum MountResult { Fresh, Rbind { fresh: StepFailure }, Failed { fresh: StepFailure, rbind: Option<StepFailure> }, NotRun(&'static str) } // #[non_exhaustive]
+pub struct StepFailure { pub op: &'static str, pub errno: Option<i32>, pub detail: Option<String> }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060); RUN cgroups where delegated (ADR-0110); Full RUNs under SeccompProfile::docker_default
@@ -461,7 +461,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   assembled from a child's records (a refused `unshare`, each map refused,
   a fresh kernel filesystem or its rbind, Ubuntu 24.04's ranged stop at
   `chown`), records across split reads and the deadline, the report's line
-  and stop.
+  and stop, a map this process fails to write ending the waiting child at
+  once, and a failure part-way through making the probe's files removing
+  what it made.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`, host name, capability sets `a80425fb` with
@@ -478,7 +480,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/userns/tests.rs`: as the user who ran sudo, one id, then
   `newuidmap` with that user's ranges; where AppArmor restricts user
   namespaces, Ubuntu 24.04, one id stops at the `uid_map` write and ranges
-  at `chown`, elsewhere both pass; prints `measured:` lines); `a_device_node_planted_as_a_journal_is_never_opened`
+  at `chown`, elsewhere both pass; both harnesses install `newuidmap`, and
+  the user must have subordinate ids; prints `measured:` lines); `a_device_node_planted_as_a_journal_is_never_opened`
   (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;

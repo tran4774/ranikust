@@ -31,9 +31,10 @@ a kernel without overlay.
 
 **Built:** overlay root, both kaniko outcomes, refuse. **Planned, Phase 3**
 (tracking issue [#41](https://github.com/tran4774/ranikust/issues/41)):
-overlay rootless and the user-namespace probe it needs. No code makes a user
-namespace for the probe or the build: `enter_build_namespace`
-(`crates/rnk-sandbox/src/setup.rs`) does `unshare(CLONE_NEWNS)` only, and
+overlay rootless. The user-namespace probe it needs is built and reported
+only ([step 2](#probe-order---modeauto)); no code makes a user namespace for
+the build: `enter_build_namespace` (`crates/rnk-sandbox/src/setup.rs`) does
+`unshare(CLONE_NEWNS)` only, and
 `Outcome` (`crates/ranikust/src/setup.rs`) has `OverlayRoot` alone (kaniko
 mode is set up by `set_up_kaniko`). What happens meanwhile to root without
 the privilege to mount and to a process that is not root is under
@@ -101,10 +102,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    namespace makes the kernel refuse it (`EPERM`).
 2. **Overlay in a user namespace**, reported only
    ([#74](https://github.com/tran4774/ranikust/issues/74)): `--mode=auto`
-   as root, once the outcome is picked, probes it and logs one line
-   (whether the path passes or where it stops, each step with its errno,
-   the map, the overlay, the AppArmor switch below); nothing routes on it
-   until rootless overlay mode (Phase 3).
+   as root probes it during the set-up, before the spawner starts, and
+   logs one line (whether the path passes or where it stops, each step with
+   its errno, the map, the overlay, the AppArmor switch below); nothing
+   routes on it until rootless overlay mode (Phase 3).
    `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
    a directory of the build under the state directory (`userns-probe`, or a
    name the next start removes when the store is anonymous), removed after.

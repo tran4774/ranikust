@@ -21,7 +21,7 @@ writer) before `unshare`, the probes and the state directory's checks.
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
   of `rnk-sandbox` and `rnk-snapshot` in order, the outcome; with
   `--mode=auto` as root, the user-namespace probe, logged and reported only
-  (`report_user_namespace`, #74); in kaniko mode
+  (`report_user_namespace`); in kaniko mode
   the root (`/` in a container, `flock`ed; else a directory per stage,
   `KanikoStages`, ADR-0059). Then the hand-off to the libraries. `prune`
   only calls `rnk-store`.
@@ -146,11 +146,12 @@ Each step before the next; design in
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
    `unshare(CLONE_NEWNS)`, `/` rslave) → `statedir::prepare`, refused on
    overlayfs (a container's root: mount a volume) → `rnk_store::Store::open`
-   (marker, start-up clean-up) → `rnk_sandbox::probe` in
+   (marker, start-up clean-up) → with `--mode=auto`,
+   `report_user_namespace` (before the overlay probe, whose joined `mount(2)`
+   thread may still be counted) → `rnk_sandbox::probe` in
    `<state-dir>/sandbox` → `rnk_snapshot::probe` in
-   `builds/<id>/overlay-probe` → outcome → with `--mode=auto`,
-   `report_user_namespace` → `Sandbox::start` (journal replay, spawner
-   thread).
+   `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (journal replay,
+   spawner thread).
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
