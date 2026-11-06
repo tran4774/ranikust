@@ -1454,9 +1454,24 @@ impl Opens {
 
     fn watch(&mut self, p: &Path) {
         use rustix::fs::inotify::{WatchFlags as W, add_watch};
+        use rustix::fs::{Mode, OFlags, open};
         let what = W::OPEN | W::ACCESS | W::MODIFY | W::CLOSE | W::DONT_FOLLOW;
-        let wd = add_watch(&self.fd, p, what).unwrap();
-        self.names.insert(wd, p.to_owned());
+        match add_watch(&self.fd, p, what) {
+            Ok(wd) => {
+                self.names.insert(wd, p.to_owned());
+            }
+            // A device cgroup (Docker's default) refuses a watch on a node
+            // it denies; it then refuses every open of it too.
+            Err(rustix::io::Errno::PERM) => {
+                let o = open(
+                    p,
+                    OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                );
+                assert_eq!(o.err(), Some(rustix::io::Errno::PERM), "{p:?} is unwatched");
+            }
+            Err(e) => panic!("watch {p:?}: {e}"),
+        }
     }
 
     /// Fails with what was opened, read or written since the last call.
