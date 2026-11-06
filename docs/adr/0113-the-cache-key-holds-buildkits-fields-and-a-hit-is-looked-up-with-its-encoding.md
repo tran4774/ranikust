@@ -34,6 +34,14 @@ context file older than the epoch keeps its own mtime, and that mtime is in the
 layer. A key with no mtime would let a warm build give another digest than a
 cold one.
 
+A fourth question came from Phase 4's task 5
+([#128](https://github.com/tran4774/ranikust/issues/128)): in kaniko mode with a
+directory per stage, a cached layer is extracted while it streams, and a blob
+with a wrong digest is known to be bad only at its end, when the stage root is
+already broken. That contradicts a bad entry being a miss and never a failed
+build. On `/` the layer is verified before extraction, so it does not arise
+there.
+
 ## Considered Options
 
 The key's fields (the option letters are those of the question put to the
@@ -63,13 +71,31 @@ the option the maintainer chose):
   into the key: images do not change, and the cost is a few misses when such a
   file's mtime changes, which is rare.
 
+A blob found bad after its extraction began (the question of 2026-11-07, raised
+by task 5, #128):
+
+- (a) Stream, and on a bad blob run the stage again: drop the stage's root and
+  run the stage again from its base without that entry, so it counts as a miss.
+  Download and extraction still overlap, as fast as kaniko
+  ([ADR-0117](0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md)).
+  The extra cost comes only with a bad blob, and the work is in the builder's
+  task, task 7 ([#130](https://github.com/tran4774/ranikust/issues/130)).
+- (b) Verify first, then extract, as on `/`: the blob goes to the store and its
+  digest is checked before extraction. Simple, and a bad blob is a miss, but
+  download and extraction no longer overlap, so a hit on a large layer may be
+  slower than kaniko.
+- (c) A bad blob fails the build: simplest, but anyone who can push to the cache
+  repository can then fail builds, and the promise that a bad entry is a miss
+  must change.
+
 ## Decision Outcome
 
 A cache key is made of BuildKit's fields hashed with SHA-256, a cache entry is a
 one-layer OCI image found by a tag `rnk-v<version>-<hex>`, and a lookup uses the
 key together with the layer's encoding, so a warm build gives the cold build's
 digests; under `--reproducible` the key also holds each copied file's clamped
-mtime.
+mtime, and a hit found bad after its extraction began makes the stage start
+again from its base without that entry.
 
 The maintainer's answer (2026-11-06: "Kiểu BuildKit + encoding (khuyến nghị)",
 "BuildKit style plus encoding (recommended)") stood for option (a) of #13 with
@@ -81,6 +107,11 @@ raised by task 2, #125), he answered "Đưa mtime đã clamp vào key (khuyến 
 ("Put the clamped mtime into the key (recommended)"). It stood for the option
 that puts, only under `--reproducible`, the mtime of a file older than the epoch
 into the key.
+
+On the same day, asked what a blob found bad after its extraction began does
+(the question raised by task 5, #128), he answered "Stream, hỏng thì làm lại
+stage (khuyến nghị)" ("Stream, and if it is bad redo the stage (recommended)").
+It stood for option (a) of that question.
 
 - **Fields.** `H` is SHA-256 and the formula is ADR-0005's (see
   [cache-and-store](../design/cache-and-store.md#cache-keys)). A step's inputs
@@ -112,7 +143,11 @@ into the key.
 - **A bad entry is a miss.** An entry that fails its checks (its form, its
   annotations, `--limit`) is a miss with a warning, never a failed build, so a
   hostile repository cannot fail builds. An entry older than `--cache-ttl` is a
-  plain miss with no warning, as in kaniko.
+  plain miss with no warning, as in kaniko. In kaniko mode with a directory per
+  stage, a hit streams into the stage root, and a blob found bad after
+  extraction started (a wrong digest is known only at its end) makes the stage
+  start again from its base without that entry, counted as a miss. On `/`, a hit
+  is verified before extraction.
 - **Encoding.** A lookup carries the compression, its level, the time policy and
   the epoch. Builds with other settings share no entries, and the key itself
   stays ADR-0005's.
@@ -127,14 +162,22 @@ the encoding. It is decided before Phase 4's task 2
 ([#125](https://github.com/tran4774/ranikust/issues/125)) is built (a `question`
 issue if it needs the maintainer), and the `rnk-cache` card records it.
 
+Also not decided here: how often a stage may start again, and whether the
+restarted stage looks up the cache again. It is decided before the builder's
+task 7 ([#130](https://github.com/tran4774/ranikust/issues/130)) is built (a
+`question` issue if it needs the maintainer). Without a bound, a repository full
+of bad entries could make a stage restart once per hit.
+
 ### Consequences
 
 - Good, because no wrong layer is reused: a changed `$VAR` in a `COPY` or a
   `WORKDIR` changes the key.
 - Good, because a cache never changes the output: with `--reproducible`, a cold,
   a warm and a partial build give one digest, at no cost per hit.
-- Good, because a bad entry costs one miss, so nobody who can push to the
-  repository can fail a build with it.
+- Good, because a bad entry costs a miss and never a failed build, so nobody who
+  can push to the repository can fail a build with it.
+- Good, because in kaniko mode with a directory per stage a hit still streams,
+  so download and extraction overlap, as fast as kaniko.
 - Bad, because more misses than kaniko on cosmetic changes: the build
   environment (the declared `ARG`s, the environment, `USER`, `WORKDIR` and
   `SHELL`) is in the key of every step, not only of a `RUN`, used or not.
@@ -142,6 +185,10 @@ issue if it needs the maintainer), and the `rnk-cache` card records it.
   entries, so the repository holds one entry per encoding in use.
 - Bad, because under `--reproducible` a change to the mtime of a file older than
   the epoch is a miss, a few misses that are rare.
+- Bad, because in kaniko mode with a directory per stage a bad blob costs the
+  stage's work so far: the stage starts again. Until the bound on restarts is
+  decided, a repository full of bad entries could make a stage restart once per
+  hit.
 - Neutral, because users moving from kaniko start with a cold cache, as ADR-0005
   accepted.
 
@@ -176,13 +223,16 @@ issue if it needs the maintainer), and the `rnk-cache` card records it.
   the layer.
 - **[inferred]** Nothing measures the miss rate of (a) against (b): W2 has never
   been built with a cache
-  ([ADR-0005](0005-own-versioned-cache-key.md#evidence)).
+  ([ADR-0005](0005-own-versioned-cache-key.md#evidence)). Nor does anything
+  measure how often a cached blob is bad or what a restarted stage costs; the
+  question puts the cost as coming only with a bad blob.
 
 ## More Information
 
 Refines ADR-0005, which stays accepted: it fixes the field list that ADR-0005
-left to Phase 4. Answers #13, the Phase 4 question on the encoding and the
-question on a file's mtime (2026-11-07, raised by #125). Related:
+left to Phase 4. Answers #13, the Phase 4 question on the encoding, the
+question on a file's mtime (2026-11-07, raised by #125) and the question on a
+blob found bad after its extraction began (2026-11-07, raised by #128). Related:
 [ADR-0032](0032-observable-behaviour-follows-buildkit.md) (BuildKit breaks the
 tie), [ADR-0049](0049-security-and-performance-over-kaniko-compatibility.md),
 [ADR-0079](0079-resource-limits-with-a-limit-flag.md) (every document read is

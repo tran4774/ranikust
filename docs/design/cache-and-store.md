@@ -182,6 +182,13 @@ layout. A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
 
+In kaniko mode with a directory per stage, a hit streams into the stage root,
+and a blob found bad after extraction began makes the stage start again from its
+base without that entry; on `/` a hit is verified before extraction
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
+how often a stage may restart is not settled, decided before
+[#130](https://github.com/tran4774/ranikust/issues/130)).
+
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
 ([ADR-0012](../adr/0012-accept-divergence-between-modes.md)).
