@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -84,6 +85,17 @@ impl ContextFiles {
     /// always is.
     pub(crate) fn keeps(&self, path: &Path) -> bool {
         path.as_os_str().is_empty() || self.entries.contains_key(path)
+    }
+
+    /// The kept entries strictly below `dir` (relative to the context
+    /// root; `""` is the root), sorted: what a copy of `dir` reads, in the
+    /// order it reads them. A directory's entries follow it at once, as
+    /// paths compare name by name.
+    pub(crate) fn below<'a>(&'a self, dir: &'a Path) -> impl Iterator<Item = &'a Path> + 'a {
+        self.entries
+            .range::<Path, _>((Bound::Excluded(dir), Bound::Unbounded))
+            .map(|(p, _)| p.as_path())
+            .take_while(move |p| p.starts_with(dir))
     }
 
     /// The kept entries `source` names, sorted: one for a plain path, those
@@ -518,6 +530,30 @@ mod tests {
         add(&mut e, PathBuf::from("l"), link("t"));
         add(&mut e, PathBuf::from("x/w"), Kind::Other);
         assert_eq!(e.get(Path::new("l")), Some(&link("t")));
+    }
+
+    /// A directory's entries come before a sibling whose name extends the
+    /// directory's, in path order.
+    #[test]
+    fn below_lists_a_directorys_entries_and_nothing_else() {
+        let f = files(&[
+            ("sr", Kind::Other),
+            ("src", Kind::Dir),
+            ("src/a", Kind::Other),
+            ("src/b", Kind::Dir),
+            ("src/b/c", Kind::Other),
+            ("src-x", Kind::Other),
+            ("src.txt", Kind::Other),
+        ]);
+        let below = |d: &str| {
+            f.below(Path::new(d))
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(below("src"), ["src/a", "src/b", "src/b/c"]);
+        assert_eq!(below("src/b"), ["src/b/c"]);
+        assert_eq!(below("src/a"), Vec::<String>::new());
+        assert_eq!(below("").len(), 7);
     }
 
     #[test]

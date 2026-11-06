@@ -7,6 +7,8 @@
 
 #[path = "../../rnk-registry/tests/registry/fake.rs"]
 mod fake;
+#[path = "key_plan/support.rs"]
+mod key_support;
 #[path = "outputs/support.rs"]
 mod support;
 
@@ -126,4 +128,40 @@ fn metrics_do_not_change_reproducible_digests() {
         )
     });
     assert_eq!(with.digest(), without.digest());
+}
+
+/// The plan's span, and one `rnk_cache.key` per step counting the context
+/// files hashed: an archive `ADD` is one file, its bytes.
+#[test]
+fn a_key_plan_counts_its_steps_and_the_files_it_hashed() {
+    let capture = Capture::new();
+    let archive = {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_ustar();
+        h.set_size(5);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, "member", &b"hello"[..]).unwrap();
+        b.into_inner().unwrap()
+    };
+    let ctx = key_support::context(&[
+        ("a.txt", b"abc"),
+        ("d/b.txt", b"de"),
+        ("pipe", b"|fifo"),
+        ("a.tar", &archive),
+    ]);
+    // The second stage's `ADD <url>` has no key (Phase 5).
+    let df = "FROM scratch AS one\nENV A=1\nCOPY a.txt d pipe /\nADD a.tar /x/\n\
+              FROM one\nADD https://example.com/a /a\n";
+    capture.run(|| key_support::plan(df, &ctx.path, &key_support::Opts::default()));
+    let report = capture.report();
+    let plan = &report["phases"]["rnk_builder.key_plan"];
+    assert_eq!(plan["count"], 1, "{report:#}");
+    assert_eq!(plan["stages"], 2, "{report:#}");
+    assert_eq!(plan["steps"], 4, "{report:#}");
+    assert_eq!(plan["keyed"], 3, "{report:#}");
+    let key = &report["phases"]["rnk_cache.key"];
+    // a.txt, d/b.txt and a.tar; the directory d and the FIFO hold no bytes.
+    assert_eq!(key["files_hashed"], 3, "{report:#}");
+    assert_eq!(key["bytes_hashed"], 3 + 2 + archive.len(), "{report:#}");
 }
