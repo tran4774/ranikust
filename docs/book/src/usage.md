@@ -129,7 +129,9 @@ example `--context=$CI_PROJECT_DIR/app --digest-file=$CI_PROJECT_DIR/digest`
 
 - `--tar-path` is written to a temporary file renamed over `PATH`, which
   replaces only a regular file: a device node, FIFO, socket or symlink there is
-  refused, and so is a directory on `/proc` or `/sys`. So
+  refused, and so is a directory on `/proc` or `/sys`. (An entry another
+  writer of that directory swaps in during the write may be replaced, but is
+  never followed.) So
   `--tar-path=/dev/stdout` does not work: write the tarball to a file and
   stream that (`ranikust … --tar-path=/tmp/image.tar && cat /tmp/image.tar`).
 - The three digest files are local paths (a missing directory is made `0700`),

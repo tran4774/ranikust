@@ -612,8 +612,8 @@ fn swap_race_round(round: u32) -> SwapRace {
         rustix::fs::AtFlags::empty(),
     )
     .unwrap();
-    // Its own victim each: a link to the hard link's file would be refused
-    // for its other link even if the symlink were followed.
+    // A symlink to the hard link's file would be refused for its link
+    // count even if followed, so each link gets its own victim.
     symlink(victim.join("digest"), out.join("digestlink")).unwrap();
     fs::hard_link(victim.join("hard"), out.join("digesthard")).unwrap();
 

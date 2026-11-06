@@ -465,15 +465,15 @@ impl OutputDir {
         Ok(())
     }
 
-    /// Writes `bytes` to the file `name`, one plain name in this directory,
-    /// in place, as kaniko writes its digest files (a file the operator
-    /// mounted there, such as a Kubernetes termination log, keeps its
-    /// inode): made exclusively with `mode` (less the umask) when missing,
-    /// else truncated and rewritten. An existing entry is pinned without
-    /// following it and checked first: a symlink is refused, and so is
-    /// anything but a regular file with one link, since a hardlink would
-    /// carry the write to its other names; a FIFO or a device node is never
-    /// opened.
+    /// Writes `bytes` to the file `name` in place, as kaniko writes its
+    /// digest files (a file the operator mounted there, such as a
+    /// Kubernetes termination log, keeps its inode): made exclusively with
+    /// `mode` (less the umask) when missing, else truncated and rewritten.
+    /// `name` must be one plain name (no `/`); it is not checked.
+    /// An existing entry is pinned without following it and checked first:
+    /// a symlink is refused, and so is anything but a regular file with one
+    /// link, since a hardlink would carry the write to its other names; a
+    /// FIFO or a device node is never opened.
     ///
     /// # Errors
     ///
@@ -523,16 +523,19 @@ impl OutputDir {
         })
     }
 
-    /// Writes the file `name`, one plain name in this directory, through a
-    /// temporary file in this directory, renamed over `name` once `write`
-    /// succeeded and the data is synced: a reader never sees a partial
-    /// file. A regular file at `name` is replaced (a hardlink's other names
-    /// keep the old content); otherwise the file goes only where nothing is
-    /// (`RENAME_NOREPLACE`): a symlink, a device node (`/dev/null`), a FIFO,
-    /// a socket or a directory is refused: one there when the call starts
-    /// before anything is written, one swapped in later before the rename
-    /// (the temporary file removed); anything but a directory swapped in
-    /// after the last look may still be replaced, but is never followed or
+    /// Writes the file `name` through a temporary file in this directory,
+    /// renamed over `name` once `write` succeeded and the data is synced: a
+    /// reader never sees a partial file. `name` must be one plain name (no
+    /// `/`); it is not checked.
+    ///
+    /// A regular file at `name` is replaced (a hardlink's other names keep
+    /// the old content); otherwise the file goes only where nothing is
+    /// (`RENAME_NOREPLACE`), and a symlink, a device node (`/dev/null`), a
+    /// FIFO, a socket or a directory is refused. One at `name` when the call
+    /// starts is refused before anything is written; one swapped in later,
+    /// up to the last check just before the rename, is refused then, and
+    /// the temporary file is removed. Anything but a directory swapped in
+    /// after that check may still be replaced, but is never followed or
     /// opened. A directory on procfs, sysfs or another filesystem of kernel
     /// interfaces is refused before anything is written. The temporary file
     /// has a random name and is made exclusively (`O_CREAT | O_EXCL`) with
