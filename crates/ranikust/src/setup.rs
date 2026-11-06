@@ -49,10 +49,7 @@ impl fmt::Display for Outcome {
                     rnk_sandbox::RootEntry::PivotRoot => "pivot_root",
                     rnk_sandbox::RootEntry::MoveMount => "MS_MOVE",
                 })?;
-                f.write_str(match overlay.api {
-                    MountApi::LowerdirPlus => ", overlay mounts with fsconfig(lowerdir+)",
-                    MountApi::Mount2 => ", overlay mounts with mount(2)",
-                })
+                write!(f, ", overlay mounts with {}", mount_api_name(overlay.api))
             }
         }
     }
@@ -197,7 +194,8 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 /// `mount(2)` attempt, which it joins: the process is single-threaded
 /// again when the spawner starts. `userns_network` is `--allow
 /// network.none-userns` (ADR-0033); `seccomp` the profile of every `RUN`
-/// (ADR-0109).
+/// (ADR-0109); `userns_probe` (`--mode=auto`) adds the user namespace
+/// probe, reported only.
 ///
 /// # Errors
 ///
@@ -206,6 +204,7 @@ pub(crate) fn set_up(
     state_dir: &Path,
     userns_network: bool,
     seccomp: &Seccomp,
+    userns_probe: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
@@ -235,6 +234,9 @@ pub(crate) fn set_up(
         Outcome::OverlayRoot { sandbox, overlay }
     };
     tracing::info!("ranikust: {outcome}");
+    if userns_probe {
+        report_user_namespace(&store);
+    }
     let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
         kind: Kind::Other,
@@ -315,7 +317,9 @@ const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switchin
 /// false) that case is refused (Q-330, ADR-0050), never a bare `chroot` on
 /// the host. `nofile` is the `RLIMIT_NOFILE` ranikust
 /// started with, given back to every `RUN`; `seccomp` the profile of a
-/// full-sandbox `RUN` (ADR-0109), which the caller refused on `/`.
+/// full-sandbox `RUN` (ADR-0109), which the caller refused on `/`;
+/// `userns_probe` (`--mode=auto`) adds the user namespace probe, reported
+/// only.
 ///
 /// # Errors
 ///
@@ -327,6 +331,7 @@ pub(crate) fn set_up_kaniko(
     can_mount: bool,
     nofile: rnk_sandbox::NofileLimit,
     seccomp: &Seccomp,
+    userns_probe: bool,
 ) -> Result<KanikoSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     if euid != 0 {
@@ -386,6 +391,9 @@ pub(crate) fn set_up_kaniko(
         span.record("steps", 1_u64);
         Some(caps)
     };
+    if userns_probe {
+        report_user_namespace(&store);
+    }
     let isolation = if caps.is_some() {
         rnk_sandbox::Isolation::Full
     } else {
@@ -464,6 +472,128 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
             guidance: "run one kaniko-mode build at a time per container",
         }),
         Err(e) => Err(failed("cannot lock the root /", &e)),
+    }
+}
+
+/// Step 2 of the probe order, reported only (#74): whether a `RUN` could
+/// run in a user namespace here (`rnk_sandbox::probe_user_namespace`), and
+/// an overlay mount in it (`rnk_snapshot::probe`), tried in a directory of
+/// this build on the state directory's filesystem (where it mounts is
+/// [open: #4], interim (a)). Logs one line; nothing here refuses or
+/// changes the outcome. Root only: another user never reaches a set-up.
+/// Call while single-threaded, before the spawner starts.
+fn report_user_namespace(store: &Store) {
+    let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
+    let _entered = span.enter();
+    if !rustix::process::geteuid().is_root() {
+        tracing::debug!("user namespace probe not run: not root");
+        return;
+    }
+    match probe_user_namespace(store) {
+        Ok((passes, line)) => {
+            span.record("passes", passes);
+            tracing::info!("ranikust: user namespace probe (reported only): {line}");
+        }
+        Err(e) => {
+            tracing::warn!("ranikust: user namespace probe (reported only) could not run: {e}");
+        }
+    }
+}
+
+/// [`report_user_namespace`]'s probes in a directory made for them and
+/// removed after: whether the path passes, and the line to log.
+fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
+    // An anonymous store has no build directory: a name its next start
+    // removes if this build leaves it, made while no `RUN` runs.
+    let (_window, parent, name) = if store.is_anonymous() {
+        let window = store.named_window().map_err(|e| e.to_string())?;
+        let name = store.scratch_name().map_err(|e| e.to_string())?;
+        (Some(window), store.state_dir(), name)
+    } else {
+        (None, store.build_dir(), "userns-probe".to_owned())
+    };
+    let root = RootPath::open(parent).map_err(|e| e.to_string())?;
+    let scratch = root
+        .create_sub_root(&name, 0o700)
+        .map_err(|e| e.to_string())?;
+    let r = probe_in_scratch(&scratch, &parent.join(&name));
+    let removed = rnk_rootfs::delete_contents(&scratch, &rnk_rootfs::IgnoreList::new())
+        .and_then(|()| root.remove_dir(&name));
+    if let Err(e) = removed {
+        tracing::warn!(
+            "ranikust: cannot remove the user namespace probe's {}: {e}",
+            parent.join(&name).display()
+        );
+    }
+    r
+}
+
+fn probe_in_scratch(scratch: &RootPath, path: &Path) -> Result<(bool, String), String> {
+    let report = rnk_sandbox::probe_user_namespace(path, None).map_err(|e| e.to_string())?;
+    let overlay = match report.map() {
+        Some(_) => {
+            scratch
+                .create_dir("overlay", 0o700)
+                .map_err(|e| e.to_string())?;
+            let dir = path.join("overlay");
+            report.in_namespace(|| {
+                rnk_snapshot::probe(&dir)
+                    .map(|caps| mount_api_name(caps.api).to_owned())
+                    .map_err(|e| e.to_string())
+            })
+        }
+        None => None,
+    };
+    let apparmor = std::fs::read_to_string(APPARMOR_USERNS)
+        .ok()
+        .map(|v| v.trim().to_owned());
+    Ok(userns_summary(
+        report.stop(),
+        &report.to_string(),
+        overlay,
+        apparmor.as_deref(),
+    ))
+}
+
+/// Ubuntu's switch that gives an unprivileged user namespace no
+/// capabilities (24.04 sets it).
+const APPARMOR_USERNS: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
+
+/// The user namespace probe's line: whether the path passes (every step a
+/// `RUN` needs, then overlay), where it stops, each step, the overlay and
+/// the AppArmor switch.
+fn userns_summary(
+    stop: Option<&str>,
+    steps: &str,
+    overlay: Option<Result<String, String>>,
+    apparmor: Option<&str>,
+) -> (bool, String) {
+    let (overlay_ok, overlay) = match overlay {
+        Some(Ok(api)) => (true, format!("ok, {api}")),
+        Some(Err(e)) => (false, format!("refused: {e}")),
+        None => (false, "not run (no id map)".to_owned()),
+    };
+    let verdict = match stop {
+        Some(step) => format!("stops at {step}"),
+        None if overlay_ok => "passes".to_owned(),
+        None => "stops at overlay".to_owned(),
+    };
+    let passes = stop.is_none() && overlay_ok;
+    let apparmor = apparmor.unwrap_or("absent");
+    (
+        passes,
+        format!(
+            "{verdict}; {steps}; overlay: {overlay}; kernel.apparmor_restrict_unprivileged_userns: \
+             {apparmor}"
+        ),
+    )
+}
+
+/// How overlay mounts are made, for the log.
+fn mount_api_name(api: MountApi) -> &'static str {
+    match api {
+        MountApi::LowerdirPlus => "fsconfig(lowerdir+)",
+        MountApi::Mount2 => "mount(2)",
     }
 }
 

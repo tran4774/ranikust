@@ -534,6 +534,7 @@ fn build(
                             &config.state_dir,
                             config.allow_network_none_userns,
                             &seccomp,
+                            true,
                         )
                     }) {
                         Ok(setup) => {
@@ -571,7 +572,7 @@ fn build(
                             kaniko(
                                 &config,
                                 &seccomp,
-                                "--mode=auto",
+                                AUTO,
                                 true,
                                 runtime,
                                 metrics_file,
@@ -588,7 +589,7 @@ fn build(
                     kaniko(
                         &config,
                         &seccomp,
-                        "--mode=auto",
+                        AUTO,
                         false,
                         runtime,
                         metrics_file,
@@ -601,6 +602,10 @@ fn build(
         }
     }
 }
+
+/// How `--mode=auto` names itself in messages, and tells [`kaniko`] it
+/// was picked.
+const AUTO: &str = "--mode=auto";
 
 /// The kaniko-mode flags in overlay mode: refused where they would change
 /// the image, else a warning each (ADR-0040).
@@ -616,7 +621,14 @@ fn overlay_flags(args: &BuildArgs) -> Result<(), Failure> {
 /// then the build.
 fn overlay(config: &BuildConfig, seccomp: &Seccomp, span: &tracing::Span) -> Result<(), Failure> {
     let setup = span
-        .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns, seccomp))
+        .in_scope(|| {
+            setup::set_up(
+                &config.state_dir,
+                config.allow_network_none_userns,
+                seccomp,
+                false,
+            )
+        })
         .map_err(Failure::refused)?;
     overlay_built(config, setup)
 }
@@ -736,8 +748,19 @@ fn kaniko(
     } else {
         None
     };
+    // `--mode=auto` also probes the user namespace, reported only (#74).
+    let userns_probe = how == AUTO;
     let setup = tracing::debug_span!("ranikust.setup")
-        .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile, seccomp))
+        .in_scope(|| {
+            setup::set_up_kaniko(
+                &config.state_dir,
+                on_slash,
+                can_mount,
+                nofile,
+                seccomp,
+                userns_probe,
+            )
+        })
         .map_err(Failure::refused)?;
     if on_slash {
         // Once the set-up left ranikust only what a `RUN` keeps (ADR-0078),

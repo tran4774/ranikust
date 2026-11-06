@@ -181,7 +181,7 @@ fn each_kernel_filesystem_is_new_else_an_rbind() {
     assert_eq!(a.mount_ns, StepResult::Ok);
     assert_eq!(a.proc, MountResult::Fresh);
     assert_eq!(a.sysfs, MountResult::Fresh);
-    assert_eq!(a.mknod, failed("mknod c 1:3", EPERM));
+    assert_eq!(a.mknod, failed("mknod", EPERM));
 
     // Rootless Podman: `/proc` is masked, the network namespace not ours.
     let a = assemble(
@@ -254,7 +254,7 @@ fn a_ranged_map_on_ubuntu_24_04_stops_at_chown_then_the_mount_namespace() {
     ];
     let plan = ranges();
     let a = assemble(&plan, &records, Some(Ok(())), None);
-    assert_eq!(a.chown, failed("chown to a mapped id other than 0", EPERM));
+    assert_eq!(a.chown, failed("chown", EPERM));
     assert_eq!(a.mount_ns, failed("unshare(CLONE_NEWNS)", EPERM));
     assert_eq!(a.proc, MountResult::NotRun("no mount namespace"));
     let report = report_of(vec![(IdMap::Ranges, StepResult::Ok)], Some((plan, a)));
@@ -274,7 +274,7 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
         r.to_string(),
         "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; unshare(CLONE_NEWNS): ok; \
          proc: rbind of /proc (mount proc: EPERM); sysfs: rbind of /sys (mount sysfs: EPERM); \
-         mknod: mknod c 1:3: EPERM"
+         mknod: EPERM"
     );
     assert_eq!(passing(ranges(), &[CHOWN]).stop(), Some("chown"));
     assert_eq!(passing(ranges(), &[NEWNS]).stop(), Some("mount namespace"));

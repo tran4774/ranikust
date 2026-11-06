@@ -56,6 +56,14 @@ const NO_MAP: &str = "no id map";
 /// Why a step is missing from a child that stopped early.
 const STOPPED: &str = "the probe's child stopped before it";
 
+// The operations of the steps that are their own label in the report.
+const UNSHARE_USER: &str = "unshare(CLONE_NEWUSER)";
+/// To a mapped id other than 0.
+const CHOWN_OP: &str = "chown";
+const UNSHARE_MOUNT: &str = "unshare(CLONE_NEWNS)";
+/// Of `/dev/null`'s node, 1:3.
+const MKNOD_OP: &str = "mknod";
+
 /// Which id map the probe's user namespace got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -131,19 +139,24 @@ impl Failure {
     }
 }
 
+impl Failure {
+    /// The errno and what else is known, without the operation.
+    fn cause(&self) -> String {
+        let errno = self.errno.map(|e| match errno_name(e) {
+            Some(name) => name.to_owned(),
+            None => format!("errno {e}"),
+        });
+        [errno.as_deref(), self.detail.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:", self.op)?;
-        if let Some(e) = self.errno {
-            match errno_name(e) {
-                Some(name) => write!(f, " {name}")?,
-                None => write!(f, " errno {e}")?,
-            }
-        }
-        if let Some(d) = &self.detail {
-            write!(f, " {d}")?;
-        }
-        Ok(())
+        write!(f, "{}: {}", self.op, self.cause())
     }
 }
 
@@ -294,7 +307,13 @@ impl UsernsReport {
 
 impl fmt::Display for UsernsReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unshare(CLONE_NEWUSER): {}; map: ", self.unshare)?;
+        // A step refused by its own operation shows only the errno.
+        let step = |f: &mut fmt::Formatter<'_>, label: &str, r: &StepResult| match r {
+            StepResult::Failed(e) if e.op == label => write!(f, "{label}: {}", e.cause()),
+            r => write!(f, "{label}: {r}"),
+        };
+        step(f, UNSHARE_USER, &self.unshare)?;
+        f.write_str("; map: ")?;
         match self.map() {
             Some(m) => write!(f, "{m}")?,
             None => f.write_str("none")?,
@@ -308,15 +327,16 @@ impl fmt::Display for UsernsReport {
         if !refused.is_empty() {
             write!(f, " ({})", refused.join(", "))?;
         }
-        write!(
-            f,
-            "; chown: {}; unshare(CLONE_NEWNS): {}; proc: ",
-            self.chown, self.mount_ns
-        )?;
+        f.write_str("; ")?;
+        step(f, CHOWN_OP, &self.chown)?;
+        f.write_str("; ")?;
+        step(f, UNSHARE_MOUNT, &self.mount_ns)?;
+        f.write_str("; proc: ")?;
         self.proc.show(f, "/proc")?;
         f.write_str("; sysfs: ")?;
         self.sysfs.show(f, "/sys")?;
-        write!(f, "; mknod: {}", self.mknod)?;
+        f.write_str("; ")?;
+        step(f, MKNOD_OP, &self.mknod)?;
         if let Some(c) = &self.cut_short {
             write!(f, "; {c}")?;
         }
@@ -954,7 +974,7 @@ fn assemble(
     };
     let unshare = match get(CHDIR).filter(|&e| e != 0) {
         Some(e) => StepResult::Failed(Failure::errno("fchdir to the probe's directory", e)),
-        None => step(UNSHARE, "unshare(CLONE_NEWUSER)"),
+        None => step(UNSHARE, UNSHARE_USER),
     };
     let map = if let Some(e) = get(DUMPABLE).filter(|&e| e != 0) {
         StepResult::Failed(Failure::errno("prctl(PR_SET_DUMPABLE)", e))
@@ -991,9 +1011,9 @@ fn assemble(
     let chown = if plan.other_ids().is_none() {
         StepResult::NotRun(ONLY_ID_0)
     } else {
-        step(CHOWN, "chown to a mapped id other than 0")
+        step(CHOWN, CHOWN_OP)
     };
-    let mount_ns = step(NEWNS, "unshare(CLONE_NEWNS)");
+    let mount_ns = step(NEWNS, UNSHARE_MOUNT);
     let fs = |fresh: &[(u8, &'static str)], rbind: (u8, &'static str)| {
         if mount_ns != StepResult::Ok {
             return MountResult::NotRun("no mount namespace");
@@ -1042,7 +1062,7 @@ fn assemble(
         mount_ns,
         proc,
         sysfs,
-        mknod: step(MKNOD, "mknod c 1:3"),
+        mknod: step(MKNOD, MKNOD_OP),
         cut_short,
     }
 }
