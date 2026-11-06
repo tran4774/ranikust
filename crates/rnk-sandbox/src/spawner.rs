@@ -3945,11 +3945,11 @@ mod tests {
         });
     }
 
-    /// T2 (the VM only), pins a barrier of the open `#!/proc/self/exe`
-    /// question (Q-422): a running binary cannot be opened for writing
-    /// through `/proc/<pid>/exe` (`ETXTBSY`), so a `RUN` that reaches
-    /// ranikust's binary cannot change it while ranikust runs. Nothing is
-    /// written: the open alone is refused.
+    /// T2 (the VM only), pins the kernel behaviour that the `O_TMPFILE`
+    /// copy, and a build that made no sealed copy, rely on (ADR-0101,
+    /// threat-model section 6): a running binary cannot be opened for
+    /// writing through `/proc/<pid>/exe` (`ETXTBSY`). Nothing is written:
+    /// the open alone is refused.
     #[test]
     #[ignore = "T2: opens the running test binary for writing as root; run in the test VM only"]
     fn a_running_binary_cannot_be_opened_for_writing() {

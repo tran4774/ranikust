@@ -57,8 +57,12 @@ check-aarch64:
 # natively and nothing is skipped. Elsewhere they run under qemu-user through
 # cargo's target runner, QEMU 9.1 or later (older qemu-user has no openat2,
 # which RootPath needs), and these are skipped, with the reason:
-# - `open_gives_cloexec_path_fd_and_mount_id`: qemu-user's statx leaves
-#   `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id it asserts is not seen;
+# - `open_gives_cloexec_path_fd_and_mount_id`,
+#   `the_binarys_mount_is_measured_on_the_file`,
+#   `a_file_in_the_root_is_weighed_by_the_roots_file_system`,
+#   `a_mount_root_is_reached_at_its_mount_point`: qemu-user's
+#   statx leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id
+#   they assert is not seen (a fallback through /proc/self/fdinfo is #95);
 # - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
 #   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`:
 #   qemu-user runs a thread of its own, so the set-up stops at its
@@ -68,8 +72,9 @@ check-aarch64:
 #   syscall numbers cannot be installed in the x86_64 host kernel through
 #   qemu-user;
 # - without a binfmt_misc entry for aarch64, the tests that spawn an aarch64
-#   binary themselves: ranikust's `cli` and `metrics`, and rnk-store's
-#   `processes`.
+#   binary themselves: ranikust's `cli` and `metrics`, rnk-store's
+#   `processes`, and rnk-sandbox's
+#   `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`.
 
 # Static aarch64 musl binary and T0 tests, natively on aarch64 (CI job `test-aarch64`) or under qemu-user elsewhere. QEMU_AARCH64 names the emulator. Requires zig, cargo-zigbuild; on x86_64 also qemu-user 9.1 or later.
 test-aarch64 *args:
@@ -147,6 +152,9 @@ test-aarch64 *args:
     static_check
     "$qemu" "$BIN" version
     skip=(--skip root::tests::open_gives_cloexec_path_fd_and_mount_id
+      --skip seal::tests::the_binarys_mount_is_measured_on_the_file
+      --skip seal::tests::a_file_in_the_root_is_weighed_by_the_roots_file_system
+      --skip seal::tests::a_mount_root_is_reached_at_its_mount_point
       --skip without_root_the_set_up_refuses_before_touching_the_state_dir
       --skip kaniko_variables_are_not_read
       --skip logging_flags_change_what_is_written
@@ -155,9 +163,10 @@ test-aarch64 *args:
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target "$@" -- "${skip[@]}"
     else
-      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes)" >&2
+      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes, rnk-sandbox's sealed-copy interpreter test)" >&2
       skip+=(--skip concurrent_fills_from_processes_run_the_filler_once
-        --skip a_build_killed_mid_fill_leaves_nothing_behind)
+        --skip a_build_killed_mid_fill_leaves_nothing_behind
+        --skip seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec)
       cargo-zigbuild test --workspace --exclude ranikust --locked --target $target "$@" -- "${skip[@]}"
       cargo-zigbuild test -p ranikust --bins --locked --target $target "$@" -- "${skip[@]}"
     fi
@@ -272,7 +281,7 @@ smoke image="docker.io/library/alpine:3.20":
     e2e >/dev/null
     smoke_check_no_stub_leak "$E/out/oci"
     smoke_check_no_secret "$E/out/oci" "$SMOKE_E2E_SECRET"
-    smoke_check_empty_layer "$E/out/oci"
+    smoke_check_no_empty_layer "$E/out/oci"
     podman load --quiet -i "$E/out/image.tar"
     got="$(podman run --rm localhost/rnk-e2e:latest)"
     [ "$got" = "$SMOKE_E2E_OUTPUT" ] || { echo "error: the e2e image printed: $got" >&2; exit 1; }

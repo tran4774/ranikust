@@ -1,7 +1,7 @@
-# Pins a barrier of the open `#!/proc/self/exe` question (Q-422): the
-# script's interpreter is ranikust's own binary, whose command line refuses
-# the script path as a subcommand and exits with a usage error, so the
-# build fails without starting a build inside the RUN.
+# Pins a barrier of the `#!/proc/self/exe` residual (threat model section
+# 6, ADR-0101): the script's interpreter is ranikust's own binary, whose
+# command line refuses the script path as a subcommand and exits with a
+# usage error, so the build fails without starting a build inside the RUN.
 case_run() {
   local o rc=0 log
   o="$(out img)"

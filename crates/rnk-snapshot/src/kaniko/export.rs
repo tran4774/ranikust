@@ -23,10 +23,11 @@
 //!   `TakeSnapshotFS` writes for a `RUN` that changes nothing.
 //!
 //! The root is live, so every entry is pinned once with `RootPath::pin`:
-//! its physical path resolved with no symlink in any component and without
-//! leaving the root's mount, the `O_PATH` descriptor's `statx` compared
-//! with the walk's record (type, device, inode; a file's size and a file's
-//! or link's `mtime` and `ctime`). The link target, the xattrs and a file's
+//! its physical path resolved with no symlink in a parent (a last one is
+//! pinned as the link itself), no `..` and without leaving the root's
+//! mount, the `O_PATH` descriptor's `statx` compared with the walk's
+//! record (type, device, inode; a file's size and a file's or link's
+//! `mtime` and `ctime`). The link target, the xattrs and a file's
 //! content are read from that pin, the content through a reopen of exactly
 //! that inode. In `full` mode the target and the content written are
 //! hashed again and must match the walk's hashes: an inode number can come
@@ -177,9 +178,10 @@ impl WalkDiff {
 }
 
 /// The layer entry for `p`, which the walk saw as `meta`; `None` for a
-/// socket. The entry is pinned once ([`RootPath::pin`]: no symlink in any
-/// component, on the root's mount) and checked to be the walk's inode;
-/// its link target and xattrs are read from that pin.
+/// socket. The entry is pinned once ([`RootPath::pin`]: no symlink in a
+/// parent, a last one pinned as the link itself, no `..`, on the root's
+/// mount) and checked to be the walk's inode; its link target and xattrs
+/// are read from that pin.
 fn make_entry(root: &RootPath, p: &Path, meta: &EntryMeta) -> Result<Option<Entry>> {
     if meta.kind == FileType::Socket {
         return Ok(None);

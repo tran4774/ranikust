@@ -154,6 +154,8 @@ fn absolute_symlinks_stay_inside() {
     assert_eq!(errno(f.root.create_dir("out/new", 0o755)), Errno::NOENT);
     assert_eq!(errno(f.root.sub_root("out")), Errno::NOENT);
     assert_eq!(errno(f.root.statx("out/sentinel")), Errno::NOENT);
+    // A physical path follows no symlink at all, not even inside.
+    assert_eq!(errno(f.root.statx_physical("out/sentinel")), Errno::LOOP);
     assert_eq!(
         errno(f.root.set_meta(
             "out/sentinel",

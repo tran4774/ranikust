@@ -17,8 +17,9 @@ detail.
   kaniko's cache is not (`ADR-0005`). Out of scope: bake, the warmer, cloud
   contexts, multi-platform builds (`ADR-0008`).
 - It writes nothing outside the state directory or store, the requested
-  outputs and, in kaniko mode in a container, `/`; there is no work-directory
-  flag (`ADR-0050`).
+  outputs and, in kaniko mode in a container, `/`, but for the `O_TMPFILE`
+  fallback of the sealed copy of its binary, a file with no name in
+  `TMPDIR` (`ADR-0101`); there is no work-directory flag (`ADR-0050`).
 - Two snapshot modes, chosen by probing at start-up: overlay and kaniko
   (`ADR-0002`, `ADR-0014`). Where neither works it refuses with guidance.
 

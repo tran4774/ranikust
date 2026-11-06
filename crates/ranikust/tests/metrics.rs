@@ -29,6 +29,7 @@ fn ranikust(
     cmd.env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
         .env_remove("RANIKUST_DEBUG_FAULT")
+        .env_remove("RANIKUST_SEALED_COPY")
         .env("RUST_BACKTRACE", "0");
     for (key, value) in env {
         cmd.env(key, value);

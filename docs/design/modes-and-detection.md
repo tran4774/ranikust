@@ -204,7 +204,11 @@ Built today (`crates/ranikust/src/setup.rs`), until rootless mode exists:
 - A process that is not root is refused whatever its user namespaces allow,
   with the advice to run as root or in a container (`NEEDS_ROOT`).
 - Kaniko mode on `/` is refused where `refuse_unsafe_slash` stops it: root may
-  mount, a writable `/proc/sys` (ADR-0054), or `--network=none` (ADR-0057).
+  mount, a writable `/proc/sys` (ADR-0054), `--network=none` (ADR-0057), or
+  ranikust's binary on a writable mount other than `/`'s, reached by one, or
+  on one it cannot tell, or a process of another mount namespace in its PID
+  namespace that it can open through `/proc` as it starts, the only ones
+  it counts, or one it cannot tell (ADR-0101).
 - A container where root may mount but overlayfs is unusable is refused
   (`Route::RefuseInContainer`).
 - A failed probe step is refused with the step, its errno and the way out

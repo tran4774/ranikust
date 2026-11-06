@@ -32,7 +32,9 @@ root it makes, in one state directory (`--state-dir`, default
 `/var/lib/ranikust`); there is no work-directory flag
 ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It never writes outside the state directory, the requested outputs and, in
-kaniko mode in a container, `/`.
+kaniko mode in a container, `/`, but for the `O_TMPFILE` fallback of the
+sealed copy of its binary, a file with no name in `TMPDIR`
+([host safety](#host-safety)).
 
 ## Code map
 
@@ -112,7 +114,8 @@ xattrs, `USER` and `--chown` lookup in the root's own `/etc/passwd`, the
 ignore list's matching, and deletion by descriptor that never crosses a mount
 point (`rnk-snapshot` decides what to delete in a build root, `rnk-store` in
 the store). Also the operator's host paths that the build context's owner must
-not steer, such as an output's directory (ADR-0076). **Must not** reach a root
+not steer, such as an output's directory (ADR-0076), and the parser of
+`/proc/self/mountinfo`. **Must not** reach a root
 path by joining strings onto a host path, follow symlinks or cross mount points
 when deleting, decompress layers, or mount, create namespaces or run
 processes.
@@ -136,14 +139,18 @@ Isolated execution of `RUN`: namespaces, `proc`/`dev`/`sys`, `pivot_root` (or
 BPF, Docker's default embedded,
 [ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),
 stub mount points, `USER` resolved inside the root, exec. Also the probes of
-its own capabilities, each tried for real. In
+its own capabilities, each tried for real, and the sealed copy of ranikust's
+binary a build runs from, with the mount of the binary as installed, for
+`ranikust`'s refusal in kaniko mode on `/`
+([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)). In
 sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
 **Must not** snapshot or diff a root, mount or probe overlays
-(`rnk-snapshot`), or look up users on the host.
+(`rnk-snapshot`; the seal only reads whether `/` is one, ADR-0101), or look
+up users on the host.
 
 ### `rnk-snapshot`
 
@@ -225,7 +232,9 @@ depend on higher ones. Besides the chain:
 - `rnk-snapshot` uses `rnk-layer` (decoder for extraction, writer for export)
   and `rnk-store`; `rnk-cache` uses `rnk-store`; `rnk-registry` does not: it
   writes pulls into a sink its caller gets from `rnk-store`.
-- `rnk-sandbox` uses `rnk-rootfs` for `USER`.
+- `rnk-sandbox` uses `rnk-rootfs` for `USER`, for the parser of
+  `/proc/self/mountinfo` it shares with `rnk-snapshot`, and for `RootPath`
+  to reach a writable mount's mount point from `/` (ADR-0101).
 - `rnk-context` uses `rnk-ignore` for its walk (ADR-0027), and `rnk-sched` uses
   `rnk-dockerfile` for the stage graph: both interim, `[open: #7]`.
 - `rnk-rootfs` never depends on `rnk-layer`. `rnk-dockerfile`, `rnk-ignore` and
@@ -239,7 +248,10 @@ declares none yet.
 
 1. **Set-up** (`ranikust`, single-threaded): parse flags; refuse a kernel older
    than Linux 5.8 (`rnk_rootfs::probe_support`,
-   [ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)); install the logs and
+   [ADR-0028](docs/adr/0028-minimum-kernel-linux-5-8.md)); for `build`, run
+   again from a sealed copy of the binary, which starts over from the top
+   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
+   `rnk-sandbox`); install the logs and
    the opt-in metrics; validate the flags into a `BuildConfig`; try to enter a
    private mount namespace (failing means root may not mount); check the state
    directory; clean up the store (`rnk-store`); start the `RUN` spawner thread
@@ -305,7 +317,11 @@ Images from the two modes may differ in documented ways
 ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 
 - Nothing is written outside the state directory or store, the requested
-  outputs and, in kaniko mode in a container, `/`.
+  outputs and, in kaniko mode in a container, `/`. One exception, made
+  before the state directory is checked: where the kernel refuses the
+  sealed memfd copy of the binary, its `O_TMPFILE` fallback, a file with
+  no name in `TMPDIR`, gone with the build
+  ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
 - Every path that comes from an image, a context or a Dockerfile is reached
   through `rnk_rootfs::RootPath`, never through `std::fs` on a joined host
   path.

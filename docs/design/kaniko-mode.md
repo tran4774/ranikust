@@ -96,6 +96,25 @@ the scheduler runs one stage at a time) or a private directory per stage
       directory of a volume mounted at a parent.
   - **Not dumpable.** `/proc/<ranikust>/{fd,environ,mem,maps,root}` need
     `CAP_SYS_PTRACE` (a root `RUN` still lists descriptor numbers).
+  - **A sealed binary.** ranikust runs from a sealed memfd copy of its
+    binary, counted in the container's memory, else an `O_TMPFILE` copy,
+    else the installed binary, warned ([sandbox step 0](sandbox.md#process-set-up-once-per-build),
+    [ADR-0101](../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
+    The installed binary is refused on a writable mount other than `/`'s
+    (bound without `:ro`, from outside the container or inside it, a
+    volume), when a writable mount reaches it (its tree bound read-write
+    too, by `/proc/self/mountinfo`; a link of it bound read-write, even one
+    whose name was removed; a file with another hard link; in a
+    root that is not an overlay (overlayfs or fuse-overlayfs), a binary in
+    the root too), and on a mount ranikust cannot tell (qemu-user, a
+    memfd, a mount table that does not place it (its own name removed
+    among them) or changes while it is read, a writable directory of its
+    file system whose name was removed, a writable mount that another
+    mount covers or that cannot be reached at its mount point, a binary
+    not weighed because ranikust did not find itself in a container when
+    it started), before anything is written: a `RUN` reaches it by name,
+    and the build no longer runs it (ADR-0101). Only a build that finds
+    itself in a container looks the writable mount points up.
   - **No capability beyond the `RUN`'s**
     ([ADR-0078](../adr/0078-kaniko-mode-on-root-lends-run-no-capability-and-reads-secrets-once.md)).
     The `RUN` child drops every capability outside Docker's defaults from its
@@ -124,6 +143,28 @@ the scheduler runs one stage at a time) or a private directory per stage
     mount
     ([ADR-0054](../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md));
     devices passed with `--device` stay the operator's choice.
+  - **Refused with a process of another mount namespace in reach.** A `RUN`
+    shares the container's PID namespace; where another container shares
+    it too (Kubernetes `shareProcessNamespace: true` or `hostPID: true`,
+    `--pid container:<name>`, `--pid=host`), a `RUN` could reach that
+    container's files through `/proc`, which this container's mount table
+    does not show. With the binary's check, before anything is written,
+    ranikust looks once through `/proc` (`exposure::scan_peers`): a
+    process with a thread in another mount namespace
+    (`/proc/<pid>/task/<tid>/ns/mnt` by device and inode) whose root it
+    opens, every thread probed through one descriptor of `/proc/<pid>`
+    (the process as one where its threads may not be listed), refuses the
+    build. A thread counts only when ranikust opens it and its root
+    (`EACCES` and `EPERM` mean not opened); one gone is skipped, and any
+    other error or more than 32768 threads refuse too, each with its own
+    guidance. Its own mount namespaces are the one it started in, opened
+    before the set-up and held open until the scan ends, and the one it is
+    in when it looks (a set-up that failed after its `unshare` left it in
+    a copy of its own). A `--pid=host` container is refused by the same
+    rule when a process of the host or of another container is in reach.
+    It counts only the processes it can open as it starts, a residual risk
+    accepted in ADR-0101; its mitigation is a PID namespace of the build
+    container's own.
   - **No process outlives its `RUN`.** ranikust is a child subreaper. After
     each `RUN` it kills everything that became its child during the `RUN`, and
     their descendants, through a pidfd after checking the parent and start time
@@ -496,13 +537,14 @@ pkg/snapshot/snapshot.go:341-391`):
   not written, as BuildKit and overlay mode (ADR-0045). The exporter never
   resolves a symlink.
 - **The root is live.** Every entry is pinned once with `RootPath::pin`: its
-  physical path resolved with no symlink in any component and without leaving
-  the root's mount (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`, `O_PATH |
-  O_NOFOLLOW`). The pin's `statx` is checked against the walk's record: type,
-  device, inode; a regular file's size; a file's or symlink's `mtime` and
-  `ctime`, not a directory's, whose entry is written from the walk's record.
-  The inode number alone is not enough, since a file deleted and created again
-  can get the freed number back at once (ext4 on CI's aarch64 runner did).
+  physical path resolved with no symlink in a parent (a last one is pinned as
+  the link itself), no `..` and without leaving the root's mount
+  (`RESOLVE_IN_ROOT | NO_SYMLINKS | NO_XDEV`, `O_PATH | O_NOFOLLOW`). The
+  pin's `statx` is checked against the walk's record: type, device, inode; a
+  regular file's size; a file's or symlink's `mtime` and `ctime`, not a
+  directory's, whose entry is written from the walk's record. The inode
+  number alone is not enough, since a file deleted and created again can get
+  the freed number back at once (ext4 on CI's aarch64 runner did).
   - The link target, the xattrs and the content are read from that pin, the
     content through a reopen of exactly that inode, so a parent swapped for a
     symlink or a mount, or a FIFO or device swapped in, is never opened.
