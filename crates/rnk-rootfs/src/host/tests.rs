@@ -586,6 +586,14 @@ fn swap_race_round(round: u32) -> SwapRace {
     fs::write(out.join("out.tar"), b"old").unwrap();
     fs::write(out.join("digest"), b"old").unwrap();
     symlink(victim.join("out.tar"), out.join("tarlink")).unwrap();
+    rustix::fs::linkat(
+        rustix::fs::CWD,
+        out.join("tarlink"),
+        rustix::fs::CWD,
+        out.join("tarlink.keep"),
+        rustix::fs::AtFlags::empty(),
+    )
+    .unwrap();
     symlink(victim.join("digest"), out.join("digestlink")).unwrap();
     fs::hard_link(victim.join("digest"), out.join("digesthard")).unwrap();
 
@@ -631,7 +639,7 @@ fn swap_race_round(round: u32) -> SwapRace {
         } else {
             race.refused += 1;
         }
-        relink_tar(&out_here, &victim.join("out.tar"));
+        relink_tar(&out_here);
     }
     stop.store(true, Ordering::Relaxed);
     race.swaps = swapper.join().unwrap();
@@ -673,19 +681,21 @@ fn write_both(out: &Path) -> bool {
     tar.is_ok() && digest.is_ok()
 }
 
-/// Makes `tarlink` a symlink to `target` again where a write's rename
-/// replaced the link the swapper had put at `out.tar`, so the tar's race
-/// lasts the whole round. Only that rename turns the link into a file, and
-/// no write runs meanwhile, so exactly one of the two names is a link after.
-fn relink_tar(out: &rustix::fd::OwnedFd, target: &Path) {
-    use rustix::fs::{AtFlags, FileType, renameat, statat, symlinkat};
+/// Puts the tar's link back at `tarlink` where a write's rename replaced it
+/// (the swapper had put it at `out.tar`), so the tar's race lasts the whole
+/// round. The link's second name, `tarlink.keep`, makes its link count say
+/// whether it is still at one of the two names, which no exchange changes;
+/// looking at both names instead races with the swapper.
+fn relink_tar(out: &rustix::fd::OwnedFd) {
+    use rustix::fs::{AtFlags, linkat, renameat, statat};
 
-    let is_link = |name: &str| {
-        let st = statat(out, name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
-        FileType::from_raw_mode(st.st_mode) == FileType::Symlink
-    };
-    if !is_link("out.tar") && !is_link("tarlink") {
-        symlinkat(target, out, "tarlink.new").unwrap();
+    if statat(out, "tarlink.keep", AtFlags::SYMLINK_NOFOLLOW)
+        .unwrap()
+        .st_nlink
+        == 1
+    {
+        // Both names hold files now, and only a write changes that.
+        linkat(out, "tarlink.keep", out, "tarlink.new", AtFlags::empty()).unwrap();
         renameat(out, "tarlink.new", out, "tarlink").unwrap();
     }
 }
