@@ -26,9 +26,11 @@ pub struct OverlayCaps {
 /// before any long-lived thread exists: it mounts there directly (the
 /// `mount(2)` attempt from a short thread it joins), so a failed attempt
 /// leaves at most a mount in that namespace, which goes with the process.
-/// `ranikust`'s user-namespace probe (#74, reported only) also calls it in
-/// a forked child, as root of a new user and mount namespace, whose mounts
-/// go with that child. Mounts a small overlay with the ADR-0016 options, with `lowerdir+` and
+/// `ranikust`'s user-namespace probe (reported only) also calls it in a
+/// forked child, as root of a new user and mount namespace, whose mounts go
+/// with that child.
+///
+/// Mounts a small overlay with the ADR-0016 options, with `lowerdir+` and
 /// then, if the kernel refuses it (Linux before 6.8 fails it only at
 /// `FSCONFIG_CMD_CREATE`), with `mount(2)`; then writes through it and
 /// checks that the upper directory holds what overlay writes with

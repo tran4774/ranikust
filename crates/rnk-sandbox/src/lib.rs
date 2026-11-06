@@ -15,7 +15,7 @@
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
 //! user namespace would need, and only reports them: nothing routes on it
-//! yet (#74).
+//! yet.
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused
@@ -31,13 +31,15 @@
 //!
 //! While the process is single-threaded: [`run_from_sealed_copy`] first,
 //! which runs the process again from the copy, then
-//! [`enter_build_namespace`], then [`probe`] (and, in `--mode=auto`,
-//! [`probe_user_namespace`]). Then [`Sandbox::start`], which
+//! [`enter_build_namespace`], then, in `--mode=auto`,
+//! [`probe_user_namespace`] (before the overlay probe, whose joined thread
+//! may still be counted), then [`probe`]. Then [`Sandbox::start`], which
 //! replays the stub journals of dead builds and starts the spawner thread,
 //! and [`Sandbox::run`] per `RUN`.
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
 //! says root may not mount), then [`trim_to_run_capabilities`], still
-//! single-threaded, then [`Sandbox::start_direct`] (ADR-0078).
+//! single-threaded; in `--mode=auto` then [`probe_user_namespace`]; then
+//! [`Sandbox::start_direct`] (ADR-0078).
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
 //! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. A `RUN` in a
@@ -87,6 +89,6 @@ pub use spec::{
 };
 pub use stop::{StopSignal, StopSignals, block_stop_signals};
 pub use userns::{
-    Failure, IdMap, IdRange, MountResult, StepResult, SubordinateIds, UsernsReport,
+    IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds, UsernsReport,
     probe_user_namespace,
 };

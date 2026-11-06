@@ -21,7 +21,7 @@ fn ranges() -> Plan {
 }
 
 fn failed(op: &'static str, errno: i32) -> StepResult {
-    StepResult::Failed(Failure::errno(op, errno))
+    StepResult::Failed(StepFailure::errno(op, errno))
 }
 
 /// What a child that reached its end reports, with `errno` for the steps
@@ -159,7 +159,7 @@ fn a_map_fails_where_it_was_written() {
 
     // Written here: the child's records do not say.
     let records = [(CHDIR, 0), (UNSHARE, 0), (READY, 0)];
-    let refused = Failure::other(
+    let refused = StepFailure::other(
         "newuidmap",
         "exit status: 1: newuidmap: write to uid_map failed",
     );
@@ -193,13 +193,13 @@ fn each_kernel_filesystem_is_new_else_an_rbind() {
     assert_eq!(
         a.proc,
         MountResult::Rbind {
-            fresh: Failure::errno("mount proc", EPERM)
+            fresh: StepFailure::errno("mount proc", EPERM)
         }
     );
     assert_eq!(
         a.sysfs,
         MountResult::Rbind {
-            fresh: Failure::errno("mount sysfs", EPERM)
+            fresh: StepFailure::errno("mount sysfs", EPERM)
         }
     );
 
@@ -212,8 +212,8 @@ fn each_kernel_filesystem_is_new_else_an_rbind() {
     assert_eq!(
         a.proc,
         MountResult::Failed {
-            fresh: Failure::errno("unshare(CLONE_NEWPID)", EPERM),
-            rbind: Some(Failure::errno("rbind /proc", EPERM)),
+            fresh: StepFailure::errno("unshare(CLONE_NEWPID)", EPERM),
+            rbind: Some(StepFailure::errno("rbind /proc", EPERM)),
         }
     );
 
@@ -223,7 +223,7 @@ fn each_kernel_filesystem_is_new_else_an_rbind() {
     assert_eq!(
         a.proc,
         MountResult::Rbind {
-            fresh: Failure::other("mount proc", "not reported")
+            fresh: StepFailure::other("mount proc", "not reported")
         }
     );
 
@@ -235,7 +235,7 @@ fn each_kernel_filesystem_is_new_else_an_rbind() {
     assert_eq!(
         a.sysfs,
         MountResult::Failed {
-            fresh: Failure::errno("make / a recursive slave mount", EPERM),
+            fresh: StepFailure::errno("make / a recursive slave mount", EPERM),
             rbind: None
         }
     );
@@ -341,12 +341,12 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
 #[test]
 fn a_failure_names_its_errno() {
     assert_eq!(
-        Failure::errno("mount proc", EPERM).to_string(),
+        StepFailure::errno("mount proc", EPERM).to_string(),
         "mount proc: EPERM"
     );
-    assert_eq!(Failure::errno("x", 4095).to_string(), "x: errno 4095");
+    assert_eq!(StepFailure::errno("x", 4095).to_string(), "x: errno 4095");
     assert_eq!(
-        Failure::other("newuidmap", "did not finish").to_string(),
+        StepFailure::other("newuidmap", "did not finish").to_string(),
         "newuidmap: did not finish"
     );
     assert_eq!(errno_name(libc::EOPNOTSUPP), Some("EOPNOTSUPP"));
@@ -396,6 +396,42 @@ fn a_result_is_cut_at_its_limit_on_a_character_boundary() {
     assert_eq!(frame.len(), 5 + RESULT_LIMIT - 1);
 }
 
+/// A failure part-way through making the probe's files leaves the
+/// directory as it was given: here a `sys` already there.
+#[test]
+fn a_failure_making_the_probes_files_removes_what_it_made() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("sys"), b"").unwrap();
+    assert!(probe_in(dir.path(), None).is_err());
+    let left: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["sys"]);
+}
+
+/// A map this process fails to write ends the waiting child at once, not at
+/// the deadline: here the child stays in this user namespace, whose map is
+/// already written, so the write is refused without any privilege.
+#[test]
+fn a_map_the_parent_cannot_write_ends_the_waiting_child() {
+    let started = Instant::now();
+    let run = supervise(&ranges(), false, None, -1, Duration::from_secs(5), |args| {
+        // SAFETY: the report pipe's write end, open in this child.
+        let report = unsafe { BorrowedFd::borrow_raw(args.report) };
+        map_in_child(args, report);
+    })
+    .unwrap();
+    assert!(!run.records.timed_out, "the child waited for the deadline");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        matches!(run.parent_map, Some(Err(ref e)) if e.op == "write uid_map"),
+        "{:?}",
+        run.parent_map
+    );
+    assert_eq!(run.cut_short, None);
+}
+
 /// Writes `measured: <line>` to stderr past libtest's capture, for the T2
 /// suite's log.
 fn measured(line: &str) {
@@ -424,7 +460,7 @@ fn seccomp_without_sys_admin() -> bool {
 fn is_eperm(r: &StepResult) -> bool {
     matches!(
         r,
-        StepResult::Failed(Failure {
+        StepResult::Failed(StepFailure {
             errno: Some(EPERM),
             ..
         })
@@ -493,11 +529,14 @@ fn as_user(uid: u32, gid: u32, f: impl FnOnce() -> String) -> String {
                 && libc::setgid(gid) == 0
                 && libc::setuid(uid) == 0
         };
+        // A panic must not unwind into the test harness's copy here.
         let text = if dropped {
-            f()
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+                .unwrap_or_else(|_| "error: panicked".to_owned())
         } else {
             format!("error: cannot drop to {uid}:{gid}")
         };
+        // The parent's assertions fail on what is missing.
         let _ = write_all(w.as_fd(), text.as_bytes());
         // SAFETY: `_exit` ends this process at once.
         unsafe { libc::_exit(0) }
@@ -573,15 +612,13 @@ fn the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts() {
     } else {
         assert_eq!((one[0], one[1]), ("none", "one uid"), "{out}");
     }
+    // Both harnesses install `uidmap`, and the user has subordinate ids.
     let tools = tool("newuidmap").is_some() && tool("newgidmap").is_some();
-    if sub.is_none() || !tools {
-        measured(&format!(
-            "user namespace as {name}: no ranged map probed (subordinate ids: {}, newuidmap: {tools})",
-            sub.is_some()
-        ));
-        assert_eq!(lines.len(), 1 + usize::from(sub.is_some()));
-        return;
-    }
+    assert!(
+        sub.is_some() && tools,
+        "no ranged map to probe (subordinate ids for {name}: {}, newuidmap: {tools})",
+        sub.is_some()
+    );
     let ranged = &lines[1];
     if restricted {
         assert_eq!((ranged[0], ranged[1]), ("chown", "newuidmap"), "{out}");

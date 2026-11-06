@@ -1,6 +1,6 @@
 //! The user-namespace probe: step 2 of
-//! `design/modes-and-detection.md#probe-order---modeauto`, reported only
-//! (#74): nothing routes on it yet.
+//! `design/modes-and-detection.md#probe-order---modeauto`, reported only:
+//! nothing routes on it yet.
 //!
 //! Each attempt runs in a forked child that makes a user namespace, gets an
 //! id map, makes a mount namespace, then tries each step a `RUN` in a user
@@ -63,6 +63,8 @@ const CHOWN_OP: &str = "chown";
 const UNSHARE_MOUNT: &str = "unshare(CLONE_NEWNS)";
 /// Of `/dev/null`'s node, 1:3.
 const MKNOD_OP: &str = "mknod";
+/// In the child's mount namespace, before any mount.
+const SLAVE_OP: &str = "make / a recursive slave mount";
 
 /// Which id map the probe's user namespace got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +102,7 @@ pub struct IdRange {
 }
 
 /// The subordinate ids of a user other than root, for `newuidmap` and
-/// `newgidmap`, as the binary read them (`/etc/subuid`, `/etc/subgid`): this
+/// `newgidmap`, as the caller read them (`/etc/subuid`, `/etc/subgid`): this
 /// crate looks up no user on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SubordinateIds {
@@ -112,7 +114,7 @@ pub struct SubordinateIds {
 
 /// A step that failed: the operation, and its errno or what else is known.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failure {
+pub struct StepFailure {
     /// The operation refused, such as `mount proc`.
     pub op: &'static str,
     /// Its errno, when it has one.
@@ -121,7 +123,7 @@ pub struct Failure {
     pub detail: Option<String>,
 }
 
-impl Failure {
+impl StepFailure {
     fn errno(op: &'static str, errno: i32) -> Self {
         Self {
             op,
@@ -137,9 +139,7 @@ impl Failure {
             detail: Some(detail.into()),
         }
     }
-}
 
-impl Failure {
     /// The errno and what else is known, without the operation.
     fn cause(&self) -> String {
         let errno = self.errno.map(|e| match errno_name(e) {
@@ -154,7 +154,7 @@ impl Failure {
     }
 }
 
-impl fmt::Display for Failure {
+impl fmt::Display for StepFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.op, self.cause())
     }
@@ -167,7 +167,7 @@ pub enum StepResult {
     /// It worked.
     Ok,
     /// It was refused.
-    Failed(Failure),
+    Failed(StepFailure),
     /// It was not tried, for the reason given.
     NotRun(&'static str),
 }
@@ -192,15 +192,15 @@ pub enum MountResult {
     /// A new instance was refused; the recursive bind worked.
     Rbind {
         /// Why the new instance was refused.
-        fresh: Failure,
+        fresh: StepFailure,
     },
     /// Both were refused.
     Failed {
         /// Why the new instance was refused (or, when making `/` a slave
         /// mount was, that).
-        fresh: Failure,
+        fresh: StepFailure,
         /// Why the bind was refused; `None` when it was not tried.
-        rbind: Option<Failure>,
+        rbind: Option<StepFailure>,
     },
     /// Not tried, for the reason given.
     NotRun(&'static str),
@@ -231,7 +231,6 @@ impl MountResult {
 /// ([`probe_user_namespace`]). The steps are those of the attempt whose map
 /// worked, or of the last attempt.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct UsernsReport {
     /// `unshare(CLONE_NEWUSER)`.
     pub unshare: StepResult,
@@ -288,20 +287,24 @@ impl UsernsReport {
     }
 
     /// Runs `f` as root of a new user and mount namespace with the map this
-    /// probe got, in a forked child, and returns what `f` returned, or why
-    /// it could not run (a panic, the namespace refused this time, the
-    /// deadline). `None` when no map worked. Like the steps, whatever `f`
-    /// mounts goes with the child.
+    /// probe got, in a forked child. `None` when no map worked; `Err` with
+    /// why `f` did not run or finish (other threads, a host-side error, the
+    /// namespace refused this time, the deadline, the child's death); else
+    /// what `f` returned, a panic as `Err("panicked")`. Like the steps,
+    /// whatever `f` mounts goes with the child.
     ///
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate.
     pub fn in_namespace(
         &self,
         f: impl FnOnce() -> std::result::Result<String, String>,
-    ) -> Option<std::result::Result<String, String>> {
+    ) -> Option<std::result::Result<std::result::Result<String, String>, String>> {
         let plan = self.plan.as_ref()?;
-        let run = crate::setup::require_single_thread().and_then(|()| run_closure(plan, f));
-        Some(run.unwrap_or_else(|e| Err(e.to_string())))
+        Some(
+            crate::setup::require_single_thread()
+                .map_err(|e| e.to_string())
+                .and_then(|()| run_closure(plan, f)),
+        )
     }
 }
 
@@ -449,16 +452,30 @@ fn report_of(maps: Vec<(IdMap, StepResult)>, last: Option<(Plan, Attempt)>) -> U
     }
 }
 
+/// Makes the [`Targets`]; on a failure, removes what it made first.
 fn make_targets(root: &RootPath) -> Result<Targets> {
+    let mut made = Vec::new();
+    let r = make_each(root, &mut made);
+    if r.is_err() {
+        for (name, dir) in made.into_iter().rev() {
+            remove_one(root, name, dir);
+        }
+    }
+    r
+}
+
+fn make_each(root: &RootPath, made: &mut Vec<(&'static str, bool)>) -> Result<Targets> {
     root.create_dir("proc", 0o700)?;
+    made.push(("proc", true));
     root.create_dir("sys", 0o700)?;
+    made.push(("sys", true));
     let chown = root.open_at("chown", &OpenHow::write().create_new(0o600))?;
+    made.push(("chown", false));
     let dir = root.open_at(".", &OpenHow::path().directory())?;
     Ok(Targets { dir, chown })
 }
 
-/// Removes what [`make_targets`] made, and the node `mknod` may have made;
-/// a failure is only logged: the caller removes the directory too.
+/// Removes what [`make_targets`] made, and the node `mknod` may have made.
 fn remove_targets(root: &RootPath, targets: Targets) {
     drop(targets);
     for (name, dir) in [
@@ -467,16 +484,22 @@ fn remove_targets(root: &RootPath, targets: Targets) {
         ("proc", true),
         ("sys", true),
     ] {
-        let r = if dir {
-            root.remove_dir(name)
-        } else {
-            root.remove_file(name)
-        };
-        if let Err(e) = r
-            && !(name == "mknod" && e.raw_os_error() == Some(libc::ENOENT))
-        {
-            tracing::debug!("rnk-sandbox: user-namespace probe: cannot remove {name}: {e}");
-        }
+        remove_one(root, name, dir);
+    }
+}
+
+/// Removes the probe's file or empty directory `name`; a failure is only
+/// logged: the caller removes the directory too.
+fn remove_one(root: &RootPath, name: &str, dir: bool) {
+    let r = if dir {
+        root.remove_dir(name)
+    } else {
+        root.remove_file(name)
+    };
+    if let Err(e) = r
+        && !(name == "mknod" && e.raw_os_error() == Some(libc::ENOENT))
+    {
+        tracing::debug!("rnk-sandbox: user-namespace probe: cannot remove {name}: {e}");
     }
 }
 
@@ -519,6 +542,14 @@ impl Plan {
             Self::OneId { .. } => None,
         }
     }
+
+    /// The map the child writes itself.
+    fn own_map(&self) -> Option<(&[u8], &[u8])> {
+        match self {
+            Self::OneId { uid_map, gid_map } => Some((uid_map, gid_map)),
+            Self::Ranges { .. } | Self::Newuidmap { .. } => None,
+        }
+    }
 }
 
 /// The maps to try, in order; one that cannot be tried comes with why.
@@ -556,11 +587,11 @@ fn plans(
 }
 
 /// [`Plan::Ranges`] from this process's own maps.
-fn ranges() -> std::result::Result<Plan, Failure> {
+fn ranges() -> std::result::Result<Plan, StepFailure> {
     let read = |name: &'static str| {
         std::fs::read_to_string(format!("/proc/self/{name}"))
-            .map_err(|e| Failure::other(name, format!("cannot be read: {e}")))
-            .and_then(|text| mirror(&text).ok_or_else(|| Failure::other(name, "unreadable")))
+            .map_err(|e| StepFailure::other(name, format!("cannot be read: {e}")))
+            .and_then(|text| mirror(&text).ok_or_else(|| StepFailure::other(name, "unreadable")))
     };
     Ok(Plan::Ranges {
         uid_map: read("uid_map")?,
@@ -670,15 +701,6 @@ struct ChildArgs<'a> {
     dir: RawFd,
 }
 
-impl Plan {
-    fn own_map(&self) -> Option<(&[u8], &[u8])> {
-        match self {
-            Self::OneId { uid_map, gid_map } => Some((uid_map, gid_map)),
-            _ => None,
-        }
-    }
-}
-
 /// One attempt with `plan`: the child steps, reported.
 fn attempt(plan: &Plan, t: &Targets, user: bool) -> Result<Attempt> {
     let chown = plan.other_ids().map(|(u, g)| (t.chown.as_raw_fd(), u, g));
@@ -705,7 +727,7 @@ fn attempt(plan: &Plan, t: &Targets, user: bool) -> Result<Attempt> {
 struct Supervised {
     records: Records,
     /// The map this process wrote, when the child asked for it.
-    parent_map: Option<std::result::Result<(), Failure>>,
+    parent_map: Option<std::result::Result<(), StepFailure>>,
     cut_short: Option<String>,
 }
 
@@ -736,13 +758,21 @@ fn supervise(
         chown,
         dir,
     };
-    // SAFETY: the child runs `child`, which ends it with `_exit`; what it
-    // may do between is the caller's contract above.
+    // SAFETY: the child runs `child`, then `_exit`; what it may do between
+    // is the caller's contract above.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
+        // This process's ends only: with its own copy of the go pipe's write
+        // end, a child would never read the end of a map this process
+        // failed to write. The child never drops these copies.
+        // SAFETY: plain `close` of descriptors this child inherited.
+        unsafe {
+            libc::close(go_w.as_raw_fd());
+            libc::close(report_r.as_raw_fd());
+        }
         child(&args);
-        // SAFETY: `_exit` ends this process at once; `child` does not
-        // return.
+        // SAFETY: `_exit` ends this process at once, after `child` if it
+        // returns.
         unsafe { libc::_exit(0) }
     }
     let fork_error = io::Error::last_os_error();
@@ -801,11 +831,11 @@ fn supervise(
 
 /// Writes the child's map from here: [`Plan::Ranges`] directly, as root
 /// may; [`Plan::Newuidmap`] through the setuid tools.
-fn write_map(plan: &Plan, pid: Pid) -> std::result::Result<(), Failure> {
+fn write_map(plan: &Plan, pid: Pid) -> std::result::Result<(), StepFailure> {
     match plan {
         Plan::Ranges { uid_map, gid_map } => {
-            write_proc(pid, "uid_map", uid_map)?;
-            write_proc(pid, "gid_map", gid_map)
+            write_proc(pid, "uid_map", "write uid_map", uid_map)?;
+            write_proc(pid, "gid_map", "write gid_map", gid_map)
         }
         Plan::Newuidmap {
             uid,
@@ -820,23 +850,25 @@ fn write_map(plan: &Plan, pid: Pid) -> std::result::Result<(), Failure> {
     }
 }
 
-/// Writes `text` to `/proc/<pid>/<name>` in one write, as the kernel asks.
-fn write_proc(pid: Pid, name: &'static str, text: &[u8]) -> std::result::Result<(), Failure> {
-    let op = match name {
-        "uid_map" => "write uid_map",
-        _ => "write gid_map",
-    };
+/// Writes `text` to `/proc/<pid>/<name>` in one write, as the kernel asks;
+/// a failure is reported as `op`'s.
+fn write_proc(
+    pid: Pid,
+    name: &str,
+    op: &'static str,
+    text: &[u8],
+) -> std::result::Result<(), StepFailure> {
     let path = format!("/proc/{}/{name}", pid.as_raw_nonzero());
     let fd = rustix::fs::open(
         path.as_str(),
         OFlags::WRONLY | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|e| Failure::errno(op, e.raw_os_error()))?;
+    .map_err(|e| StepFailure::errno(op, e.raw_os_error()))?;
     match rustix::io::write(&fd, text) {
         Ok(n) if n == text.len() => Ok(()),
-        Ok(_) => Err(Failure::other(op, "short write")),
-        Err(e) => Err(Failure::errno(op, e.raw_os_error())),
+        Ok(_) => Err(StepFailure::other(op, "short write")),
+        Err(e) => Err(StepFailure::errno(op, e.raw_os_error())),
     }
 }
 
@@ -849,8 +881,8 @@ fn run_tool(
     pid: Pid,
     own: u32,
     range: IdRange,
-) -> std::result::Result<(), Failure> {
-    let child = std::process::Command::new(path)
+) -> std::result::Result<(), StepFailure> {
+    let mut child = std::process::Command::new(path)
         .args([
             pid.as_raw_nonzero().to_string(),
             "0".to_owned(),
@@ -865,29 +897,32 @@ fn run_tool(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| Failure::other(op, format!("cannot be run: {e}")))?;
+        .map_err(|e| StepFailure::other(op, format!("cannot be run: {e}")))?;
     let deadline = Instant::now() + ATTEMPT_DEADLINE;
-    let mut child = child;
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             Ok(None) => {
+                // A tool that exited meanwhile makes these fail; the
+                // attempt fails either way.
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(Failure::other(op, "did not finish"));
+                return Err(StepFailure::other(op, "did not finish"));
             }
-            Err(e) => return Err(Failure::other(op, format!("cannot be waited for: {e}"))),
+            Err(e) => return Err(StepFailure::other(op, format!("cannot be waited for: {e}"))),
         }
     };
     if status.success() {
         return Ok(());
     }
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     if let Some(mut err) = child.stderr.take() {
         use std::io::Read as _;
-        let _ = (&mut err).take(512).read_to_string(&mut text);
+        // What was read before an error is kept; the exit status is enough.
+        let _ = (&mut err).take(512).read_to_end(&mut bytes);
     }
+    let text = String::from_utf8_lossy(&bytes);
     let line: String = text
         .lines()
         .next()
@@ -895,7 +930,7 @@ fn run_tool(
         .chars()
         .take(200)
         .collect();
-    Err(Failure::other(op, format!("{status}: {line}")))
+    Err(StepFailure::other(op, format!("{status}: {line}")))
 }
 
 /// The records read, and whether the deadline came first.
@@ -963,21 +998,21 @@ fn read_records(fd: &OwnedFd, deadline: Instant, mut on_record: impl FnMut(u8)) 
 fn assemble(
     plan: &Plan,
     records: &[(u8, i32)],
-    parent_map: Option<std::result::Result<(), Failure>>,
+    parent_map: Option<std::result::Result<(), StepFailure>>,
     cut_short: Option<String>,
 ) -> Attempt {
     let get = |op: u8| records.iter().find(|r| r.0 == op).map(|r| r.1);
     let step = |op: u8, name: &'static str| match get(op) {
         Some(0) => StepResult::Ok,
-        Some(e) => StepResult::Failed(Failure::errno(name, e)),
+        Some(e) => StepResult::Failed(StepFailure::errno(name, e)),
         None => StepResult::NotRun(STOPPED),
     };
     let unshare = match get(CHDIR).filter(|&e| e != 0) {
-        Some(e) => StepResult::Failed(Failure::errno("fchdir to the probe's directory", e)),
+        Some(e) => StepResult::Failed(StepFailure::errno("fchdir to the probe's directory", e)),
         None => step(UNSHARE, UNSHARE_USER),
     };
     let map = if let Some(e) = get(DUMPABLE).filter(|&e| e != 0) {
-        StepResult::Failed(Failure::errno("prctl(PR_SET_DUMPABLE)", e))
+        StepResult::Failed(StepFailure::errno("prctl(PR_SET_DUMPABLE)", e))
     } else if unshare != StepResult::Ok {
         StepResult::NotRun("no user namespace")
     } else if plan.by_parent() {
@@ -1018,20 +1053,18 @@ fn assemble(
         if mount_ns != StepResult::Ok {
             return MountResult::NotRun("no mount namespace");
         }
-        let before = [
-            (SLAVE, "make / a recursive slave mount"),
-            (TARGETS, "open the mount points"),
-        ];
-        if let Some(fresh) = before
-            .iter()
-            .find_map(|&(op, name)| get(op).filter(|&e| e != 0).map(|e| Failure::errno(name, e)))
-        {
+        let before = [(SLAVE, SLAVE_OP), (TARGETS, "open the mount points")];
+        if let Some(fresh) = before.iter().find_map(|&(op, name)| {
+            get(op)
+                .filter(|&e| e != 0)
+                .map(|e| StepFailure::errno(name, e))
+        }) {
             return MountResult::Failed { fresh, rbind: None };
         }
         let failed = fresh.iter().find_map(|&(op, name)| match get(op) {
             Some(0) => None,
-            Some(e) => Some(Failure::errno(name, e)),
-            None => Some(Failure::other(name, "not reported")),
+            Some(e) => Some(StepFailure::errno(name, e)),
+            None => Some(StepFailure::other(name, "not reported")),
         });
         let Some(fresh) = failed else {
             return MountResult::Fresh;
@@ -1040,7 +1073,7 @@ fn assemble(
             Some(0) => MountResult::Rbind { fresh },
             Some(e) => MountResult::Failed {
                 fresh,
-                rbind: Some(Failure::errno(rbind.1, e)),
+                rbind: Some(StepFailure::errno(rbind.1, e)),
             },
             None if fresh.errno.is_none() => MountResult::NotRun(STOPPED),
             None => MountResult::Failed { fresh, rbind: None },
@@ -1067,8 +1100,8 @@ fn assemble(
     }
 }
 
-/// Sends one record; a parent gone reads nothing, and the child goes on to
-/// its end.
+/// Sends one record. With the parent gone, the write's `SIGPIPE` ends the
+/// child, which nothing waits for any more.
 fn send(report: BorrowedFd<'_>, op: u8, r: rustix::io::Result<()>) {
     let e = match r {
         Ok(()) => 0,
@@ -1304,28 +1337,41 @@ fn last_errno() -> Errno {
 fn run_closure(
     plan: &Plan,
     f: impl FnOnce() -> std::result::Result<String, String>,
-) -> Result<std::result::Result<String, String>> {
+) -> std::result::Result<std::result::Result<String, String>, String> {
     let user = !rustix::process::geteuid().is_root();
     let run = supervise(plan, user, None, -1, CLOSURE_DEADLINE, |args| {
         // SAFETY: the child of the fork, right after it returned 0, of a
         // single-threaded process (the caller's contract): it may run `f`.
         unsafe { closure_child(args, f) }
-    })?;
+    })
+    .map_err(|e| e.to_string())?;
     if let Some((status, text)) = run.records.payload {
         let text = String::from_utf8_lossy(&text).into_owned();
         return Ok(if status == 0 { Ok(text) } else { Err(text) });
     }
-    // No result: the namespace or the map was refused this time, or the
-    // child died.
+    // No result: the child died, or a step before `f` was refused this
+    // time.
+    if let Some(c) = run.cut_short {
+        return Err(c);
+    }
     let a = assemble(plan, &run.records.list, run.parent_map, None);
-    let why = match (a.unshare, a.map, a.mount_ns, run.cut_short) {
-        (_, _, _, Some(c)) => c,
-        (StepResult::Failed(f), _, _, None)
-        | (_, StepResult::Failed(f), _, None)
-        | (_, _, StepResult::Failed(f), None) => f.to_string(),
-        _ => "the probe's child stopped before it ran".to_owned(),
-    };
-    Ok(Err(why))
+    let slave = run
+        .records
+        .list
+        .iter()
+        .find(|&&(op, e)| op == SLAVE && e != 0)
+        .map(|&(_, e)| StepFailure::errno(SLAVE_OP, e));
+    let refused = [a.unshare, a.map, a.mount_ns]
+        .into_iter()
+        .find_map(|r| match r {
+            StepResult::Failed(f) => Some(f),
+            StepResult::Ok | StepResult::NotRun(_) => None,
+        })
+        .or(slave);
+    Err(refused.map_or_else(
+        || "the probe's child stopped before it ran".to_owned(),
+        |f| f.to_string(),
+    ))
 }
 
 /// The closure's child: the user namespace and the map, the mount
@@ -1347,6 +1393,7 @@ unsafe fn closure_child(
             Ok(Err(t)) => (1, t),
             Err(_) => (2, "panicked".to_owned()),
         };
+        // A parent gone reads nothing; one still here sees no result.
         let _ = write_all(report, &result_frame(status, &text));
     }
     // SAFETY: `_exit` ends this process at once, running no destructor.
