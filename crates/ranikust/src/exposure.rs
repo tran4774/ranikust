@@ -835,12 +835,176 @@ mod tests {
         assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
     }
 
-    // T21: a zombie in any namespace is passed over as gone; its root opens for no one.
+    /// `sleep 600` started with `before` run in its process after the fork
+    /// (single-threaded, before the exec), its stdout a pipe; with the
+    /// namespace identity `before` wrote there ([`report`]).
+    fn sleeper(
+        before: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> (std::process::Child, (u64, u64)) {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("sleep");
+        command.arg("600").stdout(std::process::Stdio::piped());
+        // SAFETY: every `before` here makes system calls only: no lock, no
+        // allocation, nothing a fork of a multi-threaded process breaks.
+        unsafe { command.pre_exec(before) };
+        let mut child = command.spawn().unwrap();
+        let mut id = [0u8; 16];
+        child.stdout.take().unwrap().read_exact(&mut id).unwrap();
+        let half = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+        (child, (half(&id[..8]), half(&id[8..])))
+    }
+
+    /// Writes a namespace identity to fd 1, from a forked child.
+    fn report((dev, ino): (u64, u64)) -> std::io::Result<()> {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&dev.to_le_bytes());
+        bytes[8..].copy_from_slice(&ino.to_le_bytes());
+        // SAFETY: fd 1 is the child's stdout, a pipe open until the exec.
+        let out = unsafe { std::os::fd::BorrowedFd::borrow_raw(1) };
+        match rustix::io::write(out, &bytes)? {
+            16 => Ok(()),
+            _ => Err(std::io::Error::from_raw_os_error(Errno::IO.raw_os_error())),
+        }
+    }
+
+    /// Moves the calling process into a new mount namespace.
+    fn unshare_mounts() -> std::io::Result<()> {
+        // SAFETY: `NEWNS` does not unshare the descriptor table, the only
+        // flag `unshare_unsafe` is unsafe for.
+        unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS) }?;
+        Ok(())
+    }
+
+    /// Stops and reaps `children`.
+    fn stop(children: impl IntoIterator<Item = std::process::Child>) {
+        for mut child in children {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+    }
+
+    // The half-entered set-up (ADR-0101): a mount namespace no process is in
+    // any more, held by ranikust's handle, keeps its number from new ones.
+    #[test]
+    #[ignore = "T2: unshare(CLONE_NEWNS) as root; a freed namespace number is handed out again \
+                predictably only on a kernel nothing else uses"]
+    fn a_namespace_left_but_held_keeps_its_number_from_new_ones() {
+        // New namespaces made after it was left, each kept.
+        const NEW: usize = 64;
+        for round in 0..3 {
+            for hold in [false, true] {
+                // In M1, `mount_namespace()` on it, then into M2: M1 has no
+                // process left, only the handle when `hold`, kept open in
+                // the same process across its exec.
+                let (left, m1) = sleeper(move || {
+                    unshare_mounts()?;
+                    let ns = mount_namespace()?;
+                    let m1 = ns.id;
+                    let held = hold.then_some(ns);
+                    unshare_mounts()?;
+                    if let Some(ns) = held {
+                        rustix::io::fcntl_setfd(&ns._held, rustix::io::FdFlags::empty())?;
+                        std::mem::forget(ns);
+                    }
+                    report(m1)
+                });
+                let mut made = Vec::new();
+                let mut ids = Vec::new();
+                while made.len() < NEW && !ids.contains(&m1) {
+                    let (child, id) = sleeper(|| {
+                        unshare_mounts()?;
+                        report(mount_namespace()?.id)
+                    });
+                    made.push(child);
+                    ids.push(id);
+                }
+                stop(made.into_iter().chain([left]));
+                let reused = ids.iter().position(|&id| id == m1);
+                if hold {
+                    assert_eq!(reused, None, "round {round}: held {m1:?} reused: {ids:?}");
+                } else {
+                    // The control: without the handle the number comes back.
+                    assert!(
+                        reused.is_some(),
+                        "round {round}: {m1:?} not reused within {NEW}: {ids:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // T21: one thread of a process in another mount namespace, listed after
+    // a hundred others, refuses the process.
+    #[test]
+    #[ignore = "T2c: sysadmin: unshare(CLONE_NEWNS) in one thread"]
+    fn one_thread_in_another_mount_namespace_listed_late_reaches_its_process() {
+        use std::sync::{Arc, Mutex, mpsc};
+        // The namespace of the process as one, the leader's.
+        let now = mount_namespace().unwrap().id;
+        let own = [now, now];
+        let me = std::process::id().to_string();
+        let (stop, parked) = mpsc::channel::<()>();
+        let parked = Arc::new(Mutex::new(parked));
+        let park = |ready: Option<mpsc::Sender<()>>| {
+            let parked = parked.clone();
+            std::thread::spawn(move || {
+                if let Some(ready) = ready {
+                    unshare_mounts().unwrap();
+                    ready.send(()).unwrap();
+                }
+                let _ = parked.lock().unwrap().recv();
+            })
+        };
+        let mut threads: Vec<_> = (0..100).map(|_| park(None)).collect();
+        let before = probe(own, &me, PEER_SCAN_LIMIT);
+        let (ready, unshared) = mpsc::channel();
+        threads.push(park(Some(ready)));
+        unshared.recv().unwrap();
+        let after = probe(own, &me, PEER_SCAN_LIMIT);
+        drop(stop);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!(before.0 == Peer::Passed && before.1 > 100, "{before:?}");
+        assert_eq!(after.0, Peer::Reachable(comm(&me)), "{after:?}");
+        assert!(after.1 > 100, "{after:?}");
+    }
+
+    // T21: a process started in another mount namespace just before the
+    // probe is reached; its zombie is gone, with a root no RUN opens.
+    #[test]
+    #[ignore = "T2c: sysadmin: unshare(CLONE_NEWNS) in a child"]
+    fn a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone() {
+        let now = mount_namespace().unwrap().id;
+        let (sleeping, theirs) = sleeper(|| {
+            unshare_mounts()?;
+            report(mount_namespace()?.id)
+        });
+        assert_ne!(theirs, now);
+        let pid = sleeping.id().to_string();
+        let reached = probe([now, now], &pid, PEER_SCAN_LIMIT);
+        stop([sleeping]);
+        assert_eq!(reached, (Peer::Reachable("sleep".into()), 1));
+        zombie_is_gone(
+            std::process::Command::new("true").pre_exec_unshared(),
+            [now, now],
+        );
+    }
+
+    // T21: a zombie is passed over as gone, whatever its namespace, and its
+    // root opens for no RUN either.
     #[test]
     fn a_zombie_is_passed_over_as_gone_and_its_root_does_not_open() {
         let now = mount_namespace().unwrap().id;
         let other = (now.0, now.1 ^ 1);
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        zombie_is_gone(&mut std::process::Command::new("true"), [other, other]);
+    }
+
+    /// Runs `command` to its exit, then probes its zombie with `own`: gone,
+    /// and its roots do not open.
+    fn zombie_is_gone(command: &mut std::process::Command, own: Own) {
+        let mut child = command.spawn().unwrap();
         let pid = child.id().to_string();
         let state = || {
             fs::read_to_string(format!("/proc/{pid}/stat"))
@@ -852,7 +1016,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "{pid} never a zombie");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let found = probe([other, other], &pid, PEER_SCAN_LIMIT);
+        let found = probe(own, &pid, PEER_SCAN_LIMIT);
         let root = |path: String| {
             rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty()).map(drop)
         };
@@ -863,6 +1027,19 @@ mod tests {
         child.wait().unwrap();
         assert!(found.0 == Peer::Gone && found.1 <= 1, "{found:?}");
         assert_eq!(roots, [Err(Errno::NOENT); 2]);
+    }
+
+    /// A command whose process enters a new mount namespace before its exec.
+    trait PreExecUnshared {
+        fn pre_exec_unshared(&mut self) -> &mut Self;
+    }
+
+    impl PreExecUnshared for std::process::Command {
+        fn pre_exec_unshared(&mut self) -> &mut Self {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: `unshare_mounts` makes one system call.
+            unsafe { self.pre_exec(unshare_mounts) }
+        }
     }
 
     #[test]
