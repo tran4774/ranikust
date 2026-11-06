@@ -368,16 +368,18 @@ What a change here must keep, with where it lives:
   fork the child closes every descriptor but stdio and those it uses (the
   pipes, the probe's directory, the `chown` target), then makes system
   calls only, then `_exit`. `in_namespace`'s closure may allocate (it
-  checks for one thread first) and runs with an empty panic hook and no
-  `tracing` subscriber: the inherited ones write ranikust's metrics report
-  and log. Each child is killed at its deadline (10 s, the closure 60 s)
-  and reaped within 2 s (one that ended without the kill is killed then,
+  checks for one thread first) and runs with an empty panic hook and, on
+  its thread, no `tracing` subscriber: the inherited ones write ranikust's
+  metrics report and log (a thread the closure starts must not log). Each
+  child is killed at its deadline (10 s, the closure 60 s) and reaped
+  within 2 s (one that closed its report but is not reaped then is killed,
   and given 2 s more); its namespaces and mounts go with it. One still
   there after is `Error::ProbeChildLeft`: the probe's directory stays, and
-  `ranikust` leaves its own too. `newuidmap` is killed and reaped on every
-  failure. Its mount namespace makes `/` a recursive slave before any
-  mount. The files the steps need are made
-  by the caller in the probe's directory through `RootPath` and removed
+  `ranikust` leaves its own too, until the end of the build removes them.
+  `newuidmap` is killed and given 2 s to be reaped at its deadline or on a
+  failed wait (not after `ECHILD`). Its mount namespace makes `/` a
+  recursive slave before any mount. The files the steps need are made by
+  the caller in the probe's directory through `RootPath` and removed
   before it returns. `newuidmap` is looked for in `/usr/bin` and `/bin`
   only, run with an empty environment. A child of a user other than root
   is dumpable only around its map write, which the kernel's owner check of
