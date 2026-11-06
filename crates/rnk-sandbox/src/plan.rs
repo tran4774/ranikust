@@ -298,7 +298,7 @@ pub(crate) fn hosts_file(network: Network, hostname: &str, host_hosts: Option<&[
                 out.push(b'\n');
             }
         }
-        _ => {
+        (Network::Host, None) | (Network::None, _) => {
             out.extend_from_slice(b"127.0.0.1\tlocalhost\n");
             out.extend_from_slice(b"::1\tlocalhost ip6-localhost ip6-loopback\n");
         }
