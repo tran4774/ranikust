@@ -473,11 +473,11 @@ refused the record), it fails as `Error::InitExited`, which names the code as
 the init's own. Neither is one that ran no command. `SetupKilled` wins over a
 failure record of `Step::Init`, which the init's end may cause (the go pipe
 ended under a command still waiting), and loses to any other record, the more
-precise, the one not returned logged; `InitExited` loses to every record. A
-kill or trap of a call only the command makes after its filters and before
-`execve` (its go read, `setsid`, the `USER` switch) leaves the init alive, and
-the `RUN` fails with the command's status (`SIGSYS`, code 159), as one killed
-after `execve` does: nothing tells the two apart. A
+precise, the one not returned logged; `InitExited` loses to every record, its
+code logged. A kill or trap of a call only the command makes after its filters
+and before `execve` (its go read, `setsid`, the `USER` switch) leaves the init
+alive, and the `RUN` fails with the command's status (`SIGSYS`, code 159), as
+one killed after `execve` does: nothing tells the two apart. A
 cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit kills the
 process on a cancel; the child is forgotten only once it has exited and before
 it is reaped, so the kill never reaches a reused pid. The command is PID 2, as

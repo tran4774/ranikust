@@ -1891,13 +1891,12 @@ fn execute(
     killed?;
     // A full-sandbox child is the `RUN`'s init: the command's own status is
     // what it wrote, if it lived to write it; without it, `status` is the
-    // init's own, which `ending` never returns as the command's. An init
-    // exits 0 only after its status write: 0 without a status (the write
-    // refused) leaves the command's end unknown.
+    // init's own, which `ending` never returns as the command's.
     let mut unreported = false;
     let status = match command_status {
         Some(fd) => match read_status(&fd)? {
             Some(raw) => ExitStatus::from_raw(raw),
+            // 0 only after the status write: none read leaves the end unknown.
             None if status.code() == Some(0) => {
                 return Err(sys_err(
                     "read the RUN's exit status",
@@ -1936,8 +1935,9 @@ fn execute(
 /// init ended before it wrote the command's status (`unreported`: `status`
 /// is then the init's own), [`Error::SetupKilled`] for a signal, which
 /// names a profile behind a `SIGSYS`, or [`Error::InitExited`] for a code.
-/// A record wins over the init's code; between a record and the init's
-/// signal, the more precise one is returned and the other logged.
+/// A record wins over the init's code, which is logged; between a record
+/// and the init's signal, the more precise one is returned and the other
+/// logged.
 fn ending(
     status: ExitStatus,
     unreported: bool,
@@ -2367,9 +2367,9 @@ mod tests {
                 "{status:?} {failure:?} {profile}: {r:?}"
             );
         }
-        // The init's own code, from `_exit(125)` where its go can be
-        // neither sent nor ended or in its wait, or `_exit(127)` with its
-        // record refused.
+        // The init's own code: `_exit(125)` in its wait or where its go can
+        // be neither sent nor ended, `_exit(127)` with its record refused, or
+        // any other.
         for code in [125, 127, 1] {
             let r = end(exited(code), true, None, true);
             assert!(
