@@ -279,12 +279,14 @@ pub(crate) enum PeerScan {
 /// the processes ranikust can open as it starts.
 ///
 /// `started_in` is ranikust's mount namespace as it started
-/// ([`mount_namespace`], read before the set-up may enter one of its own).
-/// It and the one ranikust is in now both count as its own: a set-up that
-/// failed after its `unshare` left ranikust in a copy no other process is
-/// in.
-pub(crate) fn scan_peers(started_in: rustix::io::Result<(u64, u64)>) -> PeerScan {
-    let own = match own(started_in, mount_namespace()) {
+/// ([`mount_namespace`], opened before the set-up may enter one of its own
+/// and held open until the scan returns). It and the one ranikust is in now
+/// both count as its own: a set-up that failed after its `unshare` left
+/// ranikust in a copy no other process is in.
+pub(crate) fn scan_peers(started_in: rustix::io::Result<&MountNamespace>) -> PeerScan {
+    let now = mount_namespace();
+    let now_id = now.as_ref().map(|ns| ns.id).map_err(|&e| e);
+    let own = match own(started_in.map(|ns| ns.id), now_id) {
         Ok(own) => own,
         Err(e) => return PeerScan::OwnNamespace(e),
     };
@@ -453,7 +455,7 @@ fn task(own: Own, dir: &OwnedFd, [root, ns]: Steps) -> Thread {
         Err(e) => return Thread::Unknown(root, e),
     }
     match namespace(dir, "ns/mnt") {
-        Ok(found) if own.contains(&found) => Thread::Same,
+        Ok(found) if own.contains(&found.id) => Thread::Same,
         Ok(_) => Thread::Other,
         Err(e) => ns_failure(ns, e, || {
             rustix::fs::openat(
@@ -512,17 +514,30 @@ fn own(
     Ok([started_in?, now?])
 }
 
+/// A mount namespace held open by a descriptor of its `ns/mnt`, with its
+/// identity: that file's device and inode.
+#[derive(Debug)]
+pub(crate) struct MountNamespace {
+    /// An open `ns` descriptor keeps its namespace alive, so its inode
+    /// number cannot pass to a namespace made later (namespaces(7)).
+    _held: OwnedFd,
+    id: (u64, u64),
+}
+
 /// ranikust's mount namespace now ([`namespace`] of `/proc/self/ns/mnt`).
-pub(crate) fn mount_namespace() -> rustix::io::Result<(u64, u64)> {
+pub(crate) fn mount_namespace() -> rustix::io::Result<MountNamespace> {
     namespace(rustix::fs::CWD, "/proc/self/ns/mnt")
 }
 
-/// A mount namespace's identity: the device and inode of `path` (an
-/// `ns/mnt` link) below `dir`, opened `O_PATH`.
-fn namespace(dir: impl AsFd, path: &str) -> rustix::io::Result<(u64, u64)> {
+/// The mount namespace of `path` (an `ns/mnt` link) below `dir`, opened
+/// `O_PATH`.
+fn namespace(dir: impl AsFd, path: &str) -> rustix::io::Result<MountNamespace> {
     let fd = rustix::fs::openat(dir, path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
     let st = rustix::fs::fstat(&fd)?;
-    Ok((st.st_dev, st.st_ino))
+    Ok(MountNamespace {
+        _held: fd,
+        id: (st.st_dev, st.st_ino),
+    })
 }
 
 /// Whether `path` (`/proc/sys`) is on a read-only mount. A writable one lets
@@ -769,7 +784,7 @@ mod tests {
 
     #[test]
     fn every_thread_of_a_process_is_probed_within_the_bound() {
-        let now = mount_namespace().unwrap();
+        let now = mount_namespace().unwrap().id;
         let own = [now, now];
         let me = std::process::id().to_string();
         // A second thread at least, whichever thread runs the test.
@@ -803,8 +818,23 @@ mod tests {
     }
 
     #[test]
+    fn a_mount_namespace_is_held_by_an_open_descriptor_of_its_own_file() {
+        use std::os::unix::fs::MetadataExt;
+        const NSFS_MAGIC: rustix::fs::FsWord = 0x6e73_6673;
+        let ns = mount_namespace().unwrap();
+        // The namespace's file, not the link's, and not handed to a `RUN`.
+        assert_eq!(rustix::fs::fstatfs(&ns._held).unwrap().f_type, NSFS_MAGIC);
+        let held = rustix::fs::fstat(&ns._held).unwrap();
+        assert_eq!((held.st_dev, held.st_ino), ns.id);
+        let link = fs::metadata("/proc/self/ns/mnt").unwrap();
+        assert_eq!((link.dev(), link.ino()), ns.id);
+        let flags = rustix::io::fcntl_getfd(&ns._held).unwrap();
+        assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
+    }
+
+    #[test]
     fn a_thread_or_a_process_as_one_is_told_through_its_own_entries() {
-        let now = mount_namespace().unwrap();
+        let now = mount_namespace().unwrap().id;
         let other = (now.0, now.1 ^ 1);
         let open = |path: &Path| {
             rustix::fs::open(

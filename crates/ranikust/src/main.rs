@@ -470,7 +470,8 @@ fn build(
     config.limits.set_process_wide();
     tracing::debug!(limits = %config.limits.text(), "limits in force");
     // Before a set-up may enter a mount namespace of its own: kaniko mode on
-    // `/` counts this one as ranikust's too (`exposure::scan_peers`).
+    // `/` counts this one as ranikust's too, held open until its scan
+    // (`exposure::scan_peers`).
     let started_in = exposure::mount_namespace();
     match config.mode {
         config::Mode::Kaniko => {
@@ -498,6 +499,8 @@ fn build(
             )
         }
         config::Mode::Overlay => {
+            // Only kaniko mode on `/` looks at it.
+            drop(started_in);
             overlay_flags(args)?;
             // One span for the whole set-up: the namespace, then the rest.
             let span = tracing::debug_span!("ranikust.setup");
@@ -523,6 +526,7 @@ fn build(
                         setup::set_up(&config.state_dir, config.allow_network_none_userns)
                     }) {
                         Ok(setup) => {
+                            drop(started_in);
                             let warnings = match flags {
                                 Ok(warnings) => warnings,
                                 Err(invalid) => {
@@ -648,7 +652,8 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 /// whether the build's mount namespace could be entered; `runtime` is
 /// what [`container::detect`] found, read once by the caller; `binary`
 /// where the binary ranikust started from lies; `started_in` the mount
-/// namespace ranikust started in ([`exposure::mount_namespace`]).
+/// namespace ranikust started in ([`exposure::mount_namespace`]), closed
+/// before the set-up.
 fn kaniko(
     config: &BuildConfig,
     how: &str,
@@ -656,7 +661,7 @@ fn kaniko(
     runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
     binary: Option<BinaryMount>,
-    started_in: rustix::io::Result<(u64, u64)>,
+    started_in: rustix::io::Result<exposure::MountNamespace>,
 ) -> Result<(), Failure> {
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
@@ -680,8 +685,11 @@ fn kaniko(
         }
     };
     if on_slash {
+        let started_in = started_in.as_ref().map_err(|&e| e);
         refuse_unsafe_slash(config, how, can_mount, binary, started_in)?;
     }
+    // The scan is over: the build keeps no hold on another mount namespace.
+    drop(started_in);
     match statedir::raise_nofile_limit() {
         Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
         // The walk still runs, with fewer descriptors to hold directories.
@@ -760,7 +768,7 @@ fn refuse_unsafe_slash(
     how: &str,
     can_mount: bool,
     binary: Option<BinaryMount>,
-    started_in: rustix::io::Result<(u64, u64)>,
+    started_in: rustix::io::Result<&exposure::MountNamespace>,
 ) -> Result<(), Failure> {
     if can_mount {
         // A container that lets root mount (`--privileged`, CAP_SYS_ADMIN)
@@ -1356,8 +1364,10 @@ mod tests {
     #[test]
     fn the_refusals_on_slash_come_in_their_order() {
         let config = config_of(&["--no-push", "--network=none"]);
+        // Never read: both refusals come before the scan.
+        let started_in = Err(rustix::io::Errno::NOENT);
         let may_mount =
-            refuse_unsafe_slash(&config, "--mode=kaniko", true, None, Ok((0, 0))).unwrap_err();
+            refuse_unsafe_slash(&config, "--mode=kaniko", true, None, started_in).unwrap_err();
         assert!(
             may_mount
                 .message
@@ -1366,7 +1376,7 @@ mod tests {
             may_mount.message
         );
         let no_mount =
-            refuse_unsafe_slash(&config, "--mode=kaniko", false, None, Ok((0, 0))).unwrap_err();
+            refuse_unsafe_slash(&config, "--mode=kaniko", false, None, started_in).unwrap_err();
         assert!(
             no_mount
                 .message
