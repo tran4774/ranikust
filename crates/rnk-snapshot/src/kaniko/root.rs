@@ -1049,7 +1049,8 @@ impl Spooled {
         // The same decompression reads the headers as the extraction will
         // (ADR-0123), then the rest for the diff ID.
         let headers = rnk_rootfs::check_headers(&mut decoder);
-        // A body its source finds wrong is reported as such, before its tar.
+        // A failure of the body (its source's verdict) or of its
+        // decompression is reported before its tar's.
         let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
         headers?;
         // The source verifies the digest only at the end of its body.

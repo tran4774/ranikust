@@ -136,11 +136,11 @@ never called.
   every refusal a header shows on its own (names and hardlink targets out of
   the root, sparse and unknown types, whiteouts naming nothing, a file or
   symlink as the layer's root, ids and times that do not parse), with the
-  extraction's errors. It refuses nothing such an
-  extraction takes; what the root or the ignore list decides is the
-  extraction's. Kaniko mode's spool pass on `/` calls it on the bytes it
-  already decompresses, so a bad header is refused before `/` changes
-  ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123).
+  extraction's errors. It refuses nothing such an extraction takes; what the
+  root or the ignore list decides is the extraction's. Kaniko mode's spool
+  pass on `/` calls it on the bytes it already decompresses, so a bad header
+  is refused before `/` changes ([cache hit](kaniko-mode.md#a-cache-hit),
+  ADR-0123).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

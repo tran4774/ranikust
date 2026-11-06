@@ -186,9 +186,10 @@ pub struct Extracted {
 /// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
 /// the same framing, up to the end-of-archive block, and the same
 /// `tar-header` limit (ADR-0079). It refuses a name or hardlink target that
-/// leaves the root, a hardlink to itself, a GNU sparse or unknown entry
-/// type, a whiteout that names nothing, a file or symlink as the layer's
-/// root, and ids, modes and times that do not parse or are out of range.
+/// leaves the root, a hardlink to itself or to the root, a link without a
+/// target, a GNU sparse or unknown entry type, a whiteout that names
+/// nothing, a file or symlink as the layer's root, and ids, modes, device
+/// numbers and times that do not parse or are out of range.
 /// It refuses nothing such an extraction takes: what depends on the root
 /// or the ignore list (where an entry lands, a hardlink's target, a
 /// hardlink or device node as the layer's root) is left to the extraction.

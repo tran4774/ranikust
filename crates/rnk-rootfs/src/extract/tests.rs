@@ -1627,11 +1627,16 @@ fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
     t.hardlink("h", "missing");
     check_headers(t.bytes().as_slice()).unwrap();
     assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
-    let mut t = Tar::new(&f);
-    t.node("./", EntryType::Fifo, 0, 0);
-    check_headers(t.bytes().as_slice()).unwrap();
-    assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
-    extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    let mut node = Tar::new(&f);
+    node.node("./", EntryType::Fifo, 0, 0);
+    // A live root skips a link to an ignored path.
+    let mut link = Tar::new(&f);
+    link.hardlink("./", "proc/x");
+    for t in [node, link] {
+        check_headers(t.bytes().as_slice()).unwrap();
+        assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
+        extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    }
 
     let mut t = Tar::new(&f);
     t.dir("d", 0o755)
