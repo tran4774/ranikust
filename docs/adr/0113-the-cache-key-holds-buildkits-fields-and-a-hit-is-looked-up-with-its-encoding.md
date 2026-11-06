@@ -9,8 +9,9 @@ decision-makers: Tran Nguyen (maintainer)
 ## Context and Problem Statement
 
 [ADR-0005](0005-own-versioned-cache-key.md) fixes the shape of a layer cache key,
-`key(k) = H(version, key(k-1), instruction, inputs(k))`, which never depends on
-the snapshot mode, the host, the time or the thread count. It leaves the rest
+`key(k) = H(version, key(k-1), instruction, inputs(k))` (spelled out in
+[cache-and-store](../design/cache-and-store.md#cache-keys)), which never depends
+on the snapshot mode, the host, the time or the thread count. It leaves the rest
 to Phase 4: the field list, `H`, the form of a cache entry and its tag
 ([#13](https://github.com/tran4774/ranikust/issues/13), Q-041). kaniko keys the
 unexpanded instruction text, the environment and every declared `ARG` for a
@@ -54,12 +55,13 @@ one-layer OCI image found by a tag `rnk-v<version>-<hex>`, and a lookup uses the
 key together with the layer's encoding, so a warm build gives the cold build's
 digests.
 
-The maintainer, 2026-11-06, in the question window: "Kiểu BuildKit + encoding
-(khuyến nghị)" ("BuildKit style plus encoding (recommended)"). It stood for
-option (a) of #13 with the recommended entry, tag, TTL and bad-entry-is-a-miss,
-and option (a) of the encoding question.
+The maintainer's answer (2026-11-06: "Kiểu BuildKit + encoding (khuyến nghị)",
+"BuildKit style plus encoding (recommended)") stood for option (a) of #13 with the
+recommended entry, tag, TTL and bad-entry-is-a-miss, and option (a) of the
+encoding question.
 
-- **Fields.** `H` is SHA-256 and the formula is ADR-0005's. A step's inputs are:
+- **Fields.** `H` is SHA-256 and the formula is ADR-0005's (see
+  [cache-and-store](../design/cache-and-store.md#cache-keys)). A step's inputs are:
   - the instruction after expansion;
   - every declared `ARG` and the environment in effect;
   - `USER`, `WORKDIR` and `SHELL`;
@@ -70,7 +72,7 @@ and option (a) of the encoding question.
     `--chown`, type, link target and `security.capability`, never mtime;
   - for `COPY --from=<image>`, that image's platform manifest digest.
   The chain root is the base's platform manifest digest together with the
-  platform. The key of `COPY --from=<stage>` is
+  platform. The input of `COPY --from=<stage>` is
   [ADR-0114](0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)'s.
 - **Entry.** A one-layer OCI image manifest whose config `created` is the push
   time. `--cache-ttl` (kaniko's flag, kaniko's meaning, ADR-0011) compares with
@@ -79,20 +81,22 @@ and option (a) of the encoding question.
 - **Tag.** `rnk-v<version>-<hex>`, so an operator tells ranikust's entries from
   kaniko's. The `<hex>` is made from the key and the encoding together.
 - **A bad entry is a miss.** An entry that fails its checks (its form, its
-  annotations, its age, `--limit`) is a miss with a warning, never a failed
-  build, so a hostile repository cannot fail builds.
+  annotations, `--limit`) is a miss with a warning, never a failed build, so a
+  hostile repository cannot fail builds. An entry older than `--cache-ttl` is a
+  plain miss with no warning, as in kaniko.
 - **Encoding.** A lookup carries the compression, its level, the time policy and
   the epoch. Builds with other settings share no entries, and the key itself
   stays ADR-0005's.
-- **A `COPY` layer is pushed under a key only if the copied bytes equal the
-  bytes that were hashed.** A `COPY` whose files changed after they were hashed
-  is not pushed under that key. The context is a live directory of a
-  lower-trust owner
+- **A layer is pushed under a key only if the step read what the key names.** A
+  `COPY` or `ADD` whose files changed after they were hashed is not pushed under
+  that key. The context is a live directory of a lower-trust owner
   ([ADR-0076](0076-the-build-context-owner-is-a-lower-trust-principal.md)).
 
 Not decided here: the keys of `ADD <url>` and of `RUN --mount=type=bind`, which
 come with those Phase 5 features, and how `<hex>` is derived from the key and the
-encoding (the key task of Phase 4 fixes it and the `rnk-cache` card records it).
+encoding (Phase 4's task 2,
+[#125](https://github.com/tran4774/ranikust/issues/125), fixes it, and the
+`rnk-cache` card records it).
 
 ### Consequences
 
@@ -144,8 +148,9 @@ tie), [ADR-0049](0049-security-and-performance-over-kaniko-compatibility.md),
 [ADR-0079](0079-resource-limits-with-a-limit-flag.md) (every document read is
 bounded).
 
-The rule on pushing a `COPY` layer is invariant 3 of the Phase 4 plan, recorded
-here with the key because it is a condition on pushing under one.
+The rule on pushing a layer is invariant 3 of
+[#123](https://github.com/tran4774/ranikust/issues/123) (Phase 4), recorded here
+with the key because it is a condition on pushing under one.
 
 Follow-ups, with Phase 4's tasks and not before they are built: change
 [cache-and-store](../design/cache-and-store.md#cache-keys), the `rnk-cache` card,

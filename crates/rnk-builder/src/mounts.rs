@@ -295,7 +295,7 @@ pub(crate) fn run_mounts(
 
 /// Refuses the `RUN --mount` types and options this phase lacks, and the
 /// malformed ones, in every mode, before any secret is read or cache
-/// leased: `bind`, `tmpfs` and `ssh` (Phase 5, decided by ADR-0121),
+/// leased: `bind` and `tmpfs` (Phase 5, ADR-0121), `ssh` (Backlog, #139),
 /// `cache,from=`, a cache without a target, a secret without an id, an
 /// `env=` that names no variable.
 pub(crate) fn check_supported(mounts: &[Mount]) -> Result<()> {

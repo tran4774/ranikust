@@ -61,10 +61,10 @@ The layer cache lives in a registry repository or in an OCI layout on the host t
 holds one layout per key, published by `rename` alone, and kaniko mode on `/` keeps
 only a registry cache: `--cache-repo=oci:<dir>` is refused there.
 
-The maintainer, 2026-11-06, in the question window: "Registry + OCI layout an toàn
-(khuyến nghị)" ("Registry plus a safe OCI layout (recommended)"). It stood for
-option (d) of #30 for Phase 4 with `oci:` refused on `/`, option (c) of the layout
-question and option (a) of the `--compressed-caching` question.
+The maintainer's answer (2026-11-06: "Registry + OCI layout an toàn (khuyến nghị)",
+"Registry plus a safe OCI layout (recommended)") stood for option (d) of #30 for
+Phase 4 with `oci:` refused on `/`, option (c) of the layout question and option (a)
+of the `--compressed-caching` question.
 
 - **Kaniko mode on `/` (#30 (d)).** It keeps only a registry cache, and
   `--cache-repo=oci:<dir>` is refused there, before any work. The registry cache
@@ -75,7 +75,9 @@ question and option (a) of the `--compressed-caching` question.
 - **The layout (c).** An entry is a layout of its own in `<dir>/<tag>/`, made in a
   temporary directory and renamed into place. The layout cache publishes only by
   `rename`: no lock file, nothing shared between entries, nothing written outside the
-  directory the operator named.
+  directory the operator named. The directory is reached as an output is, through
+  `rnk_rootfs::OutputDir`: never through a symlink and never inside the build context
+  ([ADR-0076](0076-the-build-context-owner-is-a-lower-trust-principal.md)).
 - **`--compressed-caching` (a).** `true`, the default, is accepted; `false` is
   refused, saying that the memory it saves in kaniko is not spent in ranikust.
 

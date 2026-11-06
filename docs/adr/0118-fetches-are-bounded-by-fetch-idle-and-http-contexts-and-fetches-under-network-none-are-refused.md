@@ -60,10 +60,10 @@ download, clone or helper with no size bound and at most 10 redirects; `http://`
 contexts are refused for good, naming `https://`; and `ADD <url>` and `ADD <git>` are
 refused under `--network=none`, naming the flag.
 
-The maintainer, 2026-11-06, in the question window: "Tải trong rnk-registry, chặt
-(khuyến nghị)" ("Download in rnk-registry, strict (recommended)"). It stood for
-option (a) of the bound, option (a) of `http://` contexts and option (b) of
-`--network=none`, among other answers
+The maintainer's answer (2026-11-06: "Tải trong rnk-registry, chặt (khuyến nghị)",
+"Download in rnk-registry, strict (recommended)") stood for option (a) of the bound,
+option (a) of `http://` contexts and option (b) of `--network=none`, among other
+answers
 ([ADR-0115](0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
 records the others).
 
@@ -74,13 +74,16 @@ records the others).
   redirects.
 - **`http://` contexts.** Refused for good, with an error that names `https://`.
   Nothing kaniko users had is lost, and an unauthenticated context would decide the
-  whole image.
+  whole image. The refusal covers the `http://` context scheme only, not the `http`
+  protocol that [ADR-0035](0035-git-contexts-built-in-or-external-git.md) lets a git
+  context use with `GIT_PULL_METHOD=http`.
 - **`--network=none`.** `ADD <url>` and `ADD <git>` are refused under it, naming the
   flag. The operator's intent holds with no new mechanism: such a build drops the
   flag or moves the file into the context.
 
 Not covered: address filtering of ranikust's own requests, which stays #25's, and
-the scheme of an `ADD <url>` (this ADR decides `http://` for contexts only).
+the scheme of an `ADD <url>` and the `http` protocol of a git context (this ADR
+decides `http://` for contexts only).
 
 ### Consequences
 

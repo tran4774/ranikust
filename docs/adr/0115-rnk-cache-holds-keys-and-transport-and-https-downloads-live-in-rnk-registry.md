@@ -57,11 +57,11 @@ on `rnk-cache` and `rnk-context` on `rnk-layer`; the two interim edges stay;
 `rnk-registry` gains the one HTTPS download that fetched contexts and `ADD <url>`
 share; and `ContextSource` stays synchronous.
 
-The maintainer, 2026-11-06, in the question window, for the Phase 4 edges:
-"Registry + OCI layout an toàn (khuyến nghị)" ("Registry plus a safe OCI layout
-(recommended)"), which stood for the recommended Phase 4 edges of #7; and for
-Phase 5: "Tải trong rnk-registry, chặt (khuyến nghị)" ("Download in rnk-registry,
-strict (recommended)"), which stood for option (b) of #7 and option (a) of #6.
+For the Phase 4 edges the maintainer answered (2026-11-06: "Registry + OCI layout
+an toàn (khuyến nghị)", "Registry plus a safe OCI layout (recommended)"), which
+stood for the recommended Phase 4 edges of #7; and for Phase 5 (2026-11-06: "Tải
+trong rnk-registry, chặt (khuyến nghị)", "Download in rnk-registry, strict
+(recommended)"), which stood for option (b) of #7 and option (a) of #6.
 
 | Edge | Decision | Reason |
 |---|---|---|
@@ -85,10 +85,18 @@ strict (recommended)"), which stood for option (b) of #7 and option (a) of #6.
   downloads live in the registry client, and the interim already is (a).
   Downloads come in as a reader or a spooled file.
 
-Not decided here: `rnk-cache` → `rnk-store`, which
-[ARCHITECTURE.md](../../ARCHITECTURE.md#intended-dependency-direction) names in its
-intended direction while Phase 4's plan publishes built layers in the store from
-`rnk-store` and `rnk-builder`.
+Not settled here:
+
+- `rnk-cache` → `rnk-store`, which
+  [ARCHITECTURE.md](../../ARCHITECTURE.md#intended-dependency-direction) names in its
+  intended direction while Phase 4 publishes built layers in the store from
+  `rnk-store` and `rnk-builder`. Phase 4's task 4
+  ([#127](https://github.com/tran4774/ranikust/issues/127)) or task 10
+  ([#133](https://github.com/tran4774/ranikust/issues/133)) settles it; see
+  [#123](https://github.com/tran4774/ranikust/issues/123).
+- How `gix`, the one network client left in `rnk-context`, gets the TLS roots and
+  proxies that `rnk-registry` owns. Phase 5's task 3
+  ([#142](https://github.com/tran4774/ranikust/issues/142)) settles it.
 
 ### Consequences
 

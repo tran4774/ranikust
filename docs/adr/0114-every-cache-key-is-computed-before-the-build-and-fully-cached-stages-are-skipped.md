@@ -23,8 +23,8 @@ more questions came up while planning Phase 4 (see
   exports only the result's chain. W2's `pnpm install` sits in a stage read only
   through `COPY --from`.
 - The key of `COPY --from=<stage>`, whose input is another stage's files.
-  kaniko hashes the copied files by default and keys by the source stage's final
-  key behind a feature flag; BuildKit keys by content.
+  kaniko hashes the copied files by default and, behind a feature flag, uses the
+  source stage's final key in place of those hashes; BuildKit keys by content.
 - What `--materialize` means.
   [ADR-0064](0064-materialize-refused-until-the-layer-cache.md) refused it until
   the cache gives it a meaning "with a test of its meaning".
@@ -52,8 +52,9 @@ Stages whose layers go to the cache:
 
 The key of `COPY --from=<stage>`:
 
-- (a) The source stage's final key: the source can be skipped, but a rebuilt
-  source with a non-deterministic `RUN` leaves a hit holding the old files.
+- (a) The source stage's final key as the step's input, in place of the copied
+  files' hashes: the source can be skipped, but a rebuilt source with a
+  non-deterministic `RUN` leaves a hit holding the old files.
 - (b) The copied files' content (kaniko's default, BuildKit): the source stage
   must run or be extracted first, so it is never skipped.
 - (c) (a) when the source stage did not run in this build, a miss when it did.
@@ -69,14 +70,14 @@ The key of `COPY --from=<stage>`:
 ## Decision Outcome
 
 Every cache key of a build is computed before any stage runs and all lookups run
-at once, each stage uses its hits up to its first miss, a stage that nothing which
-runs reads is never prepared, and `--cache` caches the layers of every stage the
-build runs.
+at once, each stage uses its hits up to its first miss, a stage whose steps all hit
+and which nothing that runs reads is never prepared, and `--cache` caches the
+layers of every stage the build runs.
 
-The maintainer, 2026-11-06, in the question window: "Tính trước, bỏ qua stage
-(khuyến nghị)" ("Compute ahead, skip stages (recommended)"). It stood for option (a)
-of #14, option (a) of the stages question, option (c) of the `COPY --from=<stage>`
-question and option (a) of the `--materialize` question.
+The maintainer's answer (2026-11-06: "Tính trước, bỏ qua stage (khuyến nghị)",
+"Compute ahead, skip stages (recommended)") stood for option (a) of #14, option (a)
+of the stages question, option (c) of the `COPY --from=<stage>` question and
+option (a) of the `--materialize` question.
 
 - **Lookahead (a).** The keys are computed after the context walk and the base
   manifests are resolved, and every step is looked up, one lookup per step even
@@ -92,11 +93,13 @@ question and option (a) of the `--materialize` question.
   ADR-0038 left open: under `--cache` the stages whose layers are encoded are
   every stage the build runs, not only the target's `FROM` chain. Without
   `--cache` ADR-0038's rule is unchanged.
-- **`COPY --from=<stage>` (c).** Its key is the source stage's final key when the
-  source stage did not run in this build. When it did run, the step is a miss: it
-  copies what the stage made and pushes under the source stage's final key. The
-  key stays one computed before the build, so skipping works, and a rebuilt stage's
-  files are what the image gets.
+- **`COPY --from=<stage>` (c).** When the source stage did not run in this build,
+  the source stage's final key is the step's input, in place of the copied files'
+  hashes; the step's key is still ADR-0005's, with `key(k-1)` and the instruction.
+  When the source stage did run, the step is a miss: it copies what the stage made
+  and is pushed under the key computed from that input. The key stays one computed
+  before the build, so skipping works, and a rebuilt stage's files are what the
+  image gets.
 - **`--materialize` (a).** It returns in kaniko mode on `/`: the target's root is
   extracted onto `/` even when every step hits, as in kaniko. It is refused in
   overlay mode and in kaniko mode with a directory per stage, whose roots are
@@ -116,8 +119,8 @@ question and option (a) of the `--materialize` question.
 - Bad, because a cold build does the work of encoding and pushing every stage,
   not only the target's chain.
 - Bad, because a `COPY --from` whose source did not run takes the layer cached
-  under the source's final key, not a hash of the files: it is as good as the
-  source stage's own cached layers, and no better.
+  under a key whose input is the source's final key, not a hash of the files: it is
+  as good as the source stage's own cached layers, and no better.
 - Bad, because a kaniko command line with `--materialize` is refused wherever the
   mode is not kaniko on `/`.
 
@@ -152,9 +155,9 @@ and fulfils ADR-0064's "Phase 4 brings it back"; neither is rewritten. Related:
 [ADR-0113](0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)
 (the key).
 
-Carried over to a later phase: a content-based `COPY --from` key beside this
-definition-based one, which this answer leaves out and the Phase 4 plan carries
-over.
+Not covered: a content-based `COPY --from` key beside this definition-based one
+(listed under "carried over" in
+[#123](https://github.com/tran4774/ranikust/issues/123)).
 
 Follow-ups, with Phase 4's tasks and not before they are built: change
 [cache-and-store](../design/cache-and-store.md), the

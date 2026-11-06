@@ -11,7 +11,7 @@ decision-makers: Tran Nguyen (maintainer)
 Phase 2's acceptance asked every cold build to beat kaniko on W1 to W3
 ([phase-2](../agents/phase-2.md), the time criterion, a frozen record).
 [ADR-0108](0108-rootless-overlay-has-no-performance-target-and-its-time-is-recorded.md)
-gave rootless overlay no target and recorded its time instead. W2 has never been
+gave rootless builds no target and recorded their time instead. W2 has never been
 built with a cache. What performance does Phase 4 have to reach (raised while
 planning Phase 4, see [the roadmap](../../README.md#roadmap))?
 
@@ -19,7 +19,7 @@ planning Phase 4, see [the roadmap](../../README.md#roadmap))?
 
 - (a) Warm and partial W2 no slower than kaniko with `--cache=true`, in overlay mode
   as root, in kaniko mode on `/` and in kaniko mode with a directory per stage;
-  rootless overlay recorded only (ADR-0108).
+  rootless recorded only (ADR-0108).
 - (b) Record the times, no target.
 - (c) (a) for overlay mode only; kaniko mode recorded.
 
@@ -27,16 +27,17 @@ planning Phase 4, see [the roadmap](../../README.md#roadmap))?
 
 Phase 4's acceptance requires a warm and a partial W2 build with `--cache` to be no
 slower than kaniko with `--cache=true`, in overlay mode as root, in kaniko mode on `/`
-and in kaniko mode with a directory per stage; rootless overlay's time is recorded only.
+and in kaniko mode with a directory per stage; a rootless build's time is recorded
+only.
 
-The maintainer, 2026-11-06, in the question window: "Không chậm hơn kaniko (khuyến
-nghị)" ("No slower than kaniko (recommended)"), option (a).
+Option (a) (the maintainer, 2026-11-06: "Không chậm hơn kaniko (khuyến nghị)", "No
+slower than kaniko (recommended)").
 
 - **Target.** Each of the three modes, warm and partial, against kaniko
   `--cache=true` on the same workload. It is Phase 2's bar applied to the cache, which
   is what kaniko users compare.
-- **Rootless overlay** has no target: its time is recorded against overlay as root,
-  as ADR-0108 says.
+- **Rootless** has no target: its time is recorded against overlay as root and
+  kaniko mode, as ADR-0108 says.
 - **When it is measured.** In Phase 4's acceptance run, which runs only when the
   maintainer asks.
 
@@ -57,7 +58,8 @@ nghị)" ("No slower than kaniko (recommended)"), option (a).
 
 ## More Information
 
-Raised while planning Phase 4. Related: ADR-0108 (rootless overlay's time recorded),
+Raised while planning Phase 4. Related: ADR-0108 (a rootless build's time recorded),
 [ADR-0114](0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)
 (what makes a warm build fast). The cache scenarios of the end-to-end harness (W2
-warm and partial) are Phase 4's task 13.
+warm and partial) are Phase 4's task 13
+([#136](https://github.com/tran4774/ranikust/issues/136)).
