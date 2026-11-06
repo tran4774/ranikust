@@ -488,13 +488,24 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
         Some(st) => st,
         None => reap(pid, true, Duration::from_secs(10)).unwrap().unwrap(),
     };
+    let gave_up = "the child exited 4: its death signal refused, or its parent gone";
+    assert_ne!(killed.exit_status(), Some(4), "{gave_up}");
     assert_eq!(killed.terminating_signal(), Some(libc::SIGKILL));
     let pid = fork(false);
     let left = reap(pid, true, Duration::from_millis(100));
-    // An error is the next `reap`'s to show.
-    let _ = rustix::process::kill_process(pid, Signal::KILL);
+    // Only a child not reaped yet: a reaped one's number may be another
+    // process's. An error is the next `reap`'s to show.
+    if matches!(left, Ok(None)) {
+        let _ = rustix::process::kill_process(pid, Signal::KILL);
+    }
     let after = reap(pid, true, Duration::from_secs(10));
-    assert!(left.unwrap().is_none());
+    let left = left.unwrap();
+    assert_ne!(left.and_then(|st| st.exit_status()), Some(4), "{gave_up}");
+    assert!(
+        left.is_none(),
+        "reaped before the kill: {:?}",
+        left.map(|st| (st.exit_status(), st.terminating_signal()))
+    );
     assert!(after.unwrap().is_some());
 }
 
