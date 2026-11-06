@@ -668,13 +668,21 @@ fn run_init(
     let go_w = go_w.into_raw_fd();
     let mut keep = [err, go_w, status_w];
     keep.sort_unstable();
-    if let Err(e) = close_all_except_checked(&keep) {
+    // SAFETY: the init is a forked child that ends with `_exit`, here or in
+    // `kill_and_fail`, and uses or drops no owner of what this closes:
+    // `go_r` is dropped above, `go_w` taken from its owner, and the owners
+    // in this copy of the parent's memory are never dropped.
+    if let Err(e) = unsafe { close_all_except_checked(&keep) } {
         kill_and_fail(err, command, Step::Init, e);
     }
-    if let Err(e) = close_one(err) {
+    // SAFETY: as above; after a failed close only `kill_and_fail` writes to
+    // `err`, and nothing opened since could hold its number.
+    if let Err(e) = unsafe { close_one(err) } {
         kill_and_fail(err, command, Step::Init, e);
     }
-    send_go(go_w);
+    // SAFETY: `go_w` is open, taken from its owner above, and not used
+    // after.
+    unsafe { send_go(go_w) };
     let status = reap_until(command);
     let bytes = status.to_le_bytes();
     // SAFETY: `status_w` is open in this process; the write is below
@@ -750,13 +758,19 @@ const GO: u8 = b'G';
 /// refused), the init ends (125) rather than leave both waiting. A command
 /// already gone fails only the write: the init, PID 1 of its namespace,
 /// gets no `SIGPIPE` it has no handler for.
-fn send_go(go_w: RawFd) {
+///
+/// # Safety
+///
+/// `go_w` is open in this process, and no owner of it is used or dropped
+/// after: this closes it.
+unsafe fn send_go(go_w: RawFd) {
     // SAFETY: `go_w` is open in this process until the `close` below.
     let sent = matches!(
         rustix::io::write(unsafe { BorrowedFd::borrow_raw(go_w) }, &[GO]),
         Ok(1)
     );
-    let closed = close_one(go_w).is_ok();
+    // SAFETY: the caller's contract, which is `close_one`'s.
+    let closed = unsafe { close_one(go_w) }.is_ok();
     if !sent && !closed {
         // SAFETY: `_exit` ends the process at once; the kernel then kills
         // what is left of the namespace.
@@ -2079,17 +2093,21 @@ pub(crate) unsafe fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: Pa
 /// Only in a forked child that ends with `_exit` or `execve` and uses or
 /// drops no owner (`OwnedFd`, `File`) of a descriptor this closes.
 pub(crate) unsafe fn close_all_except(keep: &[RawFd]) {
-    if close_gaps(keep).is_ok() {
+    // SAFETY: the caller's contract, which is `close_gaps`'s.
+    if unsafe { close_gaps(keep) }.is_ok() {
         return;
     }
-    match close_listed(keep) {
+    // SAFETY: the caller's contract, which is `close_listed`'s.
+    match unsafe { close_listed(keep) } {
         Listed::Closed => {}
         Listed::Unreadable | Listed::Refused(_) => {
             let limit = nofile_bound(true, 1 << 20);
             for fd in (0..=limit).filter(|fd| !keep.contains(fd)) {
                 // Best effort before the `RUN`'s filters; the init checks
                 // its own closing.
-                let _ = close_raw(fd);
+                // SAFETY: the caller's contract: no owner of `fd` is used
+                // or dropped after.
+                let _ = unsafe { close_raw(fd) };
             }
         }
     }
@@ -2106,11 +2124,17 @@ pub(crate) unsafe fn close_all_except(keep: &[RawFd]) {
 /// `close_range` answered with success is trusted, which only a filter
 /// around ranikust can fake (ADR-0109); a `close` so faked is caught by
 /// the pass that does not shrink.
-fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
-    let Err(range) = close_gaps(keep) else {
+///
+/// # Safety
+///
+/// As [`close_all_except`].
+unsafe fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
+    // SAFETY: the caller's contract, which is `close_gaps`'s.
+    let Err(range) = (unsafe { close_gaps(keep) }) else {
         return Ok(());
     };
-    match close_listed(keep) {
+    // SAFETY: the caller's contract, which is `close_listed`'s.
+    match unsafe { close_listed(keep) } {
         Listed::Closed => Ok(()),
         Listed::Refused(e) => Err(e),
         Listed::Unreadable => Err(range),
@@ -2119,13 +2143,16 @@ fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
 
 /// `close_range` over every gap of `keep` (sorted as for
 /// [`close_all_except`]); the first error, after every gap was tried.
-/// Only for a forked child that ends in `_exit` or `execve`, as the other
-/// two below: none of them asks whether an `OwnedFd` holds what it closes.
-fn close_gaps(keep: &[RawFd]) -> Result<(), Errno> {
+///
+/// # Safety
+///
+/// As [`close_all_except`]: nothing here asks whether an `OwnedFd` holds
+/// what it closes.
+unsafe fn close_gaps(keep: &[RawFd]) -> Result<(), Errno> {
     let mut first = None;
     let mut range = |from: u32, to: u32| {
-        // SAFETY: a plain syscall; the child drops no owner of a descriptor
-        // it closes before it ends.
+        // SAFETY: a plain syscall; by the caller's contract, no owner of a
+        // descriptor it closes is used or dropped after.
         if unsafe { libc::syscall(libc::SYS_close_range, from, to, 0u32) } != 0 {
             first.get_or_insert(last_errno());
         }
@@ -2146,8 +2173,12 @@ fn close_gaps(keep: &[RawFd]) -> Result<(), Errno> {
 
 /// `close` as the kernel answers it, through `syscall`: musl's `close`
 /// turns `EINTR` into success.
-fn close_raw(fd: RawFd) -> Result<(), Errno> {
-    // SAFETY: as in `close_gaps`.
+///
+/// # Safety
+///
+/// No owner of `fd` (`OwnedFd`, `File`) is used or dropped after.
+unsafe fn close_raw(fd: RawFd) -> Result<(), Errno> {
+    // SAFETY: a plain syscall on a number the caller gives up.
     if unsafe { libc::syscall(libc::SYS_close, fd) } == 0 {
         Ok(())
     } else {
@@ -2157,13 +2188,18 @@ fn close_raw(fd: RawFd) -> Result<(), Errno> {
 
 /// Closes `fd` with `close_range`, which a profile may allow where it
 /// refuses `close`, else with `close`, whose error it returns.
-fn close_one(fd: RawFd) -> Result<(), Errno> {
+///
+/// # Safety
+///
+/// As [`close_raw`].
+unsafe fn close_one(fd: RawFd) -> Result<(), Errno> {
     let n = u32::try_from(fd).map_err(|_| Errno::BADF)?;
-    // SAFETY: as in `close_gaps`.
+    // SAFETY: a plain syscall on a number the caller gives up.
     if unsafe { libc::syscall(libc::SYS_close_range, n, n, 0u32) } == 0 {
         return Ok(());
     }
-    close_raw(fd)
+    // SAFETY: the caller's contract, which is `close_raw`'s.
+    unsafe { close_raw(fd) }
 }
 
 /// Whether `dir` is on procfs, read through `libc` into a zeroed buffer:
@@ -2215,7 +2251,11 @@ enum Listed {
 /// included, counts only as the kernel answers it ([`close_raw`]), and the
 /// first refused one ends it. A pass that finds no fewer descriptors than
 /// the one before ends it too, as [`Listed::Unreadable`].
-fn close_listed(keep: &[RawFd]) -> Listed {
+///
+/// # Safety
+///
+/// As [`close_all_except`].
+unsafe fn close_listed(keep: &[RawFd]) -> Listed {
     let mut before = usize::MAX;
     loop {
         let Ok(dir) = rustix::fs::openat(
@@ -2242,12 +2282,15 @@ fn close_listed(keep: &[RawFd]) -> Listed {
                 && fd != own
             {
                 found += 1;
-                if let Err(e) = close_raw(fd) {
+                // SAFETY: the caller's contract: no owner of a descriptor
+                // not in `keep` is used or dropped after.
+                if let Err(e) = unsafe { close_raw(fd) } {
                     return Listed::Refused(e);
                 }
             }
         }
-        if let Err(e) = close_raw(dir.into_raw_fd()) {
+        // SAFETY: the listing's own descriptor, taken from its owner.
+        if let Err(e) = unsafe { close_raw(dir.into_raw_fd()) } {
             return Listed::Refused(e);
         }
         if found == 0 {
@@ -2973,7 +3016,10 @@ mod tests {
                     .unwrap()
                     .program;
                 let status = crate::seccomp::under_filter(&prog, || {
-                    send_go(go_w.as_raw_fd());
+                    // SAFETY: `under_filter`'s child ends with `_exit`, so
+                    // its copy of `go_w`'s owner is never dropped; only
+                    // `fcntl` looks at the number after.
+                    unsafe { send_go(go_w.as_raw_fd()) };
                     // SAFETY: `F_GETFD` on a descriptor number only reads.
                     i32::from(unsafe { libc::fcntl(go_w.as_raw_fd(), libc::F_GETFD) } >= 0)
                 });
@@ -3045,7 +3091,10 @@ mod tests {
                     };
                     let count = || (3..top).filter(|&fd| is_open(fd)).count();
                     let before = count();
-                    match close_all_except_checked(keep) {
+                    // SAFETY: `under_filter`'s child ends with `_exit`: the
+                    // owners in its copy of this process are never dropped,
+                    // and `is_open` only reads a number's flags.
+                    match unsafe { close_all_except_checked(keep) } {
                         Ok(()) if keep_all => 103,
                         Ok(()) if count() > 0 => 104,
                         Ok(()) => 0,
