@@ -2,7 +2,7 @@
 # of the RUN's PID namespace, its init and processes left in the background
 # or in a session of their own included, runs under the same filters, the
 # profile among them, without no_new_privs; a setuid-root program run by
-# another user gets Docker's 14 capabilities at most and keeps those
+# another user gets exactly Docker's 14 capabilities and keeps those
 # filters; and the profile never changes a layer: one --reproducible digest
 # without the flag, with --seccomp=unconfined and with an allow-all profile
 # file. In the T1 kaniko leg a RUN runs on the container's `/` under the
