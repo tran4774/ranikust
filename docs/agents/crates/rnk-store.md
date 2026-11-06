@@ -133,7 +133,11 @@ Design: [locks](../../design/cache-and-store.md#locks),
   build was clean, and unlocks last (`Error::NotEmptied` fails the build).
 - `prune`, in both forms (a minimal `--all` in Phase 3, the full one in Phase 5),
   opens the store as a build does, takes the same locks and never removes an
-  entry a running build uses [inferred: in-use tracking is not designed].
+  entry a running build uses: decided by
+  [ADR-0122](../../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
+  not built yet (a shared `flock` on each entry a build uses, and the entry's
+  marker mtime as its last use); the mechanism is
+  [#76](https://github.com/tran4774/ranikust/issues/76)'s (Phase 3).
 - In kaniko mode on `/` the state directory is on the ignore list: nothing
   walks, snapshots or deletes it as part of a root. Every descriptor is
   `O_CLOEXEC`; none reaches `RUN` (T7).

@@ -1,7 +1,8 @@
 # rnk-context
 
 > **Status:** in progress · **Phase:** 1 (tar, git, HTTPS: 5) ·
-> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, [open: #7]) ·
+> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, ADR-0115), `rnk-layer`
+> (planned, Phase 5, ADR-0115) ·
 > **Used by:** `rnk-builder`, `ranikust` · **Path:** `crates/rnk-context/`
 
 **TL;DR:** The build context from a local directory (tar, git and HTTPS are
@@ -36,7 +37,7 @@ Boundaries: `crates/rnk-context/src/lib.rs`. In short:
 pub enum ContextSpec { Dir(PathBuf), Tar(String), Git(String), Https(String) }  // kaniko prefixes; #[non_exhaustive]
 pub fn parse_spec(arg: &str) -> Result<ContextSpec>;  // tar://, git://, https://; bare path = dir; gs://, s3:// refused; `dir://` refused with Error::DirScheme, naming the plain path (ADR-0053, ADR-0054)
 pub trait ContextSource {                             // [decided] open trait, ADR-0008
-    fn open(&self) -> Result<Context>;                // sync for now [open: #6]
+    fn open(&self) -> Result<Context>;                // sync, ADR-0115
 }
 pub struct DirSource;                                 // DirSource::new(path): opened with RESOLVE_NO_SYMLINKS, a symlink anywhere refused (Error::Symlink, ADR-0076), used in place
 pub fn open(spec: &ContextSpec) -> Result<Context>;   // Dir only; Tar, Git, Https -> Error::Unsupported until Phase 5
@@ -79,7 +80,7 @@ constructor argument, not `open`'s.
 
 - **Design:** [design/overlay-snapshot.md#state-directory-layout](../../design/overlay-snapshot.md#state-directory-layout), [design/cache-and-store.md#cache-keys](../../design/cache-and-store.md#cache-keys) (context file digests after `.dockerignore`)
 - **Decisions:** [ADR-0008](../../adr/0008-out-of-scope-bake-warmer-cloud-contexts.md) (four sources, open trait), [ADR-0027](../../adr/0027-context-filtering-follows-buildkit-walk.md) (the walk), [ADR-0035](../../adr/0035-git-contexts-built-in-or-external-git.md) (git contexts), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (TLS trust store), [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (trusting a context is the user's call), [ADR-0076](../../adr/0076-the-build-context-owner-is-a-lower-trust-principal.md) (the context's owner)
-- **Open:** [#6](https://github.com/tran4774/ranikust/issues/6) (sync or async trait), [#7](https://github.com/tran4774/ranikust/issues/7) (planned crate dependencies), [#15](https://github.com/tran4774/ranikust/issues/15), [#16](https://github.com/tran4774/ranikust/issues/16), [#17](https://github.com/tran4774/ranikust/issues/17) (git, below)
+- **Decided, not built yet:** [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (the trait stays sync, the crate edges, downloads live in `rnk-registry`), [ADR-0119](../../adr/0119-git-contexts-take-buildkits-fragment-only-with-no-backend-fallback.md) (git: no fallback, `#ref:subdir` only, a `--git-config` allow-list)
 - **Evidence:** none measured; [survey 03 §5](../../research/survey/03-rust-architecture.md#5-estimated-code-size) estimates ~500 lines; [exp-05](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) for TLS in `scratch`
 - **kaniko:** `kaniko@44aa7ddc0 pkg/buildcontext/buildcontext.go:40-72` (trait, prefix dispatch), `dir.go:25-27`, `tar.go:36-60`, `git.go:56-150`, `https.go:38-76`; `cmd/executor/cmd/root.go:595-633` (bare path, `--context-sub-path`); `pkg/util/fs_util.go:1195-1204` (ignore file lookup); `pkg/util/command_util.go:145-185` (`COPY` globs)
 - **External:** [Docker docs, git URL fragments](https://docs.docker.com/build/concepts/context/#url-fragments); BuildKit v0.34.0 [dockerui/config.go](https://github.com/moby/buildkit/blob/v0.34.0/frontend/dockerui/config.go#L415) (`<Dockerfile>.dockerignore`); fsutil `83cac42c1c52` `filter.go` (`filterFS.Walk`)
@@ -156,11 +157,12 @@ Not built: `open` refuses them. `ADD <url>` and `ADD <git>` belong to
 - `tar://stdin` is a gzip stream on stdin (`tar.go:41-56`).
 - kaniko's `git://` clones over HTTPS (HTTP with `GIT_PULL_METHOD`), takes
   `GIT_USERNAME`/`GIT_PASSWORD`/`GIT_TOKEN` and reads `#ref#commit`
-  (`git.go:56-128`, `:197-220`); Docker uses `#ref:dir`; both forms are
-  accepted (ADR-0035).
+  (`git.go:56-128`, `:197-220`); Docker uses `#ref:dir`; ADR-0035
+  accepted both; ADR-0119 keeps Docker's only.
 - Plan (ADR-0035): a `GitSource` with two backends behind one trait: a
   built-in `gix` by default (a static binary in `scratch` has no `git` to
-  call; TLS roots shared with `rnk-registry`, ADR-0024) and
+  call; ADR-0035 planned to share `rnk-registry`'s TLS roots, ADR-0024, and
+  how `gix` gets them is not settled, below) and
   `--git-backend=external`, a `git` binary run by the ADR's hardened recipe
   (isolated from the host's configuration, hooks and `fsmonitor` off),
   configured by `--git-binary`, `--git-config`, `--git-arg` and
@@ -169,10 +171,12 @@ Not built: `open` refuses them. `ADD <url>` and `ADD <git>` belong to
   directory and is read through `RootPath`; `.git` is removed unless
   `BUILDKIT_CONTEXT_KEEP_GIT_DIR=1`; kaniko's `--git` keys and `GIT_*`
   variables work for both.
-- Open: [#15](https://github.com/tran4774/ranikust/issues/15) fallback
-  between the backends; [#16](https://github.com/tran4774/ranikust/issues/16)
-  kaniko's commit with a subdirectory;
-  [#17](https://github.com/tran4774/ranikust/issues/17) the built-in's
-  `--git-config` keys; [#7](https://github.com/tran4774/ranikust/issues/7)
-  where the TLS configuration shared with `rnk-registry` lives, and whether
-  `rnk-context` may use `rnk-layer` to decompress tar contexts.
+- Decided by [ADR-0119](../../adr/0119-git-contexts-take-buildkits-fragment-only-with-no-backend-fallback.md),
+  not built yet: no fallback between the backends; BuildKit's `#ref:subdir`
+  fragment only (kaniko's `#ref#commit` is dropped); an allow-list of the
+  built-in's `--git-config` keys. By
+  [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
+  `rnk-context` may use `rnk-layer` to decompress tar contexts, and downloads
+  live in `rnk-registry`. Not settled: how `gix` gets the TLS roots and proxies
+  that `rnk-registry` owns
+  ([#142](https://github.com/tran4774/ranikust/issues/142)).

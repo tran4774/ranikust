@@ -1,15 +1,18 @@
 # rnk-cache
 
 > **Status:** skeleton · **Phase:** 4 ·
-> **Depends on:** `rnk-oci`, `rnk-store`, `rnk-registry` (planned) ·
-> **Used by:** `rnk-builder`, `rnk-sched` (up-front lookups) ·
+> **Depends on:** `rnk-registry`, `rnk-oci`, `rnk-rootfs` (ADR-0115) and
+> `rnk-store` (ADR-0021), all planned: the crate declares none yet ·
+> **Used by:** `rnk-builder` (its lookups started up front by `rnk-sched`
+> through `StageRunner`) ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per instruction and looks
 up and pushes cached layers in a registry repository or an OCI layout. A key
 depends on the instruction, the context it reads and the previous key only,
-never on the snapshot mode, host, time or thread count, and it is not
-compatible with kaniko's cache. The crate is a skeleton (docs, no code): the
+never on the snapshot mode, host, time (apart from a file's mtime under
+`--reproducible`, ADR-0113) or thread count, and it is not compatible with
+kaniko's cache. The crate is a skeleton (docs, no code): the
 CLI refuses `--cache`, `--cache-repo` and the related flags until Phase 4 and
 accepts `--cache=false` (ADR-0036).
 
@@ -24,7 +27,8 @@ accepts `--cache=false` (ADR-0036).
 Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 
 - Read or write kaniko's cache or mimic its keys (ADR-0005).
-- Let a key depend on the snapshot mode, host, users, timestamps, thread
+- Let a key depend on the snapshot mode, host, users, timestamps (apart from the
+  mtime of a file older than the epoch under `--reproducible`, ADR-0113), thread
   count or the order of an unordered collection.
 - Transfer blobs (`rnk-registry`), encode layers (`rnk-layer`), own the local
   store (`rnk-store`) or choose what to export (`rnk-builder`).
@@ -37,18 +41,22 @@ Nothing exists yet; this is the design sketch.
 pub const KEY_VERSION: u32 = 1;                      // [decided] a version field, ADR-0005; bump on any change
 pub struct CacheKey { version: u32, hash: [u8; 32] } // [design] key(k) = H(version, key(k-1), instruction, inputs(k))
 impl CacheKey {
-    pub fn root(base: &Digest, platform: &Platform) -> Self;             // [design] resolved base digest [inferred]
+    pub fn root(base: &Digest, platform: &Platform) -> Self;             // ADR-0113: the base's platform manifest digest plus the platform
     pub fn next(&self, instr: &ExpandedInstr, inputs: &KeyInputs) -> Self; // [design]
-    pub fn tag(&self) -> String;                                          // [open: #13] form in --cache-repo
+    pub fn tag(&self, encoding: &Encoding) -> String;                     // form: ADR-0113; derivation: #125
 }
-pub struct KeyInputs { /* sorted file digests, mount specs, args, env */ }   // [open: #13] fixed in Phase 4 with W2
+pub struct KeyInputs { /* per file: path, content digest, attributes, mtime of a file older than the epoch under --reproducible; a RUN's network and mount specs; COPY --from=<image>'s manifest digest; COPY --from=<stage>'s final key (ADR-0114); args; env; USER, WORKDIR, SHELL */ }   // fields: ADR-0113
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
-    async fn lookup(&self, key: &CacheKey) -> Result<Option<CachedLayer>>;
-    async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
+    async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>;  // takes the encoding (ADR-0113): a value of rnk-cache's own, as it does not depend on rnk-layer (ADR-0115)
+    async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &EncodedLayer) -> Result<()>;  // asynchronous; the tag and the entry's annotations need the encoding (ADR-0113)
 }
 ```
 
-`H` is a cryptographic hash; SHA-256 is likely but not decided [open: #13].
+`H` is SHA-256, and the fields, the entry and the form of the tag are decided by
+[ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
+how the tag's `<hex>` is derived is decided before
+[#125](https://github.com/tran4774/ranikust/issues/125) is built. None of it is
+built yet.
 
 ## Invariants
 
@@ -56,9 +64,11 @@ The key formula and its fields: [`design/cache-and-store.md#cache-keys`](../../d
 
 - A new algorithm bumps `KEY_VERSION`; old entries are never matched again
   and never rewritten.
-- `COPY`/`ADD` inputs are the digests of the files actually read, after
-  `.dockerignore`; the instruction is hashed after variable expansion, the
-  environment in a fixed order [inferred].
+- `COPY`/`ADD` inputs are the files actually read, after `.dockerignore`: each
+  one's path relative to the source, content digest and attributes, and under
+  `--reproducible` the mtime of a file older than the epoch (ADR-0113). The
+  instruction is hashed after variable expansion, with the environment in a
+  fixed order [inferred]: the order itself is not decided.
 - Same inputs, same key, in either mode and with any `--jobs`; a layer cached
   by one mode may serve the other (ADR-0005).
 - A `type=secret` mount adds its specification, never its content (T11);
@@ -69,8 +79,8 @@ The key formula and its fields: [`design/cache-and-store.md#cache-keys`](../../d
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#cache-keys`](../../design/cache-and-store.md#cache-keys), [`#ownership`](../../design/cache-and-store.md#ownership); [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export) (`--cache` makes a layer needed); [threat model T11, T13](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
-- **Open:** [#13](https://github.com/tran4774/ranikust/issues/13) (key fields and tag), [#14](https://github.com/tran4774/ranikust/issues/14) (lookahead, skipping cached stages), [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
+- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache); decided, not built yet: [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (key fields, tag, encoding), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (lookahead, skipping cached stages), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (edges), [ADR-0116](../../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md) (registry or layout, none on `/`)
+- **Open:** [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
 - **Evidence:** none measured: workload W2 (cold, warm, partial cache) was never run; mode independence is argued in [survey 06](../../research/survey/06-overlay-and-parallelism.md) §6.
 - **kaniko** (compare, do not copy): `kaniko@44aa7ddc0`
   `pkg/executor/build.go:322` `populateCompositeKey` (sorts the environment
@@ -109,5 +119,6 @@ Planned.
 - Users moving from kaniko start with a cold cache: decided, not a bug
   (ADR-0005).
 - A secret in a key or a cache tag leaks through the registry (T11).
-- The chain root and instruction fields are [inferred] and no cache
-  measurement exists: decide nothing and claim no speed-up before Phase 4.
+- The key's fields and the chain root are decided by ADR-0113 and not built,
+  and no cache measurement exists yet: claim no speed-up before Phase 4
+  measures one.
