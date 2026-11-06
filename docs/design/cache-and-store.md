@@ -57,11 +57,12 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
                                 stage roots are stages/<n>/rootfs (ADR-0059)
 ```
 
-The store lives in the state directory: `/var/lib/ranikust` in every mode
-unless `--state-dir` names another
+The store lives in the state directory: `/var/lib/ranikust` as root in every
+mode, `~/.local/share/ranikust` for another user, unless `--state-dir` names
+another
 ([ADR-0050](../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It is the private directory of every build root: owned by the user running
-ranikust, `0700`, below directories only root may write
+ranikust, `0700`, below directories only root or that user may write
 ([kaniko-mode](kaniko-mode.md#host-safety-checks)). Kaniko mode on `/` keeps
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).

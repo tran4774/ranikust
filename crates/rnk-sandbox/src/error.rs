@@ -431,6 +431,24 @@ pub enum Error {
     /// a panic.
     #[error("{0}")]
     ProbeClosure(String),
+    /// [`crate::enter_build_user_namespace`] found no map with which the
+    /// build's user and mount namespaces work here, each tried in a child
+    /// first: this process is still in its own namespaces.
+    #[error(
+        "no user namespace for the build: {}",
+        crate::userns::tried_text(tried)
+    )]
+    NoUserNamespace {
+        /// Each map considered, in order, with the step that stopped its
+        /// trial or why it was not tried.
+        tried: Vec<(crate::IdMap, crate::StepResult)>,
+    },
+    /// [`crate::enter_build_user_namespace`]: a step failed for this
+    /// process after the same step passed in a trial. The process may be in
+    /// the new user namespace without a usable map, or dumpable: it must
+    /// not go on.
+    #[error("the build's user namespace: {0}, after its trial passed; the process cannot go on")]
+    UserNamespaceBroken(crate::StepFailure),
     /// A system call of the parent failed.
     #[error("{op}: {source}")]
     Sys {

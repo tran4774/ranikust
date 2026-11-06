@@ -33,11 +33,11 @@ the build needs root, and nothing in the dev loop should ever be run with
 | [git-cliff](https://git-cliff.org/) | Optional: `just changelog` drafts notes from commit messages; releases are drafted from pull requests by `just release-prepare` | `cargo install --locked git-cliff` |
 | `file`, `readelf` | `just build-static` and `just test-aarch64` check the binary is static | `file` and `binutils` packages |
 | A C compiler as `cc` | Builds the C dependencies (libzstd, mimalloc, ring) for the host, and links the static binary | `gcc` or `clang` package |
-| [zig](https://ziglang.org/) | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64` and `just test-aarch64` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
+| [zig](https://ziglang.org/) | Compiles the C dependencies for the musl targets in `just build-static`, `just check-aarch64`, `just test-aarch64` and `just test-rootless` ([ADR-0020](docs/adr/0020-static-musl-via-cargo-zigbuild.md)) | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) | Hands zig to those builds | [docs/development-setup.md](docs/development-setup.md#1-the-build-every-contributor) |
 | `aarch64-linux-gnu-gcc` | Links the aarch64 binary as static-pie in `just test-aarch64` on x86_64 (on aarch64 the native `cc` does); without it the recipe links with zig and cannot check static-pie (Q-140) | `gcc-aarch64-linux-gnu` package |
 | `qemu-aarch64` (QEMU user mode) 9.1 or later | `just test-aarch64`, so `just ci`, on an x86_64 machine: the aarch64 tests under emulation (8.2 has no `openat2`); a binfmt_misc entry also runs the tests that spawn a binary ([testing](docs/testing.md#aarch64-under-qemu-user)). Not needed on aarch64, where they run natively (as in CI) | `qemu-user` package if 9.1 or later, else Debian 13's `qemu-user` unpacked with `dpkg -x`; `QEMU_AARCH64=<path>` |
-| rootless [Podman](https://podman.io/) | `just smoke` and `just smoke-case` (the T1 smoke tests, [docs/testing.md](docs/testing.md)), `just test-vm e2e` and `ultra` (they save the reference images from it), and `just registry-up` (`podman compose`, with `openssl`, python3's `bcrypt` and `skopeo`) | `podman`, `podman-compose` or `docker-compose`, `python3-bcrypt`, `skopeo` packages |
+| rootless [Podman](https://podman.io/) | `just test-rootless` (with `jq`, and entries for you in `/etc/subuid` and `/etc/subgid`), `just smoke` and `just smoke-case` (T1, [docs/testing.md](docs/testing.md)), `just test-vm e2e` and `ultra` (they save the reference images from it), and `just registry-up` (`podman compose`, with `openssl`, python3's `bcrypt` and `skopeo`) | `podman`, `podman-compose` or `docker-compose`, `python3-bcrypt`, `skopeo` packages |
 | A [`nextjs-kaniko`](docs/testing.md#end-to-end-workloads-e2e) checkout next to the repository, with its registry and verdaccio storage filled and its images in podman | Only `just test-vm ultra`, the ultra benchmark; read, never written | `RANIKUST_NEXTJS_KANIKO=<path>` |
 | QEMU 10.1 or later with KVM and its passt backend, [passt](https://passt.top/) 2024_10_30 or later, `xorriso`, `jq`; `socat` for the `push` suite | Only `just test-vm`, the T2 VM harness; `/dev/kvm` must be readable and writable by you (its group or an ACL), never through `sudo`. passt is the VM's egress ([ADR-0086](docs/adr/0086-the-t2-vm-reaches-no-host-loopback-port-but-the-test-registries.md)) | `qemu-system-x86`, `qemu-utils`, `passt`, `xorriso`, `jq`, `socat` packages |
 
@@ -101,11 +101,11 @@ rules):
 | Tier | What | Where |
 |---|---|---|
 | T0 | Unit and in-process tests | Anywhere: `just test` |
-| T1 | Rootless integration (user namespaces, rootless Podman); today the smoke tests only | Your machine: `just smoke` |
+| T1 | Rootless integration (user namespaces, rootless Podman) | Your machine, as yourself with subordinate ids: `just test-rootless`, `just smoke`, `just smoke-case` |
 | T2 | Privileged integration: real root, overlay, rootful Docker, host-safety attacks. T2c: the root tests that mean the same in a throwaway container | A disposable VM only: `just test-vm`; on a full CI run, a GitHub-hosted runner. T2c also runs through `just test-container`, on the maintainer's marked test machine only |
 | T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint; on a full run also the static build and the native aarch64 tests | GitHub Actions, by lanes ([above](#what-ci-runs)) |
 
-Tests above T0 are marked `#[ignore = "T1: ..."]`, `"T2c: ..."` or
+Tests above T0 are marked `#[ignore = "T1: <profile>: ..."]`, `"T2c: ..."` or
 `"T2: ..."` and run only through their harness; `"inner: ..."` marks a step
 a T2 test starts again in a place of its own
 ([testing.md](docs/testing.md#rules)). **Never run a T2 or T2c
