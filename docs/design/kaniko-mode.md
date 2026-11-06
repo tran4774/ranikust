@@ -766,8 +766,9 @@ layer is.
   base-layer path, `rnk_rootfs::extract_live` with the stage's ignore list,
   under [its rules](#ignore-list), and its diff ID is checked at the end. On
   `/` a streamed layer is spooled and verified before its first entry
-  reaches `/` ([streaming](streaming.md#credentials-and-failures)), so a bad
-  one is a miss; per stage it is extracted as it arrives (ADR-0055). The scan ADR-0098 plans for base
+  reaches `/` ([streaming](streaming.md#credentials-and-failures)), so a
+  blob with a bad digest is a miss; per stage it is extracted as it arrives
+  (ADR-0055). The scan ADR-0098 plans for base
   layers in a user namespace (Phase 3) must cover cached layers too.
 - **The walk catches up lazily.** Applying a layer marks the walk's record
   of the root stale; the next `begin_layer` of a stage whose layers are
@@ -783,8 +784,9 @@ layer is.
   broken: no layer, applied layer, view, keep or child stage (`FROM`,
   squashed or handed over) goes on from it, so no later layer is computed
   over part of a cached one. The shared root is usable again once a new base
-  empties it; a broken stage directory is only released, and the builder runs
-  the stage again from its base, the bad entry a miss
+  empties it (what the builder does then is not decided [open: #167]); a
+  broken stage directory is only released, and the builder runs the stage
+  again from its base, the bad entry a miss
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
   [#130](https://github.com/tran4774/ranikust/issues/130)).
 - **Refused, nothing changed:** a layer open, a root not held (shared root)
