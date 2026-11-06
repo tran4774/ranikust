@@ -6,6 +6,10 @@
 //! - every step: its instruction after expansion, as canonical JSON with
 //!   its flags; the `ARG`s declared and the environment in effect; `USER`,
 //!   `WORKDIR` and `SHELL`; its heredocs' bodies, as BuildKit expands them;
+//! - an owner name, the `USER` that owns what a `WORKDIR` creates or a
+//!   `--chown=<user>[:<group>]`, as written, never the ids it resolves to:
+//!   it resolves in the stage's root, which the previous key fixes, and
+//!   which does not exist before the build (#168, decided 2026-11-07, option (a));
 //! - a `RUN`: the network BuildKit keys (its `--network`, or `none` for one
 //!   without it under the build's `--network=none`,
 //!   `buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert.go:823`,
@@ -20,9 +24,9 @@
 //!   stage's final key ([`StepKey::reads_stage`]).
 //!
 //! A step the plan cannot key as the build would run it (a feature the
-//! build refuses, an expansion or a read that fails, a `--chown`
-//! \[open: #168]) has no key, and neither has any later step of its stage
-//! or a stage built on it or reading it: fail closed, a miss. The one
+//! build refuses, an expansion or a read that fails) has no key, and
+//! neither has any later step of its stage or a stage built on it or
+//! reading it: fail closed, a miss. The one
 //! exception is an `ADD` of a local archive, keyed though the build refuses
 //! it until Phase 5: no build pushes a layer under its key before then, and
 //! Phase 5 keys any rule its extraction adds to the archive's bytes, or
@@ -126,8 +130,11 @@ impl StageKeys {
     }
 
     /// The stage this one is built on (`FROM <stage>`), whose final key is
-    /// [`root`](Self::root): a miss there is a miss for every step here,
-    /// or a cached layer would sit on a lower it was not made on (ADR-0114).
+    /// [`root`](Self::root). ADR-0114's stop rule holds across it: the
+    /// caller treats a miss on any step of that stage, or of a stage it is
+    /// built on, as a miss for every step here, or a cached layer would sit
+    /// on a lower it was not made on, and an owner name would resolve in
+    /// another root than the key names (#168, decided 2026-11-07, option (a)).
     #[must_use]
     pub fn base_stage(&self) -> Option<usize> {
         self.base_stage
@@ -486,7 +493,6 @@ impl Step<'_, '_> {
 
     /// An `ADD`: a `COPY` from the context, its archives keyed as files.
     fn add(&self, a: &Add, inputs: &mut KeyInputs) -> Result<()> {
-        unkeyed_chown(&a.chown)?;
         if !a.checksum.is_empty() || a.keep_git_dir.is_some() || a.unpack == Some(true) {
             return Err(unsupported("ADD --checksum, --keep-git-dir or --unpack"));
         }
@@ -503,7 +509,6 @@ impl Step<'_, '_> {
     /// A `COPY`: the files it reads from the context, or what `--from`
     /// names; the stage it reads, if any.
     fn copy(&self, c: &Copy, inputs: &mut KeyInputs) -> Result<Option<usize>> {
-        unkeyed_chown(&c.chown)?;
         if c.link || c.parents || !c.excludes.is_empty() {
             return Err(unsupported("COPY --link, --parents or --exclude"));
         }
@@ -546,9 +551,9 @@ impl Step<'_, '_> {
     }
 
     /// The context files `sources` name, as the copy writes them: owned by
-    /// 0:0 (no `--chown`), `--chmod` applied, the special files a `Direct`
-    /// build's copy leaves out left out, and a socket as the empty file the
-    /// copy makes of it.
+    /// 0:0 (a `--chown` is keyed as written, in the instruction), `--chmod`
+    /// applied, the special files a `Direct` build's copy leaves out left
+    /// out, and a socket as the empty file the copy makes of it.
     fn context_files(&self, sources: &[String], chmod: &str, inputs: &mut KeyInputs) -> Result<()> {
         if sources.iter().any(String::is_empty) {
             return Err(unsupported("an empty source"));
@@ -650,19 +655,6 @@ impl Step<'_, '_> {
             });
         }
         Ok(())
-    }
-}
-
-/// A `--chown` resolves in the stage's root, which does not exist before
-/// the build, so the ids ADR-0113 keys are unknown: no key for such a step
-/// \[open: #168].
-fn unkeyed_chown(chown: &str) -> Result<()> {
-    if chown.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::Invalid(
-            "--chown resolves in the stage's root: not keyed yet [open: #168]".to_owned(),
-        ))
     }
 }
 

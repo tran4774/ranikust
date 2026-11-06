@@ -164,21 +164,28 @@ pub struct StepKey { pub key: CacheKey, pub reads_stage: Option<usize> }  // a C
 ```
 
 - Fail closed: a step the build refuses (the Phase 5 features, `ONBUILD`
-  triggers, a `Direct` refusal), a `COPY` or `ADD` with `--chown`
-  ([open: #168]) or a step whose expansion or read fails has no key, and
-  neither has a later step of its stage nor a stage built on or reading it.
+  triggers, a `Direct` refusal) or whose expansion or read fails has no
+  key, and neither has a later step of its stage nor a stage built on or
+  reading it.
   The one exception: an `ADD` of a local archive is keyed, as one file, the
   archive (BuildKit's way), though the build refuses it until Phase 5; no
   build pushes a layer under that key before then, and Phase 5 keys any
   rule its extraction adds to the archive's bytes, or bumps `KEY_VERSION`.
+- An owner name is keyed as written, never resolved: a `--chown` in the
+  instruction, and the `USER` that owns what a `WORKDIR` creates. It
+  resolves in the stage's root, which the previous key fixes
+  (#168, decided 2026-11-07, option (a)).
 - A file is keyed as the copy writes it: under the name it is copied under,
-  owned by `0:0`, with `--chmod` applied; hardlinks inside one directory
+  owned by `0:0` (its `--chown` is in the instruction), with `--chmod`
+  applied; hardlinks inside one directory
   source as links to the first; a socket as an empty file; under
   `Isolation::Direct` special files left out, as the copy leaves them. A
   FIFO, socket or device is described, never opened.
-- `base_stage()`: a stage built on another chains from its final key; a
-  miss there is a miss for every step here, or a cached layer would sit on
-  a lower it was not made on (ADR-0114).
+- `base_stage()`: a stage built on another chains from its final key.
+  ADR-0114's stop rule holds across it: the caller treats a miss on any
+  step of the base stage as a miss for every step built on it, or a cached
+  layer would sit on a lower it was not made on, and an owner name resolve
+  in another root than its key names.
 - A `RUN` without `--network` is keyed with the network BuildKit gives it:
   `none` under the build's `--network=none`, else the default.
 
@@ -297,13 +304,13 @@ noted.
 - `tests/key_plan/`: keys the same on 1 or 8 threads, with the context
   listed in another order or touched; under `--reproducible` an mtime older
   than the epoch counts; each input (a declared build argument, `ENV`,
-  content, mode, name, `--chmod`, mounts, a dropped cache mount, the
-  network, a source stage, a heredoc body) changes the key, an undeclared
-  build argument does not (a secret's value cannot: `PlanInput` holds
-  none); a FIFO keyed without being opened; special files and hardlinks as
-  the copy writes them; an archive `ADD`; no key from a refused step or a
-  `--chown` on; a stage built on a stage; one golden pinning the inputs a
-  build gives.
+  content, mode, name, `--chown` as written, `--chmod`, mounts, a dropped
+  cache mount, the network, a source stage, a heredoc body, the `USER` of a
+  `WORKDIR`) changes the key, an undeclared build argument does not (a
+  secret's value cannot: `PlanInput` holds none); a FIFO keyed without
+  being opened; special files and hardlinks as the copy writes them; an
+  archive `ADD`; no key from a refused step on; stages built on stages; one
+  golden pinning the inputs a build gives.
 - `tests/outputs/` (layer bytes the same at 1, 2 and 8 threads;
   `--reproducible` scrubbing; the OCI layout and Docker tar file by file and
   through `skopeo inspect` when installed; push with mounts against

@@ -105,6 +105,8 @@ pub(crate) struct Opts {
     /// `--reproducible`'s epoch.
     pub(crate) epoch: Option<i64>,
     pub(crate) threads: usize,
+    /// The `USER` of the image `base`.
+    pub(crate) base_user: &'static str,
 }
 
 impl Default for Opts {
@@ -116,18 +118,20 @@ impl Default for Opts {
             allow_network_host: false,
             epoch: None,
             threads: 1,
+            base_user: "app",
         }
     }
 }
 
-/// The digest and config of the image `base` the Dockerfiles use.
-fn base() -> (Digest, ImageConfig) {
+/// The digest and config of the image `base` the Dockerfiles use, its
+/// `USER` being `user`.
+fn base(user: &str) -> (Digest, ImageConfig) {
     let config = ImageConfig {
         architecture: "amd64".to_owned(),
         os: "linux".to_owned(),
         config: Some(ContainerConfig {
             env: Some(vec!["PATH=/usr/bin:/bin".to_owned()]),
-            user: Some("app".to_owned()),
+            user: Some(user.to_owned()),
             working_dir: Some("/srv".to_owned()),
             ..ContainerConfig::default()
         }),
@@ -169,7 +173,7 @@ pub(crate) fn plan(dockerfile: &str, ctx: &Path, opts: &Opts) -> (KeyPlan, usize
         },
     )
     .unwrap();
-    let (digest, config) = base();
+    let (digest, config) = base(opts.base_user);
     let images = BTreeMap::from([(
         "base".to_owned(),
         PlanImage {

@@ -165,7 +165,10 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **instruction:** the instruction after variable expansion, with its flags.
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
-    and `SHELL`;
+    and `SHELL`; an owner name as written, never the ids it resolves to
+    (the `USER` that owns what a `WORKDIR` creates, a `--chown`): it
+    resolves in the stage's root, which the previous key fixes
+    (#168, decided 2026-11-07, option (a));
   - for a `RUN`, its network as BuildKit keys it (its `--network`, or
     `none` for one without it under the build's `--network=none`), each
     secret mount's id, target, mode and owner, given or not (below), and
@@ -174,11 +177,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     drops it;
   - for `COPY` and `ADD` from the build context, each file read (after
     `.dockerignore`): its path relative to the context, content, mode, owner
-    after `--chown` (`0:0` without one; a step with `--chown`, which
-    resolves in a stage root the plan does not have, gets no key yet
-    [open: #168]), type, link target, `security.capability` and, under
-    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
-    file older than the epoch counts;
+    (`0:0`, the `--chown` being in the instruction), type, link target,
+    `security.capability` and, under `--reproducible`, its mtime clamped to
+    the epoch, so only the mtime of a file older than the epoch counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (a forced miss when
     that stage ran in this build,

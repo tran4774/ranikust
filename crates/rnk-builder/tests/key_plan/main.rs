@@ -390,48 +390,81 @@ fn tar(content: &[u8]) -> Vec<u8> {
     b.into_inner().unwrap()
 }
 
-/// A `--chown` resolves in the stage's root, which the plan does not have:
-/// no key until #168 says what stands for the ids; the same steps without
-/// it have keys.
+/// A `--chown` is keyed as written, never resolved: the previous key fixes
+/// the root its names resolve in (#168, decided 2026-11-07, option (a)).
 #[test]
-fn a_chown_step_has_no_key_until_its_owner_can_be_keyed() {
+fn a_chown_is_keyed_as_written() {
     let ctx = context(&[("run.sh", b"#!/bin/sh\n")]);
-    let steps = |df: &str| {
-        keys(df, &ctx.path, &Opts::default())
-            .pop()
-            .flatten()
-            .unwrap()
-            .steps()
-            .to_vec()
-    };
-    for (owner, df) in [
-        (
-            "--chown=1:1 ",
-            "FROM base\nCOPY {} run.sh /bin/\nRUN true\n",
-        ),
-        ("--chown=app ", "FROM base\nADD {} run.sh /bin/\n"),
-        (
-            "--chown=0:0 ",
-            "FROM base AS one\nFROM base\nCOPY --from=one {} /etc /etc\n",
-        ),
+    let opts = Opts::default();
+    for df in [
+        "FROM base\nCOPY {} run.sh /bin/\nRUN true\n",
+        "FROM base\nADD {} run.sh /bin/\n",
+        "FROM base AS one\nFROM base\nCOPY --from=one {} /etc /etc\n",
     ] {
-        let with = steps(&df.replace("{} ", owner));
-        assert!(with.iter().all(Option::is_none), "{df} {owner}");
-        let without = steps(&df.replace("{} ", ""));
-        assert!(without.iter().all(Option::is_some), "{df}");
+        let key = |owner: &str| last(&df.replace("{} ", owner), &ctx.path, &opts);
+        let none = key("");
+        let app = key("--chown=app ");
+        // `0` may name the same ids as `root`, or not: only the root knows.
+        let (zero, root) = (key("--chown=0 "), key("--chown=root "));
+        assert_ne!(app, key("--chown=app:staff "), "{df}");
+        assert_ne!(app, key("--chown=web "), "{df}");
+        assert_ne!(zero, root, "{df}");
+        assert_ne!(none, zero, "{df}");
+        assert_eq!(app, key("--chown=app "), "{df}");
     }
 }
 
+/// The `USER` that owns the directories a `WORKDIR` makes is keyed as
+/// written, whether the Dockerfile or the base image sets it.
+#[test]
+fn a_changed_user_name_changes_the_workdir_key() {
+    let ctx = context(&[]);
+    let df = |user: &str| format!("FROM base\nUSER {user}\nWORKDIR /data\n");
+    let opts = Opts::default();
+    assert_ne!(
+        last(&df("app"), &ctx.path, &opts),
+        last(&df("web"), &ctx.path, &opts)
+    );
+    let web = Opts {
+        base_user: "web",
+        ..Opts::default()
+    };
+    let workdir = "FROM base\nWORKDIR /data\n";
+    assert_ne!(
+        last(workdir, &ctx.path, &opts),
+        last(workdir, &ctx.path, &web),
+        "the base image's USER, the same digest"
+    );
+}
+
+/// ADR-0114's stop rule across `FROM <stage>`, as far as the plan carries
+/// it: each stage names the one it is built on, chains from its final key,
+/// so whatever changes a base step changes every step built on it, and has
+/// no key when its base has none.
 #[test]
 fn a_stage_built_on_a_stage_chains_from_its_final_key() {
     let ctx = context(&[("a.txt", b"a")]);
-    let df = "FROM base AS one\nCOPY a.txt /\nFROM one\nRUN true\n";
+    let df = "FROM base AS one\nCOPY a.txt /\nFROM one AS two\nRUN true\n\
+              FROM two\nUSER app\nWORKDIR /w\nCOPY --chown=app a.txt .\n";
     let stages = keys(df, &ctx.path, &Opts::default());
-    let (one, two) = (stages[0].as_ref().unwrap(), stages[1].as_ref().unwrap());
-    assert_eq!((one.base_stage(), two.base_stage()), (None, Some(0)));
-    assert_eq!(Some(two.root()), one.final_key());
-    assert!(two.steps()[0].is_some());
-    let df = "FROM base AS one\nCOPY --chown=1 a.txt /\nFROM one\nRUN true\n";
+    let stage = |i: usize| stages[i].as_ref().unwrap();
+    let bases: Vec<_> = (0..3).map(|i| stage(i).base_stage()).collect();
+    assert_eq!(bases, [None, Some(0), Some(1)]);
+    assert_eq!(Some(stage(1).root()), stage(0).final_key());
+    assert_eq!(Some(stage(2).root()), stage(1).final_key());
+
+    let other = context(&[("a.txt", b"b")]);
+    let changed = keys(df, &other.path, &Opts::default());
+    let (two, three) = (changed[1].as_ref().unwrap(), changed[2].as_ref().unwrap());
+    assert_eq!(stage(0).root(), changed[0].as_ref().unwrap().root());
+    for (old, new) in [(stage(1), two), (stage(2), three)] {
+        assert_ne!(old.root(), new.root());
+        for (a, b) in old.steps().iter().zip(new.steps()) {
+            assert_ne!(a.unwrap().key, b.unwrap().key, "every step built on it");
+        }
+    }
+
+    let df = "FROM base AS one\nADD https://example.com/a /a\nFROM one\nRUN true\n";
     let stages = keys(df, &ctx.path, &Opts::default());
     assert!(stages[1].is_none(), "built on a stage with no final key");
 }
