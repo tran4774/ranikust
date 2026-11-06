@@ -571,9 +571,11 @@ impl OutputDir {
     /// Renames the temporary file `tmp` to `name`: over a regular file
     /// there, else only where nothing is (`RENAME_NOREPLACE`), so a device
     /// node, a FIFO, a socket, a directory or a symlink at the name
-    /// (`/dev/null`, `/dev/stdout`) is refused, never replaced. Where the
-    /// filesystem refuses `RENAME_NOREPLACE` (NFS, 9p, FUSE without
-    /// `rename2`: `EINVAL`), [`OutputDir::link_into`] takes over.
+    /// (`/dev/null`, `/dev/stdout`) is refused. A symlink a writer of this
+    /// directory swaps in between the look and the rename may be replaced,
+    /// but is never followed. Where the filesystem refuses
+    /// `RENAME_NOREPLACE` (NFS, 9p, FUSE without `rename2`: `EINVAL`),
+    /// [`OutputDir::link_into`] takes over.
     fn rename_into(&self, tmp: &OsStr, name: &OsStr, tmp_path: &Path) -> Result<()> {
         for _ in 0..2 {
             if self.replaceable(name)? {

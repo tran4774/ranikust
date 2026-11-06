@@ -168,8 +168,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changes what the `tar` crate hands on and never lets a name or PAX record
   over the bound through. `red_team_names_swapped_during_an_output_never_redirect_it`
   (`src/host/tests.rs`): a thread exchanging the output directory, the tar
-  and the digest file with links to victims while `OutputDir` writes 3000
-  times (flaky on CI: [#44](https://github.com/tran4774/ranikust/issues/44)).
+  and the digest file with links to victims, in random order, while
+  `OutputDir` writes; rounds of 3000 writes, the victim checked after each,
+  until some got through and some were refused (60 s at most).
 - **T1** (`#[ignore = "T1: ..."]`, `RNK_T1_ROOT`): extraction and live
   extraction never write below or skip-wrongly real mounts; foreign owners
   and setuid kept raw in `extract`.
