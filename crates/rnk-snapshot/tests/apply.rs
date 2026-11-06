@@ -347,6 +347,19 @@ impl Shared {
     }
 }
 
+/// `h`, a host path a test writes into a stage root through, checked to be
+/// below `top`, the fixture's temporary directory: never `/`, which is what
+/// `mount_point()` gives for a shared root told it is `/`.
+fn inside(top: &Path, h: PathBuf) -> PathBuf {
+    assert!(
+        h != Path::new("/") && h.starts_with(top),
+        "{} is not below the test's directory {}",
+        h.display(),
+        top.display()
+    );
+    h
+}
+
 /// Changed and deleted paths of a diff, as strings.
 fn changes(d: &WalkDiff) -> (Vec<String>, Vec<String>) {
     (
@@ -477,11 +490,13 @@ fn encode<D: ExportLayer>(
 
 /// After a walked step, two cached layers applied, then a step that
 /// changes nothing (an empty diff) and one that writes a file and deletes
-/// one a layer brought (exactly those changes): the walk never reports
+/// one a layer brought (those, and `app`, which the deletion moves): the
+/// walk never reports
 /// what the layers brought as new.
 fn the_next_diff_holds_only_the_next_steps_changes<S>(
     snap: &S,
     blobs: &Path,
+    top: &Path,
     host: impl Fn(&S::Root) -> PathBuf,
 ) where
     S: Snapshotter<Layer = KanikoLayer>,
@@ -509,7 +524,7 @@ fn the_next_diff_holds_only_the_next_steps_changes<S>(
     drop(d);
     root.apply(&blob(snap, blobs, "one", &one)).unwrap();
     root.apply(&blob(snap, blobs, "two", &two)).unwrap();
-    let h = host(&root);
+    let h = inside(top, host(&root));
     assert_eq!(fs::read(h.join("app/a")).unwrap(), b"one");
     assert_eq!(fs::read(h.join("app/b")).unwrap(), b"two");
     assert_eq!(fs::read(h.join("etc/os")).unwrap(), b"changed");
@@ -546,7 +561,7 @@ fn the_next_diff_holds_only_the_next_steps_changes<S>(
 #[test]
 fn per_stage_the_next_diff_holds_only_the_next_steps_changes() {
     let f = Stages::new();
-    the_next_diff_holds_only_the_next_steps_changes(&f.snap, &f.blobs(), |r| {
+    the_next_diff_holds_only_the_next_steps_changes(&f.snap, &f.blobs(), &f.top, |r| {
         r.mount_point().to_owned()
     });
 }
@@ -556,7 +571,9 @@ fn shared_root_the_next_diff_holds_only_the_next_steps_changes() {
     for slash in [false, true] {
         let f = Shared::new(slash);
         let root = f.root.clone();
-        the_next_diff_holds_only_the_next_steps_changes(&f.snap, &f.blobs(), |_| root.clone());
+        the_next_diff_holds_only_the_next_steps_changes(&f.snap, &f.blobs(), &f.top, |_| {
+            root.clone()
+        });
     }
 }
 
@@ -585,6 +602,7 @@ fn a_stage_whose_layers_are_not_needed_applies_without_a_walk() {
 fn whiteouts_remove_lower_entries_once<S>(
     snap: &S,
     blobs: &Path,
+    top: &Path,
     host: impl Fn(&S::Root) -> PathBuf,
 ) where
     S: Snapshotter<Layer = KanikoLayer>,
@@ -614,7 +632,7 @@ fn whiteouts_remove_lower_entries_once<S>(
     root.begin_layer().unwrap();
     drop(root.end_layer().unwrap());
     root.apply(&blob(snap, blobs, "cached", &cached)).unwrap();
-    let h = host(&root);
+    let h = inside(top, host(&root));
     assert!(!h.join("gone").exists());
     assert!(!h.join("dir/x").exists());
     assert_eq!(fs::read(h.join("dir/y")).unwrap(), b"y");
@@ -648,7 +666,9 @@ fn whiteouts_remove_lower_entries_once<S>(
 #[test]
 fn per_stage_whiteouts_in_a_cached_layer_remove_lower_entries_once() {
     let f = Stages::new();
-    whiteouts_remove_lower_entries_once(&f.snap, &f.blobs(), |r| r.mount_point().to_owned());
+    whiteouts_remove_lower_entries_once(&f.snap, &f.blobs(), &f.top, |r| {
+        r.mount_point().to_owned()
+    });
 }
 
 #[test]
@@ -656,7 +676,7 @@ fn shared_root_whiteouts_in_a_cached_layer_remove_lower_entries_once() {
     for slash in [false, true] {
         let f = Shared::new(slash);
         let root = f.root.clone();
-        whiteouts_remove_lower_entries_once(&f.snap, &f.blobs(), |_| root.clone());
+        whiteouts_remove_lower_entries_once(&f.snap, &f.blobs(), &f.top, |_| root.clone());
     }
 }
 
@@ -689,7 +709,8 @@ fn rich_base() -> Vec<u8> {
 /// a tree, a directory replaced by a file, new nested directories, a
 /// symlink, a hardlink among new files, an empty private directory; every
 /// time it sets is in whole seconds.
-fn step_one(h: &Path) {
+fn step_one(top: &Path, h: &Path) {
+    inside(top, h.to_owned());
     fs::write(h.join("etc/conf"), b"changed conf").unwrap();
     fs::set_permissions(h.join("usr/bin/tool"), fs::Permissions::from_mode(0o700)).unwrap();
     fs::remove_file(h.join("etc/drop")).unwrap();
@@ -723,7 +744,8 @@ fn step_one(h: &Path) {
 }
 
 /// The step after: new content, a file through a hardlink, a removed link.
-fn step_two(h: &Path) {
+fn step_two(top: &Path, h: &Path) {
+    inside(top, h.to_owned());
     fs::create_dir(h.join("srv")).unwrap();
     fs::write(h.join("srv/new"), b"two").unwrap();
     fs::write(h.join("opt/app/bin/run"), b"run v2").unwrap();
@@ -738,6 +760,7 @@ fn step_two(h: &Path) {
 fn built_both_ways<S>(
     snap: &S,
     blobs: &Path,
+    top: &Path,
     host: impl Fn(&S::Root) -> PathBuf,
     cached: impl Fn(&S, &[u8], Vec<u8>) -> KanikoLayer,
 ) where
@@ -752,11 +775,11 @@ fn built_both_ways<S>(
         .unwrap();
     ran.set_layers_needed(true);
     ran.begin_layer().unwrap();
-    step_one(&host(&ran));
+    step_one(top, &host(&ran));
     let (gz, id) = encode(ran.end_layer().unwrap(), Compression::Gzip, None);
-    let ran_root = flat(&host(&ran));
+    let ran_root = flat(&inside(top, host(&ran)));
     ran.begin_layer().unwrap();
-    step_two(&host(&ran));
+    step_two(top, &host(&ran));
     let (_, ran_next) = encode(ran.end_layer().unwrap(), Compression::None, Some(1));
     ran.release().unwrap();
 
@@ -769,9 +792,13 @@ fn built_both_ways<S>(
     let mut hit = snap.prepare(Base::Image(&[base])).unwrap();
     hit.set_layers_needed(true);
     hit.apply(&layer).unwrap();
-    assert_eq!(flat(&host(&hit)), ran_root, "the root the step left");
+    assert_eq!(
+        flat(&inside(top, host(&hit))),
+        ran_root,
+        "the root the step left"
+    );
     hit.begin_layer().unwrap();
-    step_two(&host(&hit));
+    step_two(top, &host(&hit));
     let (_, hit_next) = encode(hit.end_layer().unwrap(), Compression::None, Some(1));
     assert_eq!(hit_next, ran_next, "the next step's layer");
     hit.release().unwrap();
@@ -784,6 +811,7 @@ fn per_stage_an_applied_layer_gives_the_root_its_step_left() {
     built_both_ways(
         &f.snap,
         &f.blobs(),
+        &f.top,
         |r| r.mount_point().to_owned(),
         |snap, tar, gz| {
             let path = blobs.join("cached.gz");
@@ -795,6 +823,7 @@ fn per_stage_an_applied_layer_gives_the_root_its_step_left() {
     built_both_ways(
         &f.snap,
         &f.blobs(),
+        &f.top,
         |r| r.mount_point().to_owned(),
         |snap, tar, gz| streamed(snap, tar, &Source::new(gz)),
     );
@@ -808,6 +837,7 @@ fn shared_root_an_applied_layer_gives_the_root_its_step_left() {
         built_both_ways(
             &f.snap,
             &f.blobs(),
+            &f.top,
             |_| root.clone(),
             |snap, tar, gz| streamed(snap, tar, &Source::new(gz)),
         );
@@ -819,7 +849,7 @@ fn shared_root_an_applied_layer_gives_the_root_its_step_left() {
 /// Device nodes and FIFOs in a cached layer are not made, as in a base
 /// layer, and the walk never reports them: the image keeps them through
 /// the layer reused as it is.
-fn nodes_are_left_out<S>(snap: &S, blobs: &Path, host: impl Fn(&S::Root) -> PathBuf)
+fn nodes_are_left_out<S>(snap: &S, blobs: &Path, top: &Path, host: impl Fn(&S::Root) -> PathBuf)
 where
     S: Snapshotter<Layer = KanikoLayer>,
     S::Root: Applies,
@@ -834,7 +864,7 @@ where
     let mut root = snap.prepare(Base::Scratch).unwrap();
     root.set_layers_needed(true);
     root.apply(&blob(snap, blobs, "nodes", &cached)).unwrap();
-    let names: Vec<_> = fs::read_dir(host(&root).join("nodes"))
+    let names: Vec<_> = fs::read_dir(inside(top, host(&root)).join("nodes"))
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
@@ -853,11 +883,11 @@ where
 #[test]
 fn device_nodes_and_fifos_in_a_cached_layer_are_left_out() {
     let f = Stages::new();
-    nodes_are_left_out(&f.snap, &f.blobs(), |r| r.mount_point().to_owned());
+    nodes_are_left_out(&f.snap, &f.blobs(), &f.top, |r| r.mount_point().to_owned());
     for slash in [false, true] {
         let f = Shared::new(slash);
         let root = f.root.clone();
-        nodes_are_left_out(&f.snap, &f.blobs(), |_| root.clone());
+        nodes_are_left_out(&f.snap, &f.blobs(), &f.top, |_| root.clone());
     }
 }
 
@@ -1102,7 +1132,7 @@ fn red_team_a_hostile_cached_layer_stays_in_its_stage_root() {
     let up = format!("../../{}/rootfs", n.to_str().unwrap());
     let mut s = f.snap.prepare(Base::Scratch).unwrap();
     s.set_layers_needed(true);
-    let h = s.mount_point().to_owned();
+    let h = inside(&f.top, s.mount_point().to_owned());
     // What a `RUN` left in the ignored paths.
     fs::create_dir_all(h.join("ignored")).unwrap();
     fs::write(h.join("ignored/canary"), b"IGNORED").unwrap();
@@ -1373,8 +1403,12 @@ fn red_team_a_hostile_cached_layer_on_slash_touches_no_ignored_path() {
 /// nodes, gives the root what the same layer gives as a base layer, owners and
 /// modes kept and no device node made where root could make one, and the
 /// next diff is empty.
-fn owners_and_nodes_as_a_base_layer<S>(snap: &S, blobs: &Path, host: impl Fn(&S::Root) -> PathBuf)
-where
+fn owners_and_nodes_as_a_base_layer<S>(
+    snap: &S,
+    blobs: &Path,
+    top: &Path,
+    host: impl Fn(&S::Root) -> PathBuf,
+) where
     S: Snapshotter<Layer = KanikoLayer>,
     S::Root: Applies,
 {
@@ -1394,12 +1428,12 @@ where
     let based = snap
         .prepare(Base::Image(std::slice::from_ref(&layer)))
         .unwrap();
-    let as_base = flat(&host(&based));
+    let as_base = flat(&inside(top, host(&based)));
     based.release().unwrap();
     let mut root = snap.prepare(Base::Scratch).unwrap();
     root.set_layers_needed(true);
     root.apply(&layer).unwrap();
-    let h = host(&root);
+    let h = inside(top, host(&root));
     let applied = flat(&h);
     assert_eq!(applied, as_base, "as the same layer as a base layer");
     let md = fs::symlink_metadata(h.join("owned/setuid")).unwrap();
@@ -1428,10 +1462,10 @@ where
 fn a_cached_layer_with_foreign_owners_and_device_nodes_applies_as_a_base_layer() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let f = Stages::new();
-    owners_and_nodes_as_a_base_layer(&f.snap, &f.blobs(), |r| r.mount_point().to_owned());
+    owners_and_nodes_as_a_base_layer(&f.snap, &f.blobs(), &f.top, |r| r.mount_point().to_owned());
     let f = Shared::new(false);
     let root = f.root.clone();
-    owners_and_nodes_as_a_base_layer(&f.snap, &f.blobs(), |_| root.clone());
+    owners_and_nodes_as_a_base_layer(&f.snap, &f.blobs(), &f.top, |_| root.clone());
 }
 
 /// The environment variable that tells the inner test it was started by
