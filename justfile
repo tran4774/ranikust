@@ -67,9 +67,9 @@ check-aarch64:
 #   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
 #   `the_store_opens_inside_the_user_namespace_or_not_at_all`,
 #   `red_team_the_build_user_namespace_is_whole_or_not_entered`:
-#   qemu-user runs a thread of its own, so the set-up stops at its
-#   single-thread check before the privilege refusal or the user namespace
-#   the tests expect;
+#   qemu-user runs a thread of its own, so the set-up, or
+#   `enter_build_user_namespace`, stops at its single-thread check before
+#   the privilege refusal or the user namespace the tests expect;
 # - `the_filter_refuses_what_it_should_and_nothing_else` and the tests of every
 #   `tests::kernel` module: a seccomp filter written for aarch64
 #   syscall numbers cannot be installed in the x86_64 host kernel through

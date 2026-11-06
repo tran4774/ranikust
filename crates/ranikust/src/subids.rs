@@ -46,8 +46,8 @@ fn lookup_in(etc: &std::path::Path, uid: u32) -> Result<Option<SubordinateIds>, 
         .map(|(uids, gids)| SubordinateIds { uids, gids }))
 }
 
-/// The lines of `bytes` that are UTF-8: the name or uid another names is
-/// neither a UTF-8 name nor a decimal uid.
+/// The lines of `bytes` that are UTF-8: a line that is not is no
+/// well-formed range of a UTF-8 name or a decimal uid.
 fn valid_lines(bytes: &[u8]) -> String {
     bytes
         .split(|b| *b == b'\n')

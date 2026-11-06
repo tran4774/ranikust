@@ -73,7 +73,7 @@ const MKNOD_OP: &str = "mknod";
 /// In the child's mount namespace, before any mount.
 const SLAVE_OP: &str = "make / a recursive slave mount";
 
-/// Which id map the probe's user namespace got.
+/// Which id map a user namespace of the probe or the build got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum IdMap {

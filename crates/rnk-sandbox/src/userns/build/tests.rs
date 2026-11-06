@@ -503,7 +503,7 @@ fn one_id_parent() -> std::result::Result<(), String> {
 /// map, which passes: the build's namespace is told as the kernel gives it,
 /// one uid, `setgroups` denied, not as the map planned.
 #[test]
-#[ignore = "T1: default: root of a one-id user namespace in a rootless Podman container enters the build's"]
+#[ignore = "T1: default: root of a one-id user namespace in a rootless Podman container enters the build's user namespace"]
 fn the_build_user_namespace_below_one_id_is_told_one_uid() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let line = in_subreaper(|| match one_id_parent() {

@@ -160,8 +160,9 @@ fn dead_build(state: &Path, user: Option<(u32, u32)>) -> String {
             Ok(s) => s,
             Err(r) => return format!("refused\t{r}"),
         };
-        if moved(&before) != "new" {
-            return format!("error: the namespaces: {}", moved(&before));
+        let m = moved(&before);
+        if m != "new" {
+            return format!("error: the namespaces: {m}");
         }
         let id = set_up.store.build_id().to_owned();
         let dirs = [
@@ -189,8 +190,9 @@ fn next_build(state: &Path, user: Option<(u32, u32)>, id: &str) -> String {
             Ok(s) => s,
             Err(r) => return format!("refused\t{r}"),
         };
-        if moved(&before) != "new" {
-            return format!("error: the namespaces: {}", moved(&before));
+        let m = moved(&before);
+        if m != "new" {
+            return format!("error: the namespaces: {m}");
         }
         let left: Vec<String> = ["builds", "tmp"]
             .iter()

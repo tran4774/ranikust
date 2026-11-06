@@ -100,7 +100,8 @@ fn both_files_must_give_a_range_and_root_needs_none() {
 }
 
 /// A file that exists but cannot be read is an error, not "no range"; a
-/// line that is not UTF-8 is passed over.
+/// range line that is not UTF-8 is passed over, and a `/etc/passwd`
+/// comment field that is not UTF-8 hides no name.
 #[test]
 fn an_unreadable_file_is_an_error_and_a_line_not_utf8_is_passed_over() {
     let etc = tempfile::tempdir().unwrap();

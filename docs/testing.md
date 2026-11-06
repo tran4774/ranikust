@@ -698,9 +698,9 @@ Exceptions, all from emulation (the native CI job runs them all):
   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
   `the_store_opens_inside_the_user_namespace_or_not_at_all` and
   `red_team_the_build_user_namespace_is_whole_or_not_entered` are skipped:
-  qemu-user runs a thread of its own, so the set-up stops at its
-  single-thread check before the privilege refusal or the user namespace
-  the tests expect.
+  qemu-user runs a thread of its own, so the set-up, or
+  `enter_build_user_namespace`, stops at its single-thread check before the
+  privilege refusal or the user namespace the tests expect.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` and
   the tests of every `tests::kernel` module (rnk-sandbox's seccomp profiles,
   capability drops and keyring join under a filter) are skipped: their

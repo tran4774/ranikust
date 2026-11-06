@@ -320,7 +320,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
   advice), `subids` (ranges by name or uid, the first well-formed one,
-  malformed and empty ones and lines not UTF-8 passed over, an end past
+  malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
+  not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
+  no name, an end past
   32 bits refused, both files needed, none for root, an unreadable file an
   error),
   `container` (every signal
