@@ -3,7 +3,8 @@
 > **Status:** done · **Phase:** 1-2 ·
 > **Depends on:** no internal crate (never `rnk-layer`) ·
 > **Used by:** `rnk-snapshot`, `rnk-sandbox`, `rnk-builder`, `rnk-store`,
-> `rnk-context`, `ranikust` · **Path:** `crates/rnk-rootfs/`
+> `rnk-context`, `rnk-cache` (planned, ADR-0115), `ranikust` ·
+> **Path:** `crates/rnk-rootfs/`
 
 **TL;DR:** All filesystem access inside a build root goes through `RootPath`,
 which resolves paths from a root fd with `openat2(RESOLVE_IN_ROOT)`, so `..`

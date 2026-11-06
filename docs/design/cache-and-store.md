@@ -133,39 +133,89 @@ the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age. Both forms open the store as a build does
 (state-directory checks, the `.ranikust-state` marker), so they refuse a
 directory ranikust did not make; they take the same locks as a build and never
-remove an entry a running build uses [inferred: the in-use tracking is not
-designed yet]. The defaults are BuildKit's tiers, aging by last
+remove an entry a running build uses (the mechanism is
+[#76](https://github.com/tran4774/ranikust/issues/76)'s, in Phase 3; decided by
+[ADR-0122](../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
+not built yet: a shared `flock` on each entry a build uses, and the entry's
+marker mtime as its last use). The defaults are BuildKit's tiers, aging by last
 use ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
 mounts and contexts after 48 h unused beyond 512 MB, anything after 60 days
 unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 
 ## Cache keys
 
-Not built (Phase 4). Each instruction's key is a hash over a version field
-and the inputs the instruction depends on, chained to the previous key:
+The keys are built in `rnk-cache`; nothing computes or looks them up during
+a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
+the inputs the step depends on, chained to the previous key (ADR-0005; the
+fields are
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
+BuildKit's):
 
 ```
 key(k) = H(version, key(k-1), instruction, inputs(k))
 ```
 
-- **version:** bumped whenever the algorithm changes; old entries are simply
-  never matched again.
-- **chain root:** the resolved base image digest for the target platform
-  [inferred].
-- **instruction:** the instruction after variable expansion, with the build
-  arguments and environment in effect [inferred].
-- **inputs:** for `COPY`/`ADD`, the digests of the files read from the
-  context (after `.dockerignore`) or from the source stage; for
-  `RUN --mount`, the mount specifications [inferred].
-- **never:** the snapshot mode, the host, timestamps, thread counts.
+- **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
+  entries are simply never matched again.
+- **chain root:** the base image's platform manifest digest (none for
+  `FROM scratch`) and the platform.
+- **instruction:** the instruction after variable expansion, with its flags.
+- **inputs:**
+  - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
+    and `SHELL`;
+  - for a `RUN`, its `--network`, each secret mount's id, target, mode and
+    owner, given or not (below), and each cache mount's id and sharing,
+    marked as dropped where
+    [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
+    drops it;
+  - for `COPY` and `ADD` from the build context, each file read (after
+    `.dockerignore`): its path relative to the context, content, mode, owner
+    after `--chown`, type, link target, `security.capability` and, under
+    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
+    file older than the epoch counts;
+  - for `COPY --from=<image>`, the image's platform manifest digest; for
+    `COPY --from=<stage>`, the source stage's final key (a forced miss when
+    that stage ran in this build,
+    [ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)).
 
-The exact field list is open ([#13](https://github.com/tran4774/ranikust/issues/13)),
-to be settled with the cold, warm and partial cache scenarios of workload W2.
+  The instruction holds no heredoc body: `rnk-builder` adds each one (of a
+  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
+  that task 3 (#126) adds.
+- **never:** the snapshot mode, the host, its users or id maps, the time,
+  an mtime outside `--reproducible`, thread counts, the order of an
+  unordered collection.
+
+`ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
+features. How the fields are written into the hash:
+[the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
+
+A secret mount is keyed whether or not the build is given the secret, as
+BuildKit, which builds the mount from the Dockerfile alone and hashes the
+whole exec op (ADR-0032;
+`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert_secrets.go:14-90`,
+`solver/llbsolver/ops/exec.go:114-179`).
+
+A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
+whose `<hex>` hashes the key with the layer's encoding: the compression, its
+level (none for a plain tar), and whether file times are kept or clamped to
+an epoch, with the epoch. A hit was then encoded with this build's settings,
+so under `--reproducible` a warm build gives a cold build's digests when the
+layers it reuses were cached by a build in the same mode (below); builds
+with another encoding share no entries
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
+The cold, warm and partial cache scenarios of workload W2 test the keys.
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
+
+In kaniko mode with a directory per stage, a hit streams into the stage root,
+and a blob found bad after extraction began makes the stage start again from its
+base without that entry; on `/` a hit is verified before extraction
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
+how often a stage may restart is not settled, decided before
+[#130](https://github.com/tran4774/ranikust/issues/130)).
 
 Because keys ignore the mode, a layer cached by one mode can be used by the
 other and carry that mode's accepted differences
@@ -208,8 +258,6 @@ other and carry that mode's accepted differences
 - [Q-015](https://github.com/tran4774/ranikust/issues/1) Which digest names an extracted layer, and where do locks live?
 - [Q-016](https://github.com/tran4774/ranikust/issues/2) How is the store lock protocol proven under crashes and races?
 - [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
-- [Q-041](https://github.com/tran4774/ranikust/issues/13) What exactly goes into a cache key and its tag?
-- [Q-042](https://github.com/tran4774/ranikust/issues/14) How do cache lookahead and cached-stage skipping work?
 
 ## References
 

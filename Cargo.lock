@@ -1276,6 +1276,13 @@ dependencies = [
 [[package]]
 name = "rnk-cache"
 version = "0.0.1"
+dependencies = [
+ "proptest",
+ "rnk-metrics",
+ "rnk-oci",
+ "sha2",
+ "tracing",
+]
 
 [[package]]
 name = "rnk-context"

@@ -2,7 +2,8 @@
 
 > **Status:** done · **Phase:** 1 · **Depends on:** nothing internal ·
 > **Used by:** `rnk-snapshot` (decoder, writer), `rnk-builder`, `ranikust`
-> (`rnk-cache` planned) · **Path:** `crates/rnk-layer/`
+> (`rnk-context` planned, Phase 5; not `rnk-cache`, ADR-0115) ·
+> **Path:** `crates/rnk-layer/`
 
 **TL;DR:** Entries in, deterministic tar out, through parallel gzip or zstd,
 with diff ID and digest computed while streaming; and a gzip/zstd decoder
@@ -136,6 +137,10 @@ T0 (`cargo test -p rnk-layer`); tiers: [`docs/testing.md`](../../testing.md#tier
   single-threaded stream at level 3 (236 MB of rlibs: 66.48 MB against
   66.20 MB). libzstd's version, the level and the frame size are part of
   every zstd digest.
+- When the same tree and encoding give other bytes (a golden of
+  `tests/it/` moves: the tar writer, zlib-rs, libzstd, a block or frame
+  size), bump `rnk-cache`'s `KEY_VERSION` (ADR-0005), or a cache hit
+  carries the old bytes. A level is in the cache tag already.
 - libzstd allocates with libc's `malloc` (musl's in the release binary),
   not mimalloc: keep a context alive per worker rather than creating one
   per block.

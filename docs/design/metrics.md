@@ -220,6 +220,7 @@ No span per HTTP request or body chunk.
 | Span | Fields | Why |
 |---|---|---|
 | `rnk_snapshot.prepare` | `layers` | A stage root: overlay mount over the store, or, in kaniko mode, emptying the root and extracting the base (extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`); the baseline walk is its own `rnk_snapshot.walk`. |
+| `rnk_snapshot.apply` | | Kaniko mode: a cached layer applied to an open stage root instead of running its step ([cache hit](kaniko-mode.md#a-cache-hit)); the extraction nests `rnk_layer.decode` and `rnk_rootfs.extract`, as a base layer's. |
 | `rnk_snapshot.empty` | | Kaniko mode: the shared root emptied (before a base, on release, at the end of the build), `rnk_rootfs.delete` inside. |
 | `rnk_snapshot.keep` | `paths` | Kaniko mode: what later stages read of a finished stage copied into the keep area before the root is reused; `paths` the entries kept, 0 for the whole root; `rnk_rootfs.copy` inside. |
 | `rnk_snapshot.hand_over` | | Kaniko mode off `/`: a stage's directory handed to the only stage that reads it (ADR-0062), inside that stage's `rnk_snapshot.prepare` (`handed_over = true`); `rnk_rootfs.prune` inside, then the move (ADR-0061). |
@@ -267,7 +268,7 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | Phase 4: kaniko's `cache.key`. |
+| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next`: the regular files it holds and their content bytes; kaniko's `cache.key`. |
 | `rnk_cache.lookup` | `hit` | Phase 4: misses = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
 | `rnk_cache.push` | `bytes_out` | Phase 4: background push, parented to `rnk_sched.run`; kaniko's `cache.push`. |
 

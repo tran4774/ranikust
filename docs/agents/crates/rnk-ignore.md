@@ -2,7 +2,7 @@
 
 > **Status:** done · **Phase:** 1 ·
 > **Depends on:** `regex`, `thiserror` (pure data) ·
-> **Used by:** `rnk-context`, `rnk-builder` (`rnk-cache` [open: #7]) ·
+> **Used by:** `rnk-context`, `rnk-builder` (not `rnk-cache`, ADR-0115) ·
 > **Path:** `crates/rnk-ignore/`
 
 **TL;DR:** A port of moby `patternmatcher` v0.6.1 (as BuildKit v0.34.0 uses

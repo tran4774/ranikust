@@ -13,7 +13,7 @@ use crate::support::{
 /// sha256 of the sample tree as a plain tar. Listed with GNU tar 1.35
 /// (`tar --xattrs -tvvf`) when it was pinned: names, modes, owners, times,
 /// links, devices and the xattr all read back. A change here changes every
-/// layer digest.
+/// layer digest, and bumps `rnk-cache`'s `KEY_VERSION` (ADR-0005).
 const SAMPLE_TAR_SHA256: &str = "4c9b5fae31d8b4b308b2a35af3345654ed5ac2079361f45dcb261b75e62602d2";
 
 #[test]
@@ -341,7 +341,8 @@ fn content_must_match_the_announced_size() {
 
 /// sha256 of the layer in `control_bytes_in_names_are_written_as_they_are`,
 /// pinned when the escaping of printed names came in (the writer itself
-/// unchanged). A change here means a name's bytes changed in layers.
+/// unchanged). A change here means a name's bytes changed in layers, and
+/// bumps `rnk-cache`'s `KEY_VERSION` (ADR-0005).
 const CONTROL_NAMES_TAR_SHA256: &str =
     "509487ed79da23a4c2e085f448ba056f51da17bba5dab63c7d2a3e49c91132c7";
 

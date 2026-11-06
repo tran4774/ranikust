@@ -751,6 +751,47 @@ JDK from apt, apk or dnf, TypeScript 7 (`tsgo`), binaries calling `current_exe`
 at start and scripts using `<(...)`, `/dev/fd`, `ps` or `/proc/<pid>` need
 sequential mode.
 
+## A cache hit
+
+For the layer cache of Phase 4
+([#128](https://github.com/tran4774/ranikust/issues/128),
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)), the snapshotter
+can put a cached layer into the open stage root in place of running the
+step: `KanikoRoot::apply_layer` on the shared root, `KanikoStage::apply_layer`
+per stage. The layer is made by `base_layer` or `streamed_layer`, as a base
+layer is.
+
+- **Extracted as a base layer.** A cached layer is content anyone who can
+  push to the cache wrote, and its tag proves nothing. It takes the
+  base-layer path, `rnk_rootfs::extract_live` with the stage's ignore list,
+  under [its rules](#ignore-list), and its diff ID is checked at the end. On
+  `/` a streamed layer is spooled and verified before its first entry
+  reaches `/` ([streaming](streaming.md#credentials-and-failures)), so a bad
+  one is a miss; per stage it is extracted as it arrives (ADR-0055). The scan ADR-0098 plans for base
+  layers in a user namespace (Phase 3) must cover cached layers too.
+- **The walk catches up lazily.** Applying a layer marks the walk's record
+  of the root stale; the next `begin_layer` of a stage whose layers are
+  needed takes a new baseline (`forget`, then a full walk), so the next diff
+  holds only that step's changes. A run of hits costs no walk; since a stage
+  uses its hits only up to its first miss
+  ([ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)), it takes one baseline, as a cold build does:
+  a warm or partial build walks no more than a cold one, toward
+  [ADR-0117](../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md)'s target.
+- **No step goes on from a half-applied layer.** A failure before the first
+  entry can reach the root (the source refuses the request; on `/`, the
+  spool's check) leaves the root as it was, usable. A later one leaves it
+  broken: no layer, applied layer, view, keep or child stage (`FROM`,
+  squashed or handed over) goes on from it, so no later layer is computed
+  over part of a cached one. The shared root is usable again once a new base
+  empties it; a broken stage directory is only released, and the builder runs
+  the stage again from its base, the bad entry a miss
+  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
+  [#130](https://github.com/tran4774/ranikust/issues/130)).
+- **Refused, nothing changed:** a layer open, a root not held (shared root)
+  or handed over (per stage).
+- Span `rnk_snapshot.apply`, the extraction's `rnk_layer.decode` and
+  `rnk_rootfs.extract` inside.
+
 ## Lazy snapshots
 
 A stage whose layers are not needed is not snapshotted at all: no baseline
