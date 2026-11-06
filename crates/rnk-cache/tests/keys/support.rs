@@ -21,6 +21,7 @@ pub(crate) struct Spec {
     pub(crate) mounts: Vec<Mount>,
     pub(crate) from: Option<CopyFrom>,
     pub(crate) files: Vec<File>,
+    pub(crate) heredocs: Vec<(String, Vec<u8>)>,
 }
 
 impl Spec {
@@ -52,6 +53,9 @@ impl Spec {
         }
         for file in &self.files {
             inputs.file(file.clone());
+        }
+        for (name, body) in &self.heredocs {
+            inputs.heredoc(name, body);
         }
         inputs
     }
@@ -103,8 +107,8 @@ pub(crate) fn file(path: &str, kind: FileKind) -> File {
     }
 }
 
-/// A step that sets every input, each kind of mount and file included, and
-/// keeps mtimes.
+/// A step that sets every input, each kind of mount and file and two
+/// heredocs included, and keeps mtimes.
 pub(crate) fn full() -> Spec {
     Spec {
         epoch: None,
@@ -156,6 +160,10 @@ pub(crate) fn full() -> Spec {
             file("run/fifo", FileKind::Fifo),
             file("dev/null", FileKind::CharDevice { major: 1, minor: 3 }),
             file("dev/sda", FileKind::BlockDevice { major: 8, minor: 0 }),
+        ],
+        heredocs: vec![
+            ("EOF".to_owned(), b"echo $HOME\n".to_vec()),
+            ("CONF".to_owned(), b"debug = true\n".to_vec()),
         ],
     }
 }

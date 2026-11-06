@@ -18,8 +18,8 @@ use crate::key::{CacheKey, Encoding, TimePolicy};
 /// for the snapshot mode, a host user or id map, the build's time or a
 /// thread count, and none meant for a secret's value. The order of
 /// [`arg`](Self::arg), [`env`](Self::env) and [`file`](Self::file) calls
-/// does not change the key; the order of [`mount`](Self::mount) calls
-/// does, as the `RUN`'s does.
+/// does not change the key; the order of [`mount`](Self::mount) and
+/// [`heredoc`](Self::heredoc) calls does, as the instruction's does.
 ///
 /// The `rnk_cache.key` span runs from [`KeyInputs::new`] to
 /// [`CacheKey::next`]: create the inputs before hashing the files they hold.
@@ -37,6 +37,7 @@ pub struct KeyInputs {
     mounts: Vec<Mount>,
     from: Option<CopyFrom>,
     files: Vec<File>,
+    heredocs: Vec<(String, Vec<u8>)>,
 }
 
 impl KeyInputs {
@@ -62,6 +63,7 @@ impl KeyInputs {
             mounts: Vec::new(),
             from: None,
             files: Vec::new(),
+            heredocs: Vec::new(),
         }
     }
 
@@ -122,6 +124,17 @@ impl KeyInputs {
         self
     }
 
+    /// A heredoc of the instruction, in the instruction's order: its name
+    /// (the delimiter word) and its body after the expansion BuildKit does,
+    /// which is none for a `RUN`'s and, for a `COPY`'s or an `ADD`'s, the
+    /// build variables when the delimiter is not quoted. The instruction
+    /// passed to [`CacheKey::next`] holds no body: one appended there
+    /// could shift a field boundary.
+    pub fn heredoc(&mut self, name: &str, body: &[u8]) -> &mut Self {
+        self.heredocs.push((name.to_owned(), body.to_vec()));
+        self
+    }
+
     /// Feeds the inputs to `c` in their canonical form, and closes the span
     /// with what was hashed.
     pub(crate) fn feed(self, c: &mut Canonical) {
@@ -137,6 +150,7 @@ impl KeyInputs {
             mounts,
             from,
             mut files,
+            heredocs,
         } = self;
         let epoch = match times {
             TimePolicy::Kept => None,
@@ -192,6 +206,13 @@ impl KeyInputs {
                 bytes_hashed = bytes_hashed.saturating_add(content.size);
             }
         }
+        c.len(heredocs.len());
+        for (name, body) in &heredocs {
+            c.str(name);
+            c.bytes(body);
+            let len = u64::try_from(body.len()).unwrap_or(u64::MAX);
+            bytes_hashed = bytes_hashed.saturating_add(len);
+        }
         span.record("files_hashed", files_hashed);
         span.record("bytes_hashed", bytes_hashed);
     }
@@ -213,6 +234,7 @@ impl fmt::Debug for KeyInputs {
             .field("mounts", &self.mounts)
             .field("from", &self.from)
             .field("files", &self.files.len())
+            .field("heredocs", &self.heredocs.len())
             .finish_non_exhaustive()
     }
 }
@@ -358,6 +380,13 @@ impl CopyFrom {
 }
 
 /// A file a `COPY` or `ADD` writes from the build context, as it writes it.
+///
+/// An `ADD` of a local archive, which extracts it, names the archive as one
+/// file, its bytes, never its members, as BuildKit keys the source file's
+/// checksum and decides at run time whether to extract it
+/// (`buildkit@cd8ee244 solver/llbsolver/ops/file.go:110-121`,
+/// `cache/contenthash/checksum.go:1225-1243`,
+/// `solver/llbsolver/file/backend.go:318-324`); the instruction says `ADD`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct File {
     /// The file's path relative to the build context, with no host or

@@ -177,9 +177,10 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     that stage ran in this build,
     [ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)).
 
-  The instruction holds no heredoc body: `rnk-builder` adds each one (of a
-  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
-  that task 3 (#126) adds.
+  The instruction holds no heredoc body: each one (of a `RUN`, `#!` or
+  not, a `COPY` or an `ADD`) is an input of its own, after the expansion
+  BuildKit does. An `ADD` of a local archive is keyed as one file, the
+  archive, as BuildKit keys it.
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
   unordered collection.

@@ -44,19 +44,19 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 Built (keys and tags):
 
 ```rust
-pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how
+pub const KEY_VERSION: u32 = 2;      // bump on any change to what a key or a tag hashes, or how, or to the layer format
 pub struct CacheKey;                 // version + SHA-256; Copy, Eq, Hash; version(), hash()
 impl CacheKey {
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self; // platform manifest digest; None: FROM scratch
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self; // instruction expanded, with its flags
     pub fn tag(&self, encoding: &Encoding) -> String;                 // "rnk-v<version>-<64 hex>"
 }
-pub struct KeyInputs;                // new(&Encoding) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file
+pub struct KeyInputs;                // new(&Encoding) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file, heredoc(name, body)
 pub enum Network { Default, None, Host }               // the Dockerfile's --network, never what a mode gives
 pub enum Mount { Secret { id, target, mode, uid, gid }, Cache { id, sharing, dropped } } // no secret value; given or not
 pub enum Sharing { Shared, Private, Locked }
 pub enum CopyFrom { Image(Digest), Stage(CacheKey) }   // platform manifest digest; source stage's final key (ADR-0114); either stands for its files
-pub struct File { path: Vec<u8>, kind: FileKind, mode, uid, gid, capability: Option<Vec<u8>>, mtime: i64 } // mtime keyed when clamped
+pub struct File { path: Vec<u8>, kind: FileKind, mode, uid, gid, capability: Option<Vec<u8>>, mtime: i64 } // mtime keyed when clamped; an archive ADD is one File
 pub enum FileKind { Regular(Content), Directory, Symlink(Vec<u8>), Hardlink(Vec<u8>), Fifo, CharDevice { .. }, BlockDevice { .. } }
 pub struct Content;                  // sha256(), size(); only from ContentHasher; == compares copied bytes with hashed ones
 pub struct ContentHasher;            // update(chunk) or io::Write, then finish() -> Content
@@ -64,10 +64,9 @@ pub struct Encoding { compression: rnk_oci::Compression, level: i32, times: Time
 pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp
 ```
 
-Planned (tasks 3, 4 and 11 of #123):
+Planned (tasks 4 and 11 of #123):
 
 ```rust
-impl KeyInputs { pub fn heredoc(&mut self, name: &str, body: &[u8]) -> &mut Self; } // task 3 (#126): adds a field to the step hash, so KEY_VERSION is bumped then; its bytes count in bytes_hashed
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>; // by tag, ADR-0113
     async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &Descriptor) -> Result<()>; // rnk_oci; the new layer's blob, read from the store; asynchronous
@@ -75,7 +74,13 @@ pub trait LayerCache {                               // [design] RegistryCache, 
 ```
 
 Never append heredoc bodies to the instruction string, because that would
-shift a field boundary.
+shift a field boundary: pass each to `KeyInputs::heredoc`, after the
+expansion BuildKit does (none for a `RUN`'s; the build variables for a
+`COPY`'s or an `ADD`'s whose delimiter is not quoted).
+
+An `ADD` of a local archive, which extracts it, is one `File`: the archive
+and its bytes, never its members, as BuildKit keys the source's checksum and
+decides at run time whether to extract it; the instruction says `ADD`.
 
 ### Byte form
 
@@ -92,12 +97,13 @@ different inputs never feed the same bytes:
 - integers big-endian (`u32`, `i32`, `i64`), a 32-byte hash as it is, an
   enum as its lower-case name (`gzip`, `secret`, `regular`);
 - unordered collections (build arguments, environment, files) sorted by
-  value, duplicates kept; mounts stay in the `RUN`'s order.
+  value, duplicates kept; mounts and heredocs stay in the instruction's
+  order.
 
 | Hash | Fields in order |
 |---|---|
 | root | `"rnk-cache root"`; `KEY_VERSION` (`u32`); the base digest string (optional); the platform's architecture, os, `os.version` (optional), `os.features` (optional list), variant (optional), features (optional list) |
-| step | `"rnk-cache step"`; `KEY_VERSION`; the previous key's version and hash; the instruction; the build arguments (name, optional value); the environment (name, value); `USER`; `WORKDIR`; `SHELL` (list); the network (optional name); the mounts (`secret`: id, target, mode, uid, gid; `cache`: id, sharing, a dropped byte); the copy source (optional: `image` and the digest string, or `stage` and the key's version and hash); the files (path; the type name, then the content's SHA-256 and size (`u64`), the link target, or the device's major and minor; mode, uid, gid; `security.capability` (optional); under `clamped` a 1 byte and the mtime clamped to the epoch (`i64`), else a 0 byte) |
+| step | `"rnk-cache step"`; `KEY_VERSION`; the previous key's version and hash; the instruction; the build arguments (name, optional value); the environment (name, value); `USER`; `WORKDIR`; `SHELL` (list); the network (optional name); the mounts (`secret`: id, target, mode, uid, gid; `cache`: id, sharing, a dropped byte); the copy source (optional: `image` and the digest string, or `stage` and the key's version and hash); the files (path; the type name, then the content's SHA-256 and size (`u64`), the link target, or the device's major and minor; mode, uid, gid; `security.capability` (optional); under `clamped` a 1 byte and the mtime clamped to the epoch (`i64`), else a 0 byte); the heredocs (name, body) |
 | tag | `"rnk-cache tag"`; the key's version and hash; the compression name, then for `gzip` and `zstd` the level (`i32`); `kept`, or `clamped` and the epoch (`i64`) |
 
 The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
@@ -145,8 +151,10 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shows that a key ignores the order of build arguments, environment and
   files, the chunking of content and any mtime the header does not carry,
   that changing any one field changes it, that field boundaries cannot
-  shift, and that every encoding field changes the tag; `tests/spans.rs`
-  checks `rnk_cache.key`.
+  shift, that every encoding field changes the tag, and that a key ignores
+  the compression and its level (`a_key_ignores_the_compression_and_its_level`);
+  `tests/spans.rs` checks `rnk_cache.key`. That an archive `ADD` is keyed
+  as one file is `rnk-builder`'s test (`tests/key_plan.rs`).
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
   against a local registry; W2 cold, warm and partial; a layer cached in one
   mode reused by the other, checked against the ADR-0012 list.
@@ -155,7 +163,7 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 
 - `rnk_cache.key` (`files_hashed`, `bytes_hashed`): one per step, from
   `KeyInputs::new` to `CacheKey::next`; the regular files the key holds and
-  their bytes.
+  their bytes, plus the bytes of its heredoc bodies.
 - Phase 4, planned: `rnk_cache.lookup` (`hit`), `rnk_cache.push`
   (`bytes_out`) ([rows](../../design/metrics.md#rnk-cache)). A push
   outlives its instruction and stage: parent it to `rnk_sched.run`.
@@ -180,8 +188,7 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   host or the mode, and one relative to each source operand lets two files
   share a path: paths are relative to the build context.
 - The instruction holds no heredoc body: `rnk-builder` adds each one (of a
-  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
-  that task 3 (#126) adds.
+  `RUN`, `#!` or not, a `COPY` or an `ADD`) through `KeyInputs::heredoc`.
 - Give `KeyInputs::new` and `CacheKey::tag` the same `Encoding`, or a
   `--reproducible` hit can carry other mtimes.
 - No cache measurement exists: claim no speed-up before W2 runs.
