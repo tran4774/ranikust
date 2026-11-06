@@ -187,10 +187,13 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   [threat model](../security/threat-model.md#6-accepted-risks).
 - The profile is the operator's and may refuse any call with any errno
   `--seccomp` accepts, so every step that need not follow it comes before
-  it, in the order of step 4. After it come the `capset` to the default
-  sets, since the install needs `CAP_SYS_ADMIN` without `no_new_privs`, so
-  that a setuid binary of the `RUN` keeps working, and the init's and the
-  command's own steps (step 5 on). A filter around ranikust may still fake a
+  it, in the order of step 4, the init's fork included: the init and the
+  command each install it after the fork, the command once in its cgroup
+  namespace ([`RUN` cgroups](#run-cgroups)). After it come the `capset` to
+  the default sets, since the install needs `CAP_SYS_ADMIN` without
+  `no_new_privs`, so that a setuid binary of the `RUN` keeps working, and
+  the init's and the command's steps that must follow the fork (step 5 on).
+  A filter around ranikust may still fake a
   success; the child checks what it can (the init's fork, an `execve` or
   `execveat` back without an error and a blocking `waitpid` back with no
   child fail the `RUN`, and a read goes into a value set beforehand), and
@@ -328,8 +331,10 @@ The steps, in order:
    the `RUN`'s new session keyring (step 6), drops the bounding set and
    clears the ambient and inheritable sets (step 5), sets itself not dumpable
    and starts a session of its own (the init's, step 5), sets the umask to
-   022, installs ADR-0033's filter and the seccomp profile on top of it
-   ([above](#per-run-sequence)), and only then sets the effective and
+   022 and forks the command (step 5). Then the init and the command each
+   install ADR-0033's filter and the seccomp profile on top of it
+   ([above](#per-run-sequence)), the command once in its cgroup namespace
+   where the `RUN` has cgroups, and only then set the effective and
    permitted sets (step 5).
 5. **Drop capabilities**, for **every** `USER`: reduce the **bounding** set to
    Docker's 14 default capabilities, clear the ambient set, keep the defaults
@@ -337,12 +342,12 @@ The steps, in order:
    Docker since 20.10.14. A non-root user has no effective capabilities but a
    full bounding set, which a setuid binary in the image would regain. The
    drops go up to the kernel's last capability; an `EINVAL` ends them only
-   where it could not be read and 63 was assumed. Where the `RUN` has cgroups
-   of its own, the full sandbox's child also keeps `CAP_SYS_ADMIN`, already
-   out of the bounding set, in the effective and permitted sets: the init
-   drops it with every other capability, and the command makes its cgroup
-   namespace with it and drops it, both before the go
-   ([`RUN` cgroups](#run-cgroups)).
+   where it could not be read and 63 was assumed. In the full sandbox the
+   init and the command keep `CAP_SYS_ADMIN`, already out of the bounding
+   set, in the effective and permitted sets until each has installed its
+   filters (step 4), the command's cgroup namespace before them
+   ([`RUN` cgroups](#run-cgroups)): the init then drops every capability,
+   the command all but the defaults, both before the go.
 
    Then the full sandbox's child becomes the `RUN`'s **init**
    ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)):
@@ -353,15 +358,18 @@ The steps, in order:
      checks that its parent is PID 1 (a fork a filter around ranikust faked
      fails as `Step::Init` with `EPROTO`), joins its cgroup and makes its
      cgroup namespace where the `RUN` has cgroups
-     ([`RUN` cgroups](#run-cgroups)), waits on a close-on-exec go pipe, then
-     runs steps 6 to 8 and becomes the command.
-   - The init keeps the death signal of step 1, drops every capability, names
+     ([`RUN` cgroups](#run-cgroups)), installs its filters and sets its
+     capability sets (step 4), waits on a close-on-exec go pipe, then runs
+     steps 6 to 8 and becomes the command.
+   - The init keeps the death signal of step 1, installs its filters (step
+     4), drops every capability, names
      itself `ranikust-init`, checks the death signal is still armed and the
      parent alive, and closes every descriptor but the status pipe's write end
      and the go pipe's, the latter last: that lets the command go on (a failure
-     before kills the command unrun and is reported as `Step::Init`, unless
-     a filter around ranikust fakes the command's read of that pipe).
-   - A read after the profile answered with `EINTR` (the argument areas',
+     before kills the command unrun and is reported as `Step::Init`, or as
+     the filter's step, unless a filter around ranikust fakes the command's
+     read of that pipe).
+   - A read of the init's or the command's answered with `EINTR` (the argument areas',
      the parent check's, the go pipe's) fails the `RUN` as `Step::Init`
      instead of reading again: with no handler, the kernel restarts a read
      a signal interrupts, so only a filter answers so, and it could
@@ -546,18 +554,19 @@ to its leaf's `cgroup.procs` right after arming its death signal, the command
 to `command`'s once the init forked it, before it waits for the go; each
 closes the descriptor at once, so no `RUN` process holds one when the command
 starts. The command then makes a cgroup namespace of its own, rooted at
-`command`, and drops the `CAP_SYS_ADMIN` it kept for it (step 5), as Docker
-and containerd give a container a private one on cgroup v2. So a `RUN` reads
+`command`, before its seccomp filters, which refuse it, and before it gives
+up `CAP_SYS_ADMIN` (steps 4 and 5), as Docker and containerd give a
+container a private one on cgroup v2. So a `RUN` reads
 `0::/` in `/proc/self/cgroup`, and its init's cgroup in `/proc/1/cgroup` as
 `0::/../init` nested or `0::/../..` single, whatever ranikust's pid and the
 `RUN`'s number: a layer that records them does not depend on `--jobs` or the
 run. The `RUN` has no cgroupfs mounted and no capability in ranikust's
-user namespace to mount one. A `RUN` that may create a user namespace can
-still mount a cgroupfs of its own, rooted at the cgroup it is in, and make
-cgroups below it, as on Ubuntu 22.04; Ubuntu 24.04's AppArmor leaves it no
-capability in that namespace **[measured]**. ADR-0103's default seccomp
-profile, planned and not built yet, is to refuse it the namespace except under
-`--seccomp=unconfined` **[inferred]**. Once the init is reaped, ranikust
+user namespace to mount one. Docker's default profile refuses it a user
+namespace (ADR-0109) **[measured]**. Under `--seccomp=unconfined`, a `RUN`
+that may create one can still mount a cgroupfs of its own, rooted at the
+cgroup it is in, and make cgroups below it, as on Ubuntu 22.04; Ubuntu
+24.04's AppArmor leaves it no capability in that namespace **[measured]**.
+Once the init is reaped, ranikust
 writes `cgroup.kill` (which reaches every cgroup below), waits up to 10 s for
 `populated 0` and removes the cgroups with every cgroup below them, the
 deepest first, before the diff. Each is opened relative to its parent's

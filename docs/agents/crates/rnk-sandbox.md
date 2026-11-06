@@ -200,14 +200,16 @@ What a change here must keep, with where it lives:
   target. A profile can only let a call run, refuse it or kill, so after every
   mount the full sandbox's child makes every step that need not follow it
   first, in the order of the design's
-  [step 4](../../design/sandbox.md#per-run-sequence), then installs ADR-0033's
-  filter when it joined a held network namespace and the profile on top, both
-  without `no_new_privs`, and only then sets the effective and permitted sets.
+  [step 4](../../design/sandbox.md#per-run-sequence), and the init's fork;
+  then the init and the command each install ADR-0033's filter when the
+  child joined a held network namespace and the profile on top, both
+  without `no_new_privs` (`install_filters`; the command after its cgroup
+  namespace), and only then set the effective and permitted sets.
   Against a filter around ranikust, which can fake a success, the command
   checks that its parent is the init (`Step::Init`), an `execve` (trying no
   next candidate) or `execveat` back without an error fails as `Step::Exec`
   (`EPROTO`), a blocking `waitpid` back with 0 or an error, `EINTR` included,
-  ends the init (125), an `EINTR` on a read after the profile fails the `RUN`
+  ends the init (125), an `EINTR` on a read of the init's or the command's fails the `RUN`
   (only a filter gives it, possibly forever), `last_errno` reads errno 0 as
   `EPROTO`, and the pipe, capability, death-signal, `fstatfs` and
   `RLIMIT_NOFILE` reads go through `libc` into values set beforehand. A failed
@@ -314,8 +316,9 @@ What a change here must keep, with where it lives:
   their `cgroup.procs` descriptor (moved above 0–2, `fd_above_stdio` in
   `fd.rs`) and close it (`Step::JoinCgroup`), the command before its go, so
   no `RUN` process holds a cgroupfs descriptor; the command then makes its
-  cgroup namespace (`Step::CgroupNamespace`) with the `CAP_SYS_ADMIN`
-  `drop_capabilities_but` left it and drops that (`trim_capabilities`).
+  cgroup namespace (`Step::CgroupNamespace`), before its filters, which
+  refuse `unshare`, and before it gives up `CAP_SYS_ADMIN`
+  (`set_capability_sets`).
   After the reap: `cgroup.kill`, `populated 0` within 10 s, then
   `remove_tree`: the `RUN`'s cgroups with every cgroup a `RUN` with a
   cgroupfs of its own made below them, deepest first, each opened relative
@@ -412,7 +415,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and `child`'s (a refused keyring join with the session keyring found or
   not, each `KeyringJoin`; an `execve` or `execveat` back without an error; a
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
-  the reads after the profile, the parent check's against an unfiltered
+  the init's and the command's reads, the parent check's against an unfiltered
   control; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
   `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
@@ -446,7 +449,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--seccomp` refuses; compiled for the test) leave the
   bounding set, the session, the init's dump flag, ADR-0033's filter and
   the capability sets as they are and the umask at 022 whatever
-  ranikust's, and a faked fork of the init fails the `RUN`;
+  ranikust's; one faking the init's fork and `setsid` runs the `RUN`, the
+  fork being before the profile, while the same filter around ranikust
+  (on the test thread) fails it;
   `a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl`: under
   filters on the test thread, while the keyring can be looked up, a join
   refused with `EPERM` fails `unconfined`, not `default`, and one refused with
@@ -460,8 +465,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   whatever it wrote to the limit files it could see) removed, a failed
   probe, a planted `run-` name, a scope without `Delegate=` and the ssh
   session's, and what a
-  `RUN` reads in `/proc/self/cgroup` and `/proc/1/cgroup`, the same for a
-  later `RUN`, with Docker's capabilities alone and its init with none;
+  `RUN` under Docker's default profile reads in `/proc/self/cgroup` and
+  `/proc/1/cgroup`, refused a user namespace, the same for a later
+  unconfined `RUN`, with Docker's capabilities alone and its init with
+  none; the `RUN`s that make a user namespace, there and below, are
+  unconfined, as `--seccomp=unconfined`;
   `run_cgroup_limits_on_a_cgroupfs_without_nsdelegate`, the same `RUN`s with
   the VM's cgroupfs remounted without `nsdelegate`, where the limits hold
   too;

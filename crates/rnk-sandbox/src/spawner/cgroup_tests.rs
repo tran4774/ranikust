@@ -293,8 +293,10 @@ fn inner_companion() {
 
 /// Inner: what `Tree::try_start` finds where it was started, and, with a
 /// tree, `RUN`s in it: the command (and the init, nested) in the `RUN`'s
-/// cgroups, a cancel, a `RUN` failed by a cgroup that cannot be made, and
-/// nothing left once the tree is dropped. `RNK_T2_CGROUP` is `nested`
+/// cgroups under Docker's default profile, which refuses it a user
+/// namespace, a cancel, unconfined `RUN`s that make cgroups below their
+/// own, a `RUN` failed by a cgroup that cannot be made, and nothing left
+/// once the tree is dropped. `RNK_T2_CGROUP` is `nested`
 /// (`single` where `cpu` is not delegated), `single`, `none` or
 /// `probe-fails`.
 #[test]
@@ -386,6 +388,9 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
     let parent = ParentPid::new().unwrap();
     let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
     runner.use_cgroups(tree);
+    // Docker's default profile, as a build has without `--seccomp`: the
+    // command makes its cgroup namespace before it, which it refuses.
+    runner.seccomp = Some(SeccompProfile::docker_default().unwrap());
     let running = Running::default();
     let run = |script: &str, out: &Path| {
         let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
@@ -412,15 +417,17 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
             .collect()
     };
 
-    // 1. The command (and the init, nested) in the RUN's cgroups, which it
-    // cannot reach; a process it leaves dies, and the cgroups go, with the
-    // RUN.
+    // 1. Under the default profile: the command (and the init, nested) in
+    // the RUN's cgroups, which it cannot reach, and no user namespace for
+    // it; a process it leaves dies, and the cgroups go, with the RUN.
     let out = top.join("first.out");
     let status = run(
         &format!(
             "{views}; echo \"cgroupfs=$(ls -A /sys/fs/cgroup | wc -l)\"; \
              for p in self 1; do echo \"$p $(grep ^CapPrm: /proc/$p/status) \
-             $(grep ^CapEff: /proc/$p/status)\"; done; /rnkcgsleep 300 & exit 3"
+             $(grep ^CapEff: /proc/$p/status)\"; done; \
+             if unshare -U true; then echo userns=ok; else echo userns=refused; fi; \
+             /rnkcgsleep 300 & exit 3"
         ),
         &out,
     )
@@ -441,8 +448,9 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
         ["cmd=0::/".to_owned(), format!("init={init_view}")],
         "{text}"
     );
-    println!("{KEEP}{layout:?}: a RUN reads {first_seen:?}");
+    println!("{KEEP}{layout:?}: a RUN under the default profile reads {first_seen:?}");
     assert!(text.contains("cgroupfs=0\n"), "{text}");
+    assert!(text.contains("userns=refused\n"), "{text}");
     assert_eq!(kill_named("rnkcgsleep"), 0, "a process of the RUN was left");
     assert!(!dir.join(&first).exists(), "{first} was not removed");
 
@@ -483,7 +491,10 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
     // 3. A RUN that mounts a cgroupfs of its own makes cgroups below its
     // own, as deep and as many as the limits ranikust set let it, with a
     // process in the deepest, and writes to the limit files it can see:
-    // the limits hold, and all go with the RUN (ADR-0110).
+    // the limits hold, and all go with the RUN (ADR-0110). Unconfined, as
+    // `--seccomp=unconfined`, from here on: this measures what a RUN that
+    // may make a user namespace can do, which the default profile refuses.
+    runner.seccomp = None;
     let third = dir.join(format!("run-{pid}-3"));
     let out = top.join("limits.out");
     // `running` stays cancelled.
@@ -561,7 +572,7 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
             "{r:?}"
         );
     }
-    // A later RUN, with another number, reads the same.
+    // A later RUN, with another number and unconfined, reads the same.
     let out = top.join("after.out");
     let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), views.into()]);
     output_to(&out, &mut spec);
@@ -709,6 +720,8 @@ fn inner_forge() {
         root_with_usr(&mut mounts, &root);
         fs::create_dir(root.join("r")).unwrap();
         let parent = ParentPid::new().unwrap();
+        // Unconfined (no profile), as `--seccomp=unconfined`: the forge
+        // needs a user namespace, which the default profile refuses.
         let runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
         let running = Running::default();
         let out = top.join("forge.out");
@@ -1019,8 +1032,9 @@ fn run_cgroups_follow_the_delegation_of_a_systemd_scope() {
 /// too, the limits ranikust set on a `RUN`'s cgroup hold in both layouts,
 /// as every cgroup namespace the `RUN` can make is rooted at its `command`
 /// leaf or below, and ranikust removes what the `RUN` made. Needs a scope systemd
-/// marks and a `RUN` that may create a user namespace (Ubuntu 22.04, not
-/// 24.04).
+/// marks and a `RUN` that may create a user namespace: unconfined, as
+/// `--seccomp=unconfined` (the default profile refuses it one), and Ubuntu
+/// 22.04, not 24.04.
 #[test]
 #[ignore = "T2: remounts the VM's cgroupfs without nsdelegate and starts systemd scopes as real root; run in the test VM only"]
 fn run_cgroup_limits_on_a_cgroupfs_without_nsdelegate() {
@@ -1045,7 +1059,8 @@ fn run_cgroup_limits_on_a_cgroupfs_without_nsdelegate() {
 }
 
 /// Red team (T2, the VM only; T24, ADR-0110 (1)): a root `RUN` that may
-/// create a user namespace mounts a cgroupfs of its own and sets
+/// create a user namespace (unconfined, as `--seccomp=unconfined`) mounts
+/// a cgroupfs of its own and sets
 /// `user.delegate` on ranikust's cgroup, which then still does not count as
 /// delegated for a root ranikust. Ubuntu 22.04 lets the forge take; where
 /// AppArmor gives such a namespace no capability (Ubuntu 24.04) it fails,
@@ -1348,6 +1363,8 @@ fn teardown_runs(tree: Tree, dir: &Path) {
     let top = mounts.path().canonicalize().unwrap();
     let root = teardown_root(&mut mounts, &top);
     let parent = ParentPid::new().unwrap();
+    // Unconfined (no profile), as `--seccomp=unconfined`: each `RUN` makes a
+    // user namespace, which the default profile refuses.
     let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
     runner.use_cgroups(tree);
     let spec = |case: &str, body: &str, out: &Path| {
@@ -1435,6 +1452,8 @@ fn inner_frozen() {
         let top = mounts.path().canonicalize().unwrap();
         let root = teardown_root(&mut mounts, &top);
         let parent = ParentPid::new().unwrap();
+        // Unconfined, as `--seccomp=unconfined`: the `RUN` makes a user
+        // namespace, which the default profile refuses.
         let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
         runner.use_cgroups(tree);
         let (ready, done) = (root.join("r/ready"), AtomicBool::new(false));
@@ -1465,8 +1484,9 @@ fn inner_frozen() {
 /// threaded subtree, mounts over its cgroups), it ends with no process left
 /// and its cgroups removed, and one that froze all of its cgroups is
 /// cancelled at once, nested and single; in a delegated systemd scope or,
-/// where systemd marks none, a privileged container. AppArmor's restriction
-/// of user namespaces (Ubuntu 24.04) is lifted meanwhile.
+/// where systemd marks none, a privileged container. The `RUN`s are
+/// unconfined, as `--seccomp=unconfined`, and AppArmor's restriction of
+/// user namespaces (Ubuntu 24.04) is lifted meanwhile: they make one.
 #[test]
 #[ignore = "T2: lifts the VM's user namespace restriction and starts systemd scopes or privileged containers as real root; run in the test VM only"]
 fn a_runs_cgroups_go_with_it_whatever_it_left_in_them() {
@@ -1495,8 +1515,9 @@ fn a_runs_cgroups_go_with_it_whatever_it_left_in_them() {
 
 /// Red team (T2, the VM only; T8, ADR-0110): a `SIGKILL`ed ranikust leaves
 /// no process of a `RUN` that froze all of its cgroups, nested and single,
-/// in a privileged container whose PID 1, a shell, outlives ranikust.
-/// AppArmor's restriction of user namespaces is lifted meanwhile.
+/// in a privileged container whose PID 1, a shell, outlives ranikust. The
+/// `RUN` is unconfined, as `--seccomp=unconfined`, and AppArmor's
+/// restriction of user namespaces is lifted meanwhile: it makes one.
 #[test]
 #[ignore = "T2: lifts the VM's user namespace restriction and runs privileged Docker containers as real root; run in the test VM only"]
 fn no_process_of_a_frozen_run_outlives_a_killed_ranikust() {

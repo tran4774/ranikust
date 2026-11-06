@@ -206,7 +206,7 @@ pub(crate) struct ChildArgs {
     pub(crate) cgroup_init: Option<RawFd>,
     /// The full sandbox in a delegated cgroup tree: `cgroup.procs` of the
     /// command's cgroup, which the command writes `0` to once the init forked
-    /// it, then closes, before it waits for the go.
+    /// it, then closes, before its filters and the go.
     pub(crate) cgroup_command: Option<RawFd>,
 }
 
@@ -531,10 +531,13 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // comes before it: the profile is the operator's, and may refuse any
     // call with any errno `--seccomp` accepts, one the child takes for
     // "unsupported" included (errno 0, a faked success, and those from 512
-    // up are refused when it compiles; ADR-0109).
-    // After it come the capability cut, since the install needs
-    // `CAP_SYS_ADMIN`, and the init's and the command's own steps, which
-    // only a filter around ranikust could fake (threat model, section 6).
+    // up are refused when it compiles; ADR-0109). The init's fork included:
+    // the init and the command each install the filters after it
+    // ([`run_init`]), the command once in its cgroup namespace (ADR-0110).
+    // After them come the capability cut, since the install needs
+    // `CAP_SYS_ADMIN`, and the steps of the init's and the command's that
+    // must follow the fork, which only a filter around ranikust could fake
+    // (threat model, section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
     // order); the command, PID 2, inherits it. Still as root: it counts
@@ -555,23 +558,6 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     new_session(err);
     // Before the profile, which could refuse it: the layer must not follow ranikust's umask.
     set_umask();
-    // After the namespace is joined and every mount made, which the filters
-    // would refuse. ADR-0033's first: the profile on top cannot fake its
-    // install, and a call both refuse gets the profile's errno.
-    if let Some(p) = &args.network_filter {
-        install_filter(err, p, Step::NetworkFilter);
-    }
-    if let Some(p) = &args.profile {
-        install_filter(err, p, Step::Seccomp);
-    }
-
-    // `CAP_SYS_ADMIN` for the command's cgroup namespace: the init drops it
-    // with every capability, the command once it made the namespace.
-    let cgroupns = match args.cgroup_command {
-        Some(_) => CapabilitySet::SYS_ADMIN,
-        None => CapabilitySet::empty(),
-    };
-    set_capability_sets_but(err, args, cgroupns);
     run_init(err, parent, fds.status_w, args, ptrs)
 }
 
@@ -591,7 +577,10 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// its own death signal, or executes a set-id binary (which clears it too),
 /// can no longer outlive ranikust.
 ///
-/// The init then keeps only what it needs to wait: no capability, no
+/// The fork comes before the `RUN`'s filters, which each process installs
+/// itself: the command makes its cgroup namespace first, which the profile
+/// refuses (ADR-0110), and a profile cannot fake the fork. The init then
+/// keeps only what it needs to wait: no capability, no
 /// descriptor but the status pipe's write end, no signal handler (the
 /// kernel drops every signal a process of the namespace sends to its PID 1
 /// whose disposition is the default), its copy of ranikust's argument and
@@ -649,10 +638,15 @@ fn run_init(
         // SAFETY: closing a descriptor number this process holds.
         unsafe { libc::close(status_w) };
         drop(go_w);
-        // Before it can go on: what the command starts is in its cgroup.
+        // Before its filters, which refuse `unshare`, and before it can go
+        // on: what the command starts is in its cgroup.
         if let Some(fd) = args.cgroup_command {
-            enter_command_cgroup(err, fd, args);
+            enter_command_cgroup(err, fd);
         }
+        if let Err((step, e)) = install_filters(args) {
+            fail(err, step, e);
+        }
+        set_capability_sets(err, args);
         wait_for_go(err, &go_r);
         drop(go_r);
         switch_user_and_exec(err, None, args, ptrs);
@@ -661,7 +655,7 @@ fn run_init(
         fail(err, Step::Init, Errno::INVAL)
     };
     drop(go_r);
-    init_keep_nothing(err, parent, command);
+    init_keep_nothing(err, parent, command, args);
     // Nothing is left to report on the error pipe: the command's own copy
     // says whether it reached `execve`. Every other descriptor goes first;
     // closing the go pipe's write end last lets the command go on only
@@ -701,19 +695,18 @@ fn join_cgroup(err: RawFd, fd: RawFd) {
 }
 
 /// The command joins its cgroup, then makes a cgroup namespace rooted there
-/// and drops the `CAP_SYS_ADMIN` that took (ADR-0110). The `RUN` then reads
-/// `0::/` in `/proc/self/cgroup`, as in a container with a private cgroup
-/// namespace, rather than a path naming ranikust's pid and the `RUN`'s
-/// number, which a layer must not depend on. A failure fails the `RUN`
-/// before its command ran.
-fn enter_command_cgroup(err: RawFd, fd: RawFd, args: &ChildArgs) {
+/// (ADR-0110), with the `CAP_SYS_ADMIN` it gives up after its filters. The
+/// `RUN` then reads `0::/` in `/proc/self/cgroup`, as in a container with a
+/// private cgroup namespace, rather than a path naming ranikust's pid and
+/// the `RUN`'s number, which a layer must not depend on. A failure fails
+/// the `RUN` before its command ran.
+fn enter_command_cgroup(err: RawFd, fd: RawFd) {
     join_cgroup(err, fd);
     // SAFETY: `NEWCGROUP` does not unshare the descriptor table, the only
     // flag `unshare_unsafe` is unsafe for; this process is single-threaded.
     if let Err(e) = unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWCGROUP) } {
         fail(err, Step::CgroupNamespace, e);
     }
-    set_capability_sets(err, args);
 }
 
 /// The init's go pipe, close-on-exec, through `libc` into descriptors set
@@ -808,16 +801,21 @@ pub(crate) fn arg_and_env_regions(stat: &[u8]) -> Option<[(usize, usize); 2]> {
         .then_some(regions)
 }
 
-/// The init gives up what the command still needs: every capability, its
-/// name. It checks its death signal is still armed and ranikust still
-/// alive. On a failure the command, still waiting on the go pipe, is
-/// killed, and the failure reported as a set-up step.
-fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t) {
-    let fail_init = |e: Errno| -> ! {
+/// The init installs the `RUN`'s filters, as the command does, and gives up
+/// what the command still needs: every capability, its name. It checks its
+/// death signal is still armed and ranikust still alive. On a failure the
+/// command, still waiting on the go pipe, is killed, and the failure
+/// reported as a set-up step.
+fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args: &ChildArgs) {
+    let fail_as = |step: Step, e: Errno| -> ! {
         // SAFETY: a plain `kill` of this process's own child.
         unsafe { libc::kill(command, libc::SIGKILL) };
-        fail(err, Step::Init, e)
+        fail(err, step, e)
     };
+    let fail_init = |e: Errno| -> ! { fail_as(Step::Init, e) };
+    if let Err((step, e)) = install_filters(args) {
+        fail_as(step, e);
+    }
     // A cosmetic name for `ps` in the `RUN`; refused only for a bad name.
     let _ = rustix::thread::set_name(INIT_NAME);
     // Lowering capabilities keeps the death signal and the dump flag:
@@ -2128,11 +2126,24 @@ fn new_session(err: RawFd) {
     }
 }
 
-/// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]), failing
-/// as `step`, which names the filter. Without `no_new_privs`: the child
-/// still has `CAP_SYS_ADMIN` here, and a setuid binary of the `RUN` must
-/// keep working.
-fn install_filter(err: RawFd, p: &Program, step: Step) {
+/// Installs the `RUN`'s seccomp filters on this process, after every mount
+/// and namespace step, which they would refuse; gives the step that names
+/// the filter that failed. ADR-0033's first: the profile on top cannot fake
+/// its install, and a call both refuse gets the profile's errno.
+fn install_filters(args: &ChildArgs) -> Result<(), (Step, Errno)> {
+    if let Some(p) = &args.network_filter {
+        install_filter(p).map_err(|e| (Step::NetworkFilter, e))?;
+    }
+    if let Some(p) = &args.profile {
+        install_filter(p).map_err(|e| (Step::Seccomp, e))?;
+    }
+    Ok(())
+}
+
+/// Installs one seccomp filter of the `RUN` ([`crate::seccomp`]). Without
+/// `no_new_privs`: the process still has `CAP_SYS_ADMIN` here, and a
+/// setuid binary of the `RUN` must keep working.
+fn install_filter(p: &Program) -> Result<(), Errno> {
     let prog = libc::sock_fprog {
         len: u16::try_from(p.insns.len()).unwrap_or(u16::MAX),
         filter: p.insns.as_ptr().cast_mut(),
@@ -2150,9 +2161,9 @@ fn install_filter(err: RawFd, p: &Program, step: Step) {
     // With `TSYNC`, a positive result names a thread it could not
     // synchronise; the child has none.
     match r {
-        0 => {}
-        r if r < 0 => fail(err, step, last_errno()),
-        _ => fail(err, step, Errno::SRCH),
+        0 => Ok(()),
+        r if r < 0 => Err(last_errno()),
+        _ => Err(Errno::SRCH),
     }
 }
 
@@ -2161,7 +2172,8 @@ fn install_filter(err: RawFd, p: &Program, step: Step) {
 /// empty, as Docker since 20.10.14. Root keeps the defaults through
 /// `execve`; any other user loses them at `setresuid` and can regain at
 /// most the defaults through a setuid binary or file capabilities. The
-/// full sandbox's child makes the same steps around its profile ([`run`]).
+/// full sandbox makes the same steps around its filters ([`run`],
+/// [`run_init`]).
 pub(crate) fn drop_capabilities(err: RawFd, args: &ChildArgs) {
     check(err, Step::BoundingSet, args.drops.drop_all());
     trim_capabilities(err, args);
@@ -2251,14 +2263,8 @@ fn current_capabilities(err: RawFd) -> CapabilitySets {
 /// Effective and permitted to Docker's defaults, of those the process has;
 /// inheritable empty.
 fn set_capability_sets(err: RawFd, args: &ChildArgs) {
-    set_capability_sets_but(err, args, CapabilitySet::empty());
-}
-
-/// [`set_capability_sets`], with `also` kept beside Docker's defaults.
-/// `also` must be out of the bounding set: no `execve` gives it back.
-fn set_capability_sets_but(err: RawFd, args: &ChildArgs, also: CapabilitySet) {
     let current = current_capabilities(err);
-    let keep = current.permitted & (CapabilitySet::from_bits_retain(args.keep) | also);
+    let keep = current.permitted & CapabilitySet::from_bits_retain(args.keep);
     check(
         err,
         Step::CapabilitySets,
@@ -2723,10 +2729,12 @@ mod tests {
             }
         }
 
-        /// The reads after the profile take `EINTR` for a failure instead of
-        /// reading again: only a filter answers so, and it could forever.
-        /// The alarm stops a loop. The parent check reads this process's
-        /// `stat` and its real parent, so that unfiltered it holds.
+        /// The init's and the command's reads take `EINTR` for a failure
+        /// instead of reading again: only a filter answers so (the profile,
+        /// after the fork, or one around ranikust, from the start), and it
+        /// could forever. The alarm stops a loop. The parent check reads
+        /// this process's `stat` and its real parent, so that unfiltered it
+        /// holds.
         #[test]
         fn an_eintr_on_a_read_after_the_profile_fails_instead_of_looping() {
             let stat = rustix::fs::open(

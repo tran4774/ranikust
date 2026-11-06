@@ -3495,6 +3495,29 @@ mod tests {
         .unwrap()
     }
 
+    /// Installs [`allow_but`]`(rules)` on this thread only, standing in for
+    /// a filter around ranikust; as root, so without `no_new_privs`. It
+    /// stays until the thread ends; each stacks on the last, and the
+    /// newest's errno wins.
+    fn filter_this_thread(rules: &str) {
+        let prog = allow_but(rules).program;
+        let fprog = libc::sock_fprog {
+            len: u16::try_from(prog.insns.len()).unwrap(),
+            filter: prog.insns.as_ptr().cast_mut(),
+        };
+        // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program,
+        // which lives across the call.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0u32,
+                &raw const fprog,
+            )
+        };
+        assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
+    }
+
     /// A rule answering `name` (with `arg0`, if given) with `errno`, 0
     /// being a faked success.
     fn errno_rule(name: &str, errno: i32, arg0: Option<u32>) -> String {
@@ -3525,8 +3548,11 @@ mod tests {
     /// its umask is 022 whatever ranikust's is, and ADR-0033's filter is
     /// still installed under a held network namespace: `unshare -U` is
     /// refused, which a control without that filter shows it would not be.
-    /// A faked fork of the init fails the `RUN` before the command runs,
-    /// never leaving it as PID 1 without an init.
+    /// The init's fork comes before the profile too (ADR-0110), so a
+    /// profile faking it and the command's `setsid` still runs the `RUN`,
+    /// under its profile. The same calls faked by a filter around ranikust
+    /// (one on this thread stands in) fail the `RUN` before the command
+    /// runs, never leaving it as PID 1 without an init.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_profile_cannot_fake_the_steps_before_it() {
@@ -3552,6 +3578,14 @@ mod tests {
                  if cat /proc/1/environ >/dev/null 2>&1; then echo environ=read; \
                  else echo environ=refused; fi";
             let defaults = format!("{:016x}", caps::docker_default_mask());
+            // `clone(SIGCHLD, ...)`, the init's fork of the command, and
+            // `setsid`, which the command, its init a session leader, would
+            // otherwise fail without the parent check.
+            let fork = format!(
+                "{},{}",
+                errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs())),
+                errno_rule("setsid", 0, None)
+            );
             let cases = [
                 (
                     "bounding, faked",
@@ -3574,6 +3608,7 @@ mod tests {
                     Network::Host,
                 ),
                 ("umask, faked", errno_rule("umask", 0, None), Network::Host),
+                ("fork, faked", fork.clone(), Network::Host),
                 (
                     "seccomp, faked, held network",
                     errno_rule("seccomp", 0, None),
@@ -3594,19 +3629,6 @@ mod tests {
                     Network::Host,
                 ),
             ];
-            // `clone(SIGCHLD, ...)`, the init's fork of the command, faked,
-            // and `setsid` too, which the init, a session leader already,
-            // would otherwise fail: the `RUN` fails, and the command never
-            // runs, so it writes nothing.
-            let fork = errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs()));
-            let setsid = errno_rule("setsid", 0, None);
-            runner.seccomp = Some(allow_but(&format!("{fork},{setsid}")));
-            let out = top.join("out-fork");
-            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
-            output_to(&out, &mut spec);
-            let forked = runner.run(spec, None, |job| clone_child(job, parent));
-            let forked_text = fs::read_to_string(&out).unwrap();
-            println!("fork, faked: {forked:?}\n{forked_text}");
             let mut got = Vec::new();
             for (name, rules, network) in cases {
                 if name.starts_with("capset") {
@@ -3645,6 +3667,17 @@ mod tests {
                 println!("{name}: {st:?}\n{text}");
                 got.push((name, st.map(|s| s.success()).ok(), text));
             }
+            // Last, as this thread keeps it: the fork faked around ranikust.
+            // The `RUN` fails, and the command never runs, so it writes
+            // nothing.
+            filter_this_thread(&fork);
+            runner.seccomp = None;
+            let out = top.join("out-fork-around");
+            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+            output_to(&out, &mut spec);
+            let forked = runner.run(spec, None, |job| clone_child(job, parent));
+            let forked_text = fs::read_to_string(&out).unwrap();
+            println!("fork, faked around ranikust: {forked:?}\n{forked_text}");
             drop(mounts);
             let mut wrong = Vec::new();
             let parent_checked = matches!(
@@ -3653,7 +3686,9 @@ mod tests {
                     if source.raw_os_error() == Some(libc::EPROTO)
             );
             if !parent_checked || !forked_text.is_empty() {
-                wrong.push(format!("fork, faked: {forked:?}, output {forked_text:?}"));
+                wrong.push(format!(
+                    "fork, faked around ranikust: {forked:?}, output {forked_text:?}"
+                ));
             }
             for (name, ok, text) in &got {
                 let mut want: Vec<(&str, String)> = vec![
@@ -3667,6 +3702,8 @@ mod tests {
                         want.push(("userns", "refused".into()));
                     }
                     "seccomp, faked, control" => want.push(("userns", "ok".into())),
+                    // The command still installed its profile.
+                    "fork, faked" => want.push(("Seccomp_filters", (own + 1).to_string())),
                     "capset and ambient, faked" => {
                         for key in ["CapInh", "CapAmb"] {
                             want.push((key, format!("{:016x}", 0)));
@@ -3722,27 +3759,6 @@ mod tests {
             root_with_usr(&mut mounts, &root);
             let parent = ParentPid::new().unwrap();
             let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
-            // On this thread only, which ends with the test; as root, so
-            // without `no_new_privs`. Each stacks on the last; the newest's
-            // errno wins.
-            let around = |rules: &str| {
-                let prog = allow_but(rules).program;
-                let fprog = libc::sock_fprog {
-                    len: u16::try_from(prog.insns.len()).unwrap(),
-                    filter: prog.insns.as_ptr().cast_mut(),
-                };
-                // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the
-                // program, which lives across the call.
-                let r = unsafe {
-                    libc::syscall(
-                        libc::SYS_seccomp,
-                        libc::SECCOMP_SET_MODE_FILTER,
-                        0u32,
-                        &raw const fprog,
-                    )
-                };
-                assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
-            };
             let keyrings = ["keyctl", "add_key", "request_key"]
                 .map(|n| errno_rule(n, libc::EPERM, None))
                 .join(",");
@@ -3788,7 +3804,7 @@ mod tests {
             ];
             let mut got = Vec::new();
             for (outer, cases) in phases {
-                around(&outer);
+                filter_this_thread(&outer);
                 for (name, profile, fails) in cases {
                     runner.seccomp = profile;
                     let spec = RunSpec::new(&root, vec!["/bin/true".into()]);

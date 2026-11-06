@@ -104,11 +104,12 @@ nested, `/../..` otherwise). Without it, a `RUN` read a path naming
 ranikust's pid and the `RUN`'s number in start order, and a
 `--reproducible` build that wrote it got another digest at another
 `--jobs` or on another run (red-team, 2026-11-06), against the rule that
-digests never depend on scheduling. The child keeps the `CAP_SYS_ADMIN`
-this takes past the capability drop (out of the bounding set): the init gives
-it up with every other capability, the command right after its namespace,
-both before the go. A failure fails the `RUN`, and the start-up probe makes
-one too (3).
+digests never depend on scheduling. The namespace takes `CAP_SYS_ADMIN`
+(out of the bounding set already) and comes before the command's seccomp
+filters, which refuse it, so the init forks the command before either
+installs them, and each gives up the capability after its own (the init
+every capability, the command all but Docker's defaults), both before the
+go. A failure fails the `RUN`, and the start-up probe makes one too (3).
 
 While it was implemented, the maintainer answered three more questions on
 2026-11-05, on #33:
@@ -141,8 +142,10 @@ more on 2026-11-05, on #33:
   removal fails, so the `RUN` fails, and the empty cgroups stay. The default
   seccomp profile of
   [ADR-0103](0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md),
-  planned and not built yet, is like Docker's to refuse the `RUN` the user
-  namespace this takes, except under `--seccomp=unconfined` **[inferred]**.
+  Docker's
+  ([ADR-0109](0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),
+  refuses the `RUN` the user namespace this takes, except under
+  `--seccomp=unconfined` **[measured]**.
 - **The root of a cgroup namespace on a read-write cgroupfs:** "Giữ quy tắc,
   ghi vào tài liệu (khuyến nghị)". It still counts as delegated, so the rule
   also accepts trees nobody delegated: root's own `unshare -C` with cgroup2
