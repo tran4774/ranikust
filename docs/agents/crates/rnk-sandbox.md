@@ -9,9 +9,11 @@
 with `pivot_root` (or `MS_MOVE`), with the capability bounding set cut to
 Docker's defaults and Docker's default seccomp profile, and probes its own
 capabilities. Never a bare `chroot` where mounting is possible; no `RUN`
-process outlives the build. User namespaces, the `proc`/`sysfs` fallbacks
-and `--userns` are Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)).
+process outlives the build. A `RUN` in a user namespace, with the
+`proc`/`sysfs` fallbacks, and `--userns` are Phase 3
+([#41](https://github.com/tran4774/ranikust/issues/41)); the probe of that
+path is built, reported only
+([#74](https://github.com/tran4774/ranikust/issues/74)).
 
 ## Owns
 
@@ -26,8 +28,24 @@ and `--userns` are Phase 3
   namespace, spawner thread, stub-journal replay; and the probe of its own
   steps, which `ranikust` runs with `rnk-snapshot`'s. Today the probe runs
   the `Full` per-`RUN` sequence in an empty root (`probe.rs`) and reports
-  only `root_entry`; the full probe and its guidance (uid map, `sysfs`, bind
-  mounts, `mknod`) are Phase 3.
+  only `root_entry`; its guidance (uid map, `sysfs`, bind mounts) is
+  Phase 3.
+- The user-namespace probe (`userns.rs`, #74), reported only: nothing
+  routes on it yet. Each step a `RUN` in a user namespace needs, in forked
+  children that leave no namespace or mount behind: `unshare(CLONE_NEWUSER)`;
+  the id map (root: its own ranges mirrored, else one id; another user:
+  `newuidmap`/`newgidmap` with the subordinate ids the caller read, else one
+  id); `chown` to a mapped id other than 0; `unshare(CLONE_NEWNS)`, a second
+  call after the map, so that the mount namespace is owned by the new user
+  namespace and a refusal names its step (with a ranged map Ubuntu 24.04
+  refuses it too, after `chown`); a new `proc` in a new PID namespace, else
+  an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
+  `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
+  closure as root of a namespace with the map that worked, for the overlay
+  probe. The `newuidmap` path has no caller but the T2 test: `ranikust`
+  probes as root only and passes no subordinate ids, and task 5
+  ([#75](https://github.com/tran4774/ranikust/issues/75)) decides where
+  the lookup lives.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`.
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
@@ -73,6 +91,14 @@ pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before sta
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]
 pub enum RootEntry { PivotRoot, MoveMount }
+pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
+pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
+pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
+pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
+pub struct IdRange { pub start: u32, pub count: u32 }
+pub enum StepResult { Ok, Failed(StepFailure), NotRun(&'static str) }   // #[non_exhaustive]
+pub enum MountResult { Fresh, Rbind { fresh: StepFailure }, Failed { fresh: StepFailure, rbind: Option<StepFailure> }, NotRun(&'static str) } // #[non_exhaustive]
+pub struct StepFailure { pub op: &'static str, pub errno: Option<i32>, pub detail: Option<String> }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
     pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060); RUN cgroups where delegated (ADR-0110); Full RUNs under SeccompProfile::docker_default
@@ -337,6 +363,37 @@ What a change here must keep, with where it lives:
 - **The probe** performs the real sequence in the configuration that will be
   used, never by kernel version; a command that does not exist fails at
   `execve` with `ENOENT`, which proves every step before it.
+- **The user-namespace probe** forks one child per map from a
+  single-threaded caller, before any credential is read; right after the
+  fork the child closes every descriptor but stdio and those it uses (the
+  pipes, the probe's directory, the `chown` target), then makes system
+  calls only, then `_exit`. `in_namespace`'s function may allocate (it
+  checks for one thread first) but must not fork (a process it starts
+  would outlive the child), and runs with an empty panic hook and, on its
+  thread, no `tracing` subscriber: the inherited ones write ranikust's
+  metrics report and log (a thread the function starts must carry the
+  function's empty dispatcher over, as `rnk-snapshot`'s mount thread
+  does). Each child is killed at its deadline (10 s, the closure 60 s) and
+  reaped within 2 s (one that closed its report but is not reaped then is
+  killed, and given 2 s more); its namespaces and mounts go with it. One
+  still there after is `Error::ProbeChildLeft`: the probe's files stay,
+  and `ranikust` leaves their directory, until the build's directory is
+  removed (or, with an anonymous store, the state directory emptied): at
+  the end of the run, at once when `--mode=auto` falls back to kaniko
+  mode, else at the next start (a refused set-up, a run cut short).
+  `newuidmap` and `newgidmap` each get 10 s, then are killed and given 2 s
+  to be reaped; one whose wait fails is too, except after `ECHILD`. The
+  child waits for them, so an attempt can run past its 10 s: it is then
+  killed as soon as they are done, reaped, and reported as killed after
+  10 s. Its mount namespace makes `/` a recursive slave before any mount.
+  The files the steps need are made by the caller in the probe's
+  directory through `RootPath` and removed before it returns. `newuidmap`
+  is looked for in `/usr/bin` and `/bin` only, run with an empty
+  environment. A child of a user other than root is dumpable only around
+  its map write, which the kernel's owner check of `/proc/<pid>/uid_map`
+  needs: made dumpable after `unshare`, not dumpable again right after the
+  map, before `chown`. `ranikust` probes as root, whose children never
+  change it.
 
 ## Refs
 
@@ -449,6 +506,27 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
+- **T0**, the user-namespace probe (`src/userns/tests.rs`): the maps
+  planned for root and for another user, the mirror of a map, the steps
+  assembled from a child's records (a refused `unshare`, each map refused,
+  a fresh kernel filesystem or its rbind, Ubuntu 24.04's ranged stop at
+  `chown`), records across split reads and the deadline, the report's line
+  and stop, a map this process fails to write ending the waiting child at
+  once, a failure part-way through making the probe's files removing what
+  it made, `in_namespace` not running its closure beside other threads, a
+  panic in the closure reported as not finishing, never as its refusal, nor
+  through the parent's panic hook, and a log line of the closure not
+  through its subscriber (in a copy of the test binary with one test
+  thread); a child holding only stdio and its own descriptors; a child
+  reaped within its grace, else killed, else reported left; a tool reaped
+  elsewhere (`ECHILD`) not killed. Its red team (`red_team_*`, as any
+  user; T22, T4, T7, T8, T9): names planted where it makes its files (a
+  symlink out, a hard link of a file outside, a FIFO; the directory itself
+  a symlink or a FIFO) never followed, opened or removed; nothing left
+  after a probe and a closure that mounts (no process, orphan included, no
+  descriptor, mount or entry); the prober killed while a child of the
+  probe runs (`SIGKILL`, `SIGINT`, `SIGINT` to its group) leaves no
+  process or mount.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`; the init under the command's filters; host
@@ -456,11 +534,21 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `nodev` root and `/dev`; read-only `/proc/sys` and `/dev/null`; masked
   kernel files; no terminal; only stdio descriptors; no stub in the
   layer); `sealed-exe`: a `RUN` reaches no thread of ranikust's or its
-  init's (ADR-0101). Not yet: the fallbacks.
+  init's (ADR-0101). `kaniko-flags` in the kaniko leg: the user-namespace
+  probe passes under rootless Podman's defaults, with an rbind of `/proc`
+  (#74); `userns-probe`, its red team at the binary's level
+  ([its steps](../../testing.md#quick-smoke-cases)). Not yet: the
+  sandbox's fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
-  (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`
-  (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
+  (`src/probe.rs`);
+  `the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts`
+  (`src/userns/tests.rs`: as the user who ran sudo, one id, then
+  `newuidmap` with that user's ranges; where AppArmor restricts user
+  namespaces, Ubuntu 24.04, one id stops at the `uid_map` write and ranges
+  at `chown`, elsewhere both pass; both harnesses install `newuidmap`, and
+  the user must have subordinate ids; prints `measured:` lines);
+  `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
   `the_run_is_pid_2_under_an_init_that_reports_its_status`;
@@ -555,7 +643,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   hopping caught by the sweep, non-blocking flood) and `src/spawner.rs`
   (`a_cancel_kills_a_running_run`, `a_direct_run_leaves_no_process_behind`,
   `a_direct_heredoc_runs_from_an_anonymous_file`, loopback for
-  `--network=none`); in `src/journal.rs`, a block device where a directory
+  `--network=none`);
+  `the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker`
+  (`src/userns/tests.rs`, profile `default`, also in the T2 unit suite on the
+  VM: every step passes with root's own ranges on a host, `unshare` is
+  refused under Docker's defaults, and nothing is left in the probe's
+  directory); the probe's red team as root (`red_team_as_root_*`, profile
+  `sysadmin`: the T0 attacks with the whole path, `proc` and `sysfs`
+  mounts and `mknodat` reached, and the probe on a tmpfs, one that runs
+  out of inodes part-way, a read-only one and a ramfs, each leaving
+  nothing; prints `measured:` lines); in `src/journal.rs`, a block device where a directory
   is needed or as the target
   (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`).
 
@@ -564,7 +661,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - `rnk_sandbox.run` per `RUN`: `wait4` rusage (`user_ns`, `sys_ns`,
   `max_rss_kb`, faults, blocks, context switches) when the child was reaped
   after `execve`, and `failed`; `rnk_sandbox.setup` (`stubs`);
-  `rnk_sandbox.probe` (`ok`) per attempt; `rnk_sandbox.cgroups` (`layout`:
+  `rnk_sandbox.probe` (`ok`) per attempt; `rnk_sandbox.probe_userns`
+  (`ok`, `map`) per user-namespace probe; `rnk_sandbox.cgroups` (`layout`:
   `nested`, `single` or `none`) once per `Sandbox::start` that may use them
   ([rows](../../design/metrics.md#rnk-sandbox)).
 - Spans are opened on the caller's thread, so they nest in its span with no

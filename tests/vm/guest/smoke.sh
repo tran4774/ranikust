@@ -8,7 +8,8 @@
 # the VM is checked for leftovers. The `ranikust` binary builds
 # tests/smoke/e2e in each environment too; Docker runs that image, and on
 # the VM itself `--reproducible` must give one digest with `--jobs 1` and the
-# default.
+# default. Each build's user-namespace probe line is printed, and a default
+# `docker run` checks where that probe stops (#74).
 set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
@@ -177,6 +178,40 @@ netns_checks() {
   echo "sysadmin: with --allow network.none-userns, loopback is up, the filter refuses what it closes over the default profile ($default_n filters) and without it, and useradd works"
 }
 
+# #74: `--mode=auto` also probes the user-namespace path of a `RUN`,
+# reported only, once per build. Prints the line of variant $1 from its
+# build log $2: on the VM itself (real root) it must pass; a default
+# `docker run` must stop at `unshare`, which Docker's seccomp refuses
+# without CAP_SYS_ADMIN.
+userns_line() {
+  local line
+  line="$(grep -o 'user namespace probe (reported only).*' <<<"$2")" ||
+    { echo "error: $1: no user namespace probe in the build log" >&2; exit 1; }
+  [ "$(wc -l <<<"$line")" = 1 ] ||
+    { echo "error: $1: more than one user namespace probe line" >&2; exit 1; }
+  echo "$1: $line"
+  case "$1" in
+    host) [[ "$line" == *"): passes; "* ]] ;;
+    default) [[ "$line" == *"): stops at unshare; unshare(CLONE_NEWUSER): EPERM; "* ]] ;;
+  esac || { echo "error: $1: the user namespace probe did not end as expected" >&2; exit 1; }
+}
+
+# A default `docker run` with no `--mode`: kaniko mode on its `/`.
+default_userns() {
+  local d="$W/default" rc=0 log
+  sudo mkdir -m 700 -p "$d/ctx"
+  printf 'FROM %s\nRUN true\n' "$E2E_BASE" | sudo tee "$d/ctx/Dockerfile" >/dev/null
+  log="$(sudo docker run --rm -v "$RNK:/ranikust/bin/ranikust:ro" -v "$d/ctx:/ranikust/ctx:ro" \
+    "$IMAGE" /ranikust/bin/ranikust --context /ranikust/ctx --no-push 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/build.log" >/dev/null
+  if [ "$rc" != 0 ] || ! grep -q 'kaniko mode, because root may not mount here' <<<"$log"; then
+    echo "error: default: --mode=auto in a default docker run: exit $rc, want 0 in kaniko mode" >&2
+    echo "$log" >&2
+    exit 1
+  fi
+  userns_line default "$log"
+}
+
 trap 'sudo rm -f "$MARKER"' EXIT
 domainname_before="$(cat /proc/sys/kernel/domainname)"
 
@@ -208,6 +243,7 @@ for v in "${VARIANTS[@]}"; do
   # The real binary builds tests/smoke/e2e in the same environment.
   case "$entry" in PivotRoot) syscall=pivot_root ;; MoveMount) syscall=MS_MOVE ;; esac
   e2e "$name" "$syscall" >/dev/null
+  userns_line "$name" "$(sudo cat "$W/$name/e2e.log")"
   [ "$name" = sysadmin ] && netns_checks
   sudo bash -c "$(declare -f smoke_check_no_stub_leak smoke_check_no_secret smoke_check_no_empty_layer); \
     smoke_check_no_stub_leak '$dir/e2e/out/oci' && \
@@ -382,6 +418,10 @@ DOCKERFILE
   fi
   echo "$name: ok"
 done
+
+echo "=== default: a default docker run, --mode=auto"
+default_userns
+echo "default: ok"
 
 echo "=== escape control: a plain chroot into the host variant's root"
 # Each escape must work there, or its check in the sandbox proves nothing.

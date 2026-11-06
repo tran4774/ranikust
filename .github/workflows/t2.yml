@@ -100,7 +100,7 @@ jobs:
       # What the VM's base image adds to Ubuntu (tests/vm/vm.sh PACKAGES);
       # Docker is the runner's own.
       - name: Install the VM's packages
-        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz uidmap
       - name: T2 unit
         env:
           RANIKUST_T2_ON_RUNNER: "1"
@@ -206,7 +206,7 @@ jobs:
         with:
           tool: cargo-zigbuild@0.24.0
       - name: Install the VM's packages
-        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz uidmap
       # The VM's Docker (Ubuntu's docker.io, 29.x) keeps images in
       # containerd's store, Docker 29's default, whose `docker load` reads
       # an OCI layout, as the smoke suite needs; the runner's Docker (28.x)

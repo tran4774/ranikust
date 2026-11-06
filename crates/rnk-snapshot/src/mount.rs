@@ -228,19 +228,18 @@ fn mount_data(spec: &Spec<'_>, links: &RootPath) -> Result<()> {
     links.create_dir(&name, 0o700)?;
     let mounted = make_links(links, &name, spec.lowers).and_then(|dir| {
         std::thread::scope(|s| {
-            let thread = std::thread::Builder::new()
-                .name("rnk-mount".into())
-                .spawn_scoped(s, || mount_in(&dir, spec.target, flags, &data))
-                .map_err(|e| Error::Mount {
-                    target: spec.target.to_owned(),
-                    lowers: spec.lowers.len(),
-                    how: "mount(2)",
-                    step: format!("start the mount thread: {e}"),
-                    errno: e
-                        .raw_os_error()
-                        .map_or(Errno::AGAIN, Errno::from_raw_os_error),
-                    options: Some(len),
-                })?;
+            let thread =
+                spawn_as_caller(s, "rnk-mount", || mount_in(&dir, spec.target, flags, &data))
+                    .map_err(|e| Error::Mount {
+                        target: spec.target.to_owned(),
+                        lowers: spec.lowers.len(),
+                        how: "mount(2)",
+                        step: format!("start the mount thread: {e}"),
+                        errno: e
+                            .raw_os_error()
+                            .map_or(Errno::AGAIN, Errno::from_raw_os_error),
+                        options: Some(len),
+                    })?;
             thread
                 .join()
                 // The workspace aborts on panic, so the thread never
@@ -265,6 +264,20 @@ fn mount_data(spec: &Spec<'_>, links: &RootPath) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Starts `f` on a scoped thread named `name` that logs through this
+/// thread's `tracing` dispatcher: a scoped one, as the user-namespace
+/// probe's empty one in its child, reaches it, not only the global one.
+fn spawn_as_caller<'scope, T: Send + 'scope>(
+    s: &'scope std::thread::Scope<'scope, '_>,
+    name: &str,
+    f: impl FnOnce() -> T + Send + 'scope,
+) -> std::io::Result<std::thread::ScopedJoinHandle<'scope, T>> {
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn_scoped(s, move || tracing::dispatcher::with_default(&dispatch, f))
 }
 
 /// Fills `links/<name>/` with `<i> -> lowers[i]` and opens it as a path
@@ -344,7 +357,50 @@ pub(crate) fn unmount(target: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
+
+    /// A subscriber that counts the events it gets.
+    struct Count(Arc<AtomicUsize>);
+
+    impl tracing::Subscriber for Count {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The mount thread logs where its caller does: a scoped dispatcher,
+    /// as the user-namespace probe's empty one in its child, reaches it. A
+    /// plain thread, the control, gets the global one instead.
+    #[test]
+    fn the_mount_thread_logs_through_its_callers_dispatcher() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let dispatch = tracing::Dispatch::new(Count(Arc::clone(&seen)));
+        tracing::dispatcher::with_default(&dispatch, || {
+            std::thread::scope(|s| {
+                spawn_as_caller(s, "rnk-test", || tracing::info!("from the thread"))
+                    .unwrap()
+                    .join()
+                    .unwrap();
+                s.spawn(|| tracing::info!("from a plain thread"))
+                    .join()
+                    .unwrap();
+            });
+        });
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
+    }
 
     fn spec<'a>(lowers: &'a [PathBuf], upper: Option<(&'a Path, &'a Path)>) -> Spec<'a> {
         Spec {
