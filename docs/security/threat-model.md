@@ -243,7 +243,8 @@ These follow from decisions and are documented to users rather than fixed:
   as runc and libseccomp do **[inferred]** (not tested against runc).
   To restrict an argument, let the default action refuse and allow only the
   values a build needs, with `SCMP_CMP_EQ`, `SCMP_CMP_LT`, `SCMP_CMP_LE` or
-  `SCMP_CMP_MASKED_EQ` conditions, as the default profile does; it is not
+  `SCMP_CMP_MASKED_EQ` conditions, and allow neither `clone3` nor the
+  `io_uring_*` calls, as the default profile does for a `RUN`; it is not
   affected.
 - A `RUN`'s profile that refuses `close` with an errno (a kill or a trap
   fails the `RUN` instead) hangs that `RUN` until the build is cancelled, a
@@ -254,8 +255,9 @@ These follow from decisions and are documented to users rather than fixed:
   that grows with the square of that limit, then waits. Docker's default
   profile allows `close`.
 - A `RUN`'s profile that refuses `exit` and `exit_group`, or every call,
-  leaves the build running until it is cancelled, a limit of reliability,
-  not of security ([#103](https://github.com/tran4774/ranikust/issues/103)).
+  with an errno (a kill or a trap fails the `RUN` instead) leaves the build
+  running until it is cancelled, a limit of reliability, not of security
+  ([#103](https://github.com/tran4774/ranikust/issues/103)).
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by

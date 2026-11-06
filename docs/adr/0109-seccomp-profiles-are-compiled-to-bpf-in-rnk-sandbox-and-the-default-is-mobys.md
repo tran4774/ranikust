@@ -173,7 +173,8 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   says how to write a profile that is not.
 - **A profile that refuses `exit` and `exit_group`, or refuses everything,
   keeps the behaviour it has** ("Để như Docker, mở task", leave it as Docker
-  does, and open a task). The build then runs until it is cancelled. This is
+  does, and open a task). Where it refuses with an errno, the build then runs
+  until it is cancelled; a kill or a trap fails the `RUN` instead. This is
   not a security matter. It is tracked in
   [#103](https://github.com/tran4774/ranikust/issues/103), which lists the
   options left open: refuse such a profile at start-up, or end such a `RUN`
@@ -205,7 +206,7 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   may not catch every way of passing them; the default profile is not
   affected (threat model, section 6).
 - Bad, because a profile that refuses `exit` and `exit_group`, or refuses
-  everything, leaves the build running until it is cancelled
+  everything, with an errno leaves the build running until it is cancelled
   ([#103](https://github.com/tran4774/ranikust/issues/103)).
 - Bad, because moby's profile has to be re-vendored by hand when it changes.
 - Neutral, because a profile that asks for what ranikust does not support is
@@ -228,14 +229,19 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   highest precedence wins, with its errno.
 - **[inferred]** runc and libseccomp leave the same limit on argument rules.
   Not tested against runc.
+- **[code]** moby's `default.json` refuses by default (`SCMP_ACT_ERRNO`), and
+  each of its rules with argument conditions is `SCMP_ACT_ALLOW` with
+  `SCMP_CMP_EQ`, `SCMP_CMP_LT` or `SCMP_CMP_MASKED_EQ` conditions, as threat
+  model section 6 advises;
+  `docker_default_restricts_arguments_by_allowing_values` checks it.
 - **[measured]** 2026-11-06, kernel 7.0.0-42-generic, ranikust in rootless
   Podman (T1), as reported in
   [#103](https://github.com/tran4774/ranikust/issues/103): a profile that
-  refuses `exit` and `exit_group` leaves the `RUN`'s shell retrying its
-  exit, and a profile with a refusing default action and no rules does the
-  same to ranikust's own child before `exec`, each with one process using
-  99.9 % of a CPU 30 s after the build started; a `SIGTERM` then cancels the
-  build in 0.1 s ("build cancelled", exit code 1).
+  refuses `exit` and `exit_group` with an errno leaves the `RUN`'s shell
+  retrying its exit, and `{"defaultAction":"SCMP_ACT_ERRNO"}` with no rules
+  does the same to ranikust's own child before `exec`, each with one process
+  using 99.9 % of a CPU 30 s after the build started; a `SIGTERM` then
+  cancels the build in 0.1 s ("build cancelled", exit code 1).
 
 ## More Information
 
