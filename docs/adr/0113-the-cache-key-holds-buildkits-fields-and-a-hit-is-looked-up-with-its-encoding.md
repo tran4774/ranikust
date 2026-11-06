@@ -8,8 +8,8 @@ decision-makers: Tran Nguyen (maintainer)
 
 ## Context and Problem Statement
 
-[ADR-0005](0005-own-versioned-cache-key.md) fixes the shape of a layer cache key,
-`key(k) = H(version, key(k-1), instruction, inputs(k))` (spelled out in
+[ADR-0005](0005-own-versioned-cache-key.md) fixes the shape of a layer cache
+key, `key(k) = H(version, key(k-1), instruction, inputs(k))` (spelled out in
 [cache-and-store](../design/cache-and-store.md#cache-keys)), which never depends
 on the snapshot mode, the host, the time or the thread count. It leaves the rest
 to Phase 4: the field list, `H`, the form of a cache entry and its tag
@@ -21,19 +21,20 @@ never mtime. Issue #13's note of 2026-11-01 adds that the key must tell a cache
 mount that [ADR-0057](0057-direct-run-heredoc-from-memfd-and-refusals.md) drops
 from one that was given.
 
-A second question came up while planning Phase 4 (see
-[the roadmap](../../README.md#roadmap)): the bytes of a cached layer depend on
-the compression, its level and the file times (now, or the `--reproducible`
-epoch). kaniko's key holds none of them and appends a hit as it is, so a warm
-build can change an image's digest and break `--reproducible`.
+A second question came up while planning Phase 4 (see [the
+roadmap](../../README.md#roadmap)): the bytes of a cached layer depend on the
+compression, its level and the file times (now, or the `--reproducible` epoch).
+kaniko's key holds none of them and appends a hit as it is, so a warm build can
+change an image's digest and break `--reproducible`.
 
 ## Considered Options
 
 The key's fields (the option letters are those of the question put to the
 maintainer; #13's text lists only the choice of `H`):
 
-- (a) BuildKit's fields ([ADR-0032](0032-observable-behaviour-follows-buildkit.md)),
-  hashed with SHA-256.
+- (a) BuildKit's fields
+  ([ADR-0032](0032-observable-behaviour-follows-buildkit.md)), hashed with
+  SHA-256.
 - (b) kaniko's fields: the unexpanded text, the environment for `RUN` only.
 - (c) (a) with only the build arguments a step uses.
 
@@ -45,8 +46,8 @@ What a lookup uses:
 - (a) The key plus the encoding (compression, level, time policy and epoch).
 - (b) The key alone, re-encoding a hit to this build's encoding: one entry for
   all builds, but a decompress, a tar rewrite and a compress per hit.
-- (c) The key alone, the entry used as it is (kaniko): free, but a warm build may
-  differ from a cold one.
+- (c) The key alone, the entry used as it is (kaniko): free, but a warm build
+  may differ from a cold one.
 
 ## Decision Outcome
 
@@ -56,12 +57,13 @@ key together with the layer's encoding, so a warm build gives the cold build's
 digests.
 
 The maintainer's answer (2026-11-06: "Kiểu BuildKit + encoding (khuyến nghị)",
-"BuildKit style plus encoding (recommended)") stood for option (a) of #13 with the
-recommended entry, tag, TTL and bad-entry-is-a-miss, and option (a) of the
-encoding question.
+"BuildKit style plus encoding (recommended)") stood for option (a) of #13 with
+the recommendations put with (a) (the entry, the tag, the TTL and
+bad-entry-is-a-miss), and option (a) of the encoding question.
 
 - **Fields.** `H` is SHA-256 and the formula is ADR-0005's (see
-  [cache-and-store](../design/cache-and-store.md#cache-keys)). A step's inputs are:
+  [cache-and-store](../design/cache-and-store.md#cache-keys)). A step's inputs
+  are:
   - the instruction after expansion;
   - every declared `ARG` and the environment in effect;
   - `USER`, `WORKDIR` and `SHELL`;
@@ -71,8 +73,12 @@ encoding question.
   - for `COPY` and `ADD`, each file's content, mode, uid and gid after
     `--chown`, type, link target and `security.capability`, never mtime;
   - for `COPY --from=<image>`, that image's platform manifest digest.
-  The chain root is the base's platform manifest digest together with the
-  platform. The input of `COPY --from=<stage>` is
+
+  Every step's key holds the declared `ARG`s, the environment, `USER`, `WORKDIR`
+  and `SHELL`, which makes it a superset of BuildKit's fields for a step that
+  does not read them: safe, and it only costs misses. The chain root is the
+  base's platform manifest digest together with the platform. The input of
+  `COPY --from=<stage>` is
   [ADR-0114](0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)'s.
 - **Entry.** A one-layer OCI image manifest whose config `created` is the push
   time. `--cache-ttl` (kaniko's flag, kaniko's meaning, ADR-0011) compares with
@@ -93,10 +99,10 @@ encoding question.
   ([ADR-0076](0076-the-build-context-owner-is-a-lower-trust-principal.md)).
 
 Not decided here: the keys of `ADD <url>` and of `RUN --mount=type=bind`, which
-come with those Phase 5 features, and how `<hex>` is derived from the key and the
-encoding (Phase 4's task 2,
-[#125](https://github.com/tran4774/ranikust/issues/125), fixes it, and the
-`rnk-cache` card records it).
+come with those Phase 5 features, and how `<hex>` is derived from the key and
+the encoding. It is decided before Phase 4's task 2
+([#125](https://github.com/tran4774/ranikust/issues/125)) is built (a `question`
+issue if it needs the maintainer), and the `rnk-cache` card records it.
 
 ### Consequences
 
@@ -106,38 +112,41 @@ encoding (Phase 4's task 2,
   a warm and a partial build give one digest, at no cost per hit.
 - Good, because a bad entry costs one miss, so nobody who can push to the
   repository can fail a build with it.
-- Bad, because more misses than kaniko on cosmetic changes: every declared
-  `ARG` is in the key of every `RUN`, used or not.
+- Bad, because more misses than kaniko on cosmetic changes: the build
+  environment (the declared `ARG`s, the environment, `USER`, `WORKDIR` and
+  `SHELL`) is in the key of every step, not only of a `RUN`, used or not.
 - Bad, because builds with another compression, level or time policy share no
   entries, so the repository holds one entry per encoding in use.
-- Neutral, because users moving from kaniko start with a cold cache, as
-  ADR-0005 accepted.
+- Neutral, because users moving from kaniko start with a cold cache, as ADR-0005
+  accepted.
 
 ## Evidence
 
-- **[external]** kaniko@44aa7ddc0 (the benchmark fork; which lines it changed from
-  upstream was not checked): the key holds the unexpanded text, the environment
-  and every declared `ARG` for `RUN` only, and each `COPY` file by its md5 of mode,
-  owner and content (`pkg/executor/build.go:322-374`, `pkg/util/util.go:78-160`;
-  its README, lines 1491-1496, says a changed `$VAR` can reuse a wrong layer).
-  The TTL compares with the config's `created`, set at push time and not
-  refreshed by a hit (`pkg/cache/cache.go:116-127`, `pkg/executor/push.go:447-451`);
-  a wrong layer count in an entry fails the build
-  (`pkg/commands/cache.go:27-56`, read once); a hit is appended as it is
+- **[external]** kaniko@44aa7ddc0 (the benchmark fork; which lines it changed
+  from upstream was not checked): the key holds the unexpanded text, the
+  environment and every declared `ARG` for `RUN` only, and each `COPY` file by
+  its md5 of mode, owner and content (`pkg/executor/build.go:322-374`,
+  `pkg/util/util.go:78-160`; its README, lines 1491-1496, says a changed `$VAR`
+  can reuse a wrong layer). The TTL compares with the config's `created`, set at
+  push time and not refreshed by a hit (`pkg/cache/cache.go:116-127`,
+  `pkg/executor/push.go:447-451`); a wrong layer count in an entry fails the
+  build (`pkg/commands/cache.go:27-56`, read once); a hit is appended as it is
   (`pkg/executor/build.go:861`).
 - **[external]** buildkit@cd8ee244: the `RUN` key is the JSON of the whole exec
   operation and the platform (`solver/llbsolver/ops/exec.go:114-188`); secret
   mounts carry id, target, mode and owner, never the value
-  (`frontend/dockerfile/dockerfile2llb/convert_secrets.go:14-90`); every declared
-  `ARG` with a value is in a `RUN`'s environment, used or not
-  (`frontend/dockerfile/dockerfile2llb/convert.go:1682-1730`); a `COPY` file hash
-  holds mode, uid, gid, size, type, link name, `security.capability`, content
-  SHA-256 and never mtime (`cache/contenthash/tarsum.go:38-72`); a base image is
-  keyed by manifest digest and platform (`source/containerimage/pull.go:62-84`).
+  (`frontend/dockerfile/dockerfile2llb/convert_secrets.go:14-90`); every
+  declared `ARG` with a value is in a `RUN`'s environment, used or not
+  (`frontend/dockerfile/dockerfile2llb/convert.go:1682-1730`); a `COPY` file
+  hash holds mode, uid, gid, size, type, link name, `security.capability`,
+  content SHA-256 and never mtime (`cache/contenthash/tarsum.go:38-72`); a base
+  image is keyed by manifest digest and platform
+  (`source/containerimage/pull.go:62-84`).
 - **[code]** `rnk-cache` holds no key yet; ADR-0057 drops a cache mount for a
   `Direct` `RUN`.
 - **[inferred]** Nothing measures the miss rate of (a) against (b): W2 has never
-  been built with a cache ([ADR-0005](0005-own-versioned-cache-key.md#evidence)).
+  been built with a cache
+  ([ADR-0005](0005-own-versioned-cache-key.md#evidence)).
 
 ## More Information
 
@@ -152,7 +161,7 @@ The rule on pushing a layer is invariant 3 of
 [#123](https://github.com/tran4774/ranikust/issues/123) (Phase 4), recorded here
 with the key because it is a condition on pushing under one.
 
-Follow-ups, with Phase 4's tasks and not before they are built: change
-[cache-and-store](../design/cache-and-store.md#cache-keys), the `rnk-cache` card,
-the threat model's T13 row and the book's usage page, and add the `## Changelog`
-entry.
+[cache-and-store](../design/cache-and-store.md#cache-keys) and the `rnk-cache`
+card already point here. Follow-ups, with Phase 4's tasks and not before they
+are built: their field lists, the threat model's T13 row and the book's usage
+page, and the `## Changelog` entry.

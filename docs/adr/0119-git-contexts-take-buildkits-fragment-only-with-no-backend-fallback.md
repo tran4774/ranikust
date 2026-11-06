@@ -88,11 +88,11 @@ option (a) of #17 and option (b) of the credentials question.
   names.
 
 ADR-0035 is partly superseded: its two fragment forms, and its three open points
-(fallback between backends, Q-250, answered by #15; the fragment, Q-251, by #16;
-the `--git-config` keys, Q-252, by #17), are replaced by the above. Its
-backends, flags, hardening and the rest stand. Not covered: the
-`?ref=…&subdir=…` query form that ADR-0035 lists beside the fragment, which this
-decision does not touch.
+(fallback between backends, Q-250 (#15); the fragment, Q-251 (#16); the
+`--git-config` keys, Q-252 (#17)), are replaced by the above. Its backends,
+flags, hardening and the rest stand. Not covered: the `?ref=…&subdir=…` query
+form that ADR-0035 lists beside the fragment, which this decision does not
+touch.
 
 ### Consequences
 
@@ -123,11 +123,10 @@ decision does not touch.
   (`util/gitutil/git_url.go:71-79`); an `ADD` fetch authenticates only through
   the secrets `HTTP_AUTH_HEADER_<host>`, `HTTP_AUTH_TOKEN_<host>`,
   `GIT_AUTH_TOKEN` and `GIT_AUTH_HEADER`, host-suffixed first
-  (`source/http/source.go:243-272`, `source/git/source.go:438-532`); an `ADD
-  <url>` fetch reads no netrc.
-- **[code]** ADR-0035 is the only record of the backends, flags and fragments,
-  none built: the planned design is in
-  [rnk-context](../agents/crates/rnk-context.md).
+  (`source/http/source.go:243-272`, `source/git/source.go:438-532`); an
+  `ADD <url>` fetch reads no netrc.
+- ADR-0035 is the only record of the backends, flags and fragments, none built:
+  the planned design is in [rnk-context](../agents/crates/rnk-context.md).
 
 ## More Information
 
@@ -143,5 +142,5 @@ body and front matter unchanged, since only a part of it is replaced. Related:
 
 Follow-ups, with Phase 5's tasks and not before they are built: the
 [rnk-context](../agents/crates/rnk-context.md) card's git plan, the book's usage
-page, the kaniko map, the threat model (T11, git contexts), and the `##
-Changelog` entry.
+page, the kaniko map, the threat model (T11, git contexts), and the
+`## Changelog` entry.

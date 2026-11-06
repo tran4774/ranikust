@@ -239,7 +239,7 @@ depend on higher ones. Besides the chain:
   It runs `rnk-builder` for `rnk-sched` by implementing the
   `StageRunner` trait: `rnk-sched` does not depend on `rnk-builder`.
 - `rnk-snapshot` uses `rnk-layer` (decoder for extraction, writer for export)
-  and `rnk-store`; `rnk-registry` does not: it
+  and `rnk-store`; `rnk-cache` uses `rnk-store`; `rnk-registry` does not: it
   writes pulls into a sink its caller gets from `rnk-store`.
 - `rnk-sandbox` uses `rnk-rootfs` for `USER`, for the parser of
   `/proc/self/mountinfo` it shares with `rnk-snapshot`, and for `RootPath`
@@ -255,8 +255,7 @@ declares none yet. ADR-0115 fixes the edges Phases 4 and 5 may add
 (`rnk-cache` → `rnk-registry`, `rnk-oci`, `rnk-rootfs`; `rnk-builder` →
 `rnk-cache`; `rnk-context` → `rnk-layer`) and the ones it refuses
 (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`, `rnk-layer`; `rnk-context` →
-`rnk-registry`). Whether `rnk-cache` uses `rnk-store` is not decided
-([#123](https://github.com/tran4774/ranikust/issues/123)).
+`rnk-registry`).
 
 ## Data flow of a build
 

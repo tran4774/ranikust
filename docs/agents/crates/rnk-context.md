@@ -1,7 +1,8 @@
 # rnk-context
 
 > **Status:** in progress · **Phase:** 1 (tar, git, HTTPS: 5) ·
-> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, ADR-0115) ·
+> **Depends on:** `rnk-rootfs`, `rnk-ignore` (ADR-0027, ADR-0115), `rnk-layer`
+> (planned, Phase 5, ADR-0115) ·
 > **Used by:** `rnk-builder`, `ranikust` · **Path:** `crates/rnk-context/`
 
 **TL;DR:** The build context from a local directory (tar, git and HTTPS are
@@ -156,8 +157,8 @@ Not built: `open` refuses them. `ADD <url>` and `ADD <git>` belong to
 - `tar://stdin` is a gzip stream on stdin (`tar.go:41-56`).
 - kaniko's `git://` clones over HTTPS (HTTP with `GIT_PULL_METHOD`), takes
   `GIT_USERNAME`/`GIT_PASSWORD`/`GIT_TOKEN` and reads `#ref#commit`
-  (`git.go:56-128`, `:197-220`); Docker uses `#ref:dir`; both forms are
-  accepted (ADR-0035).
+  (`git.go:56-128`, `:197-220`); Docker uses `#ref:dir`; ADR-0035
+  accepted both; ADR-0119 keeps Docker's only.
 - Plan (ADR-0035): a `GitSource` with two backends behind one trait: a
   built-in `gix` by default (a static binary in `scratch` has no `git` to
   call; TLS roots shared with `rnk-registry`, ADR-0024) and

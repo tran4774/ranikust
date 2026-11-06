@@ -151,13 +151,18 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 
 - **version:** bumped whenever the algorithm changes; old entries are simply
   never matched again.
-- **chain root:** the resolved base image digest for the target platform
-  [inferred].
-- **instruction:** the instruction after variable expansion, with the build
-  arguments and environment in effect [inferred].
-- **inputs:** for `COPY`/`ADD`, the digests of the files read from the
-  context (after `.dockerignore`) or from the source stage; for
-  `RUN --mount`, the mount specifications [inferred].
+- **chain root:** the base's platform manifest digest together with the
+  platform.
+- **instruction:** the instruction after variable expansion, with every
+  declared build argument, the environment in effect, `USER`, `WORKDIR` and
+  `SHELL`.
+- **inputs:** for `COPY`/`ADD`, each file's content, mode, owner after
+  `--chown`, type, link target and `security.capability`, read from the
+  context (after `.dockerignore`), never its mtime; for `COPY --from=<stage>`,
+  the source stage's final key when that stage did not run in this build; for
+  `COPY --from=<image>`, that image's platform manifest digest; for `RUN`, its
+  network and its mounts (a secret's id, target, mode and owner, never its
+  value; a cache mount's id and sharing).
 - **never:** the snapshot mode, the host, timestamps, thread counts.
 
 The field list is decided by

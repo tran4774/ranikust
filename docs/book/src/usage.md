@@ -207,12 +207,16 @@ ranikust: error: kaniko's --kaniko-dir is not supported: renamed in ranikust: us
   `--skip-unused-stages` (deprecated in kaniko). Drop them. `--cache=false` is
   accepted: it asks for what ranikust does.
 - **With the layer cache (Phase 4):** `--cache`, `--cache-repo`, `--cache-ttl`,
-  `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (also
-  `=false`), `--no-push-cache`.
-- **With registry mirrors, credential helpers and git contexts (Phase 5):**
-  `--git`, `--registry-mirror`, `--registry-map`, `--credential-helpers`,
+  `--cache-copy-layers`, `--cache-run-layers`, `--compressed-caching` (`=true`
+  only: `=false` is refused, since ranikust streams layers and spends no memory
+  to save), `--no-push-cache`.
+- **With registry mirrors, external credential helpers and git contexts
+  (Phase 5):** `--git`, `--registry-mirror`, `--registry-map`,
   `--skip-default-registry-fallback`, `--registry-client-cert`,
   `--push-ignore-immutable-tag-errors`.
+- **Backlog:** `--credential-helpers`, for built-in cloud helpers
+  ([#138](https://github.com/tran4774/ranikust/issues/138)); until then helpers
+  are external `docker-credential-*` binaries.
 - **Not scheduled:** `--dryrun`.
 - **Not planned:** `--bucket` (`-b`), `--azure-container-registry-config` and
   kaniko's `bake`.

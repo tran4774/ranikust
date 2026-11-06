@@ -40,9 +40,8 @@ roadmap](../../README.md#roadmap)):
 Mounts on `/` (#24):
 
 - (a) Refuse them on `/`, as Q-380 and Q-381.
-- (b) Copy the source in, read-only by convention only, removed and the target
-  restored before the walk: a copy per `RUN`, and residue to clean after a
-  crash.
+- (b) Copy the source in, read-only by convention only, removed before the walk:
+  a copy per `RUN`, and residue to clean after a crash.
 - (c) `tmpfs` alone, as an empty directory removed before the walk.
 
 A placed file's target (#31):
@@ -86,6 +85,12 @@ options (b) and (c) of #24 with `from=` refused on `/`, option (b) of #31 with
 #31 and #35 moved into Phase 5, option (a) of how a bind presents the context,
 and option (a) of `type=ssh`.
 
+The option he chose for `/` read: "Trên /: chép bind context vào đích như
+kaniko, tmpfs là thư mục rỗng, from= bị từ chối" ("On /: copy the bind context
+into the target as kaniko does, tmpfs an empty directory, from= refused"). "As
+kaniko does" brings kaniko's move-aside-and-restore of an existing target, which
+the Context describes.
+
 - **One filtered copy (a).** The copy is filtered as `.dockerignore` filters the
   context, made at the first bind and bound read-only by every mount. A `rw`
   mount gets a private copy of its source, discarded after the `RUN`. Every
@@ -114,10 +119,12 @@ and option (a) of `type=ssh`.
   ([#139](https://github.com/tran4774/ranikust/issues/139)) keeps it visible: no
   user asked, kaniko never had it, and it exposes a new credential.
 
-Not settled here, for Phase 5's task 13b
-([#152](https://github.com/tran4774/ranikust/issues/152)): how the per-build
-copy and the per-`RUN` copy on `/` relate, and what an existing target of a
-`tmpfs` gets (a bind copy's rule or a secret file's).
+Not settled here, and decided before Phase 5's task 13b
+([#152](https://github.com/tran4774/ranikust/issues/152)) is built (a `question`
+issue if it needs the maintainer): how the per-build copy and the per-`RUN` copy
+on `/` relate; what an existing target of a `tmpfs` gets (a bind copy's rule or
+a secret file's); and what a target gets when it is a mount point, a path on the
+ignore list, or inside the state directory.
 
 ### Consequences
 
@@ -173,4 +180,5 @@ Follow-ups, with Phase 5's tasks and not before they are built:
 [sandbox](../design/sandbox.md) and [kaniko-mode](../design/kaniko-mode.md)
 design docs, the `rnk-builder` and `rnk-snapshot` cards, the kaniko map, the
 book, the threat model (T21, and section 6 for read-only by convention), and the
-`## Changelog` entry.
+`## Changelog` entry. The code's message for `RUN --mount=type=ssh`
+(`crates/rnk-builder/src/mounts.rs`) says "Phase 5"; it must say Backlog (#139).

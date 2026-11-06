@@ -1,9 +1,9 @@
 # rnk-cache
 
 > **Status:** skeleton · **Phase:** 4 ·
-> **Depends on:** `rnk-registry`, `rnk-oci`, `rnk-rootfs` (planned, ADR-0115);
-> `rnk-store` is undecided, see [#123](https://github.com/tran4774/ranikust/issues/123) ·
-> **Used by:** `rnk-builder` ·
+> **Depends on:** `rnk-registry`, `rnk-oci`, `rnk-rootfs` (planned, ADR-0115),
+> `rnk-store` (ADR-0021) ·
+> **Used by:** `rnk-builder`, `rnk-sched` (up-front lookups) ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per instruction and looks
@@ -38,20 +38,22 @@ Nothing exists yet; this is the design sketch.
 pub const KEY_VERSION: u32 = 1;                      // [decided] a version field, ADR-0005; bump on any change
 pub struct CacheKey { version: u32, hash: [u8; 32] } // [design] key(k) = H(version, key(k-1), instruction, inputs(k))
 impl CacheKey {
-    pub fn root(base: &Digest, platform: &Platform) -> Self;             // [design] resolved base digest [inferred]
+    pub fn root(base: &Digest, platform: &Platform) -> Self;             // ADR-0113: the base's platform manifest digest plus the platform
     pub fn next(&self, instr: &ExpandedInstr, inputs: &KeyInputs) -> Self; // [design]
-    pub fn tag(&self) -> String;                                          // form in --cache-repo: ADR-0113
+    pub fn tag(&self, encoding: &Encoding) -> String;                     // form: ADR-0113; derivation: #125
 }
 pub struct KeyInputs { /* sorted file digests, mount specs, args, env */ }   // fields: ADR-0113
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
-    async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>;  // takes the encoding: ADR-0113
+    async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>;  // takes the encoding (ADR-0113): a value of rnk-cache's own, as it does not depend on rnk-layer (ADR-0115)
     async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
 }
 ```
 
-`H` is SHA-256, and the fields, the entry and the tag are decided by
+`H` is SHA-256, and the fields, the entry and the form of the tag are decided by
 [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
-none of it is built yet.
+how the tag's `<hex>` is derived is decided before
+[#125](https://github.com/tran4774/ranikust/issues/125) is built. None of it is
+built yet.
 
 ## Invariants
 

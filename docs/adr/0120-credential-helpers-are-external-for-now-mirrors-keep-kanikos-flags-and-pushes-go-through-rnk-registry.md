@@ -28,9 +28,9 @@ roadmap](../../README.md#roadmap)):
   that a mirror never gets another registry's credentials nor a push, and that
   flags keep kaniko's names only with kaniko's meaning. Which pulls do mirrors
   serve, and with which flags? kaniko's `--registry-mirror` mirrors Docker Hub
-  only, `--registry-map` any registry, and mirrors serve `FROM` and `COPY
-  --from`, never a push or the cache. BuildKit mirrors any registry, always
-  falls back, and also serves `RUN --mount from=` and cache imports.
+  only, `--registry-map` any registry, and mirrors serve `FROM` and
+  `COPY --from`, never a push or the cache. BuildKit mirrors any registry,
+  always falls back, and also serves `RUN --mount from=` and cache imports.
 - **Pushes.** [#27](https://github.com/tran4774/ranikust/issues/27) (Q-449):
   pushes still go through `oci-client`, which reads error bodies whole and has
   no idle bound on some requests. `oci-client` 0.18 builds its own `reqwest`
@@ -130,16 +130,17 @@ option (b) of #27.
 
 ## Evidence
 
-- **[external]** kaniko@44aa7ddc0: `--credential-helpers` takes `env, google,
-  ecr, acr, gitlab`, all on by default, each Go code linked in
+- **[external]** kaniko@44aa7ddc0: `--credential-helpers` takes
+  `env, google, ecr, acr, gitlab`, all on by default, each Go code linked in
   (`cmd/executor/cmd/root.go:409`, `pkg/creds/creds.go:50-91`); its image also
   ships `docker-credential-gcr`, `-ecr-login` and `-acr-env`
   (`deploy/Dockerfile:73-80`). `--registry-mirror` is Docker Hub only
-  (`cmd/executor/cmd/root.go:99-104`); mirrors apply to `FROM` and `COPY
-  --from=<image>`, never to a push or the cache (`pkg/image/image_util.go:107`,
-  `pkg/executor/build.go:2311`, `pkg/executor/push.go:276-299`,
-  `pkg/cache/cache.go:58-94`). `--registry-client-cert` is per registry
-  transport (`pkg/util/transport_util.go:143-185`).
+  (`cmd/executor/cmd/root.go:99-104`); mirrors apply to `FROM` and
+  `COPY --from=<image>`, never to a push or the cache
+  (`pkg/image/image_util.go:107`, `pkg/executor/build.go:2311`,
+  `pkg/executor/push.go:276-299`, `pkg/cache/cache.go:58-94`).
+  `--registry-client-cert` is per registry transport
+  (`pkg/util/transport_util.go:143-185`).
 - **[external]** buildkit@cd8ee244: the client caches credentials per host for
   4m50s (`session/auth/authprovider/authprovider.go:60-66`); the helper is
   `docker-credential-<suffix> get`, the environment inherited
@@ -159,11 +160,17 @@ mirrors). ADR-0020 and ADR-0049 stand; ADR-0079 is extended to pushes, which it
 left open as #27, and is not rewritten. Related:
 [ADR-0036](0036-kaniko-flags-in-phase-1.md) (the flags refused until Phase 5).
 
-Not settled here: when the built-in cloud helpers are built, and in which phase;
-[#138](https://github.com/tran4774/ranikust/issues/138) tracks them in the
-Backlog, and an ADR then decides it.
+Not settled here:
+
+- When the built-in cloud helpers are built, and in which phase;
+  [#138](https://github.com/tran4774/ranikust/issues/138) tracks them in the
+  Backlog, and an ADR then decides it.
+- Whether a base image extracted on `/` counts like a `RUN` for the rule that
+  refuses the external `git` and `ssh` there [open: #159].
 
 Follow-ups, with Phase 5's tasks and not before they are built: the
 `rnk-registry` and `ranikust` cards, the book's usage page (the credential
 section and the mirror flags), the kaniko map, the threat model (T11, and a row
-for helpers), and the `## Changelog` entry.
+for helpers), and the `## Changelog` entry. The code's message for
+`--credential-helpers` (`crates/ranikust/src/cli.rs`) says Phase 5; since this
+ADR it is a later phase, in the Backlog as #138.
