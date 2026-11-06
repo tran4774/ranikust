@@ -476,8 +476,9 @@ fn encode<D: ExportLayer>(
 // The next diff after an applied layer.
 
 /// After a walked step, two cached layers applied, then a step that
-/// changes nothing (an empty diff) and one that writes a file (that file
-/// only): the walk never reports what the layers brought.
+/// changes nothing (an empty diff) and one that writes a file and deletes
+/// one a layer brought (exactly those changes): the walk never reports
+/// what the layers brought as new.
 fn the_next_diff_holds_only_the_next_steps_changes<S>(
     snap: &S,
     blobs: &Path,
@@ -492,7 +493,9 @@ fn the_next_diff_holds_only_the_next_steps_changes<S>(
         .file("app/a", b"one")
         .file("etc/os", b"changed")
         .bytes();
-    let two = Tar::new().file("app/b", b"two").bytes();
+    // `app` in it too: extraction sets its time to `T`, so the deletion
+    // below moves it whatever the clock's granularity.
+    let two = Tar::new().dir("app", 0o755).file("app/b", b"two").bytes();
     let base = blob(snap, blobs, "base", &base);
     let mut root = snap.prepare(Base::Image(&[base])).unwrap();
     root.set_layers_needed(true);
@@ -510,6 +513,10 @@ fn the_next_diff_holds_only_the_next_steps_changes<S>(
     assert_eq!(fs::read(h.join("app/a")).unwrap(), b"one");
     assert_eq!(fs::read(h.join("app/b")).unwrap(), b"two");
     assert_eq!(fs::read(h.join("etc/os")).unwrap(), b"changed");
+    assert_eq!(
+        fs::metadata(h.join("app")).unwrap().mtime(),
+        i64::try_from(T).unwrap()
+    );
 
     root.begin_layer().unwrap();
     let d = root.end_layer().unwrap();
@@ -721,7 +728,7 @@ fn step_two(h: &Path) {
     fs::write(h.join("srv/new"), b"two").unwrap();
     fs::write(h.join("opt/app/bin/run"), b"run v2").unwrap();
     fs::remove_file(h.join("link")).unwrap();
-    // What the cached layer brought, deleted.
+    // Brought by the cached layer: its deletion must show in the next diff.
     fs::remove_file(h.join("opt/app/current")).unwrap();
 }
 

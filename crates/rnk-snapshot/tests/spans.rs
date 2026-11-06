@@ -1,6 +1,6 @@
 //! The `rnk_snapshot.*` spans the metrics report reads (ADR-0025), on what
 //! needs no mount: preparing and releasing a stage, extracting a base
-//! layer, exporting a diff. `mount`, `umount` and `probe` run in the T2
+//! layer, applying a cached layer, exporting a diff. `mount`, `umount` and `probe` run in the T2
 //! tests only.
 //!
 //! A test binary of its own: every test creates its [`Capture`] before it
