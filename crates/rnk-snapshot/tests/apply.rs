@@ -1479,8 +1479,13 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
         .file("../escape", b"EVIL")
         .file("after", b"EVIL")
         .bytes();
-    let r = root.apply_layer(&streamed(&kaniko, &climbs, &Source::new(climbs.clone())));
-    assert!(r.is_err(), "a name climbing out of the root is refused");
+    let e = root
+        .apply_layer(&streamed(&kaniko, &climbs, &Source::new(climbs.clone())))
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+        "a name climbing out of the root is refused: {e:?}"
+    );
     assert!(!host.join("escape").exists());
     assert!(!host.join("after").exists());
     // Refused by its header in the spool pass, before `/` changed (ADR-0123).
@@ -1493,12 +1498,14 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     );
 
     // From the store it is never spooled: the extraction refuses the entry,
-    // and `/` is broken. Made after the walk above, which would see it.
+    // and `/` is broken. Its blob is made in the root (a container's `/` may
+    // have no `/tmp`), after the walk above, which would see it.
     let blobs = tempfile::tempdir_in(host).unwrap();
     let stored = blob(&kaniko, blobs.path(), "climbs", &climbs);
+    let e = root.apply_layer(&stored).unwrap_err();
     assert!(
-        root.apply_layer(&stored).is_err(),
-        "a name climbing out of the root is refused while writing"
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+        "a name climbing out of the root is refused while writing: {e:?}"
     );
     for p in ["escape", "../escape", "after"] {
         assert!(!host.join(p).exists(), "{p}");
