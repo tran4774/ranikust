@@ -835,6 +835,36 @@ mod tests {
         assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
     }
 
+    // T21: a zombie in any namespace is passed over as gone; its root opens for no one.
+    #[test]
+    fn a_zombie_is_passed_over_as_gone_and_its_root_does_not_open() {
+        let now = mount_namespace().unwrap().id;
+        let other = (now.0, now.1 ^ 1);
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id().to_string();
+        let state = || {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|s| s.rsplit_once(") ").map(|(_, r)| r.starts_with('Z')))
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while state() != Some(true) {
+            assert!(std::time::Instant::now() < deadline, "{pid} never a zombie");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let found = probe([other, other], &pid, PEER_SCAN_LIMIT);
+        let root = |path: String| {
+            rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty()).map(drop)
+        };
+        let roots = [
+            root(format!("/proc/{pid}/root")),
+            root(format!("/proc/{pid}/task/{pid}/root")),
+        ];
+        child.wait().unwrap();
+        assert!(found.0 == Peer::Gone && found.1 <= 1, "{found:?}");
+        assert_eq!(roots, [Err(Errno::NOENT); 2]);
+    }
+
     #[test]
     fn a_thread_or_a_process_as_one_is_told_through_its_own_entries() {
         let now = mount_namespace().unwrap().id;

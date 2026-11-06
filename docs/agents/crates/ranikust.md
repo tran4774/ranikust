@@ -285,8 +285,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   on a fake directory: the step a failure names, a thread gone or out of
   reach; a denied `ns/mnt` gone only with its `ns`; the handle on a
   namespace, an open `O_PATH`, close-on-exec descriptor of its nsfs file;
-  escaped names, a process named by its pid alone; the credential warning's
-  text).
+  a zombie passed over as gone, its roots opening for no one; escaped
+  names, a process named by its pid alone; the credential warning's text).
   `src/main.rs` tests: `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`
