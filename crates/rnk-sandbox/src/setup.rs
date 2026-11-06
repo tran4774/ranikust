@@ -142,6 +142,14 @@ fn trimmed_too_little(held: u64, inheritable: u64, bounding: u64) -> bool {
     held & outside != 0 || bounding & outside != 0 || inheritable != 0
 }
 
+/// [`Error::NotSingleThreaded`] unless this process has one thread.
+pub(crate) fn require_single_thread() -> Result<()> {
+    match thread_count()? {
+        1 => Ok(()),
+        threads => Err(Error::NotSingleThreaded { threads }),
+    }
+}
+
 /// Threads of this process, from `/proc/self/status`.
 fn thread_count() -> Result<u64> {
     let status = std::fs::read_to_string("/proc/self/status")
