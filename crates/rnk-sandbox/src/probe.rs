@@ -154,23 +154,24 @@ fn next_attempt(caps: Caps, allowed: Fallbacks, e: &Error) -> Option<Caps> {
         return None;
     };
     let eperm = source.raw_os_error() == Some(libc::EPERM);
-    match step {
-        Step::MountProc if eperm && allowed.proc && caps.proc == KernelFs::Fresh => Some(Caps {
+    // Comparisons, not a match: every other step, and any added later, is
+    // final.
+    if *step == Step::MountProc && eperm && allowed.proc && caps.proc == KernelFs::Fresh {
+        return Some(Caps {
             proc: KernelFs::Rbind,
             ..caps
-        }),
-        Step::MountSys if eperm && allowed.sysfs && caps.sysfs == KernelFs::Fresh => Some(Caps {
+        });
+    }
+    if *step == Step::MountSys && eperm && allowed.sysfs && caps.sysfs == KernelFs::Fresh {
+        return Some(Caps {
             sysfs: KernelFs::Rbind,
             ..caps
-        }),
-        Step::PivotRoot if is_seccomp_refusal(e) && caps.root_entry == RootEntry::PivotRoot => {
-            Some(Caps {
-                root_entry: RootEntry::MoveMount,
-                ..caps
-            })
-        }
-        _ => None,
+        });
     }
+    (is_seccomp_refusal(e) && caps.root_entry == RootEntry::PivotRoot).then_some(Caps {
+        root_entry: RootEntry::MoveMount,
+        ..caps
+    })
 }
 
 /// The lines, once per probe, of the rbinds it chose.

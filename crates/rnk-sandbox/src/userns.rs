@@ -668,6 +668,7 @@ pub(crate) struct OwnNamespace {
 impl OwnNamespace {
     /// Reads this process's files.
     pub(crate) fn read() -> Self {
+        // Unreadable: the initial namespace's, so the step is not skipped.
         let read = |name| std::fs::read_to_string(name).ok();
         Self::parse(
             read("/proc/self/setgroups").as_deref(),
