@@ -34,6 +34,11 @@ use tracing::field::Empty;
 use crate::child::{self, FdPath};
 use crate::error::{Error, Result, sys_err};
 
+mod build;
+
+pub use build::BuildUserNamespace;
+pub(crate) use build::{enter_build, tried_text};
+
 /// How long one attempt may take before its child is killed.
 const ATTEMPT_DEADLINE: Duration = Duration::from_secs(10);
 
@@ -1257,15 +1262,7 @@ fn map_in_child(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
         }
         Some((uid_map, gid_map)) => {
             let write = |op, path: &CStr, text: &[u8]| {
-                let r = rustix::fs::open(path, OFlags::WRONLY | OFlags::CLOEXEC, Mode::empty())
-                    .and_then(|fd| rustix::io::write(&fd, text))
-                    .and_then(|n| {
-                        if n == text.len() {
-                            Ok(())
-                        } else {
-                            Err(Errno::INVAL)
-                        }
-                    });
+                let r = write_own(path, text);
                 send(report, op, r);
                 r.is_ok()
             };
@@ -1281,6 +1278,16 @@ fn map_in_child(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
         return false;
     }
     mapped
+}
+
+/// Writes `text` to this process's own `/proc` file `path` in one write, as
+/// the kernel asks of a map; a short write is `EINVAL`.
+fn write_own(path: &CStr, text: &[u8]) -> rustix::io::Result<()> {
+    let fd = rustix::fs::open(path, OFlags::WRONLY | OFlags::CLOEXEC, Mode::empty())?;
+    match rustix::io::write(&fd, text)? {
+        n if n == text.len() => Ok(()),
+        _ => Err(Errno::INVAL),
+    }
 }
 
 /// Opens the mount point `name` in the working directory, without following

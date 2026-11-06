@@ -46,6 +46,46 @@ pub fn enter_build_namespace() -> Result<()> {
     .map_err(|e| sys_err("make / a recursive slave mount", e))
 }
 
+/// Moves the process into a user namespace of the build's own, then into a
+/// mount namespace that namespace owns, whose `/` is a recursive slave as
+/// [`enter_build_namespace`]'s: the whole build runs as root of it
+/// (`design/modes-and-detection.md`). Root's build without one keeps
+/// [`enter_build_namespace`]: in a new user namespace the kernel refuses a
+/// new `proc` where `/proc` is masked.
+///
+/// The map is the first of [`crate::probe_user_namespace`]'s order whose
+/// steps pass here, each tried in a forked child first, since a map that
+/// failed would leave this process in the namespace for good. Root maps
+/// every id it has, each to itself ([`crate::IdMap::Ranges`], written by a
+/// helper forked before the `unshare`); another user maps its own ids as 0
+/// and `subordinate` from 1 through `newuidmap` and `newgidmap`
+/// ([`crate::IdMap::Newuidmap`]); else one id, its own as 0, with
+/// `setgroups` denied ([`crate::IdMap::OneId`], ADR-0098). The process is
+/// dumpable only while its map is written (ADR-0051).
+///
+/// Call before any thread exists, and before any credential is read: each
+/// trial's child is a copy of this process. Afterwards the effective uid is
+/// 0 and the host's ids show as the map gives them: read anything that
+/// depends on the ids outside first.
+///
+/// # Errors
+///
+/// [`Error::NotSingleThreaded`], [`Error::InPlainChroot`] and
+/// [`Error::NoUserNamespace`] before any change; a host-side error (a pipe,
+/// a fork) or a refused `unshare` that leave the process as it was;
+/// [`Error::UserNamespaceBroken`] when a step failed once the process was
+/// in the new user namespace: it must end.
+pub fn enter_build_user_namespace(
+    subordinate: Option<crate::SubordinateIds>,
+) -> Result<crate::BuildUserNamespace> {
+    require_single_thread()?;
+    // As for the mount namespace alone: say why before changing anything.
+    if crate::probe::slash_is_mount_root()? == Some(false) {
+        return Err(Error::InPlainChroot);
+    }
+    crate::userns::enter_build(subordinate)
+}
+
 /// Kaniko mode on `/` (ADR-0078): gives ranikust's own process the
 /// capability sets a `Direct` `RUN` keeps, so that nothing ranikust does on
 /// `/` after a `RUN` (the outputs, the metrics report, the clean-up) uses an
