@@ -172,3 +172,34 @@ fn a_kaniko_stage_directory_records_prepare_and_release() {
     assert_eq!(phases["rnk_snapshot.release"]["count"], 1);
     assert_eq!(phases["rnk_rootfs.delete"]["count"], 1);
 }
+
+#[test]
+fn a_cached_layer_applied_to_a_kaniko_stage_is_recorded() {
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let state = fs::canonicalize(dir.path()).unwrap().join("state");
+    let store = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    let (tar, id) = empty_layer();
+    let blob = dir.path().join("layer.tar");
+    fs::write(&blob, &tar).unwrap();
+    capture.run(|| {
+        let stages = rnk_snapshot::KanikoStages::new(
+            &store,
+            rnk_rootfs::IgnoreList::new(),
+            rnk_snapshot::WalkOptions::default(),
+        )
+        .unwrap();
+        let layer = stages.base_layer(&id, &blob, &[]).unwrap();
+        let mut stage = stages.prepare(Base::Scratch).unwrap();
+        stage.apply_layer(&layer).unwrap();
+        stage.release().unwrap();
+    });
+    let report = capture.report();
+    let phases = &report["phases"];
+    assert_eq!(phases["rnk_snapshot.apply"]["count"], 1);
+    // The extraction is a base layer's, nested in it.
+    assert_eq!(phases["rnk_layer.decode"]["count"], 1);
+    assert_eq!(phases["rnk_rootfs.extract"]["count"], 1);
+    // No walk: the next layer opened takes the baseline.
+    assert!(phases["rnk_snapshot.baseline"].is_null(), "{report}");
+}
