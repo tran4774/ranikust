@@ -453,7 +453,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
   that fails one of the init's last steps the `RUN` fails as that step and
   its command leaves no mark, which it leaves under a control profile; a
-  profile refusing `close` still runs the command;
+  profile refusing `close` still starts the command, whose status ends the
+  `RUN`;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
   `--seccomp` refuses; compiled for the test) leave the bounding set, the

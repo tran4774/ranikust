@@ -3799,7 +3799,7 @@ mod tests {
     /// before its command ran, and the command leaves no mark, which it
     /// leaves under a control profile that lets the init finish. A profile
     /// that refuses `close` holds nothing up: the command starts on the
-    /// byte, not on the end of the pipe.
+    /// byte, not on the end of the pipe, and the `RUN` ends with its status.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_runs_command_starts_only_once_its_init_has_finished() {
@@ -3865,6 +3865,9 @@ mod tests {
                                         && e.ran_no_command()
                             )
                     }
+                    // The shell's loader needs `close` too: the command's own
+                    // exit status, rather than a cancel, shows it started.
+                    "close refused" => st.is_ok(),
                     _ => {
                         marked.as_deref() == Some("ran\n")
                             && st.as_ref().is_ok_and(ExitStatus::success)
