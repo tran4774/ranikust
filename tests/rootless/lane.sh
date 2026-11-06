@@ -30,14 +30,16 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 # Absolute, as podman's -v needs; cargo, run from $REPO, gets the same.
 TARGET="$(realpath -m "${CARGO_TARGET_DIR:-$REPO/target}")"
 export CARGO_TARGET_DIR="$TARGET"
-OUT="$TARGET/rootless"
-STAGE="$OUT/stage"
 MUSL=x86_64-unknown-linux-musl
 # Ubuntu 24.04, as the T2c image and the VM.
 IMAGE=docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 PROFILES=(default privileged)
 
-rm -rf "$OUT"
+# A directory of this run's own: only what the run made is ever removed.
+mkdir -p "$TARGET"
+OUT="$(mktemp -d "$TARGET/rootless.XXXXXX")"
+STAGE="$OUT/stage"
+trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/bin"
 
 # The fn under each marker.
@@ -86,6 +88,11 @@ for p in "${PROFILES[@]}"; do
     status=1
   fi
 done
-log "logs in $OUT"
-[ "$status" = 0 ] && echo "test-rootless: ok" || echo "test-rootless: FAILED"
+if [ "$status" = 0 ]; then
+  rm -rf "$OUT"
+  echo "test-rootless: ok"
+else
+  log "logs in $OUT"
+  echo "test-rootless: FAILED"
+fi
 exit "$status"

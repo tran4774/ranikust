@@ -732,7 +732,9 @@ binaries it builds), then:
 1. lists the tests of each profile from the markers (every T1 test must name
    one, and no name may be in both lists: tests are selected by name) and
    builds the test binaries of their crates as static musl binaries
-   (`cargo-zigbuild test --no-run`) into `target/rootless/stage`;
+   (`cargo-zigbuild test --no-run`) into `stage/` of a directory the run
+   makes for itself, `target/rootless.XXXXXX/`; the stage is removed when
+   the lane ends;
 2. runs one container per profile from Ubuntu 24.04 by digest, `--rm
    --network none`, the stage mounted read-only at `/t1` and a tmpfs at
    `/work` (`TMPDIR`), the only place the tests write:
@@ -746,7 +748,9 @@ binaries it builds), then:
    uid outside, that a range of ids is mapped (the user needs entries in
    `/etc/subuid` and `/etc/subgid`) and that `chown` to another id works;
    then runs each listed test once and fails unless every one ran and
-   passed. Logs go to `target/rootless/<profile>.log`.
+   passed. Logs go to `<profile>.log` in the run's directory, which is
+   removed when every profile passed and kept, its path printed, when one
+   failed.
 
 CI does not run this lane, and the VM's `unit` suite runs only T2 and T2c
 tests: T1 tests run only here.
