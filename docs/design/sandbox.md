@@ -364,11 +364,13 @@ The steps, in order:
      4), drops every capability, names itself `ranikust-init`, checks the
      death signal is still armed and the parent alive, and closes every
      descriptor but the status pipe's write end and the go pipe's, the
-     error pipe last (where a `close` is refused, after `close_range` was,
-     that fails the `RUN` as `Step::Init`, its command killed, after one
-     refused `close` per descriptor number up to ranikust's hard
-     `RLIMIT_NOFILE`, at most 2^20). Last, it writes the go byte on the go
-     pipe and closes its end.
+     error pipe last. It counts only what the kernel closed: `close_range`,
+     else every descriptor `/proc/self/fd` lists, each `close` made as a
+     raw syscall (musl's `close` turns `EINTR` into success) and checked.
+     A refused `close`, whatever its errno, or a list that cannot be read
+     or does not shrink, fails the `RUN` as `Step::Init`, its command
+     killed; the cost is bounded by the descriptors open. Last, it writes
+     the go byte on the go pipe and closes its end, `close_range` first.
    - The command goes on only on that byte, never on the end of the pipe:
      the end (`EPIPE`, a read a filter around ranikust faked with no error
      included), another byte (`EPROTO`) or an error fails the `RUN` as

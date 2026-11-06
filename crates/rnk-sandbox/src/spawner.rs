@@ -3796,9 +3796,9 @@ mod tests {
     /// T2 (ADR-0080): a `RUN`'s command starts only once its init has
     /// finished every step. Under a profile that fails one of the init's
     /// last steps, or its closes (`close` and `close_range`, or
-    /// `close_range` and the `close` of one descriptor), the `RUN` fails as
-    /// `Step::Init`, before its command ran, and the command leaves
-    /// no mark, which it leaves under a control profile that lets the init
+    /// `close_range` and the `close` of one descriptor, whatever the
+    /// errno), the `RUN` fails as `Step::Init` with that errno, before its
+    /// command ran, and the command leaves no mark, which it leaves under a control profile that lets the init
     /// finish. These check the outcome; the go byte itself is checked in
     /// `child.rs`. A profile that refuses `close` alone holds nothing up:
     /// the command starts on the byte, not on the end of the pipe, and the
@@ -3820,29 +3820,42 @@ mod tests {
                 errno_rule("prctl", libc::EPERM, Some(pdeathsig)),
                 errno_rule("kill", libc::EPERM, None)
             );
+            // What a case gives: the command's mark and success, the
+            // command's own exit status, or a failure as `Step::Init` with
+            // that errno, the command unrun.
+            enum Want {
+                Runs,
+                Ends,
+                Fails(i32),
+            }
+            let with_range =
+                |close: String| format!("{close},{}", errno_rule("close_range", libc::EPERM, None));
             let cases = [
-                ("control", errno_rule("kill", libc::EPERM, None)),
-                ("the init fails", init_steps),
-                ("close refused", errno_rule("close", libc::EPERM, None)),
+                ("control", errno_rule("kill", libc::EPERM, None), Want::Runs),
+                ("the init fails", init_steps, Want::Fails(libc::EPERM)),
+                (
+                    "close refused",
+                    errno_rule("close", libc::EPERM, None),
+                    Want::Ends,
+                ),
                 (
                     "closes refused",
-                    format!(
-                        "{},{}",
-                        errno_rule("close", libc::EPERM, None),
-                        errno_rule("close_range", libc::EPERM, None)
-                    ),
+                    with_range(errno_rule("close", libc::EPERM, None)),
+                    Want::Fails(libc::EPERM),
                 ),
                 (
                     "one close refused",
-                    format!(
-                        "{},{}",
-                        errno_rule("close", libc::EPERM, Some(0)),
-                        errno_rule("close_range", libc::EPERM, None)
-                    ),
+                    with_range(errno_rule("close", libc::EPERM, Some(0))),
+                    Want::Fails(libc::EPERM),
+                ),
+                (
+                    "one close refused with EBADF",
+                    with_range(errno_rule("close", libc::EBADF, Some(0))),
+                    Want::Fails(libc::EBADF),
                 ),
             ];
             let mut got = Vec::new();
-            for (n, (name, rules)) in cases.into_iter().enumerate() {
+            for (n, (name, rules, want)) in cases.into_iter().enumerate() {
                 runner.seccomp = Some(allow_but(&rules));
                 let mark = format!("mark-{n}");
                 let out = top.join(format!("out-{n}"));
@@ -3868,26 +3881,26 @@ mod tests {
                 let text = fs::read_to_string(&out).unwrap_or_default();
                 let marked = fs::read_to_string(root.join(&mark)).ok();
                 println!("{name}: {st:?}, mark {marked:?}\n{text}");
-                got.push((name, st, marked, text));
+                got.push((name, want, st, marked, text));
             }
             drop(mounts);
             let mut wrong = Vec::new();
-            for (name, st, marked, text) in &got {
-                let ok = match *name {
-                    "the init fails" | "closes refused" | "one close refused" => {
+            for (name, want, st, marked, text) in &got {
+                let ok = match *want {
+                    Want::Fails(errno) => {
                         marked.is_none()
                             && text.is_empty()
                             && matches!(
                                 st,
                                 Err(e @ Error::Setup { step: Step::Init, source })
-                                    if source.raw_os_error() == Some(libc::EPERM)
+                                    if source.raw_os_error() == Some(errno)
                                         && e.ran_no_command()
                             )
                     }
                     // The shell's loader needs `close` too: the command's own
                     // exit status, rather than a cancel, shows it started.
-                    "close refused" => st.is_ok(),
-                    _ => {
+                    Want::Ends => st.is_ok(),
+                    Want::Runs => {
                         marked.as_deref() == Some("ran\n")
                             && st.as_ref().is_ok_and(ExitStatus::success)
                     }
