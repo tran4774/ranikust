@@ -29,20 +29,20 @@ ROOT = Path.cwd()
 # Threat-model rows and design documents per crate. Keep in step with
 # docs/security/threat-model.md and docs/design/.
 CRATES = {
-    "ranikust": (["T4", "T7", "T11", "T12", "T19"], ["modes-and-detection.md", "kaniko-mode.md", "sandbox.md"]),
-    "rnk-rootfs": (["T1", "T2", "T3", "T4", "T7", "T15", "T16", "T18"], ["rootfs.md", "kaniko-mode.md"]),
+    "ranikust": (["T4", "T7", "T11", "T12", "T19", "T25"], ["modes-and-detection.md", "kaniko-mode.md", "sandbox.md"]),
+    "rnk-rootfs": (["T1", "T2", "T3", "T4", "T7", "T15", "T16", "T18", "T25", "T26"], ["rootfs.md", "kaniko-mode.md"]),
     "rnk-sandbox": (["T5", "T6", "T7", "T8", "T9", "T10", "T11", "T17", "T18", "T19", "T20"], ["sandbox.md"]),
-    "rnk-snapshot": (["T1", "T3", "T4", "T9", "T10", "T13", "T15"], ["overlay-snapshot.md", "kaniko-mode.md"]),
+    "rnk-snapshot": (["T1", "T3", "T4", "T9", "T10", "T13", "T15", "T26"], ["overlay-snapshot.md", "kaniko-mode.md"]),
     "rnk-store": (["T4", "T13", "T14"], ["cache-and-store.md"]),
-    "rnk-builder": (["T1", "T10", "T11", "T13"], ["overlay-snapshot.md", "kaniko-mode.md"]),
+    "rnk-builder": (["T1", "T10", "T11", "T13", "T26", "T27", "T28", "T29"], ["overlay-snapshot.md", "kaniko-mode.md"]),
     "rnk-layer": (["T15", "T16"], []),
-    "rnk-registry": (["T11", "T13"], ["cache-and-store.md"]),
+    "rnk-registry": (["T11", "T13", "T25", "T26"], ["cache-and-store.md"]),
     "rnk-context": (["T1", "T15", "T16"], []),
     "rnk-dockerfile": (["T16"], []),
     "rnk-ignore": (["T16"], []),
-    "rnk-oci": (["T16"], []),
-    "rnk-cache": (["T13"], ["cache-and-store.md"]),
-    "rnk-sched": (["T12"], ["scheduler.md"]),
+    "rnk-oci": (["T16", "T26"], []),
+    "rnk-cache": (["T13", "T25", "T26", "T27", "T28", "T29"], ["cache-and-store.md"]),
+    "rnk-sched": (["T12", "T29"], ["scheduler.md"]),
     "rnk-metrics": (["T11"], ["metrics.md"]),
 }
 # Crates whose diff always needs the `host-safety` subagent (CLAUDE.md).

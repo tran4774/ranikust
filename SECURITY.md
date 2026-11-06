@@ -64,11 +64,19 @@ These are vulnerabilities in ranikust, whatever the Dockerfile or image:
   command reaches more of the host than `docker build` would allow it under
   the same privileges.
 - **Credential leaks.** Registry credentials or build secrets end up in logs,
-  layers, image configs, cache entries, error messages or another build's
-  `RUN` environment.
+  layers, image configs, cache keys, tags or entries, error messages or
+  another build's `RUN` environment.
 - **Cache poisoning.** One build changes what another build receives from a
-  shared store or registry cache beyond the documented sharing (for example,
-  a layer whose content does not match its digest is accepted).
+  shared store or layer cache beyond the documented sharing (for example,
+  a layer whose content does not match its digest is accepted, or a layer
+  is pushed under a key whose inputs its step did not read). Out of scope:
+  poisoning through a cache repository or OCI layout that people other
+  than the operator may write. The operator names the cache, and ranikust
+  trusts it as it trusts the destination until cache entries are signed
+  ([#37](https://github.com/tran4774/ranikust/issues/37);
+  [threat model, section 3](docs/security/threat-model.md#3-inputs-and-how-much-they-are-trusted)).
+  A cached layer still gets every check a base layer gets: escaping them
+  is in scope.
 
 ## By design
 
@@ -124,9 +132,9 @@ These are documented properties, not vulnerabilities:
 
 To build Dockerfiles you do not trust, run ranikust in a disposable VM or in a
 container made for that one build, add `--network=none` when the build needs
-no network, and give each trust domain its own store. `--network=none`
-isolates the `RUN` only: ranikust's own registry requests still leave from its
-network namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
+no network, and give each trust domain its own store and cache repository.
+`--network=none` isolates the `RUN` only: ranikust's own registry requests
+still leave from its network namespace ([threat model, section 6](docs/security/threat-model.md#6-accepted-risks),
 [#25](https://github.com/tran4774/ranikust/issues/25)). Every `RUN` in the
 full sandbox runs under Docker's default seccomp profile, with no flag needed
 (`--seccomp=unconfined` turns it off; in kaniko mode on `/` the container's
