@@ -213,7 +213,8 @@ The steps, in order:
    - Close every descriptor the clone copied from ranikust except stdio, the
      error and status pipes, that `stat` file, the network namespace to join,
      the stdio sources and a `#!` script (`close_range`, else the list in
-     `/proc/self/fd`, else every number up to the hard limit), in
+     `/proc/self/fd`, past a `close` refused, then, unless the list closed
+     them all, every number up to the hard limit), in
      `Isolation::Direct` too. ranikust holds directories outside the root, and
      close-on-exec acts only at `execve`: until then `/proc/self/fd/<n>` of the
      `RUN`'s `proc` would lead a `WORKDIR`, a `PATH` entry or a mount target to
@@ -369,7 +370,9 @@ The steps, in order:
      raw syscall (musl's `close` turns `EINTR` into success) and checked.
      A refused `close`, whatever its errno, or a list that cannot be read
      or does not shrink, fails the `RUN` as `Step::Init`, its command
-     killed; the cost is bounded by the descriptors open. Last, it writes
+     killed, with the listing's own errno where it has one (before
+     Linux 5.9, `close_range`'s `ENOSYS` would hide it); the cost is
+     bounded by the descriptors open. Last, it writes
      the go byte on the go pipe and closes its end, `close_range` first.
    - The command goes on only on that byte, never on the end of the pipe:
      the end (`EPIPE`, a read a filter around ranikust faked with no error

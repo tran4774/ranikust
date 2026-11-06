@@ -424,7 +424,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `EBADF` and `EINTR` included (also run for the musl target), whether
   there are descriptors to close (at most the pass's listing left open) or
   only the listing; a pass that does not shrink ends it; nothing left where
-  `close_range` alone is refused; a refused `umask` after the profile; a
+  `close_range` alone is refused; a listing that cannot be read reported
+  with its own errno, not `close_range`'s `ENOSYS`; the best-effort closing
+  before the filters going on past a refused `close`, one descriptor
+  numbered past the hard limit closed too; a refused `umask` after the profile; a
   faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
   last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
