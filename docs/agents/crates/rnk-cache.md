@@ -200,9 +200,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   and that an entry names the encoding its inputs were made for.
   `golden.rs` also pins the encoding annotation, `src/key.rs` the tag hash
   of one key under three encodings, two of which its inputs were not made
-  for (only that module can pair them), and `src/entry.rs` what a push writes (a manifest and
-  config in canonical bytes, the layer type per compression);
-  `src/error.rs` checks excerpts and that a refusal names an
+  for (only that module can pair them), and `src/entry.rs` what a push
+  writes (a manifest and config in canonical bytes, the layer type per
+  compression); `src/error.rs` checks excerpts and that a refusal names an
   empty media type in words. `tests/registry/` runs `RegistryCache` against
   `rnk-registry`'s fake registry (compiled in through `#[path]`): a push
   then a lookup is a hit with the same digests, carrying the layer's type,
@@ -262,8 +262,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   destination's options there (credentials over plain HTTP only if the
   operator named it, verified TLS only on `/`), or it gets none or too
   many.
-- Warn on `Miss::Failed`, `Pushed::Failed` and a hit's blob found bad,
-  never on `Miss::Expired` (kaniko's expired entry is a plain miss too), and
+- Warn on `Miss::Failed`, `Pushed::Failed`, a hit's blob found bad and a
+  hit whose Range resume failed, never on `Miss::Expired` (kaniko's expired entry is a plain miss too), and
   never change the exit status for any of them, apart from ADR-0123's
   open cases [open: #171] [open: #172]. A blob is found bad as
   [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) says: a decompression error, a bad tar header, a `--limit`

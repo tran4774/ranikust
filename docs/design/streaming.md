@@ -177,8 +177,8 @@ while writing, for overlay mode and kaniko mode on a host
 hit needs no local blob either: the cached layer is mounted or streamed from
 the cache repository, as a base layer is. On `/` the state never outlives the
 process (ADR-0051). A bad hit costs a miss with a warning and, once its
-extraction began, a restart of its stage with no cache, not a failed build (see
-[Credentials and failures](#credentials-and-failures)).
+extraction began, a restart of its stage with no cache, not a failed build
+([cache entries](cache-and-store.md#cache-entries)).
 
 ## Measurements
 

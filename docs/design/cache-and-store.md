@@ -311,9 +311,9 @@ registry is not decided [open: #171], nor are five more cases of the restart
   `/` it is spooled and verified before extraction. A hit found bad before its
   extraction began (the source refused it; on `/`, the spool pass, which will also
   check the tar headers and `--limit`,
-  [#174](https://github.com/tran4774/ranikust/issues/174)) is only a miss and
-  starts nothing again. One found bad after extraction began (on
-  `/`, only a failure while writing) makes the stage start again from its base
+  [#174](https://github.com/tran4774/ranikust/issues/174)) is a miss and
+  starts nothing again. One found bad after extraction began (on `/`, only a
+  failure while writing) makes the stage start again from its base
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
   at most once and with no cache at all: every step runs, and its layers are
   pushed under their keys as a cold build pushes them, only the steps the cache
@@ -323,10 +323,11 @@ registry is not decided [open: #171], nor are five more cases of the restart
   the parent's directory is still there.
 - A connection dropped after the first byte of a hit is re-requested from the
   offset with a Range request, about 3 attempts without progress, and the answer
-  must be a 206 starting at the offset; then the entry is a miss and the stage
-  starts again. On `/`, a resume that still fails during the spool is only a
-  miss, before `/` changes, and starts nothing again. That count does not bound a connection that drops every few bytes; the
-  overall pull deadline is [#28](https://github.com/tran4774/ranikust/issues/28).
+  must be a 206 starting at the offset; then the entry is a miss with a
+  warning and the stage starts again. On `/`, a resume that still fails during
+  the spool fails before `/` changes and starts nothing again. That count does
+  not bound a connection that drops every few bytes; the overall pull deadline
+  is [#28](https://github.com/tran4774/ranikust/issues/28).
 - A bad blob found while pushing the layers of a skipped, fully cached stage
   makes it stop being skipped: it is built with no cache, its layers pushed as
   above. A blob mounted across repositories
