@@ -465,7 +465,7 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
     // The key, not the config, keeps an entry to one platform.
     let mut other = config.clone();
     other["architecture"] = json!("arm64");
-    other["os"] = json!("");
+    other["os"] = json!("windows");
     other["variant"] = json!("v8");
     store(&registry, &tag, manifest.clone(), &other);
     hit(cache.lookup(&entry).await);

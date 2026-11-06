@@ -235,9 +235,9 @@ An entry, under its tag
   layer's diff ID, and the `architecture` and `os` of the platform the
   stage is built for, with its `variant` when it has one. OCI requires the
   first two, which kaniko's entries leave empty
-  (`kaniko@44aa7ddc0 pkg/executor/push.go:447`, `pushLayerToCache`); the
-  platform is no secret, and the key, whose root holds it, keeps an entry to
-  one platform, so a lookup does not check them.
+  (`kaniko@44aa7ddc0 pkg/executor/push.go:447`, `pushLayerToCache`), and
+  the platform is no secret. A lookup does not check them: the key, whose
+  root holds the platform, keeps an entry to one.
 
 A lookup reads the manifest under the tag and then the config, each bounded
 by its `--limit` limit (ADR-0079):
@@ -255,12 +255,9 @@ by its `--limit` limit (ADR-0079):
 
 A hit returns the layer's descriptor and diff ID, which prove nothing: the
 caller checks the blob against both as it checks a base layer's, and
-extracts it under the same rules (in kaniko mode:
-[a cache hit](kaniko-mode.md#a-cache-hit)). In kaniko mode with a directory
-per stage, a blob found bad after extraction began makes the stage start
-again from its base without that entry; otherwise (overlay mode, kaniko mode
-on `/`, or before the first entry lands) it is found before the layer is
-used and nothing restarts. Either way the entry is a miss with a warning, as
+extracts it under the same rules; in kaniko mode,
+[a cache hit](kaniko-mode.md#a-cache-hit) says when a blob found bad leaves
+the root broken. A blob found bad makes its entry a miss with a warning, as
 a refused entry is
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
 how often a stage may restart is not settled, decided before

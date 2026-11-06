@@ -66,9 +66,9 @@ fn document(media_type: MediaType, bytes: Vec<u8>) -> Document {
 /// The entry's config: the one layer's diff ID, `created` (the push time,
 /// which `--cache-ttl` counts from) and the stage's platform.
 ///
-/// The platform is named because OCI requires `architecture` and `os`; it
-/// is no secret, and the key, whose root holds it, keeps the entry to one
-/// platform, so a lookup does not check it.
+/// The platform is named because OCI requires `architecture` and `os`, and
+/// it is no secret. A lookup does not check it: the key, whose root holds
+/// it, keeps the entry to one platform.
 pub(crate) fn config(
     diff_id: &Digest,
     platform: &Platform,

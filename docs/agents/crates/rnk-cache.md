@@ -243,9 +243,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   destination's options there (credentials over plain HTTP only if the
   operator named it, verified TLS only on `/`), or it gets none or too
   many.
-- Warn on `Miss::Failed` and `Pushed::Failed`, never on `Miss::Expired`
-  (kaniko's expired entry is a plain miss too), and never change the exit
-  status for either.
+- Warn on `Miss::Failed`, `Pushed::Failed` and a hit's blob found bad,
+  never on `Miss::Expired` (kaniko's expired entry is a plain miss too), and
+  never change the exit status for any of them.
 - The `LayerCache` futures are not `Send` (the registry client's are not):
   `tokio::spawn` refuses them; drive them with `Handle::block_on`.
 - No cache measurement exists: claim no speed-up before W2 runs.
