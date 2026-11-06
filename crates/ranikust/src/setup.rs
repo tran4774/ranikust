@@ -226,8 +226,8 @@ pub(crate) struct UsernsSetup {
 /// # Errors
 ///
 /// A [`Refusal`]. Where the process may be in the namespace already (an
-/// error of [`rnk_sandbox::enter_build_user_namespace`] not known to come
-/// before any change, or the store refused), it is of [`Kind::Broken`]:
+/// error of [`rnk_sandbox::enter_build_user_namespace`] not known to leave
+/// the process unchanged, or the store refused), it is of [`Kind::Broken`]:
 /// the process must end, and no caller, in any mode, may ignore it.
 #[cfg_attr(
     not(test),
@@ -262,7 +262,7 @@ fn inside_userns(refusal: Refusal) -> Refusal {
 
 /// The refusal for [`rnk_sandbox::enter_build_user_namespace`]'s error
 /// `e`, for the effective uid `euid`: [`Kind::Broken`] unless `e` is one
-/// known to come before any change.
+/// that function documents as leaving the process unchanged.
 fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
     Refusal {
         kind: match e {

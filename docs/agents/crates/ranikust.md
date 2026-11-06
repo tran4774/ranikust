@@ -34,9 +34,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   `rnk_sandbox::enter_build_user_namespace`, then `Store::open`, whose
   clean-up removes a dead build's files of subordinate ids. A refusal
   once the process may be in the namespace is `Kind::Broken`, which never
-  routes to another mode: the process must end. No build calls it yet: `prune --all` (#76) and rootless overlay mode (#79) will; a user
-  other than root is still refused before the state directory
-  (`NEEDS_ROOT`).
+  routes to another mode: the process must end. No build calls it yet:
+  `prune --all` (#76) and rootless overlay mode (#79) will; a user other
+  than root is still refused before the state directory (`NEEDS_ROOT`).
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 

@@ -750,8 +750,8 @@ binaries it builds), then:
    `/etc/subuid` and `/etc/subgid`) and that `chown` to another id works;
    then runs each listed test once and fails unless every one ran and
    passed. Logs go to `<profile>.log` in the run's directory, which is
-   removed when every profile passed and kept, its path printed, when one
-   failed.
+   removed when every profile passed or the lane stopped before any log,
+   and kept, its path printed, when a profile failed.
 
 CI does not run this lane, and the VM's `unit` suite runs only T2 and T2c
 tests: T1 tests run only here.

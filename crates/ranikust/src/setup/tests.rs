@@ -321,10 +321,25 @@ fn a_broken_user_namespace_never_falls_back() {
     let refusal = userns_refusal(SandboxError::NoUserNamespace { tried: Vec::new() }, USER);
     assert_eq!(refusal.kind, Kind::Other);
     assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
-    let refusal = userns_refusal(SandboxError::NotSingleThreaded { threads: 2 }, USER);
-    assert_eq!(refusal.kind, Kind::Other);
-    // The store refusing once inside: of the same kind, its words kept.
-    for kind in [Kind::Other, Kind::OverlayUnusable, Kind::NoMountPrivilege] {
+    for unchanged in [
+        SandboxError::NotSingleThreaded { threads: 2 },
+        SandboxError::InPlainChroot,
+        SandboxError::Sys {
+            op: "unshare(CLONE_NEWUSER)",
+            source: io::Error::from_raw_os_error(EACCES),
+        },
+    ] {
+        assert_eq!(userns_refusal(unchanged, USER).kind, Kind::Other);
+    }
+    // The store refusing once inside: broken whatever its kind, its words
+    // kept.
+    for kind in [
+        Kind::Other,
+        Kind::NoMountPrivilege,
+        Kind::OverlayUnusable,
+        Kind::SandboxBlocked,
+        Kind::Broken,
+    ] {
         let refusal = inside_userns(Refusal {
             kind,
             reason: "r".to_owned(),
