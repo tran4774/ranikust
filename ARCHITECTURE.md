@@ -29,7 +29,8 @@ every user but root is refused; rootless overlay mode is Phase 3.
 
 ranikust keeps its own files, including the persistent store and every build
 root it makes, in one state directory (`--state-dir`, default
-`/var/lib/ranikust`); there is no work-directory flag
+`/var/lib/ranikust` as root, else `~/.local/share/ranikust`); there is no
+work-directory flag
 ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 It never writes outside the state directory, the requested outputs, its own
 delegated cgroup with the cgroups it makes below it
@@ -150,7 +151,10 @@ its own, ended with `cgroup.kill`, its command in a cgroup namespace rooted at
 its `command` cgroup
 ([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
 In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
-(`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
+(`Isolation::Direct`). It also moves the process into the build's user
+namespace, each id map tried in a forked child first (no build uses it yet,
+[#75](https://github.com/tran4774/ranikust/issues/75)); the subordinate ids
+come from `ranikust`. A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).

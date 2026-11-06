@@ -26,6 +26,15 @@ writer) before `unshare`, the probes and the state directory's checks.
   the root (`/` in a container, `flock`ed; else a directory per stage,
   `KanikoStages`, ADR-0059). Then the hand-off to the libraries. `prune`
   only calls `rnk-store`.
+- The build's user namespace with the store opened in it
+  (`setup::enter_user_namespace`, #75): the state directory's checks
+  outside, the user's subordinate ids (`subids.rs`: the first range of
+  `/etc/subuid` and `/etc/subgid` by name, from `/etc/passwd`, or by uid),
+  `rnk_sandbox::enter_build_user_namespace`, then `Store::open`, whose
+  clean-up removes a dead build's files of subordinate ids. No build calls
+  it yet: `prune --all` (#76) and rootless overlay mode (#79) will; a user
+  other than root is still refused before the state directory
+  (`NEEDS_ROOT`).
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -52,8 +61,9 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
-| `statedir.rs` | `prepare` (ADR-0050 checks), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
+| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
+| `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
 | `limits.rs` | `--limit <name>=<value>`: bounds on what a registry or image can make ranikust hold or wait for (ADR-0079, T15) |
@@ -270,7 +280,8 @@ kaniko flag or an invalid combination.
 - kaniko's variables are not read (ADR-0049); only `DOCKER_AUTH_CONFIG`
   (`build.rs`, registry credentials) stays. Defaults `--context=/workspace/`,
   `--dockerfile=Dockerfile`; `--kaniko-dir` is `--state-dir` (default
-  `/var/lib/ranikust`, ADR-0050).
+  `/var/lib/ranikust` as root, else `~/.local/share/ranikust` from an
+  absolute `$HOME`, or a usage error asking for `--state-dir`; ADR-0050).
 
 ## Refs
 
@@ -290,7 +301,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   pflag booleans, `--target` lists, every refused flag with its reason all
   at once, nothing after `--`, clap errors; `--parallel-stages` and
   `--single-snapshot` refused whatever the spelling), `config` (kaniko's
-  checks, contexts, build arguments, absolute paths, state-dir defaults,
+  checks, contexts, build arguments, absolute paths, state-dir defaults
+  as root and below `$HOME`, a `$HOME` that is missing, relative or holds
+  `..` refused,
   `meta_options` leaking no destination, path or argument, the overlay-mode
   refusals and warnings, whole-root `--ignore-path` refused, `--seccomp`
   values and files refused for each reason, a FIFO given as the file never
@@ -299,9 +312,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   kaniko mode, a probe failure other than a refused mount never routes, no
   guidance sends a user back to the mode they used, the user-namespace
   probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
-  the overlay probe was left, and only then), `statedir` (each
-  ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
-  nothing created through a planted link; `0700`), `container` (every signal
+  the overlay probe was left, and only then; `setup/tests/userns.rs`: the
+  store opened inside the build's user namespace, as root of it, or the
+  set-up refused before the store, whatever the machine allows), `statedir`
+  (each ADR-0050 refusal: `/`, system directories, symlinks, writable
+  parents, nothing created through a planted link; `0700`; a user's default
+  below `$HOME` passes, a group-writable home is refused with that user's
+  advice), `subids` (ranges by name or uid, the first well-formed one,
+  malformed and empty ones passed over, both files needed, none for root),
+  `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
   reached, what cannot be told, the bound counted in threads; `walk`'s
@@ -360,7 +379,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `binary-mounts-made` its mount tables made inside the container (covered
   and stacked binds, a mount added during the walk, a container told only
   once ranikust started); `pid-peers` the test of `refuse_reachable_peers`
-  ([its steps](../../testing.md#quick-smoke-cases)).
+  ([its steps](../../testing.md#quick-smoke-cases)). `just test-rootless`
+  (profile `default`):
+  `the_store_in_the_user_namespace_removes_a_dead_build_of_other_ids`
+  (`setup/tests/userns.rs`: root of a rootless Podman container; a build
+  dies with files and a `0555` directory of ids 1 and 2 in its `tmp/` and
+  `builds/` directories; the next store, opened in the namespace, removes
+  them).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
@@ -394,7 +419,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_namespace_left_but_held_keeps_its_number_from_new_ones` (ADR-0101: a
   mount namespace no process is in, held by the handle, keeps its number
   from 64 new ones in each of three rounds; the control, without the
-  handle, gets it back in one round at least).
+  handle, gets it back in one round at least);
+  `setup/tests/userns.rs`
+  `a_regular_user_s_store_removes_a_dead_build_of_subordinate_ids` (as the
+  user who ran sudo: where AppArmor restricts user namespaces, Ubuntu
+  24.04, refused before the store with the guidance; elsewhere, 22.04, a
+  dead build's files of subordinate ids, which the user cannot remove
+  outside, removed by the next store in the namespace).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
   ranikust build is using / in this container"); `exposure.rs`, profile

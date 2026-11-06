@@ -24,7 +24,11 @@ extract the same digest at once.
   `rename`.
 - Start-up clean-up of `tmp/` leftovers and of `builds/<id>` whose build is
   gone; `prune` by total size and age (Phase 5) and a minimal `prune --all`
-  (Phase 3, ADR-0105), neither built. `ranikust prune` only calls it.
+  (Phase 3, ADR-0105), neither built. `ranikust prune` only calls it. A
+  user other than root opens the store inside the build's user namespace
+  (`ranikust`'s `setup::enter_user_namespace`, #75), where the clean-up
+  removes files of the user's subordinate ids as root of the namespace;
+  nothing here knows which namespace it runs in.
 - `BuildPaths`, the paths handed down to every crate.
 
 ## Must not
@@ -164,6 +168,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).
+- **T1 and T2**, from `ranikust` (`setup/tests/userns.rs`, see its card):
+  `Store::open` in the build's user namespace removes a dead build's
+  `tmp/<id>` and `builds/<id>` holding files and a `0555` directory of
+  other ids: as root of a rootless Podman container (`just
+  test-rootless`), and as a regular user with subordinate ids (the VM,
+  where AppArmor does not restrict user namespaces).
 - To do: `prune` by size and age (Phase 5) and a minimal `prune --all` (Phase 3,
   ADR-0105); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device
@@ -201,6 +211,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and without crossing a mount.
 - Layer entries hold image content that may be unwritable to an unprivileged
   user (a `0555` directory); deletion then fails with `EACCES`, and clean-up
-  warns and leaves the build for the next start.
+  warns and leaves the build for the next start. A user other than root
+  must therefore open the store inside the build's user namespace, never
+  outside it.
 - Deleting `builds/<id>` meets image content and may meet mounts: fd-based, by
   `mnt_id`, through `rnk-rootfs` (exp-09 D2b).

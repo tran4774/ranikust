@@ -32,11 +32,20 @@ a kernel without overlay.
 **Built:** overlay root, both kaniko outcomes, refuse. **Planned, Phase 3**
 (tracking issue [#41](https://github.com/tran4774/ranikust/issues/41)):
 overlay rootless. The user-namespace probe it needs is built and reported
-only ([step 2](#probe-order---modeauto)); no code makes a user namespace for
-the build: `enter_build_namespace` (`crates/rnk-sandbox/src/setup.rs`) does
-`unshare(CLONE_NEWNS)` only, and
-`Outcome` (`crates/ranikust/src/setup.rs`) has `OverlayRoot` alone (kaniko
-mode is set up by `set_up_kaniko`). What happens meanwhile to root without
+only ([step 2](#probe-order---modeauto)). So is the entry into the build's
+user namespace, with no build calling it yet
+([#75](https://github.com/tran4774/ranikust/issues/75)):
+`enter_build_user_namespace` (`crates/rnk-sandbox/src/setup.rs`) tries each
+map of the probe's order in a forked child, then makes the first that
+passed for the process itself, with a mount namespace that user namespace
+owns (root: its own ranges mirrored; another user: its subordinate ids
+through `newuidmap`; else one uid, `setgroups` denied, ADR-0098); where
+none passes, the process is left as it was. `enter_user_namespace`
+(`crates/ranikust/src/setup.rs`) checks the state directory outside, then
+enters and opens the store inside, so that its clean-up removes files of
+subordinate ids. Root's builds keep `enter_build_namespace`
+(`unshare(CLONE_NEWNS)` only), and `Outcome` has `OverlayRoot` alone
+(kaniko mode is set up by `set_up_kaniko`). What happens meanwhile to root without
 the privilege to mount and to a process that is not root is under
 [Refusal and guidance](#refusal-and-guidance).
 
@@ -209,11 +218,15 @@ Phase 4 (ADR-0064), `--ignore-var-run` in both modes (ADR-0052 D4).
   machine's own `/`, and kaniko's `--force` is refused.
 - Outside a container kaniko mode needs mount privileges, for the full
   sandbox; a host where root may not mount is refused (ADR-0050).
-- The state directory is `/var/lib/ranikust` in every mode; `--state-dir`
-  replaces it ([cache-and-store](cache-and-store.md#store-layout)). It must be
-  owned by the user running ranikust, not writable by others, below
-  directories only root may write; ranikust makes it `0700`
-  ([kaniko-mode](kaniko-mode.md#host-safety-checks)).
+- The state directory is `/var/lib/ranikust` for root in every mode, and
+  `~/.local/share/ranikust` for another user (from `$HOME`, which must be
+  absolute; else `--state-dir` is required); `--state-dir` replaces it
+  ([cache-and-store](cache-and-store.md#store-layout)). It must be owned by
+  the user running ranikust, not writable by others, below directories only
+  root or that user may write; ranikust makes it `0700`
+  ([kaniko-mode](kaniko-mode.md#host-safety-checks)). The checks run outside
+  the build's user namespace, where the owners read as on the host; the
+  store then opens inside it.
 - Kaniko mode on `/` takes a `flock` on `/` itself: one build per container.
   Overlay-mode builds and kaniko-mode builds on a host share the state
   directory and its store, each with its own `builds/<id>`.
