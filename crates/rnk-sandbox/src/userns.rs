@@ -77,9 +77,9 @@ const SLAVE_OP: &str = "make / a recursive slave mount";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum IdMap {
-    /// Every id this process has, each mapped to itself, written by this
-    /// process: root, with `CAP_SETUID` and `CAP_SETGID` (in a container,
-    /// several ranges).
+    /// Every id this process has, each mapped to itself, written from the
+    /// parent namespace: root, with `CAP_SETUID` and `CAP_SETGID` (in a
+    /// container, several ranges).
     Ranges,
     /// `newuidmap` and `newgidmap`: the user's own ids as 0 and its
     /// subordinate ranges from 1.

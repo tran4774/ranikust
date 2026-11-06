@@ -55,7 +55,9 @@ does not call yet.
   through a helper forked before the `unshare`; another user maps its
   subordinate ids through `newuidmap` and `newgidmap` (from `/usr/bin` or
   `/bin`), from the same helper; else the process writes one id itself,
-  `setgroups` denied (ADR-0098). Dumpable only while its map is written
+  `setgroups` denied (ADR-0098). The map and `setgroups` reported are
+  read back once inside: any map that gives one id, root's mirrored one
+  too, is one uid. Dumpable only while its map is written
   (ADR-0051). Nothing passing leaves the process as it was
   (`Error::NoUserNamespace`); a step failing once inside is
   `Error::UserNamespaceBroken`, after which the process must end.
@@ -101,7 +103,7 @@ pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: Binary
 pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, NotWeighed, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx_physical at its mount point through RootPath, its mount's root), Unplaced: not placed (a writable directory whose source was removed, a writable mount covered or not reached at its mount point, a table changed during the walk, among them); NotWeighed: the walk not asked for; Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it on a table that read the same twice; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn enter_build_user_namespace(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
-pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, StepResult)> } // #[non_exhaustive]; setgroups_allowed(): false for OneId; Display: "newuidmap map", "one uid map, setgroups denied (newuidmap: ...)"
+pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, StepResult)>, .. } // #[non_exhaustive]; read back from /proc/self once inside: map OneId whenever the uid or gid map gives one id (root's own one-id map mirrored too); setgroups_allowed(): as /proc/self/setgroups says (deny for OneId written by the process, or inherited); unreadable: UserNamespaceBroken; Display: "newuidmap map", "one uid map, setgroups denied (newuidmap: ...)"
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE
 pub struct Caps { pub root_entry: RootEntry }   // #[non_exhaustive]

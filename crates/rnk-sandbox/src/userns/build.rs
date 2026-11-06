@@ -33,27 +33,26 @@ use crate::error::{Error, Result, sys_err};
 /// `newgidmap`, each with the attempt's deadline, and some slack.
 const HELPER_DEADLINE: std::time::Duration = ATTEMPT_DEADLINE.saturating_mul(3);
 
-/// The user namespace the build entered.
+/// The user namespace the build entered, as read back from this process's
+/// `/proc` files once in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BuildUserNamespace {
-    /// The map it got.
+    /// The map it got: [`IdMap::OneId`] whenever its uid or gid map gives
+    /// one id only, whichever map was written.
     pub map: IdMap,
     /// The maps of the probe's order tried before it, each with the step
     /// that stopped its trial or why it was not tried.
     pub passed_over: Vec<(IdMap, StepResult)>,
+    setgroups: bool,
 }
 
 impl BuildUserNamespace {
-    /// Whether `setgroups` is allowed in it: not with one id, whose map
-    /// this process writes itself after denying it, as the kernel asks of a
-    /// writer without `CAP_SETGID` above the namespace.
+    /// Whether `setgroups` is allowed in it: not where this process wrote
+    /// its one-id map itself, nor where the parent namespace denies it.
     #[must_use]
     pub fn setgroups_allowed(&self) -> bool {
-        match self.map {
-            IdMap::Ranges | IdMap::Newuidmap => true,
-            IdMap::OneId => false,
-        }
+        self.setgroups
     }
 }
 
@@ -111,9 +110,11 @@ pub(crate) fn enter_build(subordinate: Option<SubordinateIds>) -> Result<BuildUs
         match trial(&plan, user)? {
             Trial::Passed => {
                 enter_with(&plan, user)?;
+                let (map, setgroups) = measure(plan.kind()).map_err(Error::UserNamespaceBroken)?;
                 return Ok(BuildUserNamespace {
-                    map: plan.kind(),
+                    map,
                     passed_over: tried,
+                    setgroups,
                 });
             }
             Trial::NoNamespace(r) => {
@@ -226,6 +227,54 @@ fn enter_with(plan: &Plan, user: bool) -> Result<()> {
         MountPropagationFlags::DOWNSTREAM | MountPropagationFlags::REC,
     )
     .map_err(|e| Error::UserNamespaceBroken(StepFailure::errno(SLAVE_OP, e.raw_os_error())))
+}
+
+/// The map and whether `setgroups` is allowed in the user namespace this
+/// process entered with a `plan` map, from its `/proc` files.
+fn measure(plan: IdMap) -> std::result::Result<(IdMap, bool), StepFailure> {
+    let read = |name: &'static str| {
+        std::fs::read_to_string(format!("/proc/self/{name}"))
+            .map_err(|e| StepFailure::other(name, format!("cannot be read: {e}")))
+    };
+    let (uid_map, gid_map, setgroups) = (read("uid_map")?, read("gid_map")?, read("setgroups")?);
+    as_entered(plan, &uid_map, &gid_map, &setgroups)
+        .ok_or_else(|| StepFailure::other("check the map", "its /proc files are unreadable"))
+}
+
+/// What a namespace entered with a `plan` map has: one id when its uid or
+/// gid map gives one only (root's own map mirrored can: rootless Podman
+/// without subordinate ids, `unshare -r`), and `setgroups` as its file
+/// says, since a namespace inherits a parent's `deny`. `None` when a file
+/// is not as the kernel writes it, or a map is empty.
+fn as_entered(plan: IdMap, uid_map: &str, gid_map: &str, setgroups: &str) -> Option<(IdMap, bool)> {
+    let (uids, gids) = (ids(uid_map)?, ids(gid_map)?);
+    let map = if uids == 1 || gids == 1 {
+        IdMap::OneId
+    } else {
+        plan
+    };
+    let allowed = match setgroups.trim_end() {
+        "allow" => true,
+        "deny" => false,
+        _ => return None,
+    };
+    Some((map, allowed))
+}
+
+/// How many ids a map's text gives: `None` when a line is not three
+/// numbers, or it gives none.
+fn ids(map: &str) -> Option<u64> {
+    let mut total = 0_u64;
+    for line in map.lines().filter(|l| !l.trim().is_empty()) {
+        let mut fields = line.split_whitespace().map(str::parse::<u32>);
+        let (Some(Ok(_)), Some(Ok(_)), Some(Ok(count)), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return None;
+        };
+        total = total.checked_add(u64::from(count))?;
+    }
+    (total > 0).then_some(total)
 }
 
 /// Writes this process's one-id map itself, `setgroups` denied first, as

@@ -139,6 +139,50 @@ fn a_trial_cut_short_says_how() {
     );
 }
 
+/// The namespace is told as the kernel gave it, not as planned: root's own
+/// one-id map mirrored is one uid, and a parent's `deny` stands.
+#[test]
+fn the_namespace_is_told_as_read_back() {
+    let text = |m: Vec<u8>| String::from_utf8(m).unwrap();
+    let one = text(mirror("0 1000 1\n").unwrap());
+    assert_eq!(
+        as_entered(IdMap::Ranges, &one, &one, "deny\n"),
+        Some((IdMap::OneId, false))
+    );
+    assert_eq!(
+        as_entered(IdMap::Ranges, &one, &one, "allow\n"),
+        Some((IdMap::OneId, true))
+    );
+    let several = text(mirror("0 1000 1\n1 100000 65536\n").unwrap());
+    assert_eq!(
+        as_entered(IdMap::Ranges, &several, &one, "allow\n"),
+        Some((IdMap::OneId, true))
+    );
+    assert_eq!(
+        as_entered(IdMap::Ranges, &several, &several, "deny\n"),
+        Some((IdMap::Ranges, false))
+    );
+    assert_eq!(
+        as_entered(IdMap::Newuidmap, &several, &several, "allow\n"),
+        Some((IdMap::Newuidmap, true))
+    );
+    for (uid_map, setgroups) in [
+        ("", "allow\n"),
+        ("0 0 0\n", "allow\n"),
+        ("0 0\n", "allow\n"),
+        ("0 0 1 1\n", "allow\n"),
+        ("0 0 x\n", "allow\n"),
+        (several.as_str(), ""),
+        (several.as_str(), "allowed\n"),
+    ] {
+        assert_eq!(
+            as_entered(IdMap::Ranges, uid_map, &several, setgroups),
+            None,
+            "{uid_map:?} {setgroups:?}"
+        );
+    }
+}
+
 #[test]
 fn the_namespace_names_its_map_and_what_was_passed_over() {
     let ns = BuildUserNamespace {
@@ -147,6 +191,7 @@ fn the_namespace_names_its_map_and_what_was_passed_over() {
             IdMap::Newuidmap,
             StepResult::NotRun("no subordinate ids for this user"),
         )],
+        setgroups: false,
     };
     assert!(!ns.setgroups_allowed());
     assert_eq!(
@@ -156,6 +201,7 @@ fn the_namespace_names_its_map_and_what_was_passed_over() {
     let ns = BuildUserNamespace {
         map: IdMap::Newuidmap,
         passed_over: Vec::new(),
+        setgroups: true,
     };
     assert!(ns.setgroups_allowed());
     assert_eq!(ns.to_string(), "newuidmap map");
@@ -248,12 +294,15 @@ struct Described {
     /// Whether the process is dumpable after.
     dumpable: String,
     passed_over: String,
+    /// What [`BuildUserNamespace::setgroups_allowed`] says: `allow` or
+    /// `deny`; empty when not entered.
+    told_setgroups: String,
 }
 
 impl Described {
     fn parse(line: &str) -> Self {
         let f: Vec<&str> = line.split('\t').collect();
-        assert_eq!(f.len(), 10, "{line}");
+        assert_eq!(f.len(), 11, "{line}");
         let s = |i: usize| f[i].to_owned();
         Self {
             outcome: s(0),
@@ -266,6 +315,7 @@ impl Described {
             mountns: s(7),
             dumpable: s(8),
             passed_over: s(9),
+            told_setgroups: s(10),
         }
     }
 }
@@ -282,7 +332,7 @@ fn describe(sub: Option<SubordinateIds>) -> String {
     };
     let (user, mount) = (link("user"), link("mnt"));
     if let Err(e) = rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable) {
-        return format!("err\tPR_SET_DUMPABLE: {e}\t\t\t\t\t\t\t\t");
+        return format!("err\tPR_SET_DUMPABLE: {e}\t\t\t\t\t\t\t\t\t");
     }
     let r = crate::enter_build_user_namespace(sub);
     let flat = |path: &str| {
@@ -297,16 +347,21 @@ fn describe(sub: Option<SubordinateIds>) -> String {
         Ok(_) => "1",
         Err(_) => "?",
     };
-    let (outcome, map, passed) = match r {
+    let (outcome, map, passed, told) = match r {
         Ok(ns) => (
             "ok".to_owned(),
             ns.map.to_string(),
             tried_text(&ns.passed_over),
+            if ns.setgroups_allowed() {
+                "allow"
+            } else {
+                "deny"
+            },
         ),
         Err(Error::NoUserNamespace { tried }) => {
-            ("err".to_owned(), "none".to_owned(), tried_text(&tried))
+            ("err".to_owned(), "none".to_owned(), tried_text(&tried), "")
         }
-        Err(e) => (format!("err {e}"), "none".to_owned(), String::new()),
+        Err(e) => (format!("err {e}"), "none".to_owned(), String::new(), ""),
     };
     [
         outcome,
@@ -319,6 +374,7 @@ fn describe(sub: Option<SubordinateIds>) -> String {
         same(&mount, "mnt").to_owned(),
         dumpable.to_owned(),
         passed,
+        told.to_owned(),
     ]
     .join("\t")
 }
@@ -336,12 +392,22 @@ fn check_kept(d: &Described, uid: u32, gid: u32, line: &str) {
                 "{line}"
             );
             assert_eq!(d.euid, "0", "{line}");
+            assert_eq!(d.setgroups, d.told_setgroups, "{line}");
+            let ids = |map: &str| -> u64 {
+                let f: Vec<&str> = map.split(' ').collect();
+                f.chunks(3).map(|l| l[2].parse::<u64>().unwrap()).sum()
+            };
+            let (uids, gids) = (ids(&d.uid_map), ids(&d.gid_map));
             if d.map == "one uid" {
-                assert_eq!(d.uid_map, format!("0 {uid} 1"), "{line}");
-                assert_eq!(d.gid_map, format!("0 {gid} 1"), "{line}");
-                assert_eq!(d.setgroups, "deny", "{line}");
+                assert!(uids == 1 || gids == 1, "{line}");
+                if uids == 1 {
+                    assert_eq!(d.uid_map, format!("0 {uid} 1"), "{line}");
+                }
+                if gids == 1 {
+                    assert_eq!(d.gid_map, format!("0 {gid} 1"), "{line}");
+                }
             } else {
-                assert_eq!(d.setgroups, "allow", "{line}");
+                assert!(uids > 1 && gids > 1, "{line}");
             }
         }
         "err" => {

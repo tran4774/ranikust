@@ -33,17 +33,11 @@ a kernel without overlay.
 (tracking issue [#41](https://github.com/tran4774/ranikust/issues/41)):
 overlay rootless. The user-namespace probe it needs is built and reported
 only ([step 2](#probe-order---modeauto)). So is the entry into the build's
-user namespace, with no build calling it yet
-([#75](https://github.com/tran4774/ranikust/issues/75)):
-`enter_build_user_namespace` (`crates/rnk-sandbox/src/setup.rs`) tries each
-map of the probe's order in a forked child, then makes the first that
-passed for the process itself, with a mount namespace that user namespace
-owns (root: its own ranges mirrored; another user: its subordinate ids
-through `newuidmap`; else one uid, `setgroups` denied, ADR-0098); where
-none passes, the process is left as it was. `enter_user_namespace`
-(`crates/ranikust/src/setup.rs`) checks the state directory outside, then
-enters and opens the store inside, so that its clean-up removes files of
-subordinate ids. Root's builds keep `enter_build_namespace`
+user namespace, with the probe's maps in its order and the store opened
+inside, with no build calling it yet
+([#75](https://github.com/tran4774/ranikust/issues/75); how:
+[rnk-sandbox](../agents/crates/rnk-sandbox.md#owns),
+[ranikust](../agents/crates/ranikust.md#owns)). Root's builds keep `enter_build_namespace`
 (`unshare(CLONE_NEWNS)` only), and `Outcome` has `OverlayRoot` alone
 (kaniko mode is set up by `set_up_kaniko`). What happens meanwhile to root without
 the privilege to mount and to a process that is not root is under
