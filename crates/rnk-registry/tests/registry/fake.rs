@@ -65,6 +65,8 @@ pub(crate) struct State {
     uploads: HashMap<String, String>,
     next_upload: u32,
     pub(crate) faults: Vec<Fault>,
+    /// The body of every injected fault; `injected failure` when `None`.
+    pub(crate) fault_body: Option<Bytes>,
     /// Serve these bytes for a blob digest instead of the stored ones.
     pub(crate) tampered: HashMap<String, Bytes>,
     /// Break the connection after this many bytes of a blob's body (its
@@ -329,7 +331,12 @@ async fn handle(state: &Mutex<State>, addr: SocketAddr, req: Request<Incoming>) 
         .find(|f| f.method == method && path.contains(&f.path_contains) && f.remaining > 0);
     if let Some(fault) = fault {
         fault.remaining -= 1;
-        return reply(fault.status, "injected failure");
+        let status = fault.status;
+        let body = state
+            .fault_body
+            .clone()
+            .unwrap_or_else(|| Bytes::from_static(b"injected failure"));
+        return reply(status, body);
     }
 
     if path == "/token"

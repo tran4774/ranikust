@@ -12,8 +12,8 @@ use crate::error::Error;
 
 /// How failed requests are retried.
 ///
-/// Only errors that may pass on their own are retried: connection failures
-/// and timeouts, 408, 429, 500, 502, 503 and 504. Each attempt starts the
+/// Only errors that may pass on their own are retried: those
+/// [`Error::Registry`]'s `retryable` names. Each attempt starts the
 /// operation over (a new upload session, a pull from the first byte).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {

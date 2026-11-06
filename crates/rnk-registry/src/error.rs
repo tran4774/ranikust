@@ -55,7 +55,10 @@ pub enum Error {
         target: String,
         /// The status and the registry's message, without credentials.
         message: String,
-        /// Whether trying again may succeed (network errors, 5xx, 429).
+        /// Whether trying again may succeed: a connection failure or
+        /// timeout, a 408, 429, 500, 502, 503 or 504 whatever the body
+        /// says, or an error envelope's `TOOMANYREQUESTS` code. Never a
+        /// pull's 404 (`not_found`).
         retryable: bool,
         /// Whether the registry refused access: a 401 or 403, or an
         /// `UNAUTHORIZED` or `DENIED` code in its error envelope. Decided
@@ -250,8 +253,9 @@ pub(crate) fn retryable_status(code: u16) -> bool {
 
 impl Op<'_> {
     /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
-    /// refusal whatever its body said, and a 404 is "not found" and never
-    /// retried, even with a `TOOMANYREQUESTS` code.
+    /// refusal and a 408, 429, 500, 502, 503 or 504 is retried, whatever
+    /// its body said; a 404 is "not found" and never retried, even with a
+    /// `TOOMANYREQUESTS` code.
     pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
         let mut e = self.error(err);
         if let Error::Registry {
@@ -262,6 +266,7 @@ impl Op<'_> {
         } = &mut e
         {
             *refused |= refusal_status(status);
+            *retryable |= retryable_status(status);
             *not_found = status == 404;
             *retryable &= !*not_found;
         }
@@ -435,6 +440,30 @@ mod tests {
         assert!(!e.is_not_found() && e.is_retryable(), "{e:?}");
         let e = op().error_for_status(404, envelope("MANIFEST_UNKNOWN"));
         assert!(e.is_not_found() && !e.is_retryable(), "{e:?}");
+    }
+
+    /// A 408 or 429 is retried from its status, whatever code its envelope
+    /// holds; another 4xx only for a `TOOMANYREQUESTS` code.
+    #[test]
+    fn a_408_or_429_is_retried_whatever_its_envelope() {
+        let envelope = |code: &str| OciDistributionError::RegistryError {
+            envelope: serde_json::from_str(&format!(r#"{{"errors":[{{"code":"{code}"}}]}}"#))
+                .unwrap(),
+            url: "https://r.example/v2/".to_owned(),
+        };
+        for status in [408, 429] {
+            for code in ["TOOMANYREQUESTS", "UNSUPPORTED", "DENIED", "SOMETHING_ELSE"] {
+                let e = op().error_for_status(status, envelope(code));
+                assert!(
+                    e.is_retryable() && !e.is_not_found(),
+                    "{status} {code}: {e:?}"
+                );
+            }
+        }
+        let e = op().error_for_status(400, envelope("UNSUPPORTED"));
+        assert!(!e.is_retryable(), "{e:?}");
+        let e = op().error_for_status(400, envelope("TOOMANYREQUESTS"));
+        assert!(e.is_retryable(), "{e:?}");
     }
 
     #[test]
