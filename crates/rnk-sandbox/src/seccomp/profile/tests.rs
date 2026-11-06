@@ -814,6 +814,41 @@ fn a_profile_too_long_for_the_kernel_is_refused() {
     assert!(m.contains("more than the kernel's 4096"), "{m}");
 }
 
+/// A rule's `names`, held in one buffer, read as a list of strings does:
+/// escapes decoded, in order, and anything else refused in serde's words.
+#[test]
+fn names_read_as_a_list_of_strings() {
+    let with = |names: &str| {
+        format!(
+            r#"{{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{{"names":{names},"action":"SCMP_ACT_ERRNO","errnoRet":1}}]}}"#
+        )
+    };
+    for names in [r#"["getppid","getpid"]"#, r#"["getppid","getpid"]"#] {
+        let p = compiled(&with(names));
+        assert_eq!(verdict(&p, libc::SYS_getppid, a0(0)), errno(1), "{names}");
+        assert_eq!(verdict(&p, libc::SYS_getpid, a0(0)), errno(1), "{names}");
+        assert_eq!(verdict(&p, libc::SYS_gettid, a0(0)), ALLOW, "{names}");
+    }
+    let single = r#"{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":null,"name":"getppid","action":"SCMP_ACT_ERRNO","errnoRet":1}]}"#;
+    assert_eq!(
+        verdict(&compiled(single), libc::SYS_getppid, a0(0)),
+        errno(1)
+    );
+    for (names, want) in [
+        (r#""getppid""#, "expected a sequence"),
+        ("[1]", "expected a string"),
+        (r#"["getppid",null]"#, "expected a string"),
+        ("[]", "names no system call"),
+        (
+            r#"["getppid","not_a_call_1","not_a_call_2"]"#,
+            r#""not_a_call_1" is not a system call"#,
+        ),
+    ] {
+        let m = refusal(&with(names));
+        assert!(m.contains(want), "{names}: {m}");
+    }
+}
+
 /// The names moby's profile allows here that `libc` gives no number for:
 /// most are other architectures' calls, the rest (`cachestat`,
 /// `futex_wait`, `statmount`, `uretprobe`...) get `ENOSYS` where Docker

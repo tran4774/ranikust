@@ -398,14 +398,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   stream, a `RUN` reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
-  (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
+  (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps
+  and its count past 4096 instructions, where it keeps nothing more;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
   aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno
   from 512 to 600, 4095 and above included, which ones refuse `keyctl`,
   `add_key` and `request_key`; random profiles against a reference, x32
   numbers, keys given twice, nesting and odd bytes, numbers in other forms,
-  rules that disagree, the kernel's 4096 instructions);
+  rules that disagree, the kernel's 4096 instructions, `names` read as a
+  list of strings); a 1 MiB profile of 5.5 million instructions refused
+  within 8 MiB (`tests/seccomp_memory.rs`, a counting allocator);
   `errno_0_reads_as_eproto`. Moby's profile's argument-rule form
   (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
   of `clone3` and `io_uring_*`

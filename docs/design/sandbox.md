@@ -181,8 +181,10 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   block instead of returning the refusal), either named in the message as
   `syscalls[N]` or `defaultErrnoRet`, two conditions on one argument in a
   rule, a rule without names (the message names the rule, `syscalls[N]`;
-  ADR-0109), a filter longer than the kernel's 4096 instructions, and anything
-  malformed; a file that is not a regular file or is over 1 MiB.
+  ADR-0109), a filter longer than the kernel's 4096 instructions (past them
+  the compiler only counts, so a profile describing millions takes memory
+  linear in its size, not in theirs), and anything malformed; a file that is
+  not a regular file or is over 1 MiB.
 - The limits of a profile's rules are in the
   [threat model](../security/threat-model.md#6-accepted-risks).
 - The profile is the operator's and may refuse any call with any errno

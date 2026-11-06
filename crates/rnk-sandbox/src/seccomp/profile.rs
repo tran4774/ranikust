@@ -30,8 +30,10 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::rc::Rc;
 
 use serde::Deserialize;
+use serde::de::{self, DeserializeSeed, Deserializer, SeqAccess, Visitor};
 
 use super::asm::{Asm, AsmError, JEQ_K, JGE_K, JGT_K, Label, MAX_INSNS};
 use super::{Program, syscalls};
@@ -174,7 +176,7 @@ struct ArchJson {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RuleJson {
-    names: Option<Vec<String>>,
+    names: Option<Names>,
     name: Option<String>,
     action: String,
     errno_ret: Option<u64>,
@@ -183,6 +185,75 @@ struct RuleJson {
     _comment: Option<String>,
     includes: Option<FilterJson>,
     excludes: Option<FilterJson>,
+}
+
+/// A rule's `names`, in order, in one buffer: a profile may list a call
+/// hundreds of thousands of times, and a `String` each would hold several
+/// times the profile's size.
+#[derive(Default)]
+struct Names {
+    text: String,
+    /// Where each name ends in `text`.
+    ends: Vec<usize>,
+}
+
+impl Names {
+    fn iter(&self) -> impl Iterator<Item = &str> + Clone {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        // Every end is one `Push` left, so each range is in `text`.
+        starts
+            .zip(&self.ends)
+            .map(|(start, &end)| self.text.get(start..end).unwrap_or_default())
+    }
+}
+
+impl<'de> Deserialize<'de> for Names {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct List;
+        impl<'de> Visitor<'de> for List {
+            type Value = Names;
+
+            // serde's own words for a `Vec<String>`, so its errors read alike.
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a sequence")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Names, A::Error> {
+                let mut names = Names::default();
+                while seq.next_element_seed(Push(&mut names))?.is_some() {}
+                Ok(names)
+            }
+        }
+        d.deserialize_seq(List)
+    }
+}
+
+/// Appends one name to a [`Names`].
+struct Push<'n>(&'n mut Names);
+
+impl<'de> DeserializeSeed<'de> for Push<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> std::result::Result<(), D::Error> {
+        d.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for Push<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string")
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<(), E> {
+        self.0.text.push_str(v);
+        self.0.ends.push(self.0.text.len());
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -458,16 +529,20 @@ fn cond(a: &ArgJson, what: &str) -> Result<Cond> {
 
 /// The rule and the names it applies to, checked whatever `includes` and
 /// `excludes` say, so that a profile is valid or not on every machine.
-fn rule(r: &RuleJson, what: &str, fakes: bool) -> Result<(Rule, Vec<String>)> {
-    let names = match (&r.name, &r.names) {
-        (Some(_), Some(_)) => {
-            return Err(bad(format!("{what}: both name and names")));
-        }
-        (Some(n), None) => vec![n.clone()],
-        (None, Some(n)) => n.clone(),
-        (None, None) => Vec::new(),
-    };
-    if names.is_empty() {
+fn rule<'r>(
+    r: &'r RuleJson,
+    what: &str,
+    fakes: bool,
+) -> Result<(Rule, impl Iterator<Item = &'r str> + Clone + use<'r>)> {
+    if r.name.is_some() && r.names.is_some() {
+        return Err(bad(format!("{what}: both name and names")));
+    }
+    let names = r
+        .name
+        .as_deref()
+        .into_iter()
+        .chain(r.names.iter().flat_map(Names::iter));
+    if names.clone().next().is_none() {
         return Err(bad(format!("{what}: names no system call")));
     }
     let action = action(
@@ -508,7 +583,7 @@ const KEYRING_CALLS: [&str; 3] = ["keyctl", "add_key", "request_key"];
 /// Whether a call with these `rules` never runs, whatever its arguments: a
 /// rule without conditions refuses it, which wins over any other, or the
 /// default refuses it and no rule lets it run.
-fn refused_always(rules: &[Rule], default: Action) -> bool {
+fn refused_always(rules: &[Rc<Rule>], default: Action) -> bool {
     rules.iter().any(|r| r.conds.is_empty() && !r.action.runs())
         || (!default.runs() && !rules.iter().any(|r| r.action.runs()))
 }
@@ -569,16 +644,18 @@ fn compile(json: &[u8], cx: &Context) -> Result<SeccompProfile> {
         return Err(bad("a listener is not supported"));
     }
 
-    let mut calls: BTreeMap<u32, Vec<Rule>> = BTreeMap::new();
+    // A rule is held once, however many names it lists.
+    let mut calls: BTreeMap<u32, Vec<Rc<Rule>>> = BTreeMap::new();
     for (i, r) in p.syscalls.iter().flatten().enumerate() {
         let what = format!("syscalls[{i}]");
         let (rule, names) = rule(r, &what, cx.fakes())?;
         if !cx.keeps(r)? {
             continue;
         }
+        let rule = Rc::new(rule);
         for name in names {
-            match (syscalls::number(&name), rule.action) {
-                (Some(nr), _) => calls.entry(nr).or_default().push(rule.clone()),
+            match (syscalls::number(name), rule.action) {
+                (Some(nr), _) => calls.entry(nr).or_default().push(Rc::clone(&rule)),
                 (None, Action::Allow) => {}
                 (
                     None,
@@ -628,7 +705,7 @@ enum Leaf {
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn emit(
-    calls: &BTreeMap<u32, Vec<Rule>>,
+    calls: &BTreeMap<u32, Vec<Rc<Rule>>>,
     default: Action,
 ) -> Result<Vec<libc::sock_filter>, AsmError> {
     use super::{ARCH, AUDIT_ARCH, NR};
@@ -693,7 +770,7 @@ fn emit(
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn emit(
-    _calls: &BTreeMap<u32, Vec<Rule>>,
+    _calls: &BTreeMap<u32, Vec<Rc<Rule>>>,
     _default: Action,
 ) -> Result<Vec<libc::sock_filter>, AsmError> {
     Err(AsmError::Label)
@@ -703,7 +780,7 @@ fn emit(
 fn tree(
     a: &mut Asm,
     iv: &[(u32, Leaf)],
-    calls: &BTreeMap<u32, Vec<Rule>>,
+    calls: &BTreeMap<u32, Vec<Rc<Rule>>>,
     default: Action,
     unknown: Action,
 ) {
@@ -725,7 +802,7 @@ fn tree(
 }
 
 /// The rules of one call, most restrictive first, then the default.
-fn chain(a: &mut Asm, rules: &[Rule], default: Action) {
+fn chain(a: &mut Asm, rules: &[Rc<Rule>], default: Action) {
     for r in rules {
         let next = a.label();
         for c in &r.conds {
