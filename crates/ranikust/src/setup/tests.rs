@@ -56,6 +56,29 @@ fn a_refused_overlay_mount_routes_root_to_kaniko_stages_but_a_host_error_does_no
     };
     assert_eq!(overlay_refusal(&host, 0).guidance, "");
     assert_eq!(overlay_refusal(&host, 0).kind, Kind::Other);
+
+    // The test hook's refusal routes as the kernel's.
+    let r = overlay_refusal(&FAULT_OVERLAY_REFUSED, 0);
+    assert_eq!(r.kind, Kind::OverlayUnusable);
+    assert_eq!(route(&r, false), Route::KanikoStages);
+}
+
+/// The user-namespace probe's directory stays when a child was left by
+/// the steps or by the overlay probe in the namespace, and only then.
+#[test]
+fn only_a_probe_child_left_behind_keeps_the_probes_directory() {
+    let left = rnk_sandbox::Error::ProbeChildLeft { pid: 42 };
+    assert!(keeps_dir(Some(&left), None));
+    assert!(keeps_dir(None, Some(&left)));
+    assert!(!keeps_dir(None, None));
+    let others = [
+        rnk_sandbox::Error::ProbeClosure("the probe's child was killed after 60 s".to_owned()),
+        rnk_sandbox::Error::NotSingleThreaded { threads: 2 },
+    ];
+    for e in &others {
+        assert!(!keeps_dir(Some(e), None), "{e}");
+        assert!(!keeps_dir(None, Some(e)), "{e}");
+    }
 }
 
 /// A probe mount that never reached the kernel (its thread could not start,
@@ -454,4 +477,104 @@ fn a_second_build_on_slash_is_refused_by_the_lock() {
     let again =
         lock_slash().unwrap_or_else(|r| panic!("/ stays locked after the build: {}", r.reason));
     drop(again);
+}
+
+#[test]
+fn the_user_namespace_line_says_whether_the_path_passes_and_where_it_stops() {
+    let steps = "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok";
+    let ok = Some(Ok(Ok(mount_api_name(MountApi::LowerdirPlus).to_owned())));
+    assert_eq!(
+        userns_summary(None, steps, ok.clone(), "0"),
+        (
+            true,
+            "passes; unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; overlay: ok, \
+             fsconfig(lowerdir+); kernel.apparmor_restrict_unprivileged_userns: 0"
+                .to_owned()
+        )
+    );
+    let (passes, line) = userns_summary(Some("unshare"), steps, None, "absent");
+    assert!(!passes);
+    assert!(line.starts_with("stops at unshare; "), "{line}");
+    assert!(
+        line.ends_with(
+            "; overlay: not run (no id map); kernel.apparmor_restrict_unprivileged_userns: absent"
+        ),
+        "{line}"
+    );
+    let refused = Some(Ok(Err("mount: EINVAL".to_owned())));
+    let (passes, line) = userns_summary(None, steps, refused, "1");
+    assert!(!passes);
+    assert!(line.starts_with("stops at overlay; "), "{line}");
+    assert!(
+        line.contains("; overlay: refused: mount: EINVAL; "),
+        "{line}"
+    );
+    // A probe that could not run is not a refusal.
+    let host = Some(Err("fork the probe's child: EAGAIN".to_owned()));
+    let (passes, line) = userns_summary(None, steps, host, "1");
+    assert!(!passes);
+    assert!(line.starts_with("overlay not probed; "), "{line}");
+    assert!(
+        line.contains("; overlay: could not run: fork the probe's child: EAGAIN; "),
+        "{line}"
+    );
+    // The steps decide first.
+    let (passes, line) = userns_summary(Some("chown"), steps, ok, "1");
+    assert!(!passes);
+    assert!(line.starts_with("stops at chown; "), "{line}");
+}
+
+/// Red team (#74): the user namespace line never reads as a mode line.
+#[test]
+fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
+    let steps = [
+        "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; unshare(CLONE_NEWNS): ok; \
+         proc: new instance; sysfs: rbind of /sys (mount sysfs: EPERM); mknod: EPERM",
+        "unshare(CLONE_NEWUSER): ok; map: one uid: write uid_map: EPERM",
+        "unshare(CLONE_NEWUSER): EPERM",
+    ];
+    let api = |a| Some(Ok(Ok(mount_api_name(a).to_owned())));
+    let overlays: [OverlayInNamespace; 5] = [
+        api(MountApi::LowerdirPlus),
+        api(MountApi::Mount2),
+        Some(Ok(Err("mount: EINVAL".to_owned()))),
+        Some(Err("fork the probe's child: EAGAIN".to_owned())),
+        None,
+    ];
+    let marks = [
+        "overlay mode",
+        "kaniko mode",
+        "set up for",
+        "RUN enters its root",
+        "RUN directly",
+        "RUN in the full sandbox",
+        "directory per stage",
+        "root may not mount",
+        "cannot run here",
+    ];
+    for stop in [
+        None,
+        Some("unshare"),
+        Some("map"),
+        Some("chown"),
+        Some("mknod"),
+    ] {
+        for step in steps {
+            for overlay in &overlays {
+                for apparmor in ["0", "1", "absent", "unreadable: EACCES"] {
+                    let (_, line) = userns_summary(stop, step, overlay.clone(), apparmor);
+                    assert!(!line.contains('\n'), "{line}");
+                    assert!(
+                        ["passes; ", "stops at ", "overlay not probed; "]
+                            .iter()
+                            .any(|v| line.starts_with(v)),
+                        "{line}"
+                    );
+                    for mark in marks {
+                        assert!(!line.contains(mark), "{mark:?} in {line}");
+                    }
+                }
+            }
+        }
+    }
 }

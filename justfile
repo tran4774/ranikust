@@ -74,7 +74,8 @@ check-aarch64:
 # - without a binfmt_misc entry for aarch64, the tests that spawn an aarch64
 #   binary themselves: ranikust's `cli` and `metrics`, rnk-store's
 #   `processes`, and rnk-sandbox's
-#   `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`.
+#   `a_copy_an_interpreter_must_reopen_is_refused_before_the_exec` and
+#   `a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent`.
 
 # Static aarch64 musl binary and T0 tests, natively on aarch64 (CI job `test-aarch64`) or under qemu-user elsewhere. QEMU_AARCH64 names the emulator. Requires zig, cargo-zigbuild; on x86_64 also qemu-user 9.1 or later.
 test-aarch64 *args:
@@ -163,10 +164,11 @@ test-aarch64 *args:
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target "$@" -- "${skip[@]}"
     else
-      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes, rnk-sandbox's sealed-copy interpreter test)" >&2
+      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes, rnk-sandbox's sealed-copy interpreter test and closure's child test)" >&2
       skip+=(--skip concurrent_fills_from_processes_run_the_filler_once
         --skip a_build_killed_mid_fill_leaves_nothing_behind
-        --skip seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec)
+        --skip seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec
+        --skip userns::tests::a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent)
       cargo-zigbuild test --workspace --exclude ranikust --locked --target $target "$@" -- "${skip[@]}"
       cargo-zigbuild test -p ranikust --bins --locked --target $target "$@" -- "${skip[@]}"
     fi

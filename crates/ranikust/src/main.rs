@@ -68,9 +68,12 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Hidden test hook. `panic` panics and aborts and `error` fails with exit
 /// code 1, after metrics are set up; `kernel-missing`, `kernel-blocked` and
 /// `kernel-hidden` make the kernel check fail; `seal-tmpfile` skips the
-/// memfd way of sealing the binary and `seal-none` both ways (ADR-0101). It
-/// lets the tests run the real binary through these paths, including a
-/// release build, where `panic = "abort"`.
+/// memfd way of sealing the binary and `seal-none` both ways (ADR-0101);
+/// `overlay-refused` takes overlay mode's probe, once it passed, as a
+/// failed probe check, which routes as NFS's refused mount does
+/// ([`setup::set_up`]). It lets the tests run the
+/// real binary through these paths, including a release build, where
+/// `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
@@ -450,16 +453,19 @@ fn run(
             Ok(())
         }
         Command::Build(args) => tracing::debug_span!("ranikust.build")
-            .in_scope(|| build(args, telemetry, metrics_file, binary)),
+            .in_scope(|| build(args, telemetry, metrics_file, binary, fault)),
     }
 }
 
+/// `fault` is the test hook's value ([`DEBUG_FAULT_ENV`]).
 fn build(
     args: &BuildArgs,
     telemetry: &Telemetry,
     metrics_file: Option<&Path>,
     binary: Option<BinaryMount>,
+    fault: Option<&str>,
 ) -> Result<(), Failure> {
+    let refuse_overlay = fault == Some("overlay-refused");
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
     let seccomp = config::read_seccomp(config.seccomp.as_ref())
         .map_err(|invalid| Failure::usage(invalid.0))?;
@@ -495,7 +501,7 @@ fn build(
             kaniko(
                 &config,
                 &seccomp,
-                "--mode=kaniko",
+                KanikoBy::Flag,
                 can_mount,
                 runtime,
                 metrics_file,
@@ -511,7 +517,7 @@ fn build(
             let span = tracing::debug_span!("ranikust.setup");
             span.in_scope(setup::enter_namespace)
                 .map_err(Failure::refused)?;
-            overlay(&config, &seccomp, &span)
+            overlay(&config, &seccomp, &span, refuse_overlay)
         }
         // Whether root may mount decides, before anything is written
         // (ADR-0040).
@@ -529,11 +535,14 @@ fn build(
                     // Overlay mode's flags are checked before its set-up
                     // writes anything, and count only if it is picked.
                     let flags = config::overlay_mode_flags(args);
+                    let mut userns_probe = true;
                     let refusal = match span.in_scope(|| {
                         setup::set_up(
                             &config.state_dir,
                             config.allow_network_none_userns,
                             &seccomp,
+                            &mut userns_probe,
+                            refuse_overlay,
                         )
                     }) {
                         Ok(setup) => {
@@ -568,10 +577,16 @@ fn build(
                             );
                             // Never read: off `/`, or with `can_mount`, no scan runs.
                             let started_in = Err(rustix::io::Errno::INVAL);
+                            // One probe line per build.
+                            let by = if userns_probe {
+                                KanikoBy::Auto
+                            } else {
+                                KanikoBy::AutoProbed
+                            };
                             kaniko(
                                 &config,
                                 &seccomp,
-                                "--mode=auto",
+                                by,
                                 true,
                                 runtime,
                                 metrics_file,
@@ -588,7 +603,7 @@ fn build(
                     kaniko(
                         &config,
                         &seccomp,
-                        "--mode=auto",
+                        KanikoBy::Auto,
                         false,
                         runtime,
                         metrics_file,
@@ -598,6 +613,26 @@ fn build(
                 }
                 Err(refusal) => Err(Failure::refused(refusal)),
             }
+        }
+    }
+}
+
+/// How [`kaniko`] was reached: `--mode=kaniko`, or picked by
+/// `--mode=auto`, which also runs the user-namespace probe, reported only,
+/// unless overlay mode's set-up ran it before it was refused.
+#[derive(Clone, Copy)]
+enum KanikoBy {
+    Flag,
+    Auto,
+    AutoProbed,
+}
+
+impl KanikoBy {
+    /// The flag, for messages.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Flag => "--mode=kaniko",
+            Self::Auto | Self::AutoProbed => "--mode=auto",
         }
     }
 }
@@ -613,10 +648,23 @@ fn overlay_flags(args: &BuildArgs) -> Result<(), Failure> {
 }
 
 /// Overlay mode, once the namespace is entered: the rest of the set-up,
-/// then the build.
-fn overlay(config: &BuildConfig, seccomp: &Seccomp, span: &tracing::Span) -> Result<(), Failure> {
+/// then the build. `refuse_overlay` is the test hook's `overlay-refused`.
+fn overlay(
+    config: &BuildConfig,
+    seccomp: &Seccomp,
+    span: &tracing::Span,
+    refuse_overlay: bool,
+) -> Result<(), Failure> {
     let setup = span
-        .in_scope(|| setup::set_up(&config.state_dir, config.allow_network_none_userns, seccomp))
+        .in_scope(|| {
+            setup::set_up(
+                &config.state_dir,
+                config.allow_network_none_userns,
+                seccomp,
+                &mut false,
+                refuse_overlay,
+            )
+        })
         .map_err(Failure::refused)?;
     overlay_built(config, setup)
 }
@@ -655,15 +703,17 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
         .map_err(|e| Failure::error(format!("printing the image digest: {e}")))
 }
 
-/// Kaniko mode, chosen by `how` (ADR-0050): in a container (kaniko's
+/// Kaniko mode, reached as `by` says (ADR-0050): in a container (kaniko's
 /// heuristic, ADR-0048) the root is `/`, and the stages run one unit at a
 /// time on it (`design/kaniko-mode.md#stage-roots-on-the-shared-root`);
 /// anywhere else each stage gets a directory of its own in the state
 /// directory, `<state>/builds/<id>/stages/<n>/rootfs`, scheduled as
 /// overlay mode's stages (`#per-stage-directories`, ADR-0059). Then
 /// `RLIMIT_NOFILE` is raised (the original kept for `RUN`), the state
-/// directory and store set up, and the ignore list built. `seccomp` is the
-/// profile of a full-sandbox `RUN`; `can_mount` is whether the build's
+/// directory and store set up, and the ignore list built. `by` names the
+/// flag in messages and says whether the user-namespace probe runs here
+/// ([`KanikoBy`]); `seccomp` is the profile of a full-sandbox `RUN`;
+/// `can_mount` is whether the build's
 /// mount namespace could be entered; `runtime` is what
 /// [`container::detect`] found, read once by the caller; `binary` where the
 /// binary ranikust started from lies; `started_in` the mount namespace
@@ -677,13 +727,14 @@ fn report_built(built: &build::Built) -> Result<(), Failure> {
 fn kaniko(
     config: &BuildConfig,
     seccomp: &Seccomp,
-    how: &str,
+    by: KanikoBy,
     can_mount: bool,
     runtime: Option<container::Runtime>,
     metrics_file: Option<&Path>,
     binary: Option<BinaryMount>,
     started_in: rustix::io::Result<exposure::MountNamespace>,
 ) -> Result<(), Failure> {
+    let how = by.flag();
     let nofile = rnk_sandbox::NofileLimit::current();
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(Failure::error(format!(
@@ -736,8 +787,21 @@ fn kaniko(
     } else {
         None
     };
+    let userns_probe = match by {
+        KanikoBy::Auto => true,
+        KanikoBy::Flag | KanikoBy::AutoProbed => false,
+    };
     let setup = tracing::debug_span!("ranikust.setup")
-        .in_scope(|| setup::set_up_kaniko(&config.state_dir, on_slash, can_mount, nofile, seccomp))
+        .in_scope(|| {
+            setup::set_up_kaniko(
+                &config.state_dir,
+                on_slash,
+                can_mount,
+                nofile,
+                seccomp,
+                userns_probe,
+            )
+        })
         .map_err(Failure::refused)?;
     if on_slash {
         // Once the set-up left ranikust only what a `RUN` keeps (ADR-0078),

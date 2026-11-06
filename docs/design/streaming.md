@@ -159,9 +159,10 @@ layers uploading or waiting to is bounded by twice `--jobs`.
 
 ## Cache (Phase 4)
 
-The cache reuses layers by cache key ([open: #13]) and publishes built blobs in
-the persistent store, under the digest computed while writing, for overlay mode
-and kaniko mode on a host
+The cache reuses layers by cache key
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md))
+and publishes built blobs in the persistent store, under the digest computed
+while writing, for overlay mode and kaniko mode on a host
 ([ADR-0052](../adr/0052-push-input-aliases-and-issue-mining-fixes.md)). A cache
 hit needs no local blob either: the cached layer is mounted or streamed from
 the cache repository, as a base layer is. On `/` the state never outlives the
@@ -214,4 +215,3 @@ container's overlayfs; main at `38f1dfd` against this design with the spool on
 ## Open questions
 
 - [Q-370](https://github.com/tran4774/ranikust/issues/23) Should a built layer be encoded straight into its upload?
-- [Q-041](https://github.com/tran4774/ranikust/issues/13) What exactly goes into a cache key and its tag?

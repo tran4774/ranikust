@@ -57,11 +57,11 @@ Moved to [#5](https://github.com/tran4774/ranikust/issues/5) (ADR-0088), answere
 
 ### Q-027: Is the ContextSource trait sync or async?
 
-Moved to [#6](https://github.com/tran4774/ranikust/issues/6) (ADR-0088).
+Moved to [#6](https://github.com/tran4774/ranikust/issues/6) (ADR-0088), answered by [ADR-0115](adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md).
 
 ### Q-028: Which planned crate dependencies are allowed?
 
-Moved to [#7](https://github.com/tran4774/ranikust/issues/7) (ADR-0088).
+Moved to [#7](https://github.com/tran4774/ranikust/issues/7) (ADR-0088), answered by [ADR-0115](adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md).
 
 ### Q-029: Which crate computes LayerDemand?
 
@@ -85,23 +85,23 @@ Moved to [#12](https://github.com/tran4774/ranikust/issues/12) (ADR-0088), answe
 
 ### Q-041: What exactly goes into a cache key and its tag?
 
-Moved to [#13](https://github.com/tran4774/ranikust/issues/13) (ADR-0088).
+Moved to [#13](https://github.com/tran4774/ranikust/issues/13) (ADR-0088), answered by [ADR-0113](adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md).
 
 ### Q-042: How do cache lookahead and cached-stage skipping work?
 
-Moved to [#14](https://github.com/tran4774/ranikust/issues/14) (ADR-0088).
+Moved to [#14](https://github.com/tran4774/ranikust/issues/14) (ADR-0088), answered by [ADR-0114](adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md).
 
 ### Q-250: Does a git context fall back between the two backends?
 
-Moved to [#15](https://github.com/tran4774/ranikust/issues/15) (ADR-0088).
+Moved to [#15](https://github.com/tran4774/ranikust/issues/15) (ADR-0088), answered by [ADR-0119](adr/0119-git-contexts-take-buildkits-fragment-only-with-no-backend-fallback.md).
 
 ### Q-251: Can kaniko's `#ref#commit` fragment name a subdirectory?
 
-Moved to [#16](https://github.com/tran4774/ranikust/issues/16) (ADR-0088).
+Moved to [#16](https://github.com/tran4774/ranikust/issues/16) (ADR-0088), answered by [ADR-0119](adr/0119-git-contexts-take-buildkits-fragment-only-with-no-backend-fallback.md).
 
 ### Q-252: Which `--git-config` keys does the built-in backend honour?
 
-Moved to [#17](https://github.com/tran4774/ranikust/issues/17) (ADR-0088).
+Moved to [#17](https://github.com/tran4774/ranikust/issues/17) (ADR-0088), answered by [ADR-0119](adr/0119-git-contexts-take-buildkits-fragment-only-with-no-backend-fallback.md).
 
 ### Q-245: Should one overlay mount serve consecutive instructions?
 
@@ -121,7 +121,7 @@ Moved to [#23](https://github.com/tran4774/ranikust/issues/23) (ADR-0088).
 
 ### Q-383: How do `bind`, `tmpfs` and `from=` mounts work for a `Direct` `RUN` on `/`?
 
-Moved to [#24](https://github.com/tran4774/ranikust/issues/24) (ADR-0088).
+Moved to [#24](https://github.com/tran4774/ranikust/issues/24) (ADR-0088), answered by [ADR-0121](adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md).
 
 ### Q-447: Should `--network=none` also keep ranikust's own registry requests off internal addresses?
 
@@ -133,7 +133,7 @@ Moved to [#26](https://github.com/tran4774/ranikust/issues/26) (ADR-0088).
 
 ### Q-449: Should push-side error bodies be bounded too?
 
-Moved to [#27](https://github.com/tran4774/ranikust/issues/27) (ADR-0088).
+Moved to [#27](https://github.com/tran4774/ranikust/issues/27) (ADR-0088), answered by [ADR-0120](adr/0120-credential-helpers-are-external-for-now-mirrors-keep-kanikos-flags-and-pushes-go-through-rnk-registry.md).
 
 ### Q-448: Should a pull have an overall deadline or minimum rate?
 
@@ -145,11 +145,11 @@ Moved to [#29](https://github.com/tran4774/ranikust/issues/29) (ADR-0088).
 
 ### Q-441: How can kaniko mode on `/` keep a cache across builds safely?
 
-Moved to [#30](https://github.com/tran4774/ranikust/issues/30) (ADR-0088).
+Moved to [#30](https://github.com/tran4774/ranikust/issues/30) (ADR-0088), partly answered by [ADR-0116](adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md).
 
 ### Q-454: What does a placed secret file do when its target exists or its parent directories are missing?
 
-Moved to [#31](https://github.com/tran4774/ranikust/issues/31) (ADR-0088).
+Moved to [#31](https://github.com/tran4774/ranikust/issues/31) (ADR-0088), answered by [ADR-0121](adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md).
 
 ## Answered
 

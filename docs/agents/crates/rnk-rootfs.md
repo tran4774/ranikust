@@ -3,7 +3,8 @@
 > **Status:** done · **Phase:** 1-2 ·
 > **Depends on:** no internal crate (never `rnk-layer`) ·
 > **Used by:** `rnk-snapshot`, `rnk-sandbox`, `rnk-builder`, `rnk-store`,
-> `rnk-context`, `ranikust` · **Path:** `crates/rnk-rootfs/`
+> `rnk-context`, `rnk-cache` (planned, ADR-0115), `ranikust` ·
+> **Path:** `crates/rnk-rootfs/`
 
 **TL;DR:** All filesystem access inside a build root goes through `RootPath`,
 which resolves paths from a root fd with `openat2(RESOLVE_IN_ROOT)`, so `..`
@@ -75,7 +76,7 @@ pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
 pub struct CopyOpts { pub owner: Option<Owner>, pub chmod: Option<Chmod>, pub skip_special: bool, pub from_context: bool } // None keeps the source's; skip_special leaves devices, FIFOs, sockets out (ADR-0060); from_context: the context rule per file (ADR-0076)
 pub struct Fence;     // Fence::of(&RootPath): a directory (by inode, so its bind mounts too) an output must not lead into, the build context's
-pub struct OutputDir; // open(path, create, fence): from / one name at a time, never through a symlink, never into the fence; check(), sub_dir(), write_in_place() (a regular file with one link), write_atomically() (O_EXCL temporary, renameat over a regular file only), open_existing() (ADR-0076)
+pub struct OutputDir; // open(path, create, fence): from / one name at a time, never through a symlink, never into the fence; check(), sub_dir(), write_in_place() (a regular file with one link), write_atomically() (O_EXCL temporary, renameat over a regular file, else only where nothing is; a non-directory swapped in after the last look may be replaced, never followed), open_existing() (ADR-0076)
 pub fn reach(path, fence: &Fence) -> Result<Reached>; // walks a host path to read (--dockerfile and its ignore file, ADR-0076); Reached::Inside(rest) once it enters the fence, for the context's RootPath; Reached::Outside(HostFile): pinned, open_regular(), open_beside(name)
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;
 pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // deletes what `remove` names (with what is below), every touched directory's times set back, overlay's own xattrs (is_overlay_own) removed from kept entries and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root
@@ -168,8 +169,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changes what the `tar` crate hands on and never lets a name or PAX record
   over the bound through. `red_team_names_swapped_during_an_output_never_redirect_it`
   (`src/host/tests.rs`): a thread exchanging the output directory, the tar
-  and the digest file with links to victims while `OutputDir` writes 3000
-  times (flaky on CI: [#44](https://github.com/tran4774/ranikust/issues/44)).
+  and the digest file with links to victims, in random order, while
+  `OutputDir` writes; rounds of 3000 writes, the victim checked after each,
+  until one round saw swaps land, let some writes through and refused some
+  (no new round after 60 s).
 - **T1** (`#[ignore = "T1: ..."]`, `RNK_T1_ROOT`): extraction and live
   extraction never write below or skip-wrongly real mounts; foreign owners
   and setuid kept raw in `extract`.

@@ -13,7 +13,9 @@
 //! Also probes, by actually trying each step, what the environment allows this
 //! crate: namespaces, the uid map, `proc`, `pivot_root` or `MS_MOVE`, and
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
-//! picks the mode.
+//! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
+//! user namespace would need, and only reports them: nothing routes on it
+//! yet.
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused
@@ -29,17 +31,21 @@
 //!
 //! While the process is single-threaded: [`run_from_sealed_copy`] first,
 //! which runs the process again from the copy, then
-//! [`enter_build_namespace`], then [`probe`]. Then [`Sandbox::start`], which
-//! replays the stub journals of dead builds and starts the spawner thread,
-//! and [`Sandbox::run`] per `RUN`.
+//! [`enter_build_namespace`], then [`probe`]; `--mode=auto` also calls
+//! [`probe_user_namespace`], in overlay mode before the probes (the overlay
+//! probe's joined thread may still be counted), in kaniko mode after them.
+//! Then [`Sandbox::start`], which replays the stub journals of dead builds
+//! and starts the spawner thread, and [`Sandbox::run`] per `RUN`.
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
 //! says root may not mount), then [`trim_to_run_capabilities`], still
-//! single-threaded, then [`Sandbox::start_direct`] (ADR-0078).
+//! single-threaded; in `--mode=auto` then [`probe_user_namespace`]; then
+//! [`Sandbox::start_direct`] (ADR-0078).
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
-//! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. User
-//! namespaces, the `proc` and `sysfs` fallbacks and the bare-`chroot` path
-//! come later (`docs/agents/crates/rnk-sandbox.md`).
+//! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. A `RUN` in a
+//! user namespace, the `proc` and `sysfs` fallbacks and the bare-`chroot`
+//! path come later (`docs/agents/crates/rnk-sandbox.md`); the user-namespace
+//! probe already tries the fallbacks.
 //!
 //! # Boundaries
 //!
@@ -68,6 +74,7 @@ mod spawner;
 mod spec;
 mod stop;
 mod sweep;
+mod userns;
 
 pub use child::RootEntry;
 pub use error::{Error, Result, Step};
@@ -81,3 +88,7 @@ pub use spec::{
     forbid_core_dumps,
 };
 pub use stop::{StopSignal, StopSignals, block_stop_signals};
+pub use userns::{
+    IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds, UsernsReport,
+    probe_user_namespace,
+};

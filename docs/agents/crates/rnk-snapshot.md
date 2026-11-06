@@ -2,7 +2,7 @@
 
 > **Status:** in progress · **Phase:** 1-2 (mounting in a user namespace: 3) ·
 > **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store`, `rnk-oci` ·
-> **Used by:** `rnk-builder`, `ranikust` (probes) ·
+> **Used by:** `rnk-builder`, `ranikust` (probes; the overlay probe also in a user namespace, reported only, #74) ·
 > **Path:** `crates/rnk-snapshot/`
 
 **TL;DR:** Gives each stage a root (`StageRootfs`) and turns each change into
@@ -73,7 +73,7 @@ impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
 pub struct LayerDiff;                              // upper + lowers; new(upper, lowers), is_empty(), entries(), export(o, out)
-pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check
+pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check; also as root of a user namespace (ranikust's #74 probe, in a child)
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
 pub const OVERLAY_OPTIONS: &str = "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile"; // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // refused beyond, no merging yet (ADR-0032)
@@ -139,10 +139,11 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   metadata from the layers below, as a flattening extractor would.
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
   from a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
-  (containerd's way, ADR-0032); the stage directory is
-  `builds/<id>/stages/<n>/` with `rootfs/`, `diff-<k>/`, `work-<k>/` and
-  `empty-<i>/` (a lower for `FROM scratch` and the read-only view, which
-  needs two).
+  (containerd's way, ADR-0032), and logs through its caller's `tracing`
+  dispatcher (the user-namespace probe's child silences it); the stage
+  directory is `builds/<id>/stages/<n>/` with `rootfs/`, `diff-<k>/`,
+  `work-<k>/` and `empty-<i>/` (a lower for `FROM scratch` and the
+  read-only view, which needs two).
 - Exported layers keep only the `security.capability` xattr, as BuildKit and
   kaniko (ADR-0032); POSIX ACLs (`system.posix_acl_*`), SELinux labels and
   IMA/EVM signatures a `RUN` sets are dropped too.
@@ -208,7 +209,9 @@ that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
-  `tests/layers.rs`).
+  `tests/layers.rs`); `spawn_as_caller`, which starts the mount thread,
+  carries its caller's dispatcher over (`src/mount.rs`; the mount itself
+  needs root).
 - **T0, walk and exporter** (`src/kaniko/walk/tests.rs`,
   `src/kaniko/export/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
@@ -260,7 +263,10 @@ that found a bug stay as its regression test.
   tar header is refused and breaks the root; a bad blob on `/` touches no
   ignored path.
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
-  `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
+  `volatile` work dir; `/` stays 555; 500 lowers; long option strings. The
+  `kaniko-flags` case's kaniko leg: `probe` passes in the user namespace
+  ranikust's user-namespace probe makes under rootless Podman's defaults
+  (#74).
 - **T2c** (rootful Docker, `just test-container unit-c`;
   `#[ignore = "T2c: <profile>: ..."]`): profile `sysadmin`:
   `tests/overlay.rs` (overlay mounts: the probe, a layer per instruction with
