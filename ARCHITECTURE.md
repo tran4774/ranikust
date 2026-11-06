@@ -264,7 +264,7 @@ depend on higher ones. Besides the chain:
 The edges actually declared are in each `crates/*/Cargo.toml`; `rnk-cache`
 declares `rnk-oci` and `rnk-registry`.
 [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
-fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`,
+fixes the edges Phases 4 and 5 add (`rnk-cache` → `rnk-registry`,
 `rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
 the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
 `rnk-layer`; `rnk-context` → `rnk-registry`);

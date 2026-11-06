@@ -49,7 +49,7 @@ Boundaries: `crates/rnk-cache/src/lib.rs`. In short:
 Built (keys, tags and the registry cache):
 
 ```rust
-pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how, or to the entry form
+pub const KEY_VERSION: u32 = 1;      // bump on any change to what a key or a tag hashes, or how, or to the entry form a lookup checks
 pub struct CacheKey;                 // version + SHA-256; Copy, Eq, Hash; version(), hash()
 impl CacheKey {
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self; // platform manifest digest; None: FROM scratch
@@ -176,19 +176,22 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shows that a key ignores the order of build arguments, environment and
   files, the chunking of content and any mtime the header does not carry,
   that changing any one field changes it, that field boundaries cannot
-  shift, and that every encoding field changes the tag; it also pins the
-  encoding annotation. `tests/registry/` runs `RegistryCache` against
-  `rnk-registry`'s fake registry (compiled in through `#[path]`): a push
-  then a lookup is a hit with the same digests; an unknown key is a miss
-  after one request; a 500, a stall past `registry-idle` and bad credentials
-  are `Miss::Failed`; an expired entry is `Miss::Expired`; another encoding
-  misses, and an entry copied under its tag is refused; hostile entries (an
-  index, a Docker manifest, a manifest with no media type, zero or two
-  layers, another layer or config
+  shift, and that every encoding field changes the tag. `golden.rs` also
+  pins the encoding annotation, and `src/entry.rs` the entry form (a
+  manifest and config in canonical bytes, the layer type per compression).
+  `tests/registry/` runs `RegistryCache` against `rnk-registry`'s fake
+  registry (compiled in through `#[path]`): a push then a lookup is a hit
+  with the same digests, carrying the layer's type, digest and size only;
+  an unknown key is a miss after one request; a 500, a stall past
+  `registry-idle` and bad credentials are `Miss::Failed`; an expired entry
+  is `Miss::Expired`; another encoding misses, and an entry copied under
+  its tag is refused; hostile entries (an index, a Docker manifest, a
+  manifest with no media type, zero or two layers, another layer or config
   type, an artifact, annotations of another key, version or encoding, two
   diff IDs, a bad `created`) and documents over `--limit` are refused; a
   held blob is not uploaded again and one in a destination is mounted; a
-  failed push publishes nothing. `tests/spans.rs` checks the three spans.
+  failed push publishes nothing; a cache repository with a tag or digest
+  is refused. `tests/spans.rs` checks the three spans.
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
   against a real registry (T2); W2 cold, warm and partial; a layer cached in
   one mode reused by the other, checked against the ADR-0012 list.

@@ -185,3 +185,85 @@ pub(crate) fn check_config(bytes: &[u8]) -> Result<(Digest, Timestamp), Refusal>
     })?;
     Ok((diff_id, created))
 }
+
+#[cfg(test)]
+mod tests {
+    use rnk_oci::Platform;
+
+    use super::*;
+    use crate::{CacheKey, Encoding, KEY_VERSION, KeyInputs, TimePolicy};
+
+    /// The entry form a lookup checks, pinned: a change bumps
+    /// `KEY_VERSION`, or entries already pushed are refused with a warning
+    /// instead of missed.
+    #[test]
+    fn the_entry_form_is_pinned_with_the_key_version() {
+        let encoding = Encoding {
+            compression: Compression::Zstd,
+            level: 3,
+            times: TimePolicy::Clamped { epoch: 0 },
+        };
+        let key = CacheKey::root(None, &Platform::new("linux", "amd64"))
+            .next("RUN make", KeyInputs::new(&encoding));
+        let entry = EntryId::new(key, encoding);
+        let diff_id = Digest::from_sha256_bytes(&[1; 32]);
+        let created = Timestamp::parse_rfc3339("2026-11-07T01:02:03.5Z").unwrap();
+        let config = config(&diff_id, created).unwrap();
+        let blob = Descriptor::new(layer_type(&entry), Digest::from_sha256_bytes(&[2; 32]), 7);
+        let manifest = manifest(&entry, config.descriptor, blob).unwrap();
+        let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
+        let bump = format!("the entry form changed: bump KEY_VERSION (now {KEY_VERSION})");
+        assert_eq!(
+            text(&config.bytes),
+            concat!(
+                r#"{"architecture":"","config":{},"created":"2026-11-07T01:02:03.5Z","os":"","#,
+                r#""rootfs":{"diff_ids":["sha256:"#,
+                "0101010101010101010101010101010101010101010101010101010101010101",
+                r#""],"type":"layers"}}"#,
+            ),
+            "{bump}"
+        );
+        assert_eq!(
+            text(&manifest.bytes),
+            concat!(
+                r#"{"annotations":{"#,
+                r#""io.github.tran4774.ranikust.cache.encoding":"zstd;level=3;times=clamped;epoch=0","#,
+                r#""io.github.tran4774.ranikust.cache.key":"#,
+                r#""22c04fe87504e908bc776349803b5acbb8b0cc2cee066648a201a838ba5f08a2","#,
+                r#""io.github.tran4774.ranikust.cache.version":"1"},"#,
+                r#""config":{"digest":"sha256:"#,
+                "8de4810af97d373f830ab5595b6ee0b9eabce1401c0c65d19122a728e2e53ac7",
+                r#"","mediaType":"application/vnd.oci.image.config.v1+json","size":188},"#,
+                r#""layers":[{"digest":"sha256:"#,
+                "0202020202020202020202020202020202020202020202020202020202020202",
+                r#"","mediaType":"application/vnd.oci.image.layer.v1.tar+zstd","size":7}],"#,
+                r#""mediaType":"application/vnd.oci.image.manifest.v1+json","schemaVersion":2}"#,
+            ),
+            "{bump}"
+        );
+        let types = [
+            Compression::Uncompressed,
+            Compression::Gzip,
+            Compression::Zstd,
+        ]
+        .map(|c| {
+            let entry = EntryId::new(
+                key,
+                Encoding {
+                    compression: c,
+                    ..encoding
+                },
+            );
+            layer_type(&entry).as_str().to_owned()
+        });
+        assert_eq!(
+            types,
+            [
+                "application/vnd.oci.image.layer.v1.tar",
+                "application/vnd.oci.image.layer.v1.tar+gzip",
+                "application/vnd.oci.image.layer.v1.tar+zstd",
+            ],
+            "{bump}"
+        );
+    }
+}

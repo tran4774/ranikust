@@ -389,6 +389,10 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
             panic!("a created that is not RFC 3339 was not refused as such");
         };
         assert!(reason.starts_with("invalid timestamp"), "{reason}");
+        assert!(
+            reason.contains("\"2026-11-07"),
+            "the value is quoted: {reason}"
+        );
         assert!(reason.len() < 200, "{reason}");
         assert!(!reason.ends_with('…'), "the reason was cut: {reason}");
     }

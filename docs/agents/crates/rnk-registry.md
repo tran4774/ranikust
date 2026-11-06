@@ -156,7 +156,8 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   error body: each error stays under 400 bytes).
 - Unit tests: exp-05's Table 14 credential cases without helpers, secret
   redaction in `Debug` and errors, trust store (embedded roots, invalid host
-  certificates dropped, PEM files), retry delays, challenge parsing.
+  certificates dropped, PEM files), retry delays, the retry and not-found
+  decisions from status and codes, challenge parsing.
 - Ignored (need a registry): `real_registry_pull` (read-only, pulls
   `RNK_TEST_IMAGE` for linux/amd64) and `real_registry_round_trip` (pushes to
   a `k6-*` repository of `RNK_TEST_REGISTRY`, `host:port`, plain HTTP, and

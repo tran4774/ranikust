@@ -91,12 +91,14 @@ pub enum Refusal {
     },
     /// The layer's media type is not the entry encoding's.
     LayerType {
-        /// The layer's media type, cut to an excerpt.
+        /// The layer's media type, cut to an excerpt; empty when it names
+        /// none.
         media_type: String,
     },
     /// The config's media type is not an OCI image config.
     ConfigType {
-        /// The config's media type, cut to an excerpt.
+        /// The config's media type, cut to an excerpt; empty when it names
+        /// none.
         media_type: String,
     },
     /// The manifest is an artifact or refers to another manifest.
@@ -129,10 +131,10 @@ impl fmt::Display for Refusal {
             Self::Malformed { document, reason } => write!(f, "its {document}: {reason}"),
             Self::Layers { count } => write!(f, "{count} layers, not one"),
             Self::LayerType { media_type } => {
-                write!(f, "a layer of type {media_type}, not of its encoding")
+                write!(f, "a layer {}, not of its encoding", typed(media_type))
             }
             Self::ConfigType { media_type } => {
-                write!(f, "a config of type {media_type}, not an OCI image config")
+                write!(f, "a config {}, not an OCI image config", typed(media_type))
             }
             Self::NotAnImage => f.write_str("an artifact or a referrer, not an image"),
             Self::Annotation { name } => {
@@ -141,6 +143,15 @@ impl fmt::Display for Refusal {
             Self::DiffIds => f.write_str("its config does not name exactly one layer"),
             Self::Created { reason } => write!(f, "its config's created time: {reason}"),
         }
+    }
+}
+
+/// `of type <media_type>`, or `with no media type` when it is empty.
+fn typed(media_type: &str) -> String {
+    if media_type.is_empty() {
+        "with no media type".to_owned()
+    } else {
+        format!("of type {media_type}")
     }
 }
 
@@ -164,6 +175,32 @@ pub(crate) fn excerpt(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_names_a_missing_media_type_in_words() {
+        let none = String::new;
+        let shown = [
+            Refusal::NotAnImageManifest { media_type: none() },
+            Refusal::LayerType { media_type: none() },
+            Refusal::ConfigType { media_type: none() },
+        ]
+        .map(|r| r.to_string());
+        assert_eq!(
+            shown,
+            [
+                "a document with no media type, not an OCI image manifest",
+                "a layer with no media type, not of its encoding",
+                "a config with no media type, not an OCI image config",
+            ]
+        );
+        let zstd = Refusal::LayerType {
+            media_type: "application/vnd.oci.image.layer.v1.tar+zstd".to_owned(),
+        };
+        assert_eq!(
+            zstd.to_string(),
+            "a layer of type application/vnd.oci.image.layer.v1.tar+zstd, not of its encoding"
+        );
+    }
 
     #[test]
     fn excerpts_are_short_single_lines() {

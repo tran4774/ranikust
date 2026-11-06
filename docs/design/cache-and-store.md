@@ -251,14 +251,12 @@ by its `--limit` limit (ADR-0079):
 
 A hit returns the layer's descriptor and diff ID, which prove nothing: the
 caller checks the blob against both as it checks a base layer's, and
-extracts it under the same rules. In kaniko mode with a directory per stage,
-a hit streams into the stage root, and a blob found bad after extraction
-began makes the stage start again from its base without that entry; on `/` a
-hit is verified before extraction
+extracts it under the same rules (in kaniko mode:
+[a cache hit](kaniko-mode.md#a-cache-hit)). A blob found bad makes the stage
+start again from its base without that entry, which counts as a miss
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
 how often a stage may restart is not settled, decided before
-[#130](https://github.com/tran4774/ranikust/issues/130)). How kaniko mode
-applies a hit: [kaniko-mode](kaniko-mode.md#a-cache-hit).
+[#130](https://github.com/tran4774/ranikust/issues/130)).
 
 A push refuses a layer of another compression than its entry's, then sends
 the layer blob (skipped when the repository holds it, mounted from a
