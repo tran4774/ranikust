@@ -419,7 +419,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   control; the command's go only on its init's go byte, never on an ended
   pipe, another byte or a read faked with no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
-  be done; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
+  be done; a refused `close` reported by the closing of every descriptor,
+  after `close_range` was refused too; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
   `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
@@ -429,11 +430,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   nothing.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
-  (PID 2 under `ranikust-init`, which runs under the command's filters,
-  host name, capability sets `a80425fb` with
-  empty inheritable and ambient, `nodev` root and `/dev`, read-only
-  `/proc/sys` and `/dev/null`, masked kernel files, no terminal, only stdio
-  descriptors, no stub in the layer); `sealed-exe`: a `RUN` reaches no
+  (PID 2 under `ranikust-init`; the init under the command's filters; host
+  name; capability sets `a80425fb` with empty inheritable and ambient;
+  `nodev` root and `/dev`; read-only `/proc/sys` and `/dev/null`; masked
+  kernel files; no terminal; only stdio descriptors; no stub in the layer); `sealed-exe`: a `RUN` reaches no
   thread of ranikust's or its init's (ADR-0101). Not yet: the fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
@@ -451,10 +451,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (ADR-0033's filter); each `RUN` in a keyring of its own, its init under
   the same filters as its command;
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
-  that fails one of the init's last steps the `RUN` fails as that step and
-  its command leaves no mark, which it leaves under a control profile; a
-  profile refusing `close` still starts the command, whose status ends the
-  `RUN`;
+  that fails one of the init's last steps, or its closes, the `RUN` fails
+  as `Step::Init` and its command leaves no mark, which it leaves under a
+  control profile; a profile refusing `close` alone still starts the
+  command, whose status ends the `RUN`;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
   `--seccomp` refuses; compiled for the test) leave the bounding set, the

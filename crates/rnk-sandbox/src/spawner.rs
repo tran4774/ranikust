@@ -3793,13 +3793,15 @@ mod tests {
         });
     }
 
-    /// T2 (ADR-0080): a `RUN`'s command starts only on its init's go byte,
-    /// written after every one of the init's steps. Under a profile that
-    /// fails one of the init's last steps, the `RUN` fails as that step,
-    /// before its command ran, and the command leaves no mark, which it
-    /// leaves under a control profile that lets the init finish. A profile
-    /// that refuses `close` holds nothing up: the command starts on the
-    /// byte, not on the end of the pipe, and the `RUN` ends with its status.
+    /// T2 (ADR-0080): a `RUN`'s command starts only once its init has
+    /// finished every step. Under a profile that fails one of the init's
+    /// last steps, or its closes (`close` and `close_range`), the `RUN`
+    /// fails as `Step::Init`, before its command ran, and the command leaves
+    /// no mark, which it leaves under a control profile that lets the init
+    /// finish. These check the outcome; the go byte itself is checked in
+    /// `child.rs`. A profile that refuses `close` alone holds nothing up:
+    /// the command starts on the byte, not on the end of the pipe, and the
+    /// `RUN` ends with its status.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_runs_command_starts_only_once_its_init_has_finished() {
@@ -3821,6 +3823,14 @@ mod tests {
                 ("control", errno_rule("kill", libc::EPERM, None)),
                 ("the init fails", init_steps),
                 ("close refused", errno_rule("close", libc::EPERM, None)),
+                (
+                    "closes refused",
+                    format!(
+                        "{},{}",
+                        errno_rule("close", libc::EPERM, None),
+                        errno_rule("close_range", libc::EPERM, None)
+                    ),
+                ),
             ];
             let mut got = Vec::new();
             for (n, (name, rules)) in cases.into_iter().enumerate() {
@@ -3855,7 +3865,7 @@ mod tests {
             let mut wrong = Vec::new();
             for (name, st, marked, text) in &got {
                 let ok = match *name {
-                    "the init fails" => {
+                    "the init fails" | "closes refused" => {
                         marked.is_none()
                             && text.is_empty()
                             && matches!(

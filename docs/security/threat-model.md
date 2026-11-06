@@ -314,12 +314,12 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   `io_uring_*` calls, as the default profile does for a `RUN`; the default
   profile is not affected.
 - A `RUN`'s profile that refuses both `close` and `close_range` with an
-  errno (a kill or a trap fails the `RUN` instead) makes the init busy-loop
-  before its command starts, holding up to ranikust's own soft
-  `RLIMIT_NOFILE`, not the `RUN`'s (ranikust's hard limit in kaniko mode),
-  in descriptors, with work that grows with the square of that limit: a
-  limit of reliability, not of security. Docker's default profile allows
-  both.
+  errno (a kill or a trap fails the `RUN` at once) makes the init
+  busy-loop, holding up to ranikust's own soft `RLIMIT_NOFILE`, not the
+  `RUN`'s (ranikust's hard limit in kaniko mode), in descriptors, with work
+  that grows with the square of that limit, before it fails the `RUN` as
+  `Step::Init`, its command unrun: a limit of reliability, not of
+  security. Docker's default profile allows both.
 - A `RUN`'s profile that refuses `exit` and `exit_group`, or every call,
   with an errno (`SCMP_ACT_KILL_PROCESS`, `SCMP_ACT_KILL` in a
   single-threaded program, or a trap in a program without a `SIGSYS`
