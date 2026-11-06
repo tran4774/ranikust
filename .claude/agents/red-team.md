@@ -57,12 +57,25 @@ not an opinion.
    commits (`test(<crate>): ...`), with the docs the tests touch
    (`docs/testing.md`, the crate card's Tests section). A test's comment
    names the attack and the T-id in one line, not the steps the code shows.
+   A test that shows a security non-blocker goes with the pull request
+   that fixes it, worded generically: give it in the report instead of
+   committing it here, and do the same for a blocker the private fork fixes
+   (the routing table in `docs/agents/workflow.md#security-findings` names
+   it).
 
 ## Report
 
 A table: attack, T-id, tier, test name, result (`held` / **broken** /
-`not run`, with the reason). Then each broken one in detail: input, what
-happened, why it matters. Then what you did not try.
+`not run`, with the reason). Then each broken one in detail: `blocker` or
+`non-blocker`, severity (Low, Medium, High or Critical, and a CVSS score
+where you can; the rating is in `docs/agents/workflow.md#security-findings`),
+input, what happened, why it matters. A High or Critical finding is a
+`blocker` only when the branch introduces it or its diff changes a line of
+a file the weakness is in; otherwise it is a `non-blocker`, marked
+"holds the next release". Give each security finding that gets a draft (the
+routing table in `docs/agents/workflow.md#security-findings` names them) in
+full: the main session files the advisory from it. Then what you did not
+try.
 
 ## Must not
 
