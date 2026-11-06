@@ -502,6 +502,34 @@ fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
     );
 }
 
+/// A probe's child holds stdio and the descriptors it uses only: one this
+/// process opened, without close-on-exec as an inherited one may be, is
+/// closed in it.
+#[test]
+fn a_probes_child_holds_only_stdio_and_its_own_descriptors() {
+    let file = rustix::fs::open(c"/dev/null", OFlags::RDONLY, Mode::empty()).unwrap();
+    let extra = file.as_raw_fd();
+    let run = supervise(
+        &ranges(),
+        false,
+        None,
+        -1,
+        Duration::from_secs(20),
+        |args| {
+            // SAFETY: the report pipe's write end, open in the child.
+            let report = unsafe { BorrowedFd::borrow_raw(args.report) };
+            for (op, fd) in [(110, extra), (111, args.go), (112, 2)] {
+                // A bare number: a closed descriptor is no `BorrowedFd`.
+                // SAFETY: `F_GETFD` only reads the descriptor's flags.
+                let r = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                send(report, op, if r < 0 { Err(last_errno()) } else { Ok(()) });
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(run.records.list, [(110, libc::EBADF), (111, 0), (112, 0)]);
+}
+
 /// A failure part-way through making the probe's files leaves the
 /// directory as it was given: here a `sys` already there.
 #[test]

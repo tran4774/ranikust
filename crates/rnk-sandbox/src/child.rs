@@ -2044,9 +2044,10 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 
 /// Closes every descriptor not in `keep`, which is sorted ascending and may
 /// hold duplicates and negative entries (ignored), before the `RUN`'s
-/// filters, as best it can: with `close_range` over the gaps, else those
-/// `/proc/self/fd` lists, else every number up to the hard limit. The init
-/// closes with [`close_all_except_checked`] instead.
+/// filters or in a user-namespace probe's child, as best it can: with
+/// `close_range` over the gaps, else those `/proc/self/fd` lists, else
+/// every number up to the hard limit. The init closes with
+/// [`close_all_except_checked`] instead.
 ///
 /// Limits, known and accepted: the last fallback stops at 2^20, so a
 /// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
@@ -2056,7 +2057,7 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// leaves descriptors open, as nothing here checks that they are gone (a
 /// `RUN`'s profile cannot answer with success, ADR-0109, and the init
 /// checks every refusal).
-fn close_all_except(keep: &[RawFd]) {
+pub(crate) fn close_all_except(keep: &[RawFd]) {
     if close_gaps(keep).is_ok() {
         return;
     }

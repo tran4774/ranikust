@@ -294,7 +294,9 @@ impl UsernsReport {
     /// goes with the child.
     ///
     /// Call while the process is single-threaded, as the set-up is: the
-    /// child runs `f`, which may allocate.
+    /// child runs `f`, which may allocate; and before any credential is
+    /// read, as for [`probe_user_namespace`]. `f` gets no descriptor of this
+    /// process but stdio: it opens what it uses.
     pub fn in_namespace(
         &self,
         f: impl FnOnce() -> std::result::Result<String, String>,
@@ -354,8 +356,10 @@ impl fmt::Display for UsernsReport {
 /// `subordinate`, else one id. Each map is one attempt, in its own child,
 /// until one works or `unshare` itself is refused.
 ///
-/// Call in the single-threaded start-up window. Reported only: nothing
-/// here changes what the build does. One `rnk_sandbox.probe_userns` span.
+/// Call in the single-threaded start-up window, before any credential is
+/// read: each child is a copy of this process's memory. Reported only:
+/// nothing here changes what the build does. One `rnk_sandbox.probe_userns`
+/// span.
 ///
 /// # Errors
 ///
@@ -736,7 +740,8 @@ struct Supervised {
 /// kills it then, and reaps it.
 ///
 /// `child` runs in the forked process, which ends with `_exit` when it
-/// returns; it may allocate only when this process is single-threaded.
+/// returns; it may allocate only when this process is single-threaded. It
+/// holds only stdio and the descriptors in [`ChildArgs`].
 fn supervise(
     plan: &Plan,
     user: bool,
@@ -762,11 +767,13 @@ fn supervise(
     // is the caller's contract above.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
-        // This process's ends only: with its own copy of the go pipe's write
-        // end, a child would never read the end of a map this process
-        // failed to write.
-        drop(go_w);
-        drop(report_r);
+        // Closed below with every other descriptor the child does not use,
+        // not dropped: their numbers may be reused. With its own copy of the
+        // go pipe's write end, a child would never read the end of a map
+        // this process failed to write.
+        std::mem::forget(go_w);
+        std::mem::forget(report_r);
+        close_unused(&args);
         child(&args);
         // SAFETY: `_exit` ends this process at once, after `child` if it
         // returns.
@@ -824,6 +831,16 @@ fn supervise(
         parent_map,
         cut_short,
     })
+}
+
+/// Closes, right after the fork, every descriptor the child copied from
+/// this process but those `a` names and stdio, which a later `open` must
+/// not take: ranikust's others (the state directory, the build context, a
+/// registry connection) are not the child's to use.
+fn close_unused(a: &ChildArgs<'_>) {
+    let mut keep = [0, 1, 2, a.report, a.go, a.dir, a.chown.map_or(-1, |c| c.0)];
+    keep.sort_unstable();
+    child::close_all_except(&keep);
 }
 
 /// Writes the child's map from here: [`Plan::Ranges`] directly, as root
