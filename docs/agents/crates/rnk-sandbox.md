@@ -424,8 +424,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
   the init's and the command's reads, the parent check's against an unfiltered
   control; the parent check's read refused or faked failing with its errno
-  or `EINVAL`, another parent with `ESRCH`; the command's go only on its init's go byte, never on an ended
-  pipe, another byte or a read faked with no error, and the init's go byte
+  or `EINVAL`, another parent with `ESRCH`; the command's go only on its
+  init's go byte, never on an ended pipe, another byte or a read faked with
+  no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; the init's closing: a refused `close` reported with its errno,
   `EBADF` and `EINTR` included (also run for the musl target), whether
@@ -434,10 +435,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `close_range` alone is refused; a listing that cannot be read reported
   with its own errno, not `close_range`'s `ENOSYS`; the best-effort closing
   before the filters going on past a refused `close`, one descriptor
-  numbered past the hard limit closed too; a refused `umask` after the profile; a
-  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
-  last two on a stack filled
-  beforehand, which shows an unwritten buffer in a debug build only; these
+  numbered past the hard limit closed too; a refused `umask` after the
+  profile; a faked `setsid`, `pipe2` or `fstatfs`, a faked or refused
+  `prlimit64`; the last two on a stack filled beforehand, which shows an
+  unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
   overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
