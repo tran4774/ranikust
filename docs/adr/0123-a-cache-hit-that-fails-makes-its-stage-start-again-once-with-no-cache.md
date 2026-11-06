@@ -141,7 +141,9 @@ recommended":
   and the restart follows 1.
 
 Not decided here: the number of retries and their delays, which are the registry
-client's, and the names of the spans and fields the restart adds.
+client's; the names of the spans and fields the restart adds; and what a
+restarted stage does when a layer of its chain is held by neither the store nor
+a registry [open: #171], decided before #130 is built.
 
 ### Consequences
 
