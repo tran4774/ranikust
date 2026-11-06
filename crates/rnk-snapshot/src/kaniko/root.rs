@@ -983,8 +983,9 @@ fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
 
 /// `layer`'s compressed bytes, opened for extraction into the shared root,
 /// with everything that can fail before an entry reaches the root done. On
-/// `/`, which nothing empties, a streamed layer is first spooled and
-/// verified ([`Spooled::of`]): nothing unverified reaches the root.
+/// `/`, which nothing empties at the end of the build (only a new base
+/// does, between stages), a streamed layer is first spooled and verified
+/// ([`Spooled::of`]): nothing unverified reaches the root.
 /// Otherwise (a blob, or any layer on a root other than `/`) it is
 /// extracted as it arrives: a base layer that fails part-way leaves its
 /// entries until the next base empties the root, or [`Kaniko::finish`]

@@ -177,13 +177,18 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
 - Roots are emptied only through `rnk-rootfs` (`mnt_id`, never `st_dev`);
   per-stage roots are extracted or copied, never hardlinked (ADR-0017).
 - A cached layer (`apply_layer`) is hostile image content: it takes the
-  base-layer path only (`extract_checked`, and on `/` the spool verified
-  before `/` changes), never a path of its own. It leaves the walk's record
-  stale (`walked = false`), so the next `begin_layer` re-baselines. A failure
-  after the first entry may have landed marks the root broken (`broken`):
-  every later layer, view, keep and child stage is refused until the shared
-  root is emptied or the stage released
-  ([cache hit](../../design/kaniko-mode.md#a-cache-hit)).
+  base-layer path only (`extract_checked`), never a path of its own. On `/`
+  a streamed layer is spooled and verified before `/` changes; a store
+  blob's compressed digest is checked when the store fills it, and its diff
+  ID at the end of the extraction. Once the layer opens, the walk's record
+  is stale (`walked = false`), so the next `begin_layer` re-baselines. A
+  failure after the first entry may have landed marks the root broken
+  (`broken`): every later layer, applied layer, view, keep and child stage
+  is refused. The shared root is usable again once a new base empties it;
+  a broken stage root is only released. Running the stage again from its
+  base, the bad entry a miss, is the builder's
+  ([#130](https://github.com/tran4774/ranikust/issues/130);
+  [cache hit](../../design/kaniko-mode.md#a-cache-hit)).
 
 ## Refs
 
