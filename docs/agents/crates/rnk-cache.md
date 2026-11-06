@@ -1,8 +1,9 @@
 # rnk-cache
 
 > **Status:** skeleton · **Phase:** 4 ·
-> **Depends on:** `rnk-oci`, `rnk-store`, `rnk-registry` (planned) ·
-> **Used by:** `rnk-builder`, `rnk-sched` (up-front lookups) ·
+> **Depends on:** `rnk-registry`, `rnk-oci`, `rnk-rootfs` (planned, ADR-0115);
+> `rnk-store` is undecided, see [#123](https://github.com/tran4774/ranikust/issues/123) ·
+> **Used by:** `rnk-builder` ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per instruction and looks
@@ -43,7 +44,7 @@ impl CacheKey {
 }
 pub struct KeyInputs { /* sorted file digests, mount specs, args, env */ }   // fields: ADR-0113
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
-    async fn lookup(&self, key: &CacheKey) -> Result<Option<CachedLayer>>;
+    async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>;  // takes the encoding: ADR-0113
     async fn push(&self, key: &CacheKey, layer: &EncodedLayer) -> Result<()>;  // asynchronous
 }
 ```
@@ -71,8 +72,8 @@ The key formula and its fields: [`design/cache-and-store.md#cache-keys`](../../d
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#cache-keys`](../../design/cache-and-store.md#cache-keys), [`#ownership`](../../design/cache-and-store.md#ownership); [`design/scheduler.md#lazy-export`](../../design/scheduler.md#lazy-export) (`--cache` makes a layer needed); [threat model T11, T13](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache)
-- **Open:** [#13](https://github.com/tran4774/ranikust/issues/13) (key fields and tag), [#14](https://github.com/tran4774/ranikust/issues/14) (lookahead, skipping cached stages), [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
+- **Decisions:** [ADR-0005](../../adr/0005-own-versioned-cache-key.md) (own versioned key), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (cross-mode layers carry differences), [ADR-0006](../../adr/0006-persistent-store.md) and [ADR-0021](../../adr/0021-rnk-store-crate.md) (the local store is `rnk-store`, not this cache); decided, not built yet: [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (key fields, tag, encoding), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (lookahead, skipping cached stages), [ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md) (edges), [ADR-0116](../../adr/0116-the-cache-lives-in-a-registry-or-an-oci-layout-of-one-layout-per-key.md) (registry or layout, none on `/`)
+- **Open:** [#37](https://github.com/tran4774/ranikust/issues/37) (signing cache entries)
 - **Evidence:** none measured: workload W2 (cold, warm, partial cache) was never run; mode independence is argued in [survey 06](../../research/survey/06-overlay-and-parallelism.md) §6.
 - **kaniko** (compare, do not copy): `kaniko@44aa7ddc0`
   `pkg/executor/build.go:322` `populateCompositeKey` (sorts the environment

@@ -132,8 +132,10 @@ the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age. Both forms open the store as a build does
 (state-directory checks, the `.ranikust-state` marker), so they refuse a
 directory ranikust did not make; they take the same locks as a build and never
-remove an entry a running build uses [inferred: the in-use tracking is not
-designed yet]. The defaults are BuildKit's tiers, aging by last
+remove an entry a running build uses (decided by
+[ADR-0122](../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
+not built yet: a shared `flock` on each entry a build uses, and the entry's
+marker mtime as its last use). The defaults are BuildKit's tiers, aging by last
 use ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
 mounts and contexts after 48 h unused beyond 512 MB, anything after 60 days
 unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
@@ -158,8 +160,12 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   `RUN --mount`, the mount specifications [inferred].
 - **never:** the snapshot mode, the host, timestamps, thread counts.
 
-The exact field list is open ([#13](https://github.com/tran4774/ranikust/issues/13)),
-to be settled with the cold, warm and partial cache scenarios of workload W2.
+The field list is decided by
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)
+and the input of `COPY --from=<stage>` by
+[ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md),
+not built yet; the cold, warm and partial cache scenarios of workload W2 test
+them.
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or
@@ -207,8 +213,6 @@ other and carry that mode's accepted differences
 - [Q-015](https://github.com/tran4774/ranikust/issues/1) Which digest names an extracted layer, and where do locks live?
 - [Q-016](https://github.com/tran4774/ranikust/issues/2) How is the store lock protocol proven under crashes and races?
 - [Q-018](https://github.com/tran4774/ranikust/issues/4) Where does the probe mount its test overlay?
-- [Q-041](https://github.com/tran4774/ranikust/issues/13) What exactly goes into a cache key and its tag?
-- [Q-042](https://github.com/tran4774/ranikust/issues/14) How do cache lookahead and cached-stage skipping work?
 
 ## References
 

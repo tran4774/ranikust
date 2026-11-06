@@ -116,8 +116,9 @@ decision does not touch.
 - **[external]** kaniko@44aa7ddc0: the fragment is `#ref#commit` with no
   subdirectory (`pkg/buildcontext/git.go:58`, `:126-128`); its credentials are
   the `GIT_USERNAME`, `GIT_PASSWORD` and `GIT_TOKEN` variables (`git.go:37-45`,
-  `:197-220`). The plan reads kaniko's git integration tests as passing a single
-  fragment part, which still works: **[inferred]**, not re-checked.
+  `:197-220`). [#137](https://github.com/tran4774/ranikust/issues/137) reads
+  kaniko's git integration tests as passing a single fragment part, which still
+  works: **[inferred]**, not re-checked.
 - **[external]** buildkit@cd8ee244: the fragment is `#ref:subdir`
   (`util/gitutil/git_url.go:71-79`); an `ADD` fetch authenticates only through
   the secrets `HTTP_AUTH_HEADER_<host>`, `HTTP_AUTH_TOKEN_<host>`,

@@ -23,8 +23,9 @@ The work is planned in phases, without dates. The
 |---|---|
 | Builds as a regular user (rootless overlay mode), `--userns`, a minimal `prune --all` for rootless state directories | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
 | The layer cache (`--cache`) | 4 |
-| `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs`, `ssh` and `type=cache,from=` (on a container's `/`, whether and how bind, tmpfs and `from=` mounts work is open: [#24](https://github.com/tran4774/ranikust/issues/24)); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; credential helpers; the `prune` subcommand | 5 |
+| `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs` and `type=cache,from=` (on a container's `/`, a bind is copied in and `from=` is refused, [ADR-0121](https://github.com/tran4774/ranikust/blob/main/docs/adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md), decided and not built yet); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; credential helpers; the `prune` subcommand | 5 |
 | kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | 6 |
+| `RUN --mount=type=ssh` | Backlog, [#139](https://github.com/tran4774/ranikust/issues/139) |
 
 An instruction, or a kaniko flag, of a later phase stops the build with a
 message naming the phase. Version 1.0 needs all three ways of building:

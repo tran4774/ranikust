@@ -215,4 +215,3 @@ container's overlayfs; main at `38f1dfd` against this design with the spool on
 ## Open questions
 
 - [Q-370](https://github.com/tran4774/ranikust/issues/23) Should a built layer be encoded straight into its upload?
-- [Q-041](https://github.com/tran4774/ranikust/issues/13) What exactly goes into a cache key and its tag?
