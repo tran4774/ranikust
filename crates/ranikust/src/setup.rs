@@ -82,6 +82,9 @@ pub(crate) enum Kind {
     /// A step of the `RUN` sandbox was refused although root may mount (an
     /// LSM blocking mounts).
     SandboxBlocked,
+    /// The process is inside the build's user namespace, and its set-up or
+    /// a later step failed: it must end, so no mode may follow (#75).
+    Broken,
 }
 
 /// What `--mode=auto` does after overlay mode's set-up refused, once root
@@ -107,7 +110,9 @@ pub(crate) fn route(refusal: &Refusal, in_container: bool) -> Route {
     match (refusal.kind, in_container) {
         (Kind::OverlayUnusable, false) => Route::KanikoStages,
         (Kind::OverlayUnusable, true) => Route::RefuseInContainer,
-        (Kind::Other | Kind::NoMountPrivilege | Kind::SandboxBlocked, _) => Route::Refuse,
+        (Kind::Other | Kind::NoMountPrivilege | Kind::SandboxBlocked | Kind::Broken, _) => {
+            Route::Refuse
+        }
     }
 }
 
@@ -219,8 +224,9 @@ pub(crate) struct UsernsSetup {
 ///
 /// # Errors
 ///
-/// A [`Refusal`]. A failure once the process is in the namespace is one
-/// too ([`rnk_sandbox::Error::UserNamespaceBroken`]): the process must end.
+/// A [`Refusal`]. One once the process is in the namespace (its set-up,
+/// [`rnk_sandbox::Error::UserNamespaceBroken`], or the store failed) is of
+/// [`Kind::Broken`]: the process must end.
 #[cfg_attr(
     not(test),
     expect(
@@ -236,18 +242,32 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
         guidance: "",
         reason: format!("cannot read this user's subordinate ids: {e}"),
     })?;
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate).map_err(|e| Refusal {
-        kind: Kind::Other,
+    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
+        .map_err(|e| userns_refusal(e, euid))?;
+    tracing::info!("ranikust: the build's user namespace: {userns}");
+    // In the namespace now: whatever refuses, no other mode may follow.
+    let store = open_store(state_dir, state_dir).map_err(|r| Refusal {
+        kind: Kind::Broken,
+        ..r
+    })?;
+    Ok(UsernsSetup { userns, store })
+}
+
+/// The refusal for [`rnk_sandbox::enter_build_user_namespace`]'s error
+/// `e`, for the effective uid `euid`.
+fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
+    Refusal {
+        kind: match e {
+            SandboxError::UserNamespaceBroken(_) => Kind::Broken,
+            _ => Kind::Other,
+        },
         guidance: if euid != 0 && matches!(e, SandboxError::NoUserNamespace { .. }) {
             NO_USER_NAMESPACE
         } else {
             ""
         },
         reason: e.to_string(),
-    })?;
-    tracing::info!("ranikust: the build's user namespace: {userns}");
-    let store = open_store(state_dir, state_dir)?;
-    Ok(UsernsSetup { userns, store })
+    }
 }
 
 /// Sets overlay mode up for a build whose state directory is `state_dir`,
