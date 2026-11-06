@@ -370,7 +370,8 @@ What a change here must keep, with where it lives:
   calls only, then `_exit`. `in_namespace`'s function may allocate (it
   checks for one thread first) and runs with an empty panic hook and, on
   its thread, no `tracing` subscriber: the inherited ones write ranikust's
-  metrics report and log (a thread the function starts must not log). Each
+  metrics report and log (a thread the function starts carries its
+  dispatcher over, as `rnk-snapshot`'s mount thread does). Each
   child is killed at its deadline (10 s, the closure 60 s) and reaped
   within 2 s (one that closed its report but is not reaped then is killed,
   and given 2 s more); its namespaces and mounts go with it. One still

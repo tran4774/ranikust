@@ -1474,9 +1474,9 @@ fn finish_closure(report: BorrowedFd<'_>, f: impl FnOnce() -> std::result::Resul
 /// Runs `f` in a probe's child without the panic hook it inherited, and,
 /// on this thread, without the `tracing` subscriber: they write ranikust's
 /// metrics report and the build's log, which are the parent's to write (a
-/// thread `f` starts still has the global subscriber: such a thread must
-/// not log). Its [`RESULT`] status and text; a panic is reported there
-/// only.
+/// thread `f` starts gets the global one unless it carries this thread's
+/// dispatcher over, as `rnk-snapshot`'s mount thread does). Its [`RESULT`]
+/// status and text; a panic is reported there only.
 fn run_silenced(f: impl FnOnce() -> std::result::Result<String, String>) -> (u8, String) {
     // Leaked, not dropped: dropping the parent's hook would run its
     // destructors in this copy of the parent.

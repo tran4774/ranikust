@@ -137,7 +137,9 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   metadata from the layers below, as a flattening extractor would.
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
   from a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
-  (containerd's way, ADR-0032); the stage directory is
+  (containerd's way, ADR-0032), and logs through its caller's `tracing`
+  dispatcher (the user-namespace probe's child silences it); the stage
+  directory is
   `builds/<id>/stages/<n>/` with `rootfs/`, `diff-<k>/`, `work-<k>/` and
   `empty-<i>/` (a lower for `FROM scratch` and the read-only view, which
   needs two).
@@ -193,7 +195,8 @@ that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
-  `tests/layers.rs`).
+  `tests/layers.rs`); the mount thread logs through its caller's dispatcher
+  (`src/mount.rs`).
 - **T0, walk and exporter** (`src/kaniko/walk/tests.rs`,
   `src/kaniko/export/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
