@@ -124,7 +124,7 @@ impl KanikoLayer {
     }
 
     /// The layer's compressed bytes from the first one.
-    fn open(&self) -> Result<Box<dyn std::io::Read + Send>> {
+    pub(super) fn open(&self) -> Result<Box<dyn std::io::Read + Send>> {
         match &self.source {
             LayerSource::Blob(path) => {
                 let file = File::open(path).map_err(|source| Error::Io {
@@ -160,6 +160,9 @@ struct Hold {
     /// Counts the times a stage started on a new base: a stage can keep
     /// its root only while the epoch it ran in lasts.
     epoch: u64,
+    /// A cached layer failed after part of it may have reached the root:
+    /// no stage goes on from it until it is emptied.
+    broken: bool,
 }
 
 #[derive(Debug)]
@@ -263,6 +266,7 @@ impl Kaniko {
                     walker: None,
                     touched: false,
                     epoch: 0,
+                    broken: false,
                 }),
                 next_id: AtomicU64::new(0),
                 kept,
@@ -531,6 +535,7 @@ fn empty_root(shared: &Shared, hold: &mut Hold) -> Result<()> {
         shared.root.set_meta("", meta)?;
     }
     hold.walked = false;
+    hold.broken = false;
     if let Some(w) = hold.walker.as_mut() {
         w.forget();
     }
@@ -629,6 +634,9 @@ impl Snapshotter for Kaniko {
                 }
                 if parent.open {
                     return Err(Error::State("the parent stage has a layer open"));
+                }
+                if hold.broken {
+                    return Err(BROKEN);
                 }
             }
             Base::Scratch | Base::Image(_) => {
@@ -967,21 +975,26 @@ fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Extracts one base layer into the shared root. On `/`, which nothing
-/// empties, a streamed layer is first spooled and verified
-/// ([`Spooled::of`]): nothing unverified reaches the root. Elsewhere it is
-/// extracted as it arrives ([`extract_blob`]): the root is emptied after a
-/// failure.
+/// Extracts one base layer into the shared root ([`open_for_root`]).
 fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
+    let tar = open_for_root(shared, layer)?;
+    extract_checked(&shared.root, &shared.ignore, tar, &layer.diff_id)
+}
+
+/// `layer`'s compressed bytes, opened for extraction into the shared root,
+/// with everything that can fail before an entry reaches the root done. On
+/// `/`, which nothing empties, a streamed layer is first spooled and
+/// verified ([`Spooled::of`]): nothing unverified reaches the root.
+/// Elsewhere it is extracted as it arrives ([`extract_blob`]): the root is
+/// emptied after a failure.
+fn open_for_root(shared: &Shared, layer: &KanikoLayer) -> Result<Box<dyn std::io::Read + Send>> {
     if shared.is_slash() && matches!(layer.source, LayerSource::Stream(_)) {
         let store = shared.tar_store()?.ok_or(Error::State(
             "no store to verify a streamed layer in before it reaches /",
         ))?;
-        return shared
-            .spool(&store, layer)?
-            .extract(&shared.root, &shared.ignore);
+        return shared.spool(&store, layer)?.reader();
     }
-    extract_blob(&shared.root, &shared.ignore, layer)
+    layer.open()
 }
 
 /// A base layer in an anonymous file of the store, as its compressed blob,
@@ -1045,11 +1058,22 @@ impl Spooled {
     /// Extracts the verified layer into `root`, decompressing the spool a
     /// second time; its diff ID is checked again on the way.
     fn extract(&self, root: &RootPath, ignore: &IgnoreList) -> Result<()> {
+        extract_checked(root, ignore, self.reader()?, self.diff_id())
+    }
+
+    /// The verified layer's compressed bytes from the first one, read
+    /// through the descriptor held.
+    fn reader(&self) -> Result<Box<dyn std::io::Read + Send>> {
         match &self.0 {
-            SpooledBlob::Blob(layer) => extract_blob(root, ignore, layer),
-            SpooledBlob::File { file, diff_id } => {
-                extract_checked(root, ignore, Box::new(ReadAt::from_start(file)?), diff_id)
-            }
+            SpooledBlob::Blob(layer) => layer.open(),
+            SpooledBlob::File { file, .. } => Ok(Box::new(ReadAt::from_start(file)?)),
+        }
+    }
+
+    fn diff_id(&self) -> &Digest {
+        match &self.0 {
+            SpooledBlob::Blob(layer) => &layer.diff_id,
+            SpooledBlob::File { diff_id, .. } => diff_id,
         }
     }
 }
@@ -1096,7 +1120,7 @@ pub(super) fn extract_blob(
 /// `diff_id` at its end. The decompression and the digest run on a thread
 /// of their own ([`Decoding`]), overlapping the extraction's writes; the
 /// bytes extracted, in their order, are the same.
-fn extract_checked(
+pub(super) fn extract_checked(
     root: &RootPath,
     ignore: &IgnoreList,
     blob: Box<dyn std::io::Read + Send>,
@@ -1391,6 +1415,11 @@ pub struct KanikoRoot {
     view: Option<(u64, RootPath)>,
 }
 
+/// What a root a cached layer failed part-way into answers until it is
+/// emptied (shared root) or released (per-stage directory).
+pub(super) const BROKEN: Error =
+    Error::State("a cached layer failed part-way into the root: nothing goes on from it");
+
 impl KanikoRoot {
     fn check_held(&self, hold: &Hold) -> Result<()> {
         if hold.holder == Some(self.id) {
@@ -1398,6 +1427,55 @@ impl KanikoRoot {
         } else {
             Err(Error::State("the stage no longer holds the shared root"))
         }
+    }
+
+    /// [`Self::check_held`], and no cached layer failed part-way into the
+    /// root since it was last emptied.
+    fn check_usable(&self, hold: &Hold) -> Result<()> {
+        self.check_held(hold)?;
+        if hold.broken {
+            return Err(BROKEN);
+        }
+        Ok(())
+    }
+
+    /// Applies `layer`, the cached layer of the stage's next step, instead
+    /// of running the step (`design/kaniko-mode.md#a-cache-hit`): extracted
+    /// into the root as a base layer is, with the build's ignore list and
+    /// its diff ID checked; on `/` a streamed layer is verified before any
+    /// entry reaches the root. The walker's record is then stale: the next
+    /// layer of a stage whose layers are needed starts from a new baseline,
+    /// so its diff holds only its own step's changes.
+    ///
+    /// `layer` comes from [`Snapshotter::base_layer`], or from
+    /// [`Snapshotter::streamed_layer`] once per root it is applied to, as a
+    /// base layer does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::State`], with nothing changed, while a layer is open, when
+    /// the stage no longer holds the root, or when an earlier layer broke
+    /// it. A failure before any entry can reach the root (the source
+    /// refused, on `/` the layer's check) leaves the root as it was. Any
+    /// later failure breaks the root: until it is emptied, no layer, view,
+    /// keep or child stage goes on from it.
+    pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
+        if self.open {
+            return Err(Error::State("a layer is open"));
+        }
+        clear_views(&self.shared)?;
+        let shared = Arc::clone(&self.shared);
+        let mut hold = shared.hold();
+        self.check_usable(&hold)?;
+        let span = tracing::info_span!("rnk_snapshot.apply");
+        let _entered = span.enter();
+        hold.walked = false;
+        let tar = open_for_root(&shared, layer)?;
+        hold.touched = true;
+        hold.broken = true;
+        extract_checked(&shared.root, &shared.ignore, tar, &layer.diff_id)?;
+        hold.broken = false;
+        Ok(())
     }
 
     /// The kept tar or image unpacked into a directory of the state
@@ -1508,7 +1586,7 @@ impl StageRootfs for KanikoRoot {
             return Err(Error::State("a layer is open already"));
         }
         let mut hold = self.shared.hold();
-        self.check_held(&hold)?;
+        self.check_usable(&hold)?;
         if self.needed && !hold.walked {
             self.baseline(&mut hold)?;
         }
@@ -1548,7 +1626,7 @@ impl StageRootfs for KanikoRoot {
         match &self.kept {
             Some(Kept::Dir { root, .. }) => Ok(root),
             Some(Kept::Tar { .. } | Kept::Image { .. }) | None => {
-                self.check_held(&self.shared.hold())?;
+                self.check_usable(&self.shared.hold())?;
                 Ok(&self.shared.root)
             }
         }
@@ -1569,6 +1647,9 @@ impl StageRootfs for KanikoRoot {
             return Err(Error::State(
                 "the shared root was reused since the stage ran",
             ));
+        }
+        if hold.broken {
+            return Err(BROKEN);
         }
         clear_views(&shared)?;
         let kept = if let Some(store) = shared.tar_store()? {

@@ -46,7 +46,7 @@ use rnk_rootfs::{
 };
 use rnk_store::Store;
 
-use super::root::{KanikoLayer, extract_blob};
+use super::root::{BROKEN, KanikoLayer, extract_blob, extract_checked};
 use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
@@ -226,7 +226,7 @@ impl Snapshotter for KanikoStages {
             if parent.open {
                 return Err(Error::State("the parent stage has a layer open"));
             }
-            parent.handed_over()?;
+            parent.usable()?;
         }
         let shared = &self.shared;
         let layers = match &base {
@@ -264,6 +264,9 @@ impl Snapshotter for KanikoStages {
         }
         if !Arc::ptr_eq(&parent.shared, &self.shared) {
             return Err(Error::State("the parent stage is another build's"));
+        }
+        if parent.broken {
+            return Err(BROKEN);
         }
         let shared = &self.shared;
         let span = tracing::info_span!("rnk_snapshot.prepare", layers = 0, handed_over = true);
@@ -327,6 +330,9 @@ pub struct KanikoStage {
     /// The root was handed to the stage built on it (ADR-0061): it is no
     /// longer this stage's to read.
     handed: AtomicBool,
+    /// A cached layer failed after part of it may have reached the root:
+    /// nothing goes on from it.
+    broken: bool,
 }
 
 impl KanikoStage {
@@ -342,6 +348,7 @@ impl KanikoStage {
             walked: false,
             walker: None,
             handed: AtomicBool::new(false),
+            broken: false,
         }
     }
 
@@ -410,6 +417,46 @@ impl KanikoStage {
         Ok(())
     }
 
+    /// [`Self::handed_over`], and no cached layer failed part-way into the
+    /// root.
+    fn usable(&self) -> Result<()> {
+        self.handed_over()?;
+        if self.broken {
+            return Err(BROKEN);
+        }
+        Ok(())
+    }
+
+    /// Applies `layer`, the cached layer of the stage's next step, instead
+    /// of running the step (`design/kaniko-mode.md#a-cache-hit`): extracted
+    /// into the root as a base layer is, as it arrives, with the stage
+    /// roots' ignore list and its diff ID checked. The walker's record is
+    /// then stale: the next layer of a stage whose layers are needed starts
+    /// from a new baseline, so its diff holds only its own step's changes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::State`], with nothing changed, while a layer is open, when
+    /// the root was handed over, or when an earlier layer broke it. A
+    /// failure to open the layer leaves the root as it was. Any later
+    /// failure (a digest or diff ID found wrong at the end, an entry
+    /// refused) breaks the root: no layer, view or child stage goes on from
+    /// it; [`StageRootfs::release`] still deletes it.
+    pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
+        if self.open {
+            return Err(Error::State("a layer is open"));
+        }
+        self.usable()?;
+        let span = tracing::info_span!("rnk_snapshot.apply");
+        let _entered = span.enter();
+        self.walked = false;
+        let tar = layer.open()?;
+        self.broken = true;
+        extract_checked(&self.root, &self.shared.ignore, tar, layer.diff_id())?;
+        self.broken = false;
+        Ok(())
+    }
+
     /// Puts `base` into the new, empty root.
     fn fill(&self, base: Base<'_, KanikoStage, KanikoLayer>) -> Result<()> {
         let root = &*self.root;
@@ -425,7 +472,7 @@ impl KanikoStage {
                 }
             }
             Base::Stage(parent) => {
-                parent.handed_over()?;
+                parent.usable()?;
                 copy_stage(&parent.root, root, ignore)?;
             }
         }
@@ -475,7 +522,7 @@ impl StageRootfs for KanikoStage {
         if self.open {
             return Err(Error::State("a layer is open already"));
         }
-        self.handed_over()?;
+        self.usable()?;
         if self.needed && !self.walked {
             self.baseline()?;
         }
@@ -503,7 +550,7 @@ impl StageRootfs for KanikoStage {
     }
 
     fn view(&mut self) -> Result<&RootPath> {
-        self.handed_over()?;
+        self.usable()?;
         Ok(&self.root)
     }
 
