@@ -1233,6 +1233,256 @@ fn on_slash_a_streamed_layer_with_a_bad_tar_header_changes_nothing() {
     }
 }
 
+/// `bytes` as one zstd frame of raw blocks (RFC 8878 3.1.1.2), which
+/// libzstd reads as any other frame: a zstd layer without an encoder.
+fn zstd_stored(bytes: &[u8]) -> Vec<u8> {
+    // No checksum or content size; a 128 KiB window (exponent 7).
+    let mut out = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 7 << 3];
+    let mut blocks: Vec<&[u8]> = bytes.chunks(128 << 10).collect();
+    if blocks.is_empty() {
+        blocks.push(&[]);
+    }
+    let last = blocks.len() - 1;
+    for (i, block) in blocks.iter().enumerate() {
+        let header = u32::from(i == last) | (u32::try_from(block.len()).unwrap() << 3);
+        out.extend_from_slice(&header.to_le_bytes()[..3]);
+        out.extend_from_slice(block);
+    }
+    out
+}
+
+/// A layer's blob made from its tar and where a second gzip member or zstd
+/// frame starts.
+type BlobForm = fn(&[u8], usize) -> Vec<u8>;
+
+/// The forms of a layer's blob the spool pass decompresses.
+const BLOB_FORMS: [(&str, BlobForm); 5] = [
+    ("plain", |t, _| t.to_vec()),
+    ("gzip", |t, _| gzip(t)),
+    ("gzip, two members", |t, at| {
+        [gzip(&t[..at]), gzip(&t[at..])].concat()
+    }),
+    ("zstd", |t, _| zstd_stored(t)),
+    ("zstd, two frames", |t, at| {
+        [zstd_stored(&t[..at]), zstd_stored(&t[at..])].concat()
+    }),
+];
+
+/// Red team (T26, ADR-0123): on `/` a streamed hit whose name climbs out,
+/// in a second gzip member or zstd frame included, is refused by the spool
+/// pass before `/` changes, whatever its compression; the same layer with
+/// a good header there is applied from one download.
+#[test]
+fn red_team_on_slash_a_bad_header_is_refused_before_slash_changes_whatever_the_compression() {
+    let first = Tar::new().file("first", b"1").bytes();
+    let head = &first[..first.len() - 1024];
+    let bad = [
+        head,
+        &Tar::new()
+            .file("../escape", b"x")
+            .file("after", b"2")
+            .bytes(),
+    ]
+    .concat();
+    let good = [head, &Tar::new().file("second", b"2").bytes()].concat();
+    for (what, form) in BLOB_FORMS {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let source = Source::new(form(&bad, head.len()));
+        let e = r
+            .apply_layer(&streamed(&f.snap, &bad, &source))
+            .unwrap_err();
+        assert!(
+            matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+            "{what}: {e:?}"
+        );
+        assert_eq!(source.opens(), 1, "{what}");
+        for p in ["first", "after"] {
+            assert!(!f.root.join(p).exists(), "{what}: {p}");
+        }
+        assert!(!f.top.join("escape").exists(), "{what}");
+        r.begin_layer().unwrap();
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        let source = Source::new(form(&good, head.len()));
+        r.apply_layer(&streamed(&f.snap, &good, &source))
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert_eq!(source.opens(), 1, "{what}");
+        assert_eq!(fs::read(f.root.join("second")).unwrap(), b"2", "{what}");
+        r.release().unwrap();
+    }
+}
+
+/// Red team (T26, T1): on `/` entries a streamed hit holds past its
+/// end-of-archive block (one or two zero blocks), which its diff ID covers,
+/// are neither checked nor extracted, as the `tar` crate stops at the first
+/// zero block: the layer is applied without them.
+#[test]
+fn red_team_on_slash_entries_past_the_end_of_the_archive_never_reach_slash() {
+    let good = Tar::new().file("good", b"g").bytes();
+    let smuggled = Tar::new()
+        .file("../escape", b"x")
+        .file("after", b"EVIL")
+        .bytes();
+    for zero_blocks in [1, 2] {
+        let mut tar = good[..good.len() - 1024].to_vec();
+        tar.extend(std::iter::repeat_n(0, 512 * zero_blocks));
+        let at = tar.len();
+        tar.extend(&smuggled);
+        for (what, form) in BLOB_FORMS {
+            let f = Shared::new(true);
+            let mut r = f.snap.prepare(Base::Scratch).unwrap();
+            r.set_layers_needed(true);
+            r.apply_layer(&streamed(&f.snap, &tar, &Source::new(form(&tar, at))))
+                .unwrap_or_else(|e| panic!("{zero_blocks}, {what}: {e:?}"));
+            assert_eq!(fs::read(f.root.join("good")).unwrap(), b"g");
+            assert!(!f.root.join("after").exists(), "{zero_blocks}, {what}");
+            assert!(!f.top.join("escape").exists(), "{zero_blocks}, {what}");
+            r.begin_layer().unwrap();
+            r.end_layer().unwrap();
+            r.release().unwrap();
+        }
+    }
+}
+
+/// A body whose connection drops at byte `at`: the read fails, then each
+/// later read fails again (`sticky`) or reports an end, as some bodies do.
+#[derive(Debug)]
+struct Dropping {
+    bytes: Vec<u8>,
+    at: usize,
+    sticky: bool,
+}
+
+struct DroppingBody {
+    bytes: std::io::Cursor<Vec<u8>>,
+    sticky: bool,
+    dropped: bool,
+}
+
+impl std::io::Read for DroppingBody {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.dropped && !self.sticky {
+            return Ok(0);
+        }
+        let n = self.bytes.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.dropped = true;
+            return Err(std::io::ErrorKind::ConnectionReset.into());
+        }
+        Ok(n)
+    }
+}
+
+impl LayerOpen for Dropping {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(DroppingBody {
+            bytes: std::io::Cursor::new(self.bytes[..self.at].to_vec()),
+            sticky: self.sticky,
+            dropped: false,
+        }))
+    }
+}
+
+/// Red team (T26, ADR-0123): on `/` a streamed hit whose body or its
+/// decompression fails while the spool pass reads its headers (a corrupt
+/// or cut deflate stream, a bad gzip checksum with or without the tar's
+/// end, a digest the source refuses, a connection dropped, which fails
+/// again or reads as an end) is refused before `/` changes, never as an
+/// entry refusal or a `--limit` overrun, and leaves `/` usable.
+#[test]
+fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
+    let big: Vec<u8> = (0..200_000_u32).flat_map(u32::to_le_bytes).collect();
+    let tar = Tar::new().file("first", &big).file("second", b"2").bytes();
+    let unended = &tar[..tar.len() - 1024];
+    let gz = gzip(&tar);
+    let corrupt = {
+        let mut c = gz.clone();
+        let mid = c.len() / 2;
+        c[mid..mid + 64].iter_mut().for_each(|b| *b ^= 0xa5);
+        c
+    };
+    let bad_crc = |t: &[u8]| {
+        let mut c = gzip(t);
+        let n = c.len();
+        c[n - 8] ^= 1;
+        c
+    };
+    let mut cases: Vec<(&str, &[u8], Arc<dyn LayerOpen>)> = vec![
+        ("a corrupt deflate stream", &tar, Source::new(corrupt)),
+        (
+            "a cut deflate stream",
+            &tar,
+            Source::new(gz[..gz.len() / 2].to_vec()),
+        ),
+        (
+            "a cut deflate stream, the digest refused",
+            &tar,
+            Source::failing_at_end(gz[..gz.len() / 2].to_vec()),
+        ),
+        (
+            "a bad gzip checksum",
+            &tar,
+            Source::failing_at_end(bad_crc(&tar)),
+        ),
+        (
+            "a bad gzip checksum, no tar end",
+            unended,
+            Source::new(bad_crc(unended)),
+        ),
+        (
+            "a bad gzip checksum, no tar end, the digest refused",
+            unended,
+            Source::failing_at_end(bad_crc(unended)),
+        ),
+        (
+            "no tar end, the digest refused",
+            unended,
+            Source::failing_at_end(gzip(unended)),
+        ),
+    ];
+    for sticky in [true, false] {
+        for (blob, at) in [(gz.clone(), gz.len() / 3), (tar.clone(), 700)] {
+            let what = match (sticky, blob.len() == tar.len()) {
+                (true, true) => "a plain body dropped, failing again",
+                (true, false) => "a gzip body dropped, failing again",
+                (false, true) => "a plain body dropped, then an end",
+                (false, false) => "a gzip body dropped, then an end",
+            };
+            cases.push((
+                what,
+                &tar,
+                Arc::new(Dropping {
+                    bytes: blob,
+                    at,
+                    sticky,
+                }),
+            ));
+        }
+    }
+    for (what, tar, source) in cases {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let layer = f.snap.streamed_layer(&diff_id(tar), source).unwrap();
+        let e = r.apply_layer(&layer).unwrap_err();
+        assert!(
+            !matches!(
+                e,
+                Error::Rootfs(
+                    rnk_rootfs::Error::Entry { .. } | rnk_rootfs::Error::ExtensionHeader { .. }
+                )
+            ),
+            "{what}: {e:?}"
+        );
+        assert!(!f.root.join("first").exists(), "{what}");
+        r.begin_layer()
+            .unwrap_or_else(|e| panic!("{what}: / broken: {e:?}"));
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        r.release().unwrap();
+    }
+}
+
 // Hostile cached layers.
 
 /// What a hostile cached layer aims at in a per-stage root: links into

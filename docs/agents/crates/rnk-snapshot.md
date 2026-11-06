@@ -273,9 +273,17 @@ that found a bug stay as its regression test.
   ignored path. On `/` a streamed layer whose tar has a header every extraction
   refuses, or one over `--limit`, after a good first entry, changes nothing and
   leaves `/` usable, and a body its source refuses reports the source's error
-  first; the same layer from the store breaks `/` (the control).
-  `tests/spans.rs`: on `/` a streamed layer is decoded once before its
-  extraction, a refused one once and never extracted (ADR-0123).
+  first; the same layer from the store breaks `/` (the control). Red team of
+  that check on `/` (ADR-0123): a name out of the root is refused before `/`
+  changes whether the blob is plain, gzip or zstd, in a second gzip member or
+  zstd frame included; entries past the end-of-archive block reach nothing; a
+  body or its decompression failing while the headers are read (corrupt or
+  cut, a bad gzip checksum, a digest refused, a connection dropped) never
+  reads as an entry refusal or a `--limit` overrun and leaves `/` usable; in
+  `src/kaniko/root/tests.rs`, a base or `COPY --from` image layer with a bad
+  header is refused before any of it is written or any directory made, and
+  keeps no spool. `tests/spans.rs`: on `/` a streamed layer is decoded once
+  before its extraction, a refused one once and never extracted (ADR-0123).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings. The
   `kaniko-flags` case's kaniko leg: `probe` passes in the user namespace
