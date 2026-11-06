@@ -2,7 +2,7 @@
 
 > **Status:** in progress · **Phase:** 1-2 (mounting in a user namespace: 3) ·
 > **Depends on:** `rnk-rootfs`, `rnk-layer`, `rnk-store`, `rnk-oci` ·
-> **Used by:** `rnk-builder`, `ranikust` (probes) ·
+> **Used by:** `rnk-builder`, `ranikust` (probes; the overlay probe also in a user namespace, reported only, #74) ·
 > **Path:** `crates/rnk-snapshot/`
 
 **TL;DR:** Gives each stage a root (`StageRootfs`) and turns each change into
@@ -73,7 +73,7 @@ impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
 pub struct LayerDiff;                              // upper + lowers; new(upper, lowers), is_empty(), entries(), export(o, out)
-pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check
+pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check; also as root of a user namespace (ranikust's #74 probe, in a child)
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
 pub const OVERLAY_OPTIONS: &str = "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile"; // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // refused beyond, no merging yet (ADR-0032)
@@ -228,7 +228,10 @@ that found a bug stay as its regression test.
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
   bases cannot reach outside `rootfs/`.
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
-  `volatile` work dir; `/` stays 555; 500 lowers; long option strings.
+  `volatile` work dir; `/` stays 555; 500 lowers; long option strings. The
+  `kaniko-flags` case's kaniko leg: `probe` passes in the user namespace
+  ranikust's user-namespace probe makes under rootless Podman's defaults
+  (#74).
 - **T2c** (rootful Docker, `just test-container unit-c`;
   `#[ignore = "T2c: <profile>: ..."]`): profile `sysadmin`:
   `tests/overlay.rs` (overlay mounts: the probe, a layer per instruction with

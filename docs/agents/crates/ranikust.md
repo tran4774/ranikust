@@ -19,7 +19,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   Kaniko's common flags plus `--mode` (ADR-0011, ADR-0023).
 - Process set-up while single-threaded: a private mount namespace when
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
-  of `rnk-sandbox` and `rnk-snapshot` in order, the outcome; in kaniko mode
+  of `rnk-sandbox` and `rnk-snapshot` in order, the outcome; with
+  `--mode=auto` as root, the user-namespace probe, logged and reported only
+  (`report_user_namespace`, #74); in kaniko mode
   the root (`/` in a container, `flock`ed; else a directory per stage,
   `KanikoStages`, ADR-0059). Then the hand-off to the libraries. `prune`
   only calls `rnk-store`.
@@ -49,7 +51,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay` |
+| `setup.rs` | `enter_namespace`, `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
 | `statedir.rs` | `prepare` (ADR-0050 checks), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
@@ -146,8 +148,9 @@ Each step before the next; design in
    overlayfs (a container's root: mount a volume) → `rnk_store::Store::open`
    (marker, start-up clean-up) → `rnk_sandbox::probe` in
    `<state-dir>/sandbox` → `rnk_snapshot::probe` in
-   `builds/<id>/overlay-probe` → outcome → `Sandbox::start` (journal replay,
-   spawner thread).
+   `builds/<id>/overlay-probe` → outcome → with `--mode=auto`,
+   `report_user_namespace` → `Sandbox::start` (journal replay, spawner
+   thread).
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
@@ -189,7 +192,9 @@ Each step before the next; design in
    own message, `store_refusal`, ADR-0077) and `Sandbox::start_direct`
    (ADR-0051); after the trim, `exposure::warn_credential_holders`. Off `/`:
    the state directory, `Store::open`, the sandbox probe and
-   `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured); when
+   `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured). On `/`
+   and off, `--mode=auto` runs `report_user_namespace` just before the
+   sandbox starts; when
    `set_up_kaniko` returns, `main.rs` builds `KanikoStages`
    (`stages_snapshotter`). Credentials
    go only over verified TLS (`verified_credentials_only`, `build.rs`).
@@ -287,7 +292,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   opened, under an inotify watch), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to
   kaniko mode, a probe failure other than a refused mount never routes, no
-  guidance sends a user back to the mode they used), `statedir` (each
+  guidance sends a user back to the mode they used, the user-namespace
+  probe's line), `statedir` (each
   ADR-0050 refusal: `/`, system directories, symlinks, writable parents,
   nothing created through a planted link; `0700`), `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
@@ -336,7 +342,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   plain `chroot`. Cases: `tests/smoke/cases/`; `kaniko-flags` tests the
   meaning of `--snapshot-mode` and `--ignore-path` (in overlay mode
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
-  the kaniko leg (a default container), `--mode=auto` picking kaniko mode;
+  the kaniko leg (a default container), `--mode=auto` picking kaniko mode
+  and its user-namespace probe passing with an rbind of `/proc` (#74);
   `seccomp` the default profile, unconfined and a file, and in the kaniko leg
   every `--seccomp` refused and a `RUN` under the container's profile;
   `binary-mounts` is the red team of `refuse_writable_binary` (ADR-0101),
@@ -366,7 +373,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   copied into the container's root, it builds; the
   only test of `refuse_unsafe_slash` calling `refuse_writable_binary`);
   `rt_auto_privileged_container` (`--mode=auto` in a `--privileged`
-  container is refused, with or without `/.dockerenv`). A `--state-dir` at
+  container is refused, with or without `/.dockerenv`). The smoke suite
+  prints the user-namespace probe's line of each environment's build, which
+  must pass on the VM itself and stop at `unshare` in a default Docker
+  container (#74). A `--state-dir` at
   `/`, below `/home/<user>` or in a directory others may write
   ([testing](../../testing.md#planned-test-suites)). `unit`: `exposure.rs`
   `a_namespace_left_but_held_keeps_its_number_from_new_ones` (ADR-0101: a
@@ -386,7 +396,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - Emits `ranikust.run` (the process), `ranikust.build` (from flag validation
   on), `ranikust.setup` (namespace, state directory, store open, probes,
   spawner) and inside it `ranikust.probe` with `steps`, the crates' probes
-  that really ran ([rows](../../design/metrics.md#ranikust)).
+  that really ran, and `ranikust.probe_userns` with `passes`
+  ([rows](../../design/metrics.md#ranikust)).
 - `Telemetry::finish` on every way out that returns. `set_meta`:
   `ranikust_version`; for `build`, `mode` and `options`
   (`BuildConfig::meta_options`: counts, booleans and enum names, never a

@@ -479,7 +479,7 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
 /// run in a user namespace here (`rnk_sandbox::probe_user_namespace`), and
 /// an overlay mount in it (`rnk_snapshot::probe`), tried in a directory of
 /// this build on the state directory's filesystem (where it mounts is
-/// [open: #4], interim (a)). Logs one line; nothing here refuses or
+/// \[open: #4], interim (a)). Logs one line; nothing here refuses or
 /// changes the outcome. Root only: another user never reaches a set-up.
 /// Call while single-threaded, before the spawner starts.
 fn report_user_namespace(store: &Store) {

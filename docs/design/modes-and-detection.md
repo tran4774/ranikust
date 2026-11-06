@@ -73,8 +73,9 @@ order while the process is still single-threaded, then picks the outcome:
 
 - `rnk-sandbox` (`probe.rs`): the real `RUN` sequence in an empty root: the
   namespaces, `proc`, `sysfs`, the `/dev` tmpfs and its node binds,
-  `pivot_root` then `MS_MOVE`, the capability drop and the `USER` switch. No
-  step tries a user namespace, the uid and gid maps or `mknod` yet (Phase 3).
+  `pivot_root` then `MS_MOVE`, the capability drop and the `USER` switch.
+  The user-namespace steps, the maps and `mknod` among them, are a probe of
+  their own (`userns.rs`, step 2), reported only.
 - `rnk-snapshot`: the overlay mount with the
   [ADR-0016](../adr/0016-overlay-mount-options.md) options, and `fsconfig`
   with `lowerdir+`.
@@ -98,30 +99,53 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    then mount a new `proc` in a new PID namespace. With `CAP_SYS_ADMIN` this
    is the only way to get a new `proc` when `/proc` is masked: a new user
    namespace makes the kernel refuse it (`EPERM`).
-2. **Overlay in a user namespace** (planned, Phase 3).
-   - `unshare(CLONE_NEWUSER | CLONE_NEWNS)`, then write `uid_map` and
-     `gid_map`. Root inside a container writes a multi-range map itself
-     (each range must fit inside one range of the parent map: `0 0 1` +
-     `1 1 65536` works where `0 0 65536` is `EPERM`). An unprivileged host
-     user needs `newuidmap`/`newgidmap` and `/etc/subuid`; without them only
-     one uid maps and `chown` to any other fails with `EINVAL`, as does a
-     `chown` to an owner outside the ranges; planned, ranikust then refuses such
-     an image ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
-   - Mount the overlay (`userxattr` is implied), then a new `proc`; if that
-     fails, an rbind of the existing `/proc` (`RUN` then sees the container's
-     processes, like BuildKit's `--oci-worker-no-process-sandbox`).
+2. **Overlay in a user namespace**, reported only
+   ([#74](https://github.com/tran4774/ranikust/issues/74)): `--mode=auto`
+   as root, once the outcome is picked, probes it and logs one line
+   (whether the path passes or where it stops, each step with its errno,
+   the map, the overlay, the AppArmor switch below); nothing routes on it
+   until rootless overlay mode (Phase 3).
+   `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
+   a directory of the build under the state directory (`userns-probe`, or a
+   name the next start removes when the store is anonymous), removed after.
+   - `unshare(CLONE_NEWUSER)`, then write `uid_map` and `gid_map`. Root
+     writes a map of every id it has, each to itself; inside a container
+     that is several ranges (each must fit inside one range of the parent
+     map: `0 0 1` + `1 1 65536` works where `0 0 65536` is `EPERM`). An
+     unprivileged host user needs `newuidmap`/`newgidmap` and
+     `/etc/subuid`; without them only one uid maps and `chown` to any other
+     fails with `EINVAL`, as does a `chown` to an owner outside the ranges;
+     planned, ranikust then refuses such an image
+     ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+     Each map is tried in turn (root: its ranges, then one uid; a user:
+     `newuidmap`, then one uid); the log names the one that worked
+     (multi-range, newuidmap, one uid) or none.
+   - `chown` to a mapped id other than 0 (not with one uid), then
+     `unshare(CLONE_NEWNS)`, apart from the first `unshare` so that a refusal
+     names its step.
+   - A new `proc` in a new PID namespace; if that fails, an rbind of the
+     existing `/proc` (`RUN` then sees the container's processes, like
+     BuildKit's `--oci-worker-no-process-sandbox`). Read-only `sysfs`, else
+     an rbind of `/sys`. `mknod`, reported only: no user namespace allows
+     it, and the sandbox binds `/dev`'s nodes.
+   - The overlay mount (`rnk_snapshot::probe`; `userxattr` is implied) as
+     root of a namespace with the map that worked, in a child of its own,
+     under the state directory ([open: #4]).
+   - `kernel.apparmor_restrict_unprivileged_userns`, read and logged.
    - On Ubuntu 24.04 (later releases probably the same) `unshare` succeeds,
      then the `unprivileged_userns` AppArmor profile strips the namespace of
      capabilities. Measured for an unconfined binary: with one id the `uid_map`
      write fails with `EPERM`; with ranges the map is set up, then `chown` and
      `unshare(CLONE_NEWNS)` fail with `EPERM` and a rename with `EACCES`
      ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)).
-     The probe must reach those steps.
+     The probe reaches those steps; the T2 suite checks where it stops for a
+     regular user.
 3. **Sandbox capabilities.** Try `pivot_root` (Docker's seccomp profile
    blocks it even with `CAP_SYS_ADMIN`; fallback `MS_MOVE` + `chroot`) and a
    read-only `sysfs`, so the sandbox knows which variant to use
    ([sandbox](sandbox.md)). The rbind `/sys` fallback is planned (Phase 3): a
-   refused `sysfs` mount fails the probe today.
+   refused `sysfs` mount fails this probe today; the user-namespace probe
+   (step 2) already tries it.
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at
    `FSCONFIG_CMD_CREATE` (`EINVAL`), so only a real create counts. On failure

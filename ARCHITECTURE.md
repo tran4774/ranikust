@@ -269,7 +269,9 @@ declares none yet.
 2. **Probe** (`ranikust`, running the probes of `rnk-sandbox` and
    `rnk-snapshot` in order): choose overlay, kaniko, or refuse;
    `--mode=overlay|kaniko` skips the choice but not the checks
-   ([modes-and-detection](docs/design/modes-and-detection.md)). In kaniko mode,
+   ([modes-and-detection](docs/design/modes-and-detection.md)); `--mode=auto`
+   as root also probes the user-namespace path of a `RUN` and logs it,
+   reported only (#74). In kaniko mode,
    pick the root: `/` in a container (`flock` on `/` itself), else a directory
    per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059), where root
    must be able to mount.
