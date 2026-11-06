@@ -166,6 +166,7 @@ impl KeyPlan {
             else {
                 continue;
             };
+            stages += 1;
             steps = steps.saturating_add(len_u64(stage.instructions.len()));
             let start = match start(input, node, &ends) {
                 Ok(start) => start,
@@ -175,7 +176,6 @@ impl KeyPlan {
                 }
             };
             let (keys, end) = plan.stage_keys(input, &reader, node, stage, start);
-            stages += 1;
             keyed = keyed.saturating_add(len_u64(keys.steps.iter().flatten().count()));
             if let Some(end) = end {
                 ends.insert(index, end);

@@ -3,8 +3,8 @@
 > **Status:** in progress · **Phase:** 4 ·
 > **Depends on:** `rnk-oci`; `rnk-registry`, `rnk-rootfs` ([ADR-0115](../../adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)) and
 > `rnk-store` ([ADR-0021](../../adr/0021-rnk-store-crate.md)), planned ·
-> **Used by:** `rnk-builder` (planned; its lookups started up front by
-> `rnk-sched` through `StageRunner`, [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)) ·
+> **Used by:** `rnk-builder` (its key plan; lookups started up front by
+> `rnk-sched` through `StageRunner` planned, [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)) ·
 > **Path:** `crates/rnk-cache/`
 
 **TL;DR:** Computes a versioned, chained cache key per step and the tag its
@@ -12,9 +12,10 @@ cached layer is looked up by; lookup and push in a registry repository or an
 OCI layout are not built yet. A key depends on the step's instruction, its
 inputs and the previous key only, never on the snapshot mode, host, the
 build's time, an mtime outside `--reproducible` or thread count, and it is
-not compatible with kaniko's cache. Nothing calls the crate yet: the CLI
-refuses `--cache`, `--cache-repo` and the related flags until Phase 4 and
-accepts `--cache=false` (ADR-0036).
+not compatible with kaniko's cache. Only `rnk-builder`'s key plan calls
+the crate, and nothing calls the plan yet: the CLI refuses `--cache`,
+`--cache-repo` and the related flags until Phase 4 and accepts
+`--cache=false` (ADR-0036).
 
 ## Owns
 
@@ -154,7 +155,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shift, that every encoding field changes the tag, and that a key ignores
   the compression and its level (`a_key_ignores_the_compression_and_its_level`);
   `tests/spans.rs` checks `rnk_cache.key`. That an archive `ADD` is keyed
-  as one file is `rnk-builder`'s test (`tests/key_plan.rs`).
+  as one file is `rnk-builder`'s test (`tests/key_plan/`, its span in
+  `tests/spans.rs`).
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
   against a local registry; W2 cold, warm and partial; a layer cached in one
   mode reused by the other, checked against the ADR-0012 list.

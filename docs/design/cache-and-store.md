@@ -143,10 +143,12 @@ unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 
 ## Cache keys
 
-The keys are built in `rnk-cache`; nothing computes or looks them up during
-a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
-the inputs the step depends on, chained to the previous key (ADR-0005; the
-fields are
+The keys are hashed in `rnk-cache`; `rnk-builder`'s key plan computes every
+step's key before any stage runs
+([ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)),
+but no build looks them up yet (Phase 4). Each step's key is a SHA-256
+over a version field and the inputs the step depends on, chained to the
+previous key (ADR-0005; the fields are
 [ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
 BuildKit's):
 
@@ -162,16 +164,19 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
     and `SHELL`;
-  - for a `RUN`, its `--network`, each secret mount's id, target, mode and
-    owner, given or not (below), and each cache mount's id and sharing,
-    marked as dropped where
+  - for a `RUN`, its network as BuildKit keys it (its `--network`, or
+    `none` for one without it under the build's `--network=none`), each
+    secret mount's id, target, mode and owner, given or not (below), and
+    each cache mount's id and sharing, marked as dropped where
     [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
     drops it;
   - for `COPY` and `ADD` from the build context, each file read (after
     `.dockerignore`): its path relative to the context, content, mode, owner
-    after `--chown`, type, link target, `security.capability` and, under
-    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
-    file older than the epoch counts;
+    after `--chown` (`0:0`, with the `--chown` in the instruction: a name
+    resolves in the stage's root, which the previous key fixes), type, link
+    target, `security.capability` and, under `--reproducible`, its mtime
+    clamped to the epoch, so only the mtime of a file older than the epoch
+    counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
     `COPY --from=<stage>`, the source stage's final key (a forced miss when
     that stage ran in this build,
@@ -186,7 +191,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   unordered collection.
 
 `ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
-features. How the fields are written into the hash:
+features; until then, as for any step the plan cannot key as the build runs
+it, that step and every step after it have no key: a miss. How the fields
+are written into the hash:
 [the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
 
 A secret mount is keyed whether or not the build is given the secret, as
