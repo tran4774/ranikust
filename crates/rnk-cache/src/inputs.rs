@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 use tracing::Span;
 
 use crate::canonical::Canonical;
-use crate::key::CacheKey;
+use crate::key::{CacheKey, TimePolicy};
 
 /// The inputs of one step's key: the build arguments, the environment,
 /// `USER`, `WORKDIR` and `SHELL` in effect, and what the step reads.
@@ -27,6 +27,7 @@ use crate::key::CacheKey;
 /// values.
 pub struct KeyInputs {
     span: Span,
+    times: TimePolicy,
     args: Vec<(String, Option<String>)>,
     env: Vec<(String, String)>,
     user: String,
@@ -39,16 +40,20 @@ pub struct KeyInputs {
 }
 
 impl KeyInputs {
-    /// Empty inputs: no argument, environment, mount or file, and `USER`,
-    /// `WORKDIR` and `SHELL` empty.
+    /// Empty inputs of a step whose layer's headers carry `times`, the
+    /// policy of its [`Encoding`](crate::Encoding): under
+    /// [`TimePolicy::Clamped`], each file's mtime as its header carries it
+    /// is part of the key (ADR-0113). No argument, environment, mount or
+    /// file, and `USER`, `WORKDIR` and `SHELL` empty.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(times: TimePolicy) -> Self {
         Self {
             span: tracing::debug_span!(
                 "rnk_cache.key",
                 files_hashed = tracing::field::Empty,
                 bytes_hashed = tracing::field::Empty,
             ),
+            times,
             args: Vec::new(),
             env: Vec::new(),
             user: String::new(),
@@ -123,6 +128,7 @@ impl KeyInputs {
     pub(crate) fn feed(self, c: &mut Canonical) {
         let Self {
             span,
+            times,
             mut args,
             mut env,
             user,
@@ -133,6 +139,14 @@ impl KeyInputs {
             from,
             mut files,
         } = self;
+        let epoch = match times {
+            TimePolicy::Kept => None,
+            TimePolicy::Clamped { epoch } => Some(epoch),
+        };
+        // Before sorting, so an mtime the key leaves out never orders files.
+        for file in &mut files {
+            file.mtime = epoch.map_or(0, |epoch| file.mtime.min(epoch));
+        }
         // Unordered collections are sorted, duplicates kept, so the key is a
         // function of what was given and never of the order it came in.
         args.sort_unstable();
@@ -173,7 +187,7 @@ impl KeyInputs {
         c.len(files.len());
         let (mut files_hashed, mut bytes_hashed) = (0_u64, 0_u64);
         for file in &files {
-            file.feed(c);
+            file.feed(c, epoch.is_some());
             if let FileKind::Regular(content) = &file.kind {
                 files_hashed += 1;
                 bytes_hashed = bytes_hashed.saturating_add(content.size);
@@ -184,18 +198,13 @@ impl KeyInputs {
     }
 }
 
-impl Default for KeyInputs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl fmt::Debug for KeyInputs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn names<V>(pairs: &[(String, V)]) -> Vec<&str> {
             pairs.iter().map(|(name, _)| name.as_str()).collect()
         }
         f.debug_struct("KeyInputs")
+            .field("times", &self.times)
             .field("args", &names(&self.args))
             .field("env", &names(&self.env))
             .field("user", &self.user)
@@ -258,13 +267,18 @@ impl Sharing {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Mount {
     /// `type=secret`: what names and places the secret, never its value
-    /// (threat model T11). Only a secret the `RUN` is given: an optional
-    /// secret that is absent is no mount.
+    /// (threat model T11). Every secret mount the `RUN` names, whether the
+    /// build is given the secret or not, as BuildKit's key
+    /// (`buildkit@cd8ee244 solver/llbsolver/ops/exec.go:114-179`).
+    ///
+    /// A secret given only as an `env=` variable has no file: `target`
+    /// empty, `mode`, `uid` and `gid` 0. BuildKit mounts nothing for it
+    /// either, and keys its id and variable name
+    /// (`client/llb/exec.go:435-443`), which the instruction holds.
     Secret {
         /// `id=`.
         id: String,
-        /// Where the file is mounted; empty for a secret given only as an
-        /// `env=` variable, as BuildKit leaves it.
+        /// Where the file is mounted.
         target: String,
         /// The file's mode.
         mode: u32,
@@ -319,7 +333,8 @@ impl Mount {
 /// Where a `COPY --from` copies from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CopyFrom {
-    /// An image: its platform manifest digest.
+    /// An image: its platform manifest digest, which stands for the files
+    /// it holds, so the step adds no [`File`] (ADR-0113).
     Image(Digest),
     /// A stage: its final key, which stands for the files it holds, so the
     /// step adds no [`File`] (ADR-0114).
@@ -342,13 +357,15 @@ impl CopyFrom {
     }
 }
 
-/// A file a `COPY` or `ADD` writes, as it writes it; never its mtime.
+/// A file a `COPY` or `ADD` writes, as it writes it; its mtime only under
+/// `--reproducible`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct File {
-    /// The file's path relative to the root it is read from (the build
-    /// context or the `--from` image), as that root names it, with no host
-    /// or mode-specific prefix: `dir1/x` and `dir2/x` stay apart. One path
-    /// names one file: two files of the step never share one.
+    /// The file's path relative to the build context, with no host or
+    /// mode-specific prefix: `dir1/x` and `dir2/x` stay apart. One path
+    /// names one file: two files of the step never share one. A `COPY`
+    /// heredoc's body is content too: `rnk-builder` hashes it (task 3 of
+    /// #123).
     pub path: Vec<u8>,
     /// Its type, with its content or link target.
     pub kind: FileKind,
@@ -360,10 +377,15 @@ pub struct File {
     pub gid: u32,
     /// The raw `security.capability` extended attribute.
     pub capability: Option<Vec<u8>>,
+    /// Its mtime in seconds since the Unix epoch, before any clamp. The key
+    /// holds it only under [`TimePolicy::Clamped`], clamped to the epoch as
+    /// the layer's header carries it (ADR-0113).
+    pub mtime: i64,
 }
 
 impl File {
-    fn feed(&self, c: &mut Canonical) {
+    /// `mtime` is already the one the header carries when `clamped`.
+    fn feed(&self, c: &mut Canonical, clamped: bool) {
         // Destructured so that a field added to `File` cannot be left out.
         let Self {
             path,
@@ -372,6 +394,7 @@ impl File {
             uid,
             gid,
             capability,
+            mtime,
         } = self;
         c.bytes(path);
         match kind {
@@ -405,6 +428,12 @@ impl File {
         c.u32(*uid);
         c.u32(*gid);
         c.opt_bytes(capability.as_deref());
+        if clamped {
+            c.u8(1);
+            c.i64(*mtime);
+        } else {
+            c.u8(0);
+        }
     }
 }
 

@@ -12,7 +12,7 @@ use rnk_cache::{
 };
 use rnk_oci::{Compression, Platform};
 
-use crate::support::{Spec, content, digest, file, full, linux_amd64, root};
+use crate::support::{EPOCH, Spec, content, digest, file, full, linux_amd64, root};
 
 fn name() -> impl Strategy<Value = String> {
     "[A-Za-z_]{0,4}"
@@ -40,6 +40,11 @@ fn file_kind() -> impl Strategy<Value = FileKind> {
     ]
 }
 
+/// Near the epochs [`spec`] picks, so files fall on both sides of one.
+fn mtime() -> impl Strategy<Value = i64> {
+    -8..8_i64
+}
+
 fn a_file() -> impl Strategy<Value = File> {
     (
         bytes(),
@@ -48,14 +53,16 @@ fn a_file() -> impl Strategy<Value = File> {
         any::<u32>(),
         any::<u32>(),
         option::of(bytes()),
+        mtime(),
     )
-        .prop_map(|(path, kind, mode, uid, gid, capability)| File {
+        .prop_map(|(path, kind, mode, uid, gid, capability, mtime)| File {
             path,
             kind,
             mode,
             uid,
             gid,
             capability,
+            mtime,
         })
 }
 
@@ -95,6 +102,7 @@ fn spec() -> impl Strategy<Value = Spec> {
             .prop_map(|seed| CopyFrom::Stage(CacheKey::root(Some(&digest(seed)), &linux_amd64()))),
     ];
     (
+        option::of(-4..4_i64),
         text(),
         vec((name(), option::of(text())), 0..4),
         vec((name(), text()), 0..4),
@@ -107,7 +115,20 @@ fn spec() -> impl Strategy<Value = Spec> {
         vec(a_file(), 0..6),
     )
         .prop_map(
-            |(instruction, args, env, user, workdir, shell, network, mounts, from, files)| Spec {
+            |(
+                epoch,
+                instruction,
+                args,
+                env,
+                user,
+                workdir,
+                shell,
+                network,
+                mounts,
+                from,
+                files,
+            )| Spec {
+                epoch,
                 instruction,
                 args,
                 env,
@@ -126,8 +147,7 @@ fn spec() -> impl Strategy<Value = Spec> {
 type Change<T> = (&'static str, fn(&mut T));
 
 /// Changes to one field of a step each: of the first entry of its kind, or
-/// an added one, so each applies to [`full`] or to its `COPY --from=<stage>`
-/// twin.
+/// an added one, so each applies to [`full`] or to one of its twins.
 fn mutations() -> Vec<Change<Spec>> {
     vec![
         ("instruction", |s| s.instruction.push('x')),
@@ -249,7 +269,7 @@ fn mutations() -> Vec<Change<Spec>> {
         }),
         ("source stage", |s| {
             if let Some(CopyFrom::Stage(k)) = &mut s.from {
-                *k = k.next("", KeyInputs::new());
+                *k = k.next("", KeyInputs::new(TimePolicy::Kept));
             }
         }),
         ("file added", |s| {
@@ -261,6 +281,24 @@ fn mutations() -> Vec<Change<Spec>> {
         ("file path", |s| {
             if let Some(f) = s.files.first_mut() {
                 f.path.push(b'x');
+            }
+        }),
+        ("--reproducible set or unset", |s| {
+            if !s.files.is_empty() {
+                s.epoch = match s.epoch {
+                    None => Some(0),
+                    Some(_) => None,
+                };
+            }
+        }),
+        ("file mtime under --reproducible", |s| {
+            if let (Some(epoch), Some(f)) = (s.epoch, s.files.first_mut()) {
+                let clamped = f.mtime.min(epoch);
+                f.mtime = if clamped == epoch {
+                    epoch - 1
+                } else {
+                    clamped + 1
+                };
             }
         }),
         ("file mode", |s| {
@@ -381,8 +419,12 @@ fn every_field_of_a_step_changes_its_key() {
         from: Some(CopyFrom::Stage(root())),
         ..full()
     };
+    let reproducible = Spec {
+        epoch: Some(EPOCH),
+        ..full()
+    };
     let mut applied = HashMap::new();
-    for base in [full(), from_stage] {
+    for base in [full(), from_stage, reproducible] {
         let mut seen = HashMap::from([(base.key(&root()), "nothing")]);
         for (what, mutate) in mutations() {
             let mut changed = base.clone();
@@ -446,7 +488,7 @@ fn every_field_of_a_root_changes_its_key() {
 #[test]
 fn every_field_of_an_encoding_changes_the_tag() {
     let key = full().key(&root());
-    let other = root().next("", KeyInputs::new());
+    let other = root().next("", KeyInputs::new(TimePolicy::Kept));
     let mut seen = HashMap::new();
     for k in [key, other] {
         for (compression, levels) in [
@@ -478,7 +520,7 @@ fn every_field_of_an_encoding_changes_the_tag() {
 
 #[test]
 fn debug_names_arguments_and_variables_without_their_values() {
-    let mut inputs = KeyInputs::new();
+    let mut inputs = KeyInputs::new(TimePolicy::Kept);
     inputs
         .arg("ARG_NAME", Some("arg-value"))
         .env("ENV_NAME", "env-value");
@@ -491,6 +533,32 @@ fn debug_names_arguments_and_variables_without_their_values() {
         !shown.contains("arg-value") && !shown.contains("env-value"),
         "{shown}"
     );
+}
+
+#[test]
+fn an_old_mtime_counts_only_under_reproducible() {
+    let with = |mtime| Spec {
+        files: vec![File {
+            mtime,
+            ..file("a", FileKind::Directory)
+        }],
+        ..Spec::default()
+    };
+    let (older, old) = (with(EPOCH - 2), with(EPOCH - 1));
+    let (new, newer) = (with(EPOCH), with(EPOCH + 1));
+    let key = |spec: &Spec, epoch| {
+        Spec {
+            epoch,
+            ..spec.clone()
+        }
+        .key(&root())
+    };
+    assert_ne!(key(&older, Some(EPOCH)), key(&old, Some(EPOCH)));
+    assert_ne!(key(&old, Some(EPOCH)), key(&new, Some(EPOCH)));
+    // A later mtime is clamped to the epoch, as the header carries it.
+    assert_eq!(key(&new, Some(EPOCH)), key(&newer, Some(EPOCH)));
+    assert_eq!(key(&older, None), key(&old, None));
+    assert_eq!(key(&old, None), key(&newer, None));
 }
 
 #[test]
@@ -574,6 +642,33 @@ proptest! {
         let n = io::copy(&mut Trickle { data: &data, step: cuts[0] }, &mut copied).unwrap();
         prop_assert_eq!(n, u64::try_from(data.len()).unwrap());
         prop_assert_eq!(copied.finish(), whole);
+    }
+
+    #[test]
+    fn mtimes_the_header_does_not_carry_never_change_the_key(
+        (spec, mtimes) in spec().prop_flat_map(|s| {
+            let n = s.files.len();
+            (Just(s), vec(mtime(), n))
+        })
+    ) {
+        // Each file's mtime, moved where its header still carries the same.
+        let moved = Spec {
+            files: spec
+                .files
+                .iter()
+                .zip(mtimes)
+                .map(|(f, m)| File {
+                    mtime: match spec.epoch {
+                        None => m,
+                        Some(epoch) if f.mtime >= epoch => epoch + m.abs(),
+                        Some(_) => f.mtime,
+                    },
+                    ..f.clone()
+                })
+                .collect(),
+            ..spec.clone()
+        };
+        prop_assert_eq!(spec.key(&root()), moved.key(&root()));
     }
 
     #[test]

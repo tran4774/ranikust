@@ -2,12 +2,15 @@
 
 use rnk_cache::{
     CacheKey, Content, ContentHasher, CopyFrom, File, FileKind, KeyInputs, Mount, Network, Sharing,
+    TimePolicy,
 };
 use rnk_oci::{Digest, Platform};
 
 /// Everything [`CacheKey::next`] takes, in the order the test gives it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Spec {
+    /// `--reproducible`'s epoch; `None` keeps each file's mtime.
+    pub(crate) epoch: Option<i64>,
     pub(crate) instruction: String,
     pub(crate) args: Vec<(String, Option<String>)>,
     pub(crate) env: Vec<(String, String)>,
@@ -22,7 +25,7 @@ pub(crate) struct Spec {
 
 impl Spec {
     pub(crate) fn inputs(&self) -> KeyInputs {
-        let mut inputs = KeyInputs::new();
+        let mut inputs = KeyInputs::new(times(self.epoch));
         for (name, value) in &self.args {
             inputs.arg(name, value.as_deref());
         }
@@ -53,6 +56,13 @@ impl Spec {
     }
 }
 
+pub(crate) fn times(epoch: Option<i64>) -> TimePolicy {
+    epoch.map_or(TimePolicy::Kept, |epoch| TimePolicy::Clamped { epoch })
+}
+
+/// The epoch of the fixtures' `--reproducible` builds.
+pub(crate) const EPOCH: i64 = 1_700_000_000;
+
 pub(crate) fn content(bytes: &[u8]) -> Content {
     let mut h = ContentHasher::new();
     h.update(bytes);
@@ -79,12 +89,15 @@ pub(crate) fn file(path: &str, kind: FileKind) -> File {
         uid: 0,
         gid: 0,
         capability: None,
+        mtime: EPOCH - 1000,
     }
 }
 
-/// A step that sets every input, each kind of mount and file included.
+/// A step that sets every input, each kind of mount and file included, and
+/// keeps mtimes.
 pub(crate) fn full() -> Spec {
     Spec {
+        epoch: None,
         instruction: "COPY --chown=1000:1000 --from=tools /src /app".to_owned(),
         args: vec![
             ("VERSION".to_owned(), Some("1.2.3".to_owned())),
@@ -124,6 +137,7 @@ pub(crate) fn full() -> Spec {
                 uid: 1000,
                 gid: 1000,
                 capability: Some(vec![1, 0, 0, 2, 0, 0x20, 0, 0]),
+                mtime: EPOCH + 1000,
                 ..file("bin/tool", FileKind::Regular(content(b"#!/bin/sh\n")))
             },
             file("etc", FileKind::Directory),

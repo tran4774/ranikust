@@ -5,7 +5,7 @@
 //! process, and a test reaching it with no subscriber alive could race a
 //! `Capture` into caching "never".
 
-use rnk_cache::{CacheKey, ContentHasher, File, FileKind, KeyInputs};
+use rnk_cache::{CacheKey, ContentHasher, File, FileKind, KeyInputs, TimePolicy};
 use rnk_metrics::Capture;
 use rnk_oci::Platform;
 
@@ -17,6 +17,7 @@ fn file(path: &str, kind: FileKind) -> File {
         uid: 0,
         gid: 0,
         capability: None,
+        mtime: 0,
     }
 }
 
@@ -31,7 +32,7 @@ fn a_key_counts_the_files_and_bytes_it_hashed() {
     let capture = Capture::new();
     let root = CacheKey::root(None, &Platform::new("linux", "amd64"));
     capture.run(|| {
-        let mut inputs = KeyInputs::new();
+        let mut inputs = KeyInputs::new(TimePolicy::Kept);
         inputs
             .file(regular("a", &[0; 10]))
             .file(regular("b", b"hello"))
@@ -39,7 +40,7 @@ fn a_key_counts_the_files_and_bytes_it_hashed() {
             .file(file("l", FileKind::Symlink(b"a".to_vec())));
         let copy = root.next("COPY . /", inputs);
         // A second step with files, so the report's sum shows.
-        let mut inputs = KeyInputs::new();
+        let mut inputs = KeyInputs::new(TimePolicy::Kept);
         inputs.file(regular("c", b"abc"));
         (copy, root.next("COPY c /", inputs))
     });

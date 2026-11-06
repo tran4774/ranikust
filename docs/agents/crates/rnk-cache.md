@@ -47,17 +47,17 @@ impl CacheKey {
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self; // instruction expanded, with its flags
     pub fn tag(&self, encoding: &Encoding) -> String;                 // "rnk-v<version>-<64 hex>"
 }
-pub struct KeyInputs;                // arg, env, user, workdir, shell, network, mount, copy_from, file; opens rnk_cache.key
+pub struct KeyInputs;                // new(TimePolicy) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file
 pub enum Network { Default, None, Host }               // the Dockerfile's --network, never what a mode gives
-pub enum Mount { Secret { id, target, mode, uid, gid }, Cache { id, sharing, dropped } } // no secret value
+pub enum Mount { Secret { id, target, mode, uid, gid }, Cache { id, sharing, dropped } } // no secret value; given or not
 pub enum Sharing { Shared, Private, Locked }
-pub enum CopyFrom { Image(Digest), Stage(CacheKey) }   // platform manifest digest; source stage's final key (ADR-0114)
-pub struct File { path: Vec<u8>, kind: FileKind, mode, uid, gid, capability: Option<Vec<u8>> } // never mtime
+pub enum CopyFrom { Image(Digest), Stage(CacheKey) }   // platform manifest digest; source stage's final key (ADR-0114); either stands for its files
+pub struct File { path: Vec<u8>, kind: FileKind, mode, uid, gid, capability: Option<Vec<u8>>, mtime: i64 } // mtime keyed when clamped
 pub enum FileKind { Regular(Content), Directory, Symlink(Vec<u8>), Hardlink(Vec<u8>), Fifo, CharDevice { .. }, BlockDevice { .. } }
 pub struct Content;                  // sha256(), size(); only from ContentHasher; == compares copied bytes with hashed ones
 pub struct ContentHasher;            // update(chunk) or io::Write, then finish() -> Content
 pub struct Encoding { compression: rnk_oci::Compression, level: i32, times: TimePolicy }
-pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp
+pub enum TimePolicy { Kept, Clamped { epoch: i64 } }   // own mtimes; --reproducible's clamp, which also keys mtimes
 ```
 
 Planned (task 4 and task 11 of #123):
@@ -65,7 +65,7 @@ Planned (task 4 and task 11 of #123):
 ```rust
 pub trait LayerCache {                               // [design] RegistryCache, LayoutCache
     async fn lookup(&self, key: &CacheKey, encoding: &Encoding) -> Result<Option<CachedLayer>>; // by tag, ADR-0113
-    async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &CachedLayer) -> Result<()>; // asynchronous
+    async fn push(&self, key: &CacheKey, encoding: &Encoding, layer: &Descriptor) -> Result<()>; // rnk_oci; the new layer's blob, read from the store; asynchronous
 }
 ```
 
@@ -87,7 +87,7 @@ different inputs never feed the same bytes:
 | Hash | Fields in order |
 |---|---|
 | root | `"rnk-cache root"`; `KEY_VERSION` (`u32`); the base digest string (optional); the platform's architecture, os, `os.version` (optional), `os.features` (optional list), variant (optional), features (optional list) |
-| step | `"rnk-cache step"`; `KEY_VERSION`; the previous key's version and hash; the instruction; the build arguments (name, optional value); the environment (name, value); `USER`; `WORKDIR`; `SHELL` (list); the network (optional name); the mounts (`secret`: id, target, mode, uid, gid; `cache`: id, sharing, a dropped byte); the copy source (optional: `image` and the digest string, or `stage` and the key's version and hash); the files (path; the type name, then the content's SHA-256 and size (`u64`), the link target, or the device's major and minor; mode, uid, gid; `security.capability` (optional)) |
+| step | `"rnk-cache step"`; `KEY_VERSION`; the previous key's version and hash; the instruction; the build arguments (name, optional value); the environment (name, value); `USER`; `WORKDIR`; `SHELL` (list); the network (optional name); the mounts (`secret`: id, target, mode, uid, gid; `cache`: id, sharing, a dropped byte); the copy source (optional: `image` and the digest string, or `stage` and the key's version and hash); the files (path; the type name, then the content's SHA-256 and size (`u64`), the link target, or the device's major and minor; mode, uid, gid; `security.capability` (optional); under `clamped` a 1 byte and the mtime clamped to the epoch (`i64`), else a 0 byte) |
 | tag | `"rnk-cache tag"`; the key's version and hash; the compression name, then for `gzip` and `zstd` the level (`i32`); `kept`, or `clamped` and the epoch (`i64`) |
 
 The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
@@ -96,16 +96,21 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 
 - A new algorithm bumps `KEY_VERSION`; old entries are never matched again
   and never rewritten. The goldens fail on any change to the byte form.
+- A change to the layer format bumps `KEY_VERSION` too (ADR-0005): an
+  `Encoding` has no encoder version.
 - Same inputs, same key, in either mode, with any `--jobs`, whatever the
   order of the build arguments, environment and files, and however file
   content is chunked; a layer cached by one mode may serve the other
   (ADR-0005, ADR-0012).
 - A `type=secret` mount adds its id, target, mode and owner, never its
-  content (T11); cached layers are digest-checked when read (T13).
+  content (T11), whether or not the build is given the secret, as
+  BuildKit; cached layers are digest-checked when read (T13).
+- Under `--reproducible` each file adds its mtime clamped to the epoch, as
+  the layer's header carries it; without it, no mtime.
 - A tag carries the encoding, so a hit was encoded with this build's
   settings (ADR-0113). One compressed blob serves both the image and the
-  cache; pushes run asynchronously. Waiting for them before exit, as kaniko does,
-  is [inferred].
+  cache; pushes run asynchronously. Waiting for them before exit, as kaniko
+  does, is [inferred].
 
 ## Refs
 
@@ -126,9 +131,10 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 - **T0** (`cargo test -p rnk-cache`): `tests/keys/golden.rs` pins keys and
   tags (a changed golden means: bump `KEY_VERSION`); `tests/keys/props.rs`
   shows that a key ignores the order of build arguments, environment and
-  files and the chunking of content, that changing any one field changes
-  it, that field boundaries cannot shift, and that every encoding field
-  changes the tag; `tests/spans.rs` checks `rnk_cache.key`.
+  files, the chunking of content and any mtime the header does not carry,
+  that changing any one field changes it, that field boundaries cannot
+  shift, and that every encoding field changes the tag; `tests/spans.rs`
+  checks `rnk_cache.key`.
 - **Planned:** `LayoutCache` round trip in a temp dir; `--cache-repo`
   against a local registry; W2 cold, warm and partial; a layer cached in one
   mode reused by the other, checked against the ADR-0012 list.
@@ -160,6 +166,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   mount's `env=` adds to a `RUN`.
 - A `File` path with a host or mode-specific prefix ties the key to the
   host or the mode, and one relative to each source operand lets two files
-  share a path: paths are relative to the build context or the `--from`
-  image.
+  share a path: paths are relative to the build context. A `COPY`
+  heredoc's body reaches the key only if `rnk-builder`
+  hashes it (task 3 of #123).
+- `KeyInputs::new` takes the layer's `TimePolicy`: give it the one the
+  `Encoding` has, or a `--reproducible` hit can carry other mtimes.
 - No cache measurement exists: claim no speed-up before W2 runs.

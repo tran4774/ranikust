@@ -2,11 +2,12 @@
 //! or a tag hashes, or how, fails here.
 
 use rnk_cache::{
-    CacheKey, CopyFrom, Encoding, KEY_VERSION, KeyInputs, Mount, Network, Sharing, TimePolicy,
+    CacheKey, CopyFrom, Encoding, File, FileKind, KEY_VERSION, KeyInputs, Mount, Network, Sharing,
+    TimePolicy,
 };
 use rnk_oci::{Compression, Digest, Platform};
 
-use crate::support::{content, digest, full, linux_amd64, root};
+use crate::support::{EPOCH, Spec, content, digest, file, full, linux_amd64, root};
 
 #[track_caller]
 fn golden(what: &str, got: &str, want: &str) {
@@ -57,7 +58,7 @@ fn root_keys() {
 
 #[test]
 fn step_keys() {
-    let empty = root().next("RUN true", KeyInputs::new());
+    let empty = root().next("RUN true", KeyInputs::new(TimePolicy::Kept));
     golden(
         "step with empty inputs",
         &hex(&empty),
@@ -66,9 +67,9 @@ fn step_keys() {
     golden(
         "step with every input",
         &hex(&full().key(&root())),
-        "c377f4087830580a656708a7adfc42d88d5855f4f5796f58b0a06454771be4cb",
+        "a6f3004f53b56028173198b4e295c2e55cc907c27ac7f619391c095c30a12055",
     );
-    let mut inputs = KeyInputs::new();
+    let mut inputs = KeyInputs::new(TimePolicy::Kept);
     inputs.copy_from(CopyFrom::Stage(empty));
     golden(
         "COPY --from=<stage> step",
@@ -76,7 +77,7 @@ fn step_keys() {
         "8f6939bab18a88c37a726427e7148abc691780763a76077017bf5b1a43bd5e5f",
     );
     // The network and sharing names `full` does not use.
-    let mut inputs = KeyInputs::new();
+    let mut inputs = KeyInputs::new(TimePolicy::Kept);
     inputs.network(Network::Default).mount(Mount::Cache {
         id: "go".to_owned(),
         sharing: Sharing::Private,
@@ -90,12 +91,49 @@ fn step_keys() {
         )),
         "8e348f6b209e57f9edc39b6cb793d5e88d15ead23897273307e1ba307e1a26aa",
     );
-    let mut inputs = KeyInputs::new();
+    let mut inputs = KeyInputs::new(TimePolicy::Kept);
     inputs.network(Network::Host);
     golden(
         "RUN step with the host network",
         &hex(&root().next("RUN --network=host true", inputs)),
         "13a30b9e8e4acd874dcf74b1ea4f76dff5d597f980936b1a12b0ff8d8a762c92",
+    );
+}
+
+#[test]
+fn copy_keys() {
+    let copy = |epoch, files| Spec {
+        epoch,
+        instruction: "COPY . /".to_owned(),
+        files,
+        ..Spec::default()
+    };
+    let hello = |path| file(path, FileKind::Regular(content(b"hello")));
+    golden(
+        "COPY step",
+        &hex(&copy(None, vec![hello("a.txt")]).key(&root())),
+        "6e2dd52a966ca983c7d7b79dc873c0230a6f9be911e80c8b647234cefcc173e3",
+    );
+    golden(
+        "COPY step with the file renamed",
+        &hex(&copy(None, vec![hello("b.txt")]).key(&root())),
+        "14941e9be42acb99dadc9dc198d496aec98174f9b5a2587c21f0ed1bc214c540",
+    );
+    // One mtime later than the epoch, clamped, and one earlier, kept.
+    let files = vec![
+        File {
+            mtime: EPOCH + 1000,
+            ..hello("new")
+        },
+        File {
+            mtime: EPOCH - 1000,
+            ..file("old", FileKind::Directory)
+        },
+    ];
+    golden(
+        "COPY step under --reproducible",
+        &hex(&copy(Some(EPOCH), files).key(&root())),
+        "f8e857ea4ac3d6a0364f8dd16ee784b467f07389b462b75170bcabb16c91ae32",
     );
 }
 
@@ -112,12 +150,12 @@ fn tags() {
     golden(
         "gzip tag",
         &tag(Compression::Gzip, 6, TimePolicy::Kept),
-        "rnk-v1-48e68c3c35ae4d1d3e39a87cc7095c8e89cc6b14ade4fa27df19941d25080ac0",
+        "rnk-v1-bef53ce32b702cb50fca05750380ccfd7bf08cf3b0e6e0c95d8d06dee2bee59e",
     );
     golden(
         "zstd reproducible tag",
         &tag(Compression::Zstd, 3, TimePolicy::Clamped { epoch: 0 }),
-        "rnk-v1-81ff1445263bb5ccb281bcb3db4d0025e3f62ef0d556efbefc8bc334c3928f47",
+        "rnk-v1-8cbc428fb8592e18fb87c528583b8b23694a9584fdfc1ade3d6874afc5cdb9c3",
     );
     golden(
         "uncompressed tag",
@@ -128,7 +166,7 @@ fn tags() {
                 epoch: 1_700_000_000,
             },
         ),
-        "rnk-v1-2651c67388fbd4c99afd1561b4603234b82500d25b1d6d43fc78fb5686d98e50",
+        "rnk-v1-0e97749319b93b0a381b183a5c5676d710398d8919c49641b38d0d913dd8ab5d",
     );
 }
 

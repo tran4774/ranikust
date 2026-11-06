@@ -6,9 +6,10 @@
 //!
 //! A chain starts at [`CacheKey::root`]; each step's key is
 //! [`CacheKey::next`] of the previous one, over the step's expanded
-//! instruction and its [`KeyInputs`]. [`CacheKey::tag`] adds the layer's
-//! [`Encoding`], so a hit was encoded with this build's settings. File
-//! content is hashed by a [`ContentHasher`] from bytes the caller reads.
+//! instruction and its [`KeyInputs`], which hold each file's mtime under
+//! `--reproducible` only. [`CacheKey::tag`] adds the layer's [`Encoding`],
+//! so a hit was encoded with this build's settings. File content is hashed
+//! by a [`ContentHasher`] from bytes the caller reads.
 //!
 //! # Boundaries
 //!
