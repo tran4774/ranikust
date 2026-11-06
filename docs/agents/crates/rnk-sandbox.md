@@ -291,16 +291,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   disagree, the kernel's 4096 instructions); `errno_0_reads_as_eproto`. The
   `tests::kernel` modules, skipped under qemu-user, install filters in forked
   children: `seccomp::profile`'s (compiled profiles; random ones answering as
-  their rules say; 4096 instructions; on x86_64, i386 and x32 calls refused), `caps`'s (an
-  `EINVAL` from a bounding drop) and `child`'s (a refused keyring join with
-  the session keyring found or not, each `KeyringJoin`; an `execve` or
-  `execveat` back without an error; a `waitpid` back with 0 or `EINTR` with a
-  command still to reap; an `EINTR` on the reads after the profile, the parent
-  check's against an unfiltered control; a refused `umask` after the profile;
-  a faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
-  last two on a stack filled beforehand, which shows an unwritten buffer in a
-  debug build only; these test the helpers, not their call sites, whose
-  `/proc/self/fd` opening overwrites that stack).
+  their rules say; 4096 instructions; on x86_64, x32 and, where the kernel
+  has it, i386 calls refused), `caps`'s (an `EINVAL` from a bounding drop) and `child`'s
+  (a refused keyring join with the session keyring found or not, each
+  `KeyringJoin`; an `execve` or `execveat` back without an error; a `waitpid`
+  back with 0 or `EINTR` with a command still to reap; an `EINTR` on the reads
+  after the profile, the parent check's against an unfiltered control; a
+  refused `umask` after the profile; a faked `setsid`, `pipe2` or `fstatfs`, a
+  faked or refused `prlimit64`; the last two on a stack filled beforehand,
+  which shows an unwritten buffer in a debug build only; these test the
+  helpers, not their call sites, whose `/proc/self/fd` opening overwrites that
+  stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.

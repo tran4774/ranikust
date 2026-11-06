@@ -213,7 +213,6 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
 
 ## Evidence
 
-- Nothing is measured here.
 - **[external]** `seccompiler` 0.5.0: `apply_filter` sets
   `PR_SET_NO_NEW_PRIVS` (`src/lib.rs:344`); one match action per filter
   (`src/backend/filter.rs:85-108`).
@@ -229,12 +228,14 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   highest precedence wins, with its errno.
 - **[inferred]** runc and libseccomp leave the same limit on argument rules.
   Not tested against runc.
-- Reported in #103 by red-team's run on this branch, 2026-11-06, and not
-  repeated for this ADR: a profile that refuses `exit` and `exit_group`
-  leaves the `RUN`'s shell retrying its exit, and a profile with a refusing
-  default action and no rules does the same to ranikust's own child before
-  `exec`, each with one process spinning at about one CPU; a `SIGTERM`
-  cancels the build at once.
+- **[measured]** 2026-11-06, kernel 7.0.0-42-generic, ranikust in rootless
+  Podman (T1), as reported in
+  [#103](https://github.com/tran4774/ranikust/issues/103): a profile that
+  refuses `exit` and `exit_group` leaves the `RUN`'s shell retrying its
+  exit, and a profile with a refusing default action and no rules does the
+  same to ranikust's own child before `exec`, each with one process at about
+  one CPU 30 s on; a `SIGTERM` then cancels the build in 0.1 s ("build
+  cancelled", exit code 1).
 
 ## More Information
 

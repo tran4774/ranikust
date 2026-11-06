@@ -96,7 +96,8 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   set-up, for the native architecture, the running kernel (`minKernel`) and
   the `RUN`'s capabilities, Docker's 14 (`includes.caps`), as moby's
   `setupSeccomp` reads a profile. Arguments compare as 64-bit values, each
-  rule keeps its action, and where several match one call the strictest wins.
+  rule keeps its action, and where several match one call the strictest
+  wins; of two refusals with different errnos, the first in the profile.
 - A name the architecture does not know is skipped under `SCMP_ACT_ALLOW`, as
   runc does, and refuses the profile under any other action. Under a default
   action that refuses, a number `libc` does not name gets `ENOSYS`, so that C

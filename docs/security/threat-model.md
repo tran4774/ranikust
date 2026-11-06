@@ -253,6 +253,9 @@ These follow from decisions and are documented to users rather than fixed:
   `RUN`'s (ranikust's hard limit in kaniko mode), in descriptors, with work
   that grows with the square of that limit, then waits. Docker's default
   profile allows `close`.
+- A `RUN`'s profile that refuses `exit` and `exit_group`, or every call,
+  leaves the build running until it is cancelled, a limit of reliability,
+  not of security ([#103](https://github.com/tran4774/ranikust/issues/103)).
 - Until `--userns` (Phase 3), a distinct host account whose uid and primary
   gid are the `RUN`'s can reach a non-root `RUN` while it lives
   ([ADR-0047](../adr/0047-kaniko-workdir-chain-is-private.md), corrected by
