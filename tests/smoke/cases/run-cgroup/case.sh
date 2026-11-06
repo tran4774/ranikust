@@ -4,7 +4,8 @@
 # namespace: nested), the command reads `0::/` and its init's cgroup beside
 # or above it, never ranikust's pid or the RUN's number. So --reproducible
 # gives one digest at --jobs 1 and 4, build after build. Where no RUN gets a
-# cgroup (the VM's ssh session), it reads ranikust's own.
+# cgroup (the VM's ssh session), it reads ranikust's own, and only the
+# builds and their digests are checked.
 case_run() {
   local a b c d got
   a="$(build j1 --reproducible --jobs 1)"
@@ -14,7 +15,10 @@ case_run() {
   expect "$b" "$a" "digest at --jobs 4 and 1"
   expect "$c" "$a" "digest of a second build at --jobs 1"
   expect "$d" "$a" "digest of a second build at --jobs 4"
-  grep -q 'RUN cgroups in' "$(out j4)/build.log" || return 0
+  if ! grep -q 'RUN cgroups in' "$(out j4)/build.log"; then
+    echo "  $CASE: no RUN cgroups here: only the builds and their digests were checked"
+    return 0
+  fi
   got="$(run j4 | tr '\n' ' ')"
   case "$got" in
   "0::/ 0::/../init 0::/ 0::/../init " | "0::/ 0::/../.. 0::/ 0::/../.. ") ;;

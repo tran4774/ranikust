@@ -398,8 +398,10 @@ impl Error {
     ///
     /// This rests on the spawner's order (`spawner.rs`, `execute`): the
     /// spec and privileges are checked before the fork; the child reports
-    /// [`Error::Setup`] or [`Error::Exec`] only from before `execve`, and
-    /// the parent returns them only after the process tree is swept
+    /// [`Error::Setup`] or [`Error::Exec`] only from before `execve`, the
+    /// full sandbox's init included, whose command starts only on the go
+    /// byte the init writes after its last step (`child.rs`, `run_init`),
+    /// and the parent returns them only after the process tree is swept
     /// (`Survivors` otherwise), and [`Error::Cgroup`] before the clone. A
     /// variant returned after the command starts must not be added here.
     #[must_use]

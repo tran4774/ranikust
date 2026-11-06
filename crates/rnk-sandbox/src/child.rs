@@ -536,7 +536,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // ([`run_init`]), the command once in its cgroup namespace (ADR-0110).
     // After them come the capability cut, since the install needs
     // `CAP_SYS_ADMIN`, and the init's and the command's steps that must
-    // follow the fork; only a filter around ranikust could fake the fork
+    // follow the filters; only a filter around ranikust could fake the fork
     // (threat model, section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
@@ -586,11 +586,11 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// is the default), its copy of ranikust's argument and environment
 /// strings zeroed; [`run`] made it not dumpable and gave it a session of
 /// its own, so that no terminal signal reaches it, before the `RUN`'s
-/// profile. The command waits on the go pipe until the init has given all
-/// that up, so a failure of the init's own steps (`Step::Init`, or the
-/// filter's step) comes before the command ran, unless a filter around
-/// ranikust fakes the command's `read` of that pipe (threat model,
-/// section 6). The init reaps every process that reparents to it; when the
+/// profile. The command starts only on the init's go byte, written once
+/// the init has given all that up, never on the end of the go pipe
+/// ([`wait_for_go`]), so a failure of the init's own steps (`Step::Init`,
+/// or the filter's step) comes before the command ran, however the init
+/// ends. The init reaps every process that reparents to it; when the
 /// command exits, it writes the command's wait status on the status pipe
 /// and exits, and the kernel kills the rest, as when the command was PID 1
 /// itself.
@@ -605,8 +605,8 @@ fn run_init(
     // with (`--build-arg` values, `--secret` paths, the environment) must not
     // be readable there by the command.
     zero_args_and_environment(err, parent);
-    // The command blocks reading the go pipe until every write end is
-    // closed: the init's goes in `close_all_except`, after its own steps.
+    // The command blocks reading the go pipe until the init's go byte,
+    // which `send_go` writes after the init's own steps.
     let (go_r, go_w) = init_pipe(err);
     // A plain `fork`: no `CLONE_VM`, a null stack, the child continues on a
     // copy of this stack, as the spawner's clone.
@@ -657,14 +657,21 @@ fn run_init(
     };
     drop(go_r);
     init_keep_nothing(err, parent, command, args);
-    // Nothing is left to report on the error pipe: the command's own copy
-    // says whether it reached `execve`. Every other descriptor goes first;
-    // closing the go pipe's write end last lets the command go on only
-    // once the init holds nothing but the status pipe.
+    // Every other descriptor goes first, then the error pipe, so that the
+    // go byte lets the command go on only once the init holds nothing but
+    // the status pipe and the go pipe's write end; where one may be left,
+    // no go, and the error pipe, still open, says why. After the go, the
+    // command's own copy of it says whether it reached `execve`.
     let go_w = go_w.into_raw_fd();
-    close_all_except(&[go_w.min(status_w), go_w.max(status_w)]);
-    // SAFETY: closing a descriptor number this process holds.
-    unsafe { libc::close(go_w) };
+    let mut keep = [err, go_w, status_w];
+    keep.sort_unstable();
+    if let Err(e) = close_all_except_checked(&keep) {
+        kill_and_fail(err, command, Step::Init, e);
+    }
+    if let Err(e) = close_one(err) {
+        kill_and_fail(err, command, Step::Init, e);
+    }
+    send_go(go_w);
     let status = reap_until(command);
     let bytes = status.to_le_bytes();
     // SAFETY: `status_w` is open in this process; the write is below
@@ -728,14 +735,43 @@ fn init_pipe(err: RawFd) -> (OwnedFd, OwnedFd) {
     unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) }
 }
 
-/// The command waits here until the init has closed its write end of the
-/// go pipe; any other outcome of the read fails the `RUN`, `EINTR`
-/// included: with no handler, the kernel restarts a read a signal
-/// interrupts, so only a filter answers so, and it could forever.
+/// The byte the init writes on the go pipe once it has done every one of
+/// its steps; the command starts on nothing else.
+const GO: u8 = b'G';
+
+/// The init's last step before it waits: the go byte, then its end of the
+/// go pipe closed. Without the byte, the command fails at its read once
+/// the pipe ends and reports that (`Step::Init`, `EPIPE`), not the write's
+/// error, as the error pipe is closed by then; the init reaps it as any
+/// command. Where the pipe cannot end either (`close_range` and `close`
+/// refused), the init ends (125) rather than leave both waiting. A command
+/// already gone fails only the write: the init, PID 1 of its namespace,
+/// gets no `SIGPIPE` it has no handler for.
+fn send_go(go_w: RawFd) {
+    // SAFETY: `go_w` is open in this process until the `close` below.
+    let sent = matches!(
+        rustix::io::write(unsafe { BorrowedFd::borrow_raw(go_w) }, &[GO]),
+        Ok(1)
+    );
+    let closed = close_one(go_w).is_ok();
+    if !sent && !closed {
+        // SAFETY: `_exit` ends the process at once; the kernel then kills
+        // what is left of the namespace.
+        unsafe { libc::_exit(125) }
+    }
+}
+
+/// The command waits here for its init's go byte ([`send_go`]); any other
+/// outcome of the read fails the `RUN` as `Step::Init`: the end of the
+/// pipe (`EPIPE`, a read a filter around ranikust answered with no error
+/// included), another byte (`EPROTO`), or an error, `EINTR` included: with
+/// no handler, the kernel restarts a read a signal interrupts, so only a
+/// filter answers so, and it could forever.
 fn wait_for_go(err: RawFd, go: &OwnedFd) {
     let mut byte = [0u8; 1];
     match rustix::io::read(go, &mut byte) {
-        Ok(0) => {}
+        Ok(1) if byte == [GO] => {}
+        Ok(0) => fail(err, Step::Init, Errno::PIPE),
         Ok(_) => fail(err, Step::Init, Errno::PROTO),
         Err(e) => fail(err, Step::Init, e),
     }
@@ -805,14 +841,11 @@ pub(crate) fn arg_and_env_regions(stat: &[u8]) -> Option<[(usize, usize); 2]> {
 /// The init installs the `RUN`'s filters, as the command does, and gives up
 /// what the command still needs: every capability, its name. It checks its
 /// death signal is still armed and ranikust still alive. On a failure the
-/// command, still waiting on the go pipe, is killed, and the failure
-/// reported as a set-up step.
+/// command is killed, wherever it is in its own steps before the go (its
+/// cgroup, its filters, its wait), and the failure reported as a set-up
+/// step; the command never goes on without the go byte either.
 fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args: &ChildArgs) {
-    let fail_as = |step: Step, e: Errno| -> ! {
-        // SAFETY: a plain `kill` of this process's own child.
-        unsafe { libc::kill(command, libc::SIGKILL) };
-        fail(err, step, e)
-    };
+    let fail_as = |step: Step, e: Errno| -> ! { kill_and_fail(err, command, step, e) };
     let fail_init = |e: Errno| -> ! { fail_as(Step::Init, e) };
     if let Err((step, e)) = install_filters(args) {
         fail_as(step, e);
@@ -843,6 +876,15 @@ fn init_keep_nothing(err: RawFd, parent: ParentCheck, command: libc::pid_t, args
     if !parent_alive(parent) {
         fail_init(Errno::SRCH);
     }
+}
+
+/// The init's failure before its go: the command killed and the failure
+/// reported. The command starts only on the go byte, which it then never
+/// gets.
+fn kill_and_fail(err: RawFd, command: libc::pid_t, step: Step, e: Errno) -> ! {
+    // SAFETY: a plain `kill` of this process's own child.
+    unsafe { libc::kill(command, libc::SIGKILL) };
+    fail(err, step, e)
 }
 
 /// Whether the process that cloned this one is still its parent, from the
@@ -2001,46 +2043,105 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 }
 
 /// Closes every descriptor not in `keep`, which is sorted ascending and may
-/// hold duplicates and negative entries (ignored): with `close_range` over
-/// the gaps, else those `/proc/self/fd` lists, else every number up to the
-/// hard limit.
+/// hold duplicates and negative entries (ignored), before the `RUN`'s
+/// filters, as best it can: with `close_range` over the gaps, else those
+/// `/proc/self/fd` lists, else every number up to the hard limit. The init
+/// closes with [`close_all_except_checked`] instead.
 ///
 /// Limits, known and accepted: the last fallback stops at 2^20, so a
 /// descriptor numbered higher under a larger hard `RLIMIT_NOFILE` would
 /// stay open where neither `close_range` (Linux 5.9) nor a readable
-/// `/proc/self/fd` is there; a filter around ranikust that answers
-/// `close_range` with success without running it goes unnoticed, as no
-/// call here checks that the descriptors are gone (a `RUN`'s profile
-/// cannot answer so, ADR-0109); and in the init, under a profile that
-/// refuses `close_range` and `close`, `close_listed` counts attempts, not
-/// successes, so it passes again, leaking its own directory descriptor each
-/// time, until `openat` fails at `RLIMIT_NOFILE` (threat model, section 6).
+/// `/proc/self/fd` is there; and a filter around ranikust that answers
+/// `close_range` with success without running it, or refuses both calls,
+/// leaves descriptors open, as nothing here checks that they are gone (a
+/// `RUN`'s profile cannot answer with success, ADR-0109, and the init
+/// checks every refusal).
 fn close_all_except(keep: &[RawFd]) {
-    let mut ok = true;
+    if close_gaps(keep).is_ok() {
+        return;
+    }
+    match close_listed(keep) {
+        Listed::Closed => {}
+        Listed::Unreadable | Listed::Refused(_) => {
+            let limit = nofile_bound(true, 1 << 20);
+            for fd in (0..=limit).filter(|fd| !keep.contains(fd)) {
+                // Best effort before the `RUN`'s filters; the init checks
+                // its own closing.
+                let _ = close_raw(fd);
+            }
+        }
+    }
+}
+
+/// The init's closing of every descriptor not in `keep` (sorted as for
+/// [`close_all_except`]), which counts only what the kernel closed:
+/// `close_range` over the gaps, else every descriptor `/proc/self/fd`
+/// lists, each `close` checked. A refused `close` fails it with its
+/// errno, whatever that is: in this single-threaded process a listed
+/// descriptor is open, so even `EBADF` is a refusal. Where the list cannot
+/// be read or does not shrink, `close_range`'s errno. There is no pass over
+/// every number: the cost is bounded by the descriptors open. A
+/// `close_range` answered with success is trusted, which only a filter
+/// around ranikust can fake (ADR-0109); a `close` so faked is caught by
+/// the pass that does not shrink.
+fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
+    let Err(range) = close_gaps(keep) else {
+        return Ok(());
+    };
+    match close_listed(keep) {
+        Listed::Closed => Ok(()),
+        Listed::Refused(e) => Err(e),
+        Listed::Unreadable => Err(range),
+    }
+}
+
+/// `close_range` over every gap of `keep` (sorted as for
+/// [`close_all_except`]); the first error, after every gap was tried.
+/// Only for a forked child that ends in `_exit` or `execve`, as the other
+/// two below: none of them asks whether an `OwnedFd` holds what it closes.
+fn close_gaps(keep: &[RawFd]) -> Result<(), Errno> {
+    let mut first = None;
+    let mut range = |from: u32, to: u32| {
+        // SAFETY: a plain syscall; the child drops no owner of a descriptor
+        // it closes before it ends.
+        if unsafe { libc::syscall(libc::SYS_close_range, from, to, 0u32) } != 0 {
+            first.get_or_insert(last_errno());
+        }
+    };
     let mut next: u32 = 0;
     for &k in keep {
         let Ok(k) = u32::try_from(k) else {
             continue;
         };
         if k > next {
-            // SAFETY: plain syscall on a descriptor range.
-            ok &= unsafe { libc::syscall(libc::SYS_close_range, next, k - 1, 0u32) } == 0;
+            range(next, k - 1);
         }
         next = next.max(k.saturating_add(1));
     }
-    // SAFETY: as above.
-    ok &= unsafe { libc::syscall(libc::SYS_close_range, next, u32::MAX, 0u32) } == 0;
-    if ok || close_listed(keep) {
-        return;
+    range(next, u32::MAX);
+    first.map_or(Ok(()), Err)
+}
+
+/// `close` as the kernel answers it, through `syscall`: musl's `close`
+/// turns `EINTR` into success.
+fn close_raw(fd: RawFd) -> Result<(), Errno> {
+    // SAFETY: as in `close_gaps`.
+    if unsafe { libc::syscall(libc::SYS_close, fd) } == 0 {
+        Ok(())
+    } else {
+        Err(last_errno())
     }
-    let limit = nofile_bound(true, 1 << 20);
-    for fd in 0..=limit {
-        if !keep.contains(&fd) {
-            // SAFETY: closing a descriptor number; a closed one fails with
-            // EBADF.
-            unsafe { libc::close(fd) };
-        }
+}
+
+/// Closes `fd` with `close_range`, which a profile may allow where it
+/// refuses `close`, else with `close`, whose error it returns.
+fn close_one(fd: RawFd) -> Result<(), Errno> {
+    let n = u32::try_from(fd).map_err(|_| Errno::BADF)?;
+    // SAFETY: as in `close_gaps`.
+    if unsafe { libc::syscall(libc::SYS_close_range, n, n, 0u32) } == 0 {
+        return Ok(());
     }
+    close_raw(fd)
 }
 
 /// Whether `dir` is on procfs, read through `libc` into a zeroed buffer:
@@ -2076,10 +2177,24 @@ fn nofile_bound(hard: bool, cap: u32) -> RawFd {
     RawFd::try_from(bound.min(cap)).unwrap_or(RawFd::MAX)
 }
 
+/// What [`close_listed`] did.
+enum Listed {
+    /// Every descriptor it found closed, and each pass's listing.
+    Closed,
+    /// The list cannot be read, or a pass found no fewer descriptors than
+    /// the one before: closes answered with success that closed nothing.
+    Unreadable,
+    /// A `close` refused, with its errno.
+    Refused(Errno),
+}
+
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
-/// passing again until one pass finds none; `false` if the list cannot be
-/// read.
-fn close_listed(keep: &[RawFd]) -> bool {
+/// passing again until a pass finds none; each `close`, the listing's
+/// included, counts only as the kernel answers it ([`close_raw`]), and the
+/// first refused one ends it. A pass that finds no fewer descriptors than
+/// the one before ends it too, as [`Listed::Unreadable`].
+fn close_listed(keep: &[RawFd]) -> Listed {
+    let mut before = usize::MAX;
     loop {
         let Ok(dir) = rustix::fs::openat(
             CWD,
@@ -2087,31 +2202,39 @@ fn close_listed(keep: &[RawFd]) -> bool {
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         ) else {
-            return false;
+            return Listed::Unreadable;
         };
         if !on_procfs(dir.as_fd()) {
-            return false;
+            return Listed::Unreadable;
         }
         let own = dir.as_raw_fd();
-        let mut closed = 0;
+        let mut found = 0;
         let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
         let mut entries = RawDir::new(&dir, &mut buf);
         while let Some(entry) = entries.next() {
             let Ok(entry) = entry else {
-                return false;
+                return Listed::Unreadable;
             };
             if let Some(fd) = parse_fd(entry.file_name().to_bytes())
                 && !keep.contains(&fd)
                 && fd != own
             {
-                // SAFETY: closing a listed descriptor number.
-                unsafe { libc::close(fd) };
-                closed += 1;
+                found += 1;
+                if let Err(e) = close_raw(fd) {
+                    return Listed::Refused(e);
+                }
             }
         }
-        if closed == 0 {
-            return true;
+        if let Err(e) = close_raw(dir.into_raw_fd()) {
+            return Listed::Refused(e);
         }
+        if found == 0 {
+            return Listed::Closed;
+        }
+        if found >= before {
+            return Listed::Unreadable;
+        }
+        before = found;
     }
 }
 
@@ -2780,6 +2903,162 @@ mod tests {
             };
             assert_eq!(alive(""), None, "parent check, unfiltered");
             assert_eq!(alive(&eintr("pread64")), init(libc::ESRCH), "parent check");
+        }
+
+        /// The command starts only on its init's go byte, never on the end
+        /// of the pipe: a pipe that ends first, another byte, or a read a
+        /// filter answers with no error fails the `RUN` as `Step::Init`.
+        #[test]
+        fn the_command_starts_only_on_its_inits_go_byte() {
+            let waits = |sent: &[u8], rule: &str| {
+                let (go, go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+                assert_eq!(rustix::io::write(&go_w, sent).unwrap(), sent.len());
+                drop(go_w);
+                failure_under(rule, |w| wait_for_go(w, &go))
+            };
+            let faked = r#"{"names": ["read"], "action": "SCMP_ACT_ERRNO", "errnoRet": 0}"#;
+            let init = |e| Some((Step::Init, e));
+            assert_eq!(waits(&[], ""), init(libc::EPIPE), "an ended pipe");
+            assert_eq!(waits(&[GO], ""), None, "the go byte");
+            assert_eq!(waits(b"x", ""), init(libc::EPROTO), "another byte");
+            assert_eq!(waits(&[GO], faked), init(libc::EPIPE), "a faked read");
+        }
+
+        /// The init's go: the byte, then the end of the pipe. A write
+        /// refused leaves the end alone, on which the command fails, even
+        /// with `close` refused too (`close_range` ends it); a write,
+        /// `close` and `close_range` refused end the init (125) rather than
+        /// leave it and the command waiting. The child exits 1 if its end
+        /// is still open after the go.
+        #[test]
+        fn the_init_sends_its_go_byte_or_ends_the_pipe() {
+            let refused = |names: &str| {
+                format!(
+                    r#"{{"names": [{names}], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}"#,
+                    libc::EPERM
+                )
+            };
+            for (rule, want, exit) in [
+                (String::new(), vec![GO], 0),
+                (refused(r#""write""#), vec![], 0),
+                (refused(r#""write", "close""#), vec![], 0),
+                (refused(r#""write", "close", "close_range""#), vec![], 125),
+            ] {
+                let (go, go_w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+                let json =
+                    format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
+                let prog = crate::SeccompProfile::faking(json.as_bytes())
+                    .unwrap()
+                    .program;
+                let status = crate::seccomp::under_filter(&prog, || {
+                    send_go(go_w.as_raw_fd());
+                    // SAFETY: `F_GETFD` on a descriptor number only reads.
+                    i32::from(unsafe { libc::fcntl(go_w.as_raw_fd(), libc::F_GETFD) } >= 0)
+                });
+                drop(go_w);
+                let mut got = [0u8; 2];
+                let n = rustix::io::read(&go, &mut got).unwrap();
+                assert_eq!(got.get(..n), Some(&want[..]), "{rule}");
+                assert!(libc::WIFEXITED(status), "{rule}: status {status:#x}");
+                assert_eq!(libc::WEXITSTATUS(status), exit, "{rule}");
+            }
+        }
+
+        /// The init's closing counts only what the kernel closed. With
+        /// `close` and `close_range` refused, it fails with the refusal's
+        /// errno, whatever it is (`EBADF` and `EINTR` included), both with
+        /// descriptors to close (at most the pass's listing left open) and
+        /// with only the listing to close. With `close_range` refused and
+        /// `close` answered with success that closes nothing, it ends at
+        /// the pass that does not shrink (two listings left open). With the
+        /// calls allowed, or `close_range` alone refused, nothing but those
+        /// kept is left. Both limits are lowered first, to the highest open
+        /// descriptor and 64 more.
+        #[test]
+        fn a_refused_close_is_reported_whatever_its_errno() {
+            // The child exits 0 or with the error's errno; from 100 up, it
+            // says what else went wrong.
+            let close = |rules: &str, keep_all: bool, leaks: usize| {
+                let json =
+                    format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rules}]}}"#);
+                let prog = crate::SeccompProfile::faking(json.as_bytes())
+                    .unwrap()
+                    .program;
+                crate::seccomp::under_filter(&prog, || {
+                    // SAFETY: `F_GETFD` on a descriptor number only reads.
+                    let is_open = |fd: RawFd| unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;
+                    // Ascending, as `close_all_except_checked` wants; no
+                    // allocation in a forked child.
+                    let mut open = [0; 256];
+                    let mut n = 0;
+                    for fd in (0..4096).filter(|&fd| is_open(fd)) {
+                        let Some(slot) = open.get_mut(n) else {
+                            return 100;
+                        };
+                        *slot = fd;
+                        n += 1;
+                    }
+                    let top = open.get(n.saturating_sub(1)).copied().unwrap_or(0).max(2) + 64;
+                    let bound = libc::rlim_t::from(top.unsigned_abs());
+                    let lim = libc::rlimit {
+                        rlim_cur: bound,
+                        rlim_max: bound,
+                    };
+                    // SAFETY: `setrlimit` reads one `rlimit`; lowering is
+                    // allowed.
+                    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) } != 0 {
+                        return 101;
+                    }
+                    let keep: &[RawFd] = if keep_all {
+                        open.get(..n).unwrap_or_default()
+                    } else {
+                        // Descriptors for a pass to find.
+                        for _ in 0..3 {
+                            // SAFETY: `dup` makes a new descriptor.
+                            if unsafe { libc::dup(0) } < 0 {
+                                return 102;
+                            }
+                        }
+                        &[0, 1, 2]
+                    };
+                    let count = || (3..top).filter(|&fd| is_open(fd)).count();
+                    let before = count();
+                    match close_all_except_checked(keep) {
+                        Ok(()) if keep_all => 103,
+                        Ok(()) if count() > 0 => 104,
+                        Ok(()) => 0,
+                        Err(_) if count() > before + leaks => 105,
+                        Err(e) => e.raw_os_error(),
+                    }
+                })
+            };
+            let rule = |names: &str, errno: i32| {
+                format!(
+                    r#"{{"names": [{names}], "action": "SCMP_ACT_ERRNO", "errnoRet": {errno}}}"#
+                )
+            };
+            let both = |errno| rule(r#""close", "close_range""#, errno);
+            let range = rule(r#""close_range""#, libc::EPERM);
+            let faked = format!("{range},{}", rule(r#""close""#, 0));
+            for (rules, keep_all, leaks, exit) in [
+                (String::new(), false, 0, 0),
+                (range, false, 0, 0),
+                (faked, false, 2, libc::EPERM),
+                (both(libc::EPERM), false, 1, libc::EPERM),
+                (both(libc::EPERM), true, 1, libc::EPERM),
+                (both(libc::EBADF), false, 1, libc::EBADF),
+                (both(libc::EBADF), true, 1, libc::EBADF),
+                (both(libc::EINTR), false, 1, libc::EINTR),
+                (both(libc::EINTR), true, 1, libc::EINTR),
+            ] {
+                let status = close(&rules, keep_all, leaks);
+                assert!(libc::WIFEXITED(status), "{rules}: status {status:#x}");
+                assert_eq!(
+                    libc::WEXITSTATUS(status),
+                    exit,
+                    "{rules}, keep all {keep_all}"
+                );
+            }
         }
 
         /// A `#!` heredoc's `execveat` answered with no error fails the

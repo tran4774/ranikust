@@ -1,15 +1,16 @@
 # shellcheck shell=bash
-# ranikust's and the init's cgroup namespaces are out of a RUN's reach
-# (ADR-0110, T24); the init shares ranikust's, so the probe tries the
-# init's. Where ranikust gives a RUN cgroups (the T1 leg, a --privileged
-# container): every /proc/<pid>/cgroup the RUN can read is relative to its
-# own cgroup namespace, so none names ranikust's pid, and a setns into the
-# init's cgroup namespace is refused. Under the default profile (ADR-0109)
-# the RUN makes no user namespace. Unconfined (--seccomp=unconfined), which
+# Where a RUN gets cgroups (ADR-0110, T24; the T1 leg, a --privileged
+# container), ranikust's and the init's cgroup namespaces are out of its
+# reach; the init shares ranikust's, so the probe tries the init's. Every
+# /proc/<pid>/cgroup the RUN can read is relative to its own cgroup
+# namespace, so none names ranikust's pid, and a setns into the init's
+# cgroup namespace is refused. Under the default profile (ADR-0109) the RUN
+# makes no user namespace. Unconfined (--seccomp=unconfined), which
 # measures what a RUN that may make one can do: the setns is refused from a
 # user namespace it makes too, and a cgroupfs it mounts there is rooted at
-# the cgroup it is in, so it shows only that cgroup and those below it.
-# Elsewhere no RUN gets a cgroup and only the build is checked.
+# the cgroup it is in, with no cgroup below it. Each refusal passes only
+# with the error expected. Where no RUN gets cgroups, only the build is
+# checked.
 case_run() {
   local r line
   build default >/dev/null
@@ -20,17 +21,19 @@ case_run() {
   r="$(run default)"
   check_views "$r"
   line="$(sed -n 's/^setns-userns=//p' <<<"$r")"
-  case "$line" in unshare:*) ;; *) fail "the default profile let the RUN make a user namespace: setns-userns=$line" ;; esac
+  [ "$line" = "unshare-userns:Operation not permitted" ] ||
+    fail "the default profile did not refuse the RUN a user namespace: setns-userns=$line"
   line="$(sed -n 's/^mount-ns=//p' <<<"$r")"
-  case "$line" in "refused unshare:"*) ;; *) fail "the default profile let the RUN make a user namespace: mount-ns=$line" ;; esac
+  [ "$line" = "refused unshare-userns:Operation not permitted" ] ||
+    fail "the default profile did not refuse the RUN a user namespace: mount-ns=$line"
 
   build unconfined --seccomp=unconfined >/dev/null
   r="$(run unconfined)"
   check_views "$r"
   line="$(sed -n 's/^setns-userns=//p' <<<"$r")"
   case "$line" in
-  open:* | setns:*) ;;
-  unshare:*) echo "  $CASE: an unconfined RUN is refused a user namespace too ($line): its setns check did not run, and the default profile's refusal is not told apart here" ;;
+  "open:Permission denied" | "setns:Operation not permitted") ;;
+  unshare-userns:*) echo "  $CASE: an unconfined RUN is refused a user namespace too ($line): its setns check did not run, and the default profile's refusal is not told apart here" ;;
   setgroups:* | uid_map:* | gid_map:*) echo "  $CASE: no user namespace for an unconfined RUN here ($line): its setns check did not run" ;;
   *) fail "setns-userns recorded $line: $r" ;;
   esac
@@ -64,7 +67,11 @@ check_views() {
   for v in "${vs[@]}"; do
     case "$v" in 0::/ | 0::/../init | 0::/../..) ;; *) fail "a process reads $v: $r" ;; esac
   done
-  # A refused setns, or a refused open of the namespace before it.
+  # The open of the namespace refused (the init is not dumpable), or the
+  # setns after it.
   line="$(sed -n 's/^setns-plain=//p' <<<"$r")"
-  case "$line" in open:* | setns:*) ;; *) fail "setns-plain recorded $line: $r" ;; esac
+  case "$line" in
+  "open:Permission denied" | "setns:Operation not permitted") ;;
+  *) fail "setns-plain recorded $line: $r" ;;
+  esac
 }

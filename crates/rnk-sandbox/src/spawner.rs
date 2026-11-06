@@ -3370,7 +3370,7 @@ mod tests {
 
     /// `Seccomp_filters` of `/proc/self/status` (Linux 5.9): how many
     /// filters the process runs under.
-    fn seccomp_filters(status: &str) -> Option<u32> {
+    pub(super) fn seccomp_filters(status: &str) -> Option<u32> {
         status
             .lines()
             .find_map(|l| l.strip_prefix("Seccomp_filters:"))
@@ -3384,7 +3384,9 @@ mod tests {
     /// effect in its place. Each `RUN` runs in a session keyring of its own
     /// (T11), joined before the profile: a profile that refuses the join
     /// with an errno the child does not take for "unsupported" still lets
-    /// the `RUN` start.
+    /// the `RUN` start. Its init runs under the same filters as its
+    /// command, each installing its own: ADR-0033's filter under a held
+    /// network adds one to both, unconfined too.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_run_gets_its_seccomp_profile() {
@@ -3395,6 +3397,7 @@ mod tests {
             root_with_usr(&mut mounts, &root);
             let parent = ParentPid::new().unwrap();
             let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            runner.hold_networks();
             let own = seccomp_filters(&fs::read_to_string("/proc/self/status").unwrap())
                 .expect("Seccomp_filters in /proc/self/status");
             let file = SeccompProfile::from_json(
@@ -3427,6 +3430,7 @@ mod tests {
             // `keyring=-1` where the profile refuses `keyctl`.
             let probe = format!(
                 "cat /proc/self/status; \
+                 grep -E '^Seccomp(_filters)?:' /proc/1/status | sed 's/^/init-/'; \
                  if setarch -R true; then echo personality=ok; else echo personality=refused; fi; \
                  if uname >/dev/null; then echo uname=ok; else echo uname=refused; fi; \
                  python3 -c 'import ctypes as c; print(\"keyring=%d\" % c.CDLL(None).syscall(\
@@ -3436,11 +3440,16 @@ mod tests {
                 libc::KEY_SPEC_SESSION_KEYRING,
             );
             let mut got = Vec::new();
-            for (name, profile) in [
-                ("default", Some(SeccompProfile::docker_default().unwrap())),
-                ("unconfined", None),
-                ("file", Some(file)),
-                ("join", Some(join)),
+            for (name, profile, network) in [
+                (
+                    "default",
+                    Some(SeccompProfile::docker_default().unwrap()),
+                    Network::Host,
+                ),
+                ("unconfined", None, Network::Host),
+                ("file", Some(file), Network::Host),
+                ("join", Some(join), Network::Host),
+                ("unconfined, held network", None, Network::None),
             ] {
                 runner.seccomp = profile;
                 let out = top.join(format!("out-{name}"));
@@ -3448,6 +3457,7 @@ mod tests {
                     &root,
                     vec!["/bin/sh".into(), "-c".into(), probe.clone().into()],
                 );
+                spec.network = network;
                 output_to(&out, &mut spec);
                 let st = runner.run(spec, None, |job| clone_child(job, parent));
                 let text = fs::read_to_string(&out).unwrap_or_default();
@@ -3461,9 +3471,20 @@ mod tests {
                 (own, "personality=ok", "uname=ok", true),
                 (own + 1, "personality=ok", "uname=refused", true),
                 (own + 1, "personality=ok", "uname=ok", true),
+                (own + 1, "personality=ok", "uname=ok", true),
             ]) {
                 assert_eq!(*ok, Some(true), "{name}: the RUN ran: {text}");
                 assert_eq!(seccomp_filters(text), Some(filters), "{name}: {text}");
+                let mode = if filters == 0 { "0" } else { "2" };
+                for key in ["Seccomp", "init-Seccomp"] {
+                    assert_eq!(status_value(text, key), Some(mode), "{name}: {key}: {text}");
+                }
+                let count = filters.to_string();
+                assert_eq!(
+                    status_value(text, "init-Seccomp_filters"),
+                    Some(count.as_str()),
+                    "{name}: the init's filters: {text}"
+                );
                 assert!(text.contains(personality), "{name}: {personality}: {text}");
                 assert!(text.contains(uname), "{name}: {uname}: {text}");
                 let keyring: Option<i64> = text
@@ -3766,6 +3787,126 @@ mod tests {
                 let sid = text.lines().find_map(|l| l.strip_prefix("sid="));
                 if !sid.is_some_and(|s| s.trim().parse::<u32>().is_ok_and(|s| s > 0)) {
                     wrong.push(format!("{name}: session id {sid:?}"));
+                }
+            }
+            assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        });
+    }
+
+    /// T2 (ADR-0080): a `RUN`'s command starts only once its init has
+    /// finished every step. Under a profile that fails one of the init's
+    /// last steps, or its closes (`close` and `close_range`, or
+    /// `close_range` and the `close` of one descriptor, whatever the
+    /// errno), the `RUN` fails as `Step::Init` with that errno, before its
+    /// command ran, and the command leaves no mark, which it leaves under a
+    /// control profile that lets the init finish. These check the outcome;
+    /// the go byte itself is checked in `child.rs`. A profile that refuses
+    /// `close` alone holds nothing up: the command starts on the byte, not
+    /// on the end of the pipe, and the `RUN` ends with its status.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_runs_command_starts_only_once_its_init_has_finished() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let pdeathsig = libc::PR_GET_PDEATHSIG.unsigned_abs();
+            // Calls only the init makes after its filters.
+            let init_steps = format!(
+                "{},{}",
+                errno_rule("prctl", libc::EPERM, Some(pdeathsig)),
+                errno_rule("kill", libc::EPERM, None)
+            );
+            // What a case gives: the command's mark and success, the
+            // command's own exit status, or a failure as `Step::Init` with
+            // that errno, the command unrun.
+            enum Want {
+                Runs,
+                Ends,
+                Fails(i32),
+            }
+            let with_range =
+                |close: String| format!("{close},{}", errno_rule("close_range", libc::EPERM, None));
+            let cases = [
+                ("control", errno_rule("kill", libc::EPERM, None), Want::Runs),
+                ("the init fails", init_steps, Want::Fails(libc::EPERM)),
+                (
+                    "close refused",
+                    errno_rule("close", libc::EPERM, None),
+                    Want::Ends,
+                ),
+                (
+                    "closes refused",
+                    with_range(errno_rule("close", libc::EPERM, None)),
+                    Want::Fails(libc::EPERM),
+                ),
+                (
+                    "one close refused",
+                    with_range(errno_rule("close", libc::EPERM, Some(0))),
+                    Want::Fails(libc::EPERM),
+                ),
+                (
+                    "one close refused with EBADF",
+                    with_range(errno_rule("close", libc::EBADF, Some(0))),
+                    Want::Fails(libc::EBADF),
+                ),
+            ];
+            let mut got = Vec::new();
+            for (n, (name, rules, want)) in cases.into_iter().enumerate() {
+                runner.seccomp = Some(allow_but(&rules));
+                let mark = format!("mark-{n}");
+                let out = top.join(format!("out-{n}"));
+                let script = format!("echo ran > /{mark}");
+                let mut spec =
+                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+                output_to(&out, &mut spec);
+                // A `RUN` that waits for a go it never gets is cancelled,
+                // which fails the case rather than the whole suite.
+                let running = &Running::default();
+                let (done, wait) = std::sync::mpsc::channel::<()>();
+                let st = std::thread::scope(|s| {
+                    s.spawn(move || {
+                        let waited = wait.recv_timeout(std::time::Duration::from_secs(60));
+                        if waited == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                            running.cancel();
+                        }
+                    });
+                    let st = runner.run(spec, Some(running), |job| clone_child(job, parent));
+                    drop(done);
+                    st
+                });
+                let text = fs::read_to_string(&out).unwrap_or_default();
+                let marked = fs::read_to_string(root.join(&mark)).ok();
+                println!("{name}: {st:?}, mark {marked:?}\n{text}");
+                got.push((name, want, st, marked, text));
+            }
+            drop(mounts);
+            let mut wrong = Vec::new();
+            for (name, want, st, marked, text) in &got {
+                let ok = match *want {
+                    Want::Fails(errno) => {
+                        marked.is_none()
+                            && text.is_empty()
+                            && matches!(
+                                st,
+                                Err(e @ Error::Setup { step: Step::Init, source })
+                                    if source.raw_os_error() == Some(errno)
+                                        && e.ran_no_command()
+                            )
+                    }
+                    // The shell's loader needs `close` too: the command's own
+                    // exit status, rather than a cancel, shows it started.
+                    Want::Ends => st.is_ok(),
+                    Want::Runs => {
+                        marked.as_deref() == Some("ran\n")
+                            && st.as_ref().is_ok_and(ExitStatus::success)
+                    }
+                };
+                if !ok {
+                    wrong.push(format!("{name}: {st:?}, mark {marked:?}, output {text:?}"));
                 }
             }
             assert!(wrong.is_empty(), "{}", wrong.join("\n"));
