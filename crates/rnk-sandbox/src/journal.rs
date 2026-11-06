@@ -680,7 +680,7 @@ fn remove_stubs(root: &RootPath, stubs: &[StubRecord]) -> Result<usize> {
             Ok(false) => {}
             Err(e) if first.is_none() => first = Some(e),
             Err(e) => tracing::warn!(
-                "rnk-sandbox: cannot remove the stub {}: {e}",
+                "rnk-sandbox: cannot undo the journal entry {}: {e}",
                 stub.path.display()
             ),
         }

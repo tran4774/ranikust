@@ -1892,8 +1892,8 @@ fn execute(
     // A full-sandbox child is the `RUN`'s init: the command's own status is
     // what it wrote, if it lived to write it; without it, `status` is the
     // init's own, which `ending` never returns as the command's. An init
-    // that exited 0 always wrote one: without it, the command's end is
-    // unknown.
+    // exits 0 only after its status write: 0 without a status (the write
+    // refused) leaves the command's end unknown.
     let mut unreported = false;
     let status = match command_status {
         Some(fd) => match read_status(&fd)? {
@@ -1973,6 +1973,12 @@ fn ending(
                     %step,
                     signal,
                     "rnk-sandbox: a RUN's init was also killed by a signal"
+                );
+            } else if unreported {
+                tracing::debug!(
+                    %step,
+                    %status,
+                    "rnk-sandbox: a RUN's init also ended without the command's status"
                 );
             }
             let source = io::Error::from_raw_os_error(errno);
@@ -2361,8 +2367,9 @@ mod tests {
                 "{status:?} {failure:?} {profile}: {r:?}"
             );
         }
-        // The init's own code, from `_exit(125)` after its go or in its
-        // wait, or `_exit(127)` with its record refused.
+        // The init's own code, from `_exit(125)` where its go can be
+        // neither sent nor ended or in its wait, or `_exit(127)` with its
+        // record refused.
         for code in [125, 127, 1] {
             let r = end(exited(code), true, None, true);
             assert!(
@@ -3653,9 +3660,9 @@ mod tests {
 
     /// T2: a profile whose default action kills (`SCMP_ACT_KILL_PROCESS`)
     /// or traps (`SCMP_ACT_TRAP`) kills the `RUN`'s set-up at its first call
-    /// after the filters. The `RUN` fails as a set-up killed by `SIGSYS`
-    /// under its profile, never with an exit status of the command, which
-    /// never ran.
+    /// after the filters. The `RUN` fails as `Error::SetupKilled`, its init
+    /// killed by `SIGSYS` under its profile, never with an exit status of
+    /// the command, which never ran.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_set_up_its_profile_kills_is_reported_as_killed() {

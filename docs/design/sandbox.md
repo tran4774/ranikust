@@ -384,7 +384,8 @@ The steps, in order:
      kills the command. An init that cannot write the byte closes its end,
      and the command fails at its read, which is what is reported (the
      error pipe is closed by then); one that can do neither ends with 125,
-     never read as the command's code (`Error::InitExited`, below).
+     never read as the command's code (`Error::InitExited`, or the
+     command's `Step::Init` record, below).
      A command already gone fails only the write: the init, PID 1 of its
      namespace, gets no `SIGPIPE` it has no handler for.
    - A read of the init's or the command's answered with `EINTR` (the
