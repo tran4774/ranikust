@@ -462,8 +462,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   a fresh kernel filesystem or its rbind, Ubuntu 24.04's ranged stop at
   `chown`), records across split reads and the deadline, the report's line
   and stop, a map this process fails to write ending the waiting child at
-  once, and a failure part-way through making the probe's files removing
-  what it made.
+  once, a failure part-way through making the probe's files removing what
+  it made, and `in_namespace` not running its closure beside other threads.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user
   namespace with `pivot_root` and `RUN`s that check the result from inside
   (PID 2 under `ranikust-init`, host name, capability sets `a80425fb` with

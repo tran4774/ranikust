@@ -195,7 +195,8 @@ Each step before the next; design in
    the state directory, `Store::open`, the sandbox probe and
    `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured). On `/`
    and off, `--mode=auto` runs `report_user_namespace` just before the
-   sandbox starts; when
+   sandbox starts, unless overlay mode's set-up ran it before it was
+   refused (`KanikoBy::AutoProbed`: one probe line per build); when
    `set_up_kaniko` returns, `main.rs` builds `KanikoStages`
    (`stages_snapshotter`). Credentials
    go only over verified TLS (`verified_credentials_only`, `build.rs`).

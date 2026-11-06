@@ -179,13 +179,16 @@ netns_checks() {
 }
 
 # #74: `--mode=auto` also probes the user-namespace path of a `RUN`,
-# reported only. Prints the line of variant $1 from its build log $2: on
-# the VM itself (real root) it must pass; a default `docker run` must stop
-# at `unshare`, which Docker's seccomp refuses without CAP_SYS_ADMIN.
+# reported only, once per build. Prints the line of variant $1 from its
+# build log $2: on the VM itself (real root) it must pass; a default
+# `docker run` must stop at `unshare`, which Docker's seccomp refuses
+# without CAP_SYS_ADMIN.
 userns_line() {
   local line
-  line="$(grep -m1 -o 'user namespace probe (reported only).*' <<<"$2")" ||
+  line="$(grep -o 'user namespace probe (reported only).*' <<<"$2")" ||
     { echo "error: $1: no user namespace probe in the build log" >&2; exit 1; }
+  [ "$(wc -l <<<"$line")" = 1 ] ||
+    { echo "error: $1: more than one user namespace probe line" >&2; exit 1; }
   echo "$1: $line"
   case "$1" in
     host) [[ "$line" == *"): passes; "* ]] ;;

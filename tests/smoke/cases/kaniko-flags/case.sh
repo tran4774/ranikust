@@ -9,11 +9,13 @@
 kaniko_leg() { [[ " ${MODE_ARGS[*]} " == *" --mode=kaniko "* ]]; }
 
 # userns_line NAME: prints the user namespace probe's line of the build
-# NAME, which must have one, on stdout and stderr.
+# NAME, which must have exactly one, on stdout and stderr.
 userns_line() {
-  local line
+  local line n
   line="$(grep -o 'user namespace probe (reported only).*' "$(out "$1")/build.log")" ||
     fail "build $1 logged no user namespace probe" || return 1
+  n="$(wc -l <<<"$line")"
+  [ "$n" = 1 ] || fail "build $1 logged $n user namespace probe lines" || return 1
   echo "$CASE: $line" >&2
   printf '%s\n' "$line"
 }
