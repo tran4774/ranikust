@@ -663,7 +663,7 @@ ranikust never removes them, and they go with the unit or container
 |---|---|
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root, keeping Docker's 14 capabilities: the old root stays mounted underneath, and `..` stops at the moved root only then [measured] (the `sysadmin` variant of `tests/vm/guest/smoke.sh`, kernels 5.15 and 6.8). Inside a plain `chroot` ranikust refuses before changing anything ([modes-and-detection](modes-and-detection.md#refusal-and-guidance)) |
-| Rootless (user namespace) | Planned, Phase 3: multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail. Today no build enters a user namespace ranikust makes (its entry, `enter_build_user_namespace`, has no caller yet, #75); started inside one that something else made (rootless `podman run --privileged`), it runs the sequence above as written (T1, `just smoke`) |
+| Rootless (user namespace) | Planned, Phase 3: multi-range id map; `proc` may be an rbind; `sysfs` rbind; `sethostname` may fail. Today no build enters a user namespace ranikust makes (`enter_build_user_namespace`, #75, is called by no build yet); started inside one that something else made (rootless `podman run --privileged`), it runs the sequence above as written (T1, `just smoke`) |
 | kaniko mode, cannot mount | `Isolation::Direct`: no sandbox, `RUN` runs on `/` like kaniko (below) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 

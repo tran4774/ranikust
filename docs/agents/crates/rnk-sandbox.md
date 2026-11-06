@@ -549,7 +549,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ends the trials; a trial stops at the first step refused, or says how it
   was cut short; the line names the map and what was passed over; the map
   helper reports a refused map and ends, and ends without writing when
-  cancelled; refused beside other threads. Its red team
+  cancelled; refused beside other threads; the namespace is told as read
+  back (a map giving one id is one uid, a parent's `deny` stands). Its red team
   (`red_team_the_build_user_namespace_is_whole_or_not_entered`, as any user,
   with and without this user's ranges): the process either has the whole
   namespace (uid and gid maps, `setgroups`, euid 0, new user and mount
@@ -568,7 +569,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (profile `default`):
   `the_build_user_namespace_of_root_maps_every_id_it_has`
   (`src/userns/build/tests.rs`): root of a rootless Podman container enters
-  with its ranges mirrored and `setgroups` allowed. Not yet: the sandbox's
+  with its ranges mirrored and `setgroups` allowed;
+  `the_build_user_namespace_below_one_id_is_told_one_uid`: root of a one-id
+  namespace, `setgroups` denied (as `unshare -r`), enters with its map
+  mirrored and is told one uid, `setgroups` denied. Not yet: the sandbox's
   fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`

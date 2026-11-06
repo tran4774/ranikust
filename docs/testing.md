@@ -695,9 +695,12 @@ Exceptions, all from emulation (the native CI job runs them all):
   that guard deletion (T4 of the threat model) are therefore not exercised
   under emulation; the native CI job covers them.
 - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
-  `kaniko_variables_are_not_read` and `logging_flags_change_what_is_written`
-  are skipped: qemu-user runs a thread of its own, so the set-up stops at its
-  single-thread check before the privilege refusal the tests expect.
+  `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
+  `the_store_opens_inside_the_user_namespace_or_not_at_all` and
+  `red_team_the_build_user_namespace_is_whole_or_not_entered` are skipped:
+  qemu-user runs a thread of its own, so the set-up stops at its
+  single-thread check before the privilege refusal or the user namespace
+  the tests expect.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` and
   the tests of every `tests::kernel` module (rnk-sandbox's seccomp profiles,
   capability drops and keyring join under a filter) are skipped: their
@@ -722,8 +725,9 @@ Real aarch64 hardware is Phase 6.
 `just test-rootless` (`tests/rootless/lane.sh`) runs the `#[ignore = "T1:
 <profile>: ..."]` tests as root of rootless Podman containers on the
 developer's machine: root there is the user's own uid, with the user's
-subordinate ids, so nothing runs as real root. It refuses to run as root or
-with Podman that is not rootless, then:
+subordinate ids, so nothing runs as real root. It refuses to run as root,
+with Podman that is not rootless, or on a machine other than x86_64 (the
+binaries it builds), then:
 
 1. lists the tests of each profile from the markers (every T1 test must name
    one, and no name may be in both lists: tests are selected by name) and
