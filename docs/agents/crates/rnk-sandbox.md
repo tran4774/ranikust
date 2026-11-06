@@ -122,7 +122,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), .. }
+pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), SetupKilled { signal, seccomp }, InitExited { code }, .. }  // the init killed (seccomp: SIGSYS under a profile) or exited with no record before the command's status
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve (Cgroup: before the clone): no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -442,25 +442,37 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_writable_bind_of_a_removed_link_reaches_the_binary`,
   `red_team_binds_stacked_on_the_binarys_path`), the stub journal
   (placement through symlinks, removal, parent times, replay of dead
-  journals only, a lock kept by a shared description), swaps and planted
-  records, the journal's red-team tests (a file, FIFO, socket or whiteout
-  where a directory is needed or as the target; stubs a `RUN` swaps for
-  symlinks out of the root or for nodes; planted stub records aimed
-  outside, naming `/` or ending in `..`), `Direct` children that fail
+  journals only, a lock kept by a shared description, a lookup failing
+  with `ELOOP` failing the clean-up and keeping the journal while
+  `ENOTDIR` counts as gone, the older entries undone all the same), swaps
+  and planted records, the journal's red-team tests (a file, FIFO, socket
+  or whiteout where a directory is needed or as the target; stubs a `RUN`
+  swaps for symlinks out of the root or for nodes; planted stub records
+  aimed outside, naming `/` or ending in `..`), `Direct` children that fail
   before executing, mount sources and remount flags, `Direct` refusals,
   the sealed heredoc memfd, the relay (a surviving write end, a full
   stream, a `RUN` reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
-  (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps;
+  (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps
+  and its count past 4096 instructions, where it keeps nothing more;
   compiled profiles run on an interpreter (64-bit compares, an action per
   rule, long jumps, moby's profile against a table of calls for x86_64 and
   aarch64, `includes`/`excludes`, refused profiles, errno 0, every errno
   from 512 to 600, 4095 and above included, which ones refuse `keyctl`,
   `add_key` and `request_key`; random profiles against a reference, x32
   numbers, keys given twice, nesting and odd bytes, numbers in other forms,
-  rules that disagree, the kernel's 4096 instructions);
-  `errno_0_reads_as_eproto`. Moby's profile's argument-rule form
+  rules that disagree, the kernel's 4096 instructions, `names` read as a
+  list of strings); a 1 MiB profile of 5.5 million instructions refused
+  within 8 MiB (`tests/seccomp_memory.rs`, a counting allocator);
+  `errno_0_reads_as_eproto`; a killed init's message, its signal and,
+  for `SIGSYS` under a profile, the profile, and an init's own exit code
+  named as the init's (`src/error.rs`); how a `RUN` ends
+  (`a_runs_end_is_its_status_its_record_or_its_inits_end` in
+  `src/spawner.rs`: its status, a failure record, a killed init winning
+  over an init's record and losing to any other, an init's own code
+  losing to every record and never passed off as the command's). Moby's
+  profile's argument-rule form
   (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
   of `clone3` and `io_uring_*`
   (`docker_default_gives_a_run_neither_clone3_nor_io_uring`). The
@@ -472,17 +484,22 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   not, each `KeyringJoin`; an `execve` or `execveat` back without an error; a
   `waitpid` back with 0 or `EINTR` with a command still to reap; an `EINTR` on
   the init's and the command's reads, the parent check's against an unfiltered
-  control; the command's go only on its init's go byte, never on an ended
-  pipe, another byte or a read faked with no error, and the init's go byte
+  control; the parent check's read refused or faked failing with its errno
+  or `EINVAL`, another parent with `ESRCH`; the command's go only on its
+  init's go byte, never on an ended pipe, another byte or a read faked with
+  no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; the init's closing: a refused `close` reported with its errno,
   `EBADF` and `EINTR` included (also run for the musl target), whether
   there are descriptors to close (at most the pass's listing left open) or
   only the listing; a pass that does not shrink ends it; nothing left where
-  `close_range` alone is refused; a refused `umask` after the profile; a
-  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
-  last two on a stack filled
-  beforehand, which shows an unwritten buffer in a debug build only; these
+  `close_range` alone is refused; a listing that cannot be read reported
+  with its own errno, not `close_range`'s `ENOSYS`; the best-effort closing
+  before the filters going on past a refused `close`, one descriptor
+  numbered past the hard limit closed too; a refused `umask` after the
+  profile; a faked `setsid`, `pipe2` or `fstatfs`, a faked or refused
+  `prlimit64`; the last two on a stack filled beforehand, which shows an
+  unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
   overwrites that stack).
   `tests/direct_only.rs`: a `start_direct` sandbox
@@ -542,6 +559,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   profile that refuses the keyring join, and unconfined with a held network
   (ADR-0033's filter); each `RUN` in a keyring of its own, its init under
   the same filters as its command;
+  `a_set_up_its_profile_kills_is_reported_as_killed`: a default action of
+  `SCMP_ACT_KILL_PROCESS` or `SCMP_ACT_TRAP` fails the `RUN` as
+  `Error::SetupKilled` (the init killed) by `SIGSYS` under its profile;
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
   that fails one of the init's last steps, or its closes (all, or one
   with `close_range`, refused with `EPERM` or `EBADF`), the `RUN` fails as

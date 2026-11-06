@@ -1,6 +1,8 @@
 //! A classic BPF assembler for seccomp filters. Jumps go to labels, so no
 //! offset is counted by hand, and a conditional jump too far for its 8-bit
-//! offsets is laid out through two `ja`, whose offset has 32 bits.
+//! offsets is laid out through two `ja`, whose offset has 32 bits. Past
+//! [`MAX_INSNS`] it only counts: such a program is refused, and what a
+//! profile describes may be millions of instructions long.
 
 pub(super) const LD_W_ABS: u16 = 0x20;
 pub(super) const ALU_AND_K: u16 = 0x54;
@@ -36,39 +38,61 @@ pub(super) enum AsmError {
 
 #[derive(Default)]
 pub(super) struct Asm {
+    /// The ops, up to [`MAX_INSNS`].
     ops: Vec<Op>,
+    /// The ops emitted, kept or not.
+    emitted: usize,
     /// The op each label is bound to.
     labels: Vec<Option<usize>>,
     rebound: bool,
 }
 
 impl Asm {
+    /// Whether more ops were emitted than a program may have: from then on
+    /// no op or label is kept, only the count.
+    fn past_limit(&self) -> bool {
+        self.emitted > MAX_INSNS
+    }
+
     pub(super) fn label(&mut self) -> Label {
+        if self.past_limit() {
+            return Label(usize::MAX);
+        }
         self.labels.push(None);
         Label(self.labels.len() - 1)
     }
 
     pub(super) fn bind(&mut self, l: Label) {
+        if self.past_limit() {
+            return;
+        }
         match self.labels.get_mut(l.0) {
             Some(slot @ None) => *slot = Some(self.ops.len()),
             Some(Some(_)) | None => self.rebound = true,
         }
     }
 
+    fn push(&mut self, op: Op) {
+        self.emitted = self.emitted.saturating_add(1);
+        if !self.past_limit() {
+            self.ops.push(op);
+        }
+    }
+
     pub(super) fn ld(&mut self, offset: u32) {
-        self.ops.push(Op::Ld(offset));
+        self.push(Op::Ld(offset));
     }
 
     pub(super) fn and(&mut self, mask: u32) {
-        self.ops.push(Op::And(mask));
+        self.push(Op::And(mask));
     }
 
     pub(super) fn jump(&mut self, code: u16, k: u32, t: Label, f: Label) {
-        self.ops.push(Op::Jump(code, k, t, f));
+        self.push(Op::Jump(code, k, t, f));
     }
 
     pub(super) fn ret(&mut self, action: u32) {
-        self.ops.push(Op::Ret(action));
+        self.push(Op::Ret(action));
     }
 
     /// Goes to `to` when the test holds, else on.
@@ -101,6 +125,10 @@ impl Asm {
     pub(super) fn finish(self) -> Result<Vec<libc::sock_filter>, AsmError> {
         if self.rebound {
             return Err(AsmError::Label);
+        }
+        // As long as every jump fits in one instruction: the first layout's.
+        if self.past_limit() {
+            return Err(AsmError::TooLong(self.emitted));
         }
         let mut long = vec![false; self.ops.len()];
         let start = loop {
@@ -313,5 +341,45 @@ mod tests {
             a.ret(0);
         }
         assert_eq!(a.finish().unwrap_err(), AsmError::TooLong(MAX_INSNS + 1));
+    }
+
+    /// Past the limit, the ops and labels stop being kept and the count
+    /// goes on: the length refused is the whole program's, as if every jump
+    /// fitted, while what is held stays bounded.
+    #[test]
+    fn past_the_limit_only_the_count_grows() {
+        let mut a = Asm::default();
+        a.ld(0);
+        for i in 0..100_000 {
+            let next = a.label();
+            a.unless(JEQ_K, i, next);
+            a.ret(1);
+            a.bind(next);
+        }
+        a.ret(0);
+        assert!(a.ops.len() <= MAX_INSNS, "{} ops kept", a.ops.len());
+        assert!(
+            a.labels.len() <= 2 * MAX_INSNS,
+            "{} labels kept",
+            a.labels.len()
+        );
+        assert_eq!(
+            a.finish().unwrap_err(),
+            AsmError::TooLong(1 + 2 * 100_000 + 1)
+        );
+    }
+
+    /// A label bound twice, or unbound, before the limit is still a bug
+    /// reported as one.
+    #[test]
+    fn a_bad_label_before_the_limit_is_still_reported() {
+        let mut a = Asm::default();
+        let l = a.label();
+        a.bind(l);
+        a.bind(l);
+        for _ in 0..=MAX_INSNS {
+            a.ret(0);
+        }
+        assert_eq!(a.finish().unwrap_err(), AsmError::Label);
     }
 }

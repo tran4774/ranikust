@@ -1826,6 +1826,9 @@ fn execute(
     killer: Option<Killer>,
 ) -> Result<(ExitStatus, libc::rusage)> {
     let isolation = job.isolation;
+    // ranikust's own filters answer with an errno: a `SIGSYS` comes from a
+    // profile's kill or trap.
+    let profile = job.args.profile.is_some();
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
@@ -1887,13 +1890,13 @@ fn execute(
     let (status, usage) = reaped?;
     killed?;
     // A full-sandbox child is the `RUN`'s init: the command's own status is
-    // what it wrote, if it lived to write it (a cancel, or a set-up step
-    // that failed before the command was forked, leaves the init's own). An
-    // init that exited 0 always wrote one: without it, the command's end is
-    // unknown.
+    // what it wrote, if it lived to write it; without it, `status` is the
+    // init's own, which `ending` never returns as the command's.
+    let mut unreported = false;
     let status = match command_status {
         Some(fd) => match read_status(&fd)? {
             Some(raw) => ExitStatus::from_raw(raw),
+            // 0 only after the status write: none read leaves the end unknown.
             None if status.code() == Some(0) => {
                 return Err(sys_err(
                     "read the RUN's exit status",
@@ -1903,7 +1906,10 @@ fn execute(
                     ),
                 ));
             }
-            None => status,
+            None => {
+                unreported = true;
+                status
+            }
         },
         None => status,
     };
@@ -1913,16 +1919,77 @@ fn execute(
     // `Setup` and `Exec` come from the child before `execve` and are
     // returned only here, after the tree is reaped and swept (`killed?`):
     // `Error::ran_no_command` relies on it (ADR-0056). Keep it so.
-    match failure? {
-        None => Ok((status, usage)),
-        Some((Step::Exec, errno)) => Err(Error::Exec {
-            program: program.to_owned(),
-            source: io::Error::from_raw_os_error(errno),
+    let failure = failure.inspect_err(|_| {
+        if unreported {
+            tracing::debug!(
+                %status,
+                "rnk-sandbox: a RUN's init ended without the command's status; its set-up record could not be read"
+            );
+        }
+    })?;
+    ending(status, unreported, failure, profile, program).map(|s| (s, usage))
+}
+
+/// How a reaped `RUN` that was not cancelled ended: its status, the
+/// failure the child recorded before `execve`, or, where the full sandbox's
+/// init ended before it wrote the command's status (`unreported`: `status`
+/// is then the init's own), [`Error::SetupKilled`] for a signal, which
+/// names a profile behind a `SIGSYS`, or [`Error::InitExited`] for a code.
+/// A record wins over the init's code, which is logged; between a record
+/// and the init's signal, the more precise one is returned and the other
+/// logged.
+fn ending(
+    status: ExitStatus,
+    unreported: bool,
+    failure: Option<(Step, i32)>,
+    profile: bool,
+    program: &str,
+) -> Result<ExitStatus> {
+    let killed = |signal| Error::SetupKilled {
+        signal,
+        seccomp: profile && signal == libc::SIGSYS,
+    };
+    let init_killed_by = status.signal().filter(|_| unreported);
+    match (failure, init_killed_by) {
+        (None, None) if unreported => Err(Error::InitExited {
+            // Not killed, so exited: `reap` waits for nothing else.
+            code: libc::WEXITSTATUS(status.into_raw()),
         }),
-        Some((step, errno)) => Err(Error::Setup {
-            step,
-            source: io::Error::from_raw_os_error(errno),
-        }),
+        (None, None) => Ok(status),
+        (None, Some(signal)) => Err(killed(signal)),
+        // The init's end ends the go pipe, which a command still waiting
+        // reports (`EPIPE`): a record of `Step::Init` may be its consequence.
+        (Some((Step::Init, errno)), Some(signal)) => {
+            tracing::debug!(
+                errno,
+                signal,
+                "rnk-sandbox: a RUN's init was killed by a signal; its failure record of the init step is not returned"
+            );
+            Err(killed(signal))
+        }
+        (Some((step, errno)), signal) => {
+            if let Some(signal) = signal {
+                tracing::debug!(
+                    %step,
+                    signal,
+                    "rnk-sandbox: a RUN's init was also killed by a signal"
+                );
+            } else if unreported {
+                tracing::debug!(
+                    %step,
+                    %status,
+                    "rnk-sandbox: a RUN's init also ended without the command's status"
+                );
+            }
+            let source = io::Error::from_raw_os_error(errno);
+            Err(match step {
+                Step::Exec => Error::Exec {
+                    program: program.to_owned(),
+                    source,
+                },
+                step => Error::Setup { step, source },
+            })
+        }
     }
 }
 
@@ -2257,6 +2324,90 @@ mod tests {
         rustix::io::write(&w, &rec[..3]).unwrap();
         drop(w);
         assert!(read_failure(&r).is_err());
+    }
+
+    /// A `RUN`'s end: its status, or the child's record from before
+    /// `execve`. An init that ended before it wrote the command's status
+    /// (`unreported`) never passes its own status off as the command's: a
+    /// signal is `SetupKilled`, naming the profile only for `SIGSYS` under
+    /// one, which wins over a record of `Step::Init`, which its end may
+    /// cause, and loses to any other, which is more precise; a code is
+    /// `InitExited`, which every record wins over.
+    #[test]
+    fn a_runs_end_is_its_status_its_record_or_its_inits_end() {
+        let exited = |code: i32| ExitStatus::from_raw(code << 8);
+        let killed_by = ExitStatus::from_raw;
+        let end = |status, unreported, failure, profile| {
+            ending(status, unreported, failure, profile, "prog")
+        };
+        // The command's own status, as the init wrote it.
+        assert_eq!(end(exited(3), false, None, true).unwrap().code(), Some(3));
+        for code in [125, 127] {
+            assert_eq!(
+                end(exited(code), false, None, true).unwrap().code(),
+                Some(code)
+            );
+        }
+        let sigsys = killed_by(libc::SIGSYS);
+        assert_eq!(
+            end(sigsys, false, None, true).unwrap().signal(),
+            Some(libc::SIGSYS)
+        );
+        for (status, failure, profile, seccomp) in [
+            (sigsys, None, true, true),
+            (sigsys, None, false, false),
+            (killed_by(libc::SIGKILL), None, true, false),
+            (sigsys, Some((Step::Init, libc::EPIPE)), true, true),
+            (sigsys, Some((Step::Init, libc::EPERM)), true, true),
+        ] {
+            let r = end(status, true, failure, profile);
+            assert!(
+                matches!(r, Err(Error::SetupKilled { signal, seccomp: s })
+                    if Some(signal) == status.signal() && s == seccomp),
+                "{status:?} {failure:?} {profile}: {r:?}"
+            );
+        }
+        // The init's own code: `_exit(125)` in its wait or where its go can
+        // be neither sent nor ended, `_exit(127)` with its record refused, or
+        // any other.
+        for code in [125, 127, 1] {
+            let r = end(exited(code), true, None, true);
+            assert!(
+                matches!(r, Err(Error::InitExited { code: c }) if c == code),
+                "{code}: {r:?}"
+            );
+        }
+        for (status, unreported) in [(exited(3), false), (sigsys, true), (exited(127), true)] {
+            let r = end(
+                status,
+                unreported,
+                Some((Step::Seccomp, libc::EINVAL)),
+                true,
+            );
+            assert!(
+                matches!(&r, Err(Error::Setup { step: Step::Seccomp, source })
+                    if source.raw_os_error() == Some(libc::EINVAL)),
+                "{status:?}: {r:?}"
+            );
+            let r = end(status, unreported, Some((Step::Exec, libc::ENOENT)), true);
+            assert!(
+                matches!(&r, Err(Error::Exec { program, .. }) if program == "prog"),
+                "{status:?}: {r:?}"
+            );
+        }
+        for (status, unreported) in [(exited(3), false), (exited(127), true)] {
+            let r = end(status, unreported, Some((Step::Init, libc::EPIPE)), true);
+            assert!(
+                matches!(
+                    r,
+                    Err(Error::Setup {
+                        step: Step::Init,
+                        ..
+                    })
+                ),
+                "{status:?}: {r:?}"
+            );
+        }
     }
 
     /// The init's status record: none (it died or failed before writing),
@@ -3503,6 +3654,47 @@ mod tests {
                 } else {
                     assert_eq!(keyring, Some(-1), "{name}: keyctl refused: {text}");
                 }
+            }
+        });
+    }
+
+    /// T2: a profile whose default action kills (`SCMP_ACT_KILL_PROCESS`)
+    /// or traps (`SCMP_ACT_TRAP`) kills the `RUN`'s set-up at its first call
+    /// after the filters. The `RUN` fails as `Error::SetupKilled`, its init
+    /// killed by `SIGSYS` under its profile, never with an exit status of
+    /// the command, which never ran.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn a_set_up_its_profile_kills_is_reported_as_killed() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            let mut got = Vec::new();
+            for action in ["SCMP_ACT_KILL_PROCESS", "SCMP_ACT_TRAP"] {
+                let json = format!(r#"{{"defaultAction": "{action}"}}"#);
+                runner.seccomp = Some(SeccompProfile::from_json(json.as_bytes()).unwrap());
+                let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
+                got.push((
+                    action,
+                    runner.run(spec, None, |job| clone_child(job, parent)),
+                ));
+            }
+            drop(mounts);
+            for (action, r) in got {
+                assert!(
+                    matches!(
+                        r,
+                        Err(Error::SetupKilled {
+                            signal: libc::SIGSYS,
+                            seccomp: true
+                        })
+                    ),
+                    "{action}: {r:?}"
+                );
             }
         });
     }
