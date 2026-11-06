@@ -264,8 +264,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   many.
 - Warn on `Miss::Failed`, `Pushed::Failed`, a hit's blob found bad and a
   hit whose Range resume failed, never on `Miss::Expired` (kaniko does not
-  warn on an expired entry either), and never change the exit status for
-  any of them, apart from ADR-0123's open cases [open: #171]
+  warn on an expired entry either:
+  `kaniko@44aa7ddc0 pkg/cache/cache.go:125`), and never change the exit
+  status for any of them, apart from ADR-0123's open cases [open: #171]
   [open: #172]. A blob is found bad as
   [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)
   says: a decompression error, a bad tar header, a `--limit` overrun, or a

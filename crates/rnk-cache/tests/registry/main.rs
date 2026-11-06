@@ -180,14 +180,17 @@ async fn bad_credentials_are_a_miss_and_a_failed_push_with_a_warning() {
     let e = failed(cache.lookup(&entry).await);
     assert!(matches!(e, Error::Registry { .. }), "{e}");
     assert!(!e.to_string().contains("wrong"), "{e}");
+    // The form a config's `auth` and a Basic header carry.
+    assert!(!e.to_string().contains(&auth), "{e}");
     let Pushed::Failed(e) = cache.push(&entry, &layer(b"l")).await else {
         panic!("a push with bad credentials succeeded");
     };
     assert!(!e.to_string().contains("wrong"), "{e}");
+    assert!(!e.to_string().contains(&auth), "{e}");
 }
 
 #[tokio::test]
-async fn an_entry_older_than_the_ttl_is_a_plain_miss() {
+async fn an_entry_older_than_the_ttl_is_a_miss_without_a_warning() {
     let registry = FakeRegistry::start(Auth::Open).await;
     let entry = entry("RUN make");
     let tag = entry.tag();

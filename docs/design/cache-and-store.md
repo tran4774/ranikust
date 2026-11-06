@@ -32,7 +32,8 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
   - A hit is hostile image content, checked and extracted as a base layer
     is, and every cache document read is bounded by `--limit`. A bad
     entry, or a lookup or push that fails, is a miss or a warning: the
-    exit status and the image do not change (T26).
+    exit status and the image do not change, apart from ADR-0123's open
+    cases [open: #171] [open: #172] (T26).
   - A layer is pushed under a key only if its step read what the key names
     (T28).
   - The cache never changes the output: with `--reproducible`, a cold, a
