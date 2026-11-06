@@ -1343,13 +1343,7 @@ fn run_closure(
     })
     .map_err(|e| e.to_string())?;
     if let Some((status, text)) = run.records.payload {
-        let text = String::from_utf8_lossy(&text).into_owned();
-        // A panic did not finish `f`, as under `panic = "abort"`.
-        return match status {
-            0 => Ok(Ok(text)),
-            1 => Ok(Err(text)),
-            _ => Err(text),
-        };
+        return closure_outcome(status, String::from_utf8_lossy(&text).into_owned());
     }
     // No result: the child died, or a step before `f` was refused this
     // time.
@@ -1391,15 +1385,35 @@ unsafe fn closure_child(
     let report = unsafe { BorrowedFd::borrow_raw(a.report) };
     if enter(a, report) && enter_mount_namespace(report) {
         let (status, text) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-            Ok(Ok(t)) => (0, t),
-            Ok(Err(t)) => (1, t),
-            Err(_) => (2, "panicked".to_owned()),
+            Ok(Ok(t)) => (CLOSURE_OK, t),
+            Ok(Err(t)) => (CLOSURE_REFUSED, t),
+            Err(_) => (CLOSURE_PANICKED, "panicked".to_owned()),
         };
         // A parent gone reads nothing; one still here sees no result.
         let _ = write_all(report, &result_frame(status, &text));
     }
     // SAFETY: `_exit` ends this process at once, running no destructor.
     unsafe { libc::_exit(0) }
+}
+
+/// The closure's [`RESULT`] statuses, from [`closure_child`] to
+/// [`closure_outcome`]: it returned `Ok`, it returned `Err`, it panicked.
+const CLOSURE_OK: u8 = 0;
+const CLOSURE_REFUSED: u8 = 1;
+const CLOSURE_PANICKED: u8 = 2;
+
+/// What [`UsernsReport::in_namespace`] returns for the closure's status and
+/// text.
+fn closure_outcome(
+    status: u8,
+    text: String,
+) -> std::result::Result<std::result::Result<String, String>, String> {
+    match status {
+        CLOSURE_OK => Ok(Ok(text)),
+        CLOSURE_REFUSED => Ok(Err(text)),
+        // A panic did not finish `f`, as under `panic = "abort"`.
+        _ => Err(text),
+    }
 }
 
 /// A [`RESULT`] record: `status`, and `text` cut to [`RESULT_LIMIT`] bytes

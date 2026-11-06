@@ -34,9 +34,8 @@
 //! [`enter_build_namespace`], then [`probe`]; `--mode=auto` also calls
 //! [`probe_user_namespace`], in overlay mode before the probes (the overlay
 //! probe's joined thread may still be counted), in kaniko mode after them.
-//! Then [`Sandbox::start`], which
-//! replays the stub journals of dead builds and starts the spawner thread,
-//! and [`Sandbox::run`] per `RUN`.
+//! Then [`Sandbox::start`], which replays the stub journals of dead builds
+//! and starts the spawner thread, and [`Sandbox::run`] per `RUN`.
 //! Kaniko mode on `/` calls [`enter_build_namespace`] (whose failure only
 //! says root may not mount), then [`trim_to_run_capabilities`], still
 //! single-threaded; in `--mode=auto` then [`probe_user_namespace`]; then

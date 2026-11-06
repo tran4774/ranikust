@@ -396,6 +396,23 @@ fn a_result_is_cut_at_its_limit_on_a_character_boundary() {
     assert_eq!(frame.len(), 5 + RESULT_LIMIT - 1);
 }
 
+/// A closure that panicked did not finish: not its own refusal.
+#[test]
+fn a_closure_that_panicked_did_not_finish() {
+    assert_eq!(
+        closure_outcome(CLOSURE_OK, "api".into()),
+        Ok(Ok("api".to_owned()))
+    );
+    assert_eq!(
+        closure_outcome(CLOSURE_REFUSED, "EINVAL".into()),
+        Ok(Err("EINVAL".to_owned()))
+    );
+    assert_eq!(
+        closure_outcome(CLOSURE_PANICKED, "panicked".into()),
+        Err("panicked".to_owned())
+    );
+}
+
 /// With a map but other threads, the closure is not run, and that is not
 /// its own refusal: refused before any fork.
 #[test]
@@ -408,13 +425,14 @@ fn a_closure_is_not_run_beside_other_threads() {
     // does with threads: no child is forked.
     let (done, wait) = std::sync::mpsc::channel::<()>();
     let spare = std::thread::spawn(move || {
+        // `Err` once `done` drops: the signal to end.
         let _ = wait.recv();
     });
     let ran = r.in_namespace(|| Ok("ran".to_owned()));
     drop(done);
     spare.join().unwrap();
     match ran {
-        Some(Err(e)) => assert!(e.contains("thread"), "{e}"),
+        Some(Err(e)) => assert!(e.contains("must be single-threaded"), "{e}"),
         other => panic!("{other:?}"),
     }
 }
