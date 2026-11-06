@@ -497,7 +497,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   it made, `in_namespace` not running its closure beside other threads, a
   panic in the closure reported as not finishing, never as its refusal, nor
   through the parent's panic hook, and a log line of the closure not
-  through its subscriber; a child holding only stdio and its own
+  through its subscriber (in a copy of the test binary with one test
+  thread); a child holding only stdio and its own
   descriptors; a child reaped within its grace, else killed, else reported
   left; a tool reaped elsewhere (`ECHILD`) not killed. Its red team
   (`red_team_*`, as any user; T22, T4, T7, T8, T9): names planted where it

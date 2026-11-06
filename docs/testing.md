@@ -708,7 +708,10 @@ Exceptions, all from emulation (the native CI job runs them all):
   tests' interpreter there.
 - The tests that spawn an aarch64 binary themselves (ranikust's `cli` and
   `metrics`, rnk-store's `processes`, rnk-sandbox's
-  `seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`):
+  `seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`
+  and
+  `userns::tests::a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent`,
+  which runs in a copy of its test binary):
   without a binfmt_misc entry for aarch64 the kernel cannot execute it, so
   the recipe skips them with a warning.
 

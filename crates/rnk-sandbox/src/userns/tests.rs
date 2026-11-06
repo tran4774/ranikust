@@ -454,11 +454,20 @@ fn a_closure_is_not_run_beside_other_threads() {
 #[test]
 fn a_child_is_reaped_within_its_grace_else_reported_left() {
     let fork = |ends: bool| {
+        let parent = rustix::process::getpid();
         // SAFETY: the child makes system calls only, and ends with `_exit`
         // or `SIGKILL`.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
             if !ends {
+                // Killed with this test's thread, should the test fail
+                // before it kills the child; a parent gone first is seen.
+                if rustix::process::set_parent_process_death_signal(Some(Signal::KILL)).is_err()
+                    || rustix::process::getppid() != Some(parent)
+                {
+                    // SAFETY: `_exit` ends this process at once.
+                    unsafe { libc::_exit(4) }
+                }
                 loop {
                     // SAFETY: a plain system call.
                     unsafe { libc::pause() };
@@ -517,11 +526,18 @@ impl tracing::Subscriber for Witness {
 /// The closure's child inherits ranikust's panic hook, which writes the
 /// metrics report, and its subscriber, which writes the build's log: the
 /// closure runs with neither. Here the inherited ones are witnesses that
-/// send a record; the closure logs, then panics. The child allocates
-/// beside the harness's threads, as [`as_user`]'s does: the C library's
-/// allocator is safe after a fork.
+/// send a record; the closure logs, then panics. Run in a process of its
+/// own ([`in_own_process`]): the child's `set_hook` and `Dispatch::new`
+/// take process-wide locks, which another test's thread may hold at the
+/// fork.
 #[test]
 fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
+    if std::env::var_os(OWN_PROCESS).is_none() {
+        in_own_process(
+            "userns::tests::a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent",
+        );
+        return;
+    }
     let run = supervise(
         &ranges(),
         false,
@@ -550,6 +566,27 @@ fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
     assert_eq!(
         run.records.payload,
         Some((CLOSURE_PANICKED, b"panicked".to_vec()))
+    );
+}
+
+/// Set in the copy of this test binary [`in_own_process`] runs.
+const OWN_PROCESS: &str = "RNK_TEST_USERNS_OWN_PROCESS";
+
+/// Runs the test `name` (its full path) again in a copy of this test
+/// binary, with one test thread and [`OWN_PROCESS`] set, and fails with the
+/// copy's output unless it ran that one test and it passed.
+fn in_own_process(name: &str) {
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", name, "--test-threads=1"])
+        .env(OWN_PROCESS, "1")
+        .output()
+        .expect("run the test binary again");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{name} in its own process: {:?}\nstdout: {stdout}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
