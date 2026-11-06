@@ -222,3 +222,54 @@ pub enum TimePolicy {
         epoch: i64,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tag of a key paired with any encoding, which only this module
+    /// can build: `golden.rs` reaches tags through `next_entry`, whose key
+    /// already depends on the time policy, so this pins the tag hash
+    /// alone. A change here bumps `KEY_VERSION`.
+    #[test]
+    fn the_tag_hash_is_pinned_for_any_key_and_encoding() {
+        // `golden.rs`'s "step with every input" key, made with kept times.
+        let hex = "a949f4ffdf8c45cdd972d636face070a22bc8e7090b6d40f0cf971a06fdee1bf";
+        let mut hash = [0_u8; 32];
+        for (byte, pair) in hash.iter_mut().zip(hex.as_bytes().chunks(2)) {
+            *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+        }
+        let key = CacheKey {
+            version: KEY_VERSION,
+            hash,
+        };
+        let tag = |compression, level, times| {
+            let encoding = Encoding {
+                compression,
+                level,
+                times,
+            };
+            EntryId { key, encoding }.tag()
+        };
+        assert_eq!(
+            [
+                tag(Compression::Gzip, 6, TimePolicy::Kept),
+                tag(Compression::Zstd, 3, TimePolicy::Clamped { epoch: 0 }),
+                tag(
+                    Compression::Uncompressed,
+                    0,
+                    TimePolicy::Clamped {
+                        epoch: 1_700_000_000,
+                    },
+                ),
+            ],
+            [
+                "rnk-v2-94a5f7718b77018ac1be744ed70692af43c77d2716dcf501d6615008216e38a8",
+                "rnk-v2-4c0be455b28f53568ffe1ff1292acf63d1ae87fb3af1ef0bb8524cbabe788193",
+                "rnk-v2-fab985be670211bd2a2ace5aaf692beec32ffdcc269d9624bf0797ef9715cfc9",
+            ],
+            "the tag hash changed: bump KEY_VERSION (now {KEY_VERSION}) and update \
+             every golden"
+        );
+    }
+}

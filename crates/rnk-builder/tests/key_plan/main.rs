@@ -483,7 +483,8 @@ fn a_stage_built_on_a_stage_chains_from_its_final_key() {
     for (old, new) in [(stage(1), two), (stage(2), three)] {
         assert_ne!(old.root(), new.root());
         for (a, b) in old.steps().iter().zip(new.steps()) {
-            assert_ne!(a.unwrap().entry, b.unwrap().entry, "every step built on it");
+            let (a, b) = (a.unwrap().entry, b.unwrap().entry);
+            assert_ne!(a.key(), b.key(), "every step built on it");
         }
     }
 

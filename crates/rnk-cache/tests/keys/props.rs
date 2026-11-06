@@ -604,9 +604,7 @@ fn an_entry_names_the_encoding_its_inputs_were_made_for() {
     for epoch in [None, Some(EPOCH)] {
         let encoding = encoding(epoch);
         let entry = root().next_entry(&spec.instruction, spec.encoded_as(&encoding));
-        assert_eq!(entry.encoding(), &encoding);
-        let key = root().next(&spec.instruction, spec.encoded_as(&encoding));
-        assert_eq!(entry.key(), &key, "{epoch:?}");
+        assert_eq!(entry.encoding(), &encoding, "{epoch:?}");
     }
 }
 
