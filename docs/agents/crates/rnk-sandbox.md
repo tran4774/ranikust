@@ -417,10 +417,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   cleared its own death signal), which leave no `RUN` process, and builds in
   overlay mode, kaniko mode per stage and with the memfd skipped while
   `tests/vm/guest/sealed-exe.py` checks that ranikust and its init run one
-  sealed copy root cannot write (ADR-0101). In the `SYS_ADMIN` variant
-  `tests/smoke/netns-check.py` passes over the default profile and under
-  `--seccomp=unconfined`, one filter apart. The quick suite's kaniko mode
-  checks a build on a container's `/` runs from a sealed memfd.
+  sealed copy root cannot write (ADR-0101). The quick suite's kaniko mode
+  checks a build on a container's `/` runs from a sealed memfd. In the
+  `SYS_ADMIN` variant `tests/smoke/netns-check.py` passes over the default
+  profile and under `--seccomp=unconfined`, one filter apart.
 - **T2c** (rootful Docker, `just test-container unit-c`): the `Direct` `RUN`
   on `/` in `tests/direct_attacks.rs` (heredoc memfd cannot be rewritten, only
   own descriptors, stolen or read-back output cannot hang or stall, pid

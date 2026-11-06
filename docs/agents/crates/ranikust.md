@@ -81,15 +81,15 @@ Modules of `crates/ranikust/src/` (all crate-private):
   `--jobs`, `--network`, `--secret`, `--allow`, `--seccomp`, `--limit`,
   `--metrics-file`, `--snapshot-workers`.
 - `--seccomp=default|unconfined|<file>` (ADR-0103, ADR-0109): read by
-  `config::read_seccomp` right after `from_args`, before any set-up: the path
-  is pinned with `O_PATH` and must be a regular file (`fstat`) before it is
-  reopened for reading through `/proc/thread-self/fd`, so a FIFO or device
-  is never opened; at most 1 MiB, it is compiled
-  by `rnk_sandbox::SeccompProfile::from_json`; any failure is exit 2.
+  `config::read_seccomp` right after `from_args`, so before any set-up or
+  refusal on `/`: the path is pinned with `O_PATH` and must be a regular
+  file (`fstat`) before it is reopened for reading through
+  `/proc/thread-self/fd`, so a FIFO or device is never opened; at most
+  1 MiB, it is compiled by `rnk_sandbox::SeccompProfile::from_json`; any
+  failure is exit 2.
   `set_up` and `set_up_kaniko` hand it to the sandbox (`Seccomp::apply`); no
   flag keeps the sandbox's own default, Docker's profile. Kaniko mode on `/`
-  refuses every value in `refuse_unsafe_slash`, exit 2 (a file that cannot
-  be read or compiled is refused before, by `read_seccomp`).
+  refuses every value in `refuse_unsafe_slash`, exit 2.
 - `--snapshot-mode` is kaniko's (`full|redo|time`) and keeps that meaning in
   kaniko mode; the mode is `--mode`. Overlay mode warns and ignores it
   (ADR-0023). In overlay mode `overlay_mode_flags` refuses kaniko flags that
@@ -132,8 +132,9 @@ Each step before the next; design in
    `--metrics-file` over `RANIKUST_METRICS_FILE` (ADR-0037).
 4. `BuildConfig::from_args` and `config::read_seccomp` (in the copy: the
    `--seccomp` file is opened only after step 2's re-exec), then the mode
-   (ADR-0040): `--mode=kaniko` goes to kaniko mode; `--mode=overlay` checks the kaniko-mode flags and its
-   state directory, then enters the namespace; `--mode=auto` enters the
+   (ADR-0040): `--mode=kaniko` goes to kaniko mode; `--mode=overlay`
+   checks the kaniko-mode flags and its state directory, then enters the
+   namespace; `--mode=auto` enters the
    namespace first and goes to kaniko mode where it is refused to root for
    lack of privilege (`needs_kaniko_mode`), or where overlayfs cannot use the
    state directory outside a container (`setup::route` on the refusal's

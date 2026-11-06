@@ -253,11 +253,12 @@ declares none yet.
    ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
    `rnk-sandbox`); install the logs and
    the opt-in metrics; validate the flags into a `BuildConfig`; read and
-   compile the `--seccomp` profile, so in the copy only
+   compile the `--seccomp` profile, after the re-exec, so never in the
+   process that makes the copy
    ([ADR-0109](docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md));
-   try to enter a private mount namespace (failing means root may not mount); check the state
-   directory; clean up the store (`rnk-store`); start the `RUN` spawner thread
-   (`rnk-sandbox`).
+   try to enter a private mount namespace (failing means root may not
+   mount); check the state directory; clean up the store (`rnk-store`);
+   start the `RUN` spawner thread (`rnk-sandbox`).
 2. **Probe** (`ranikust`, running the probes of `rnk-sandbox` and
    `rnk-snapshot` in order): choose overlay, kaniko, or refuse;
    `--mode=overlay|kaniko` skips the choice but not the checks
