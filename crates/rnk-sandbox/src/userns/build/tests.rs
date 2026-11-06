@@ -1,5 +1,6 @@
 use std::ffi::CStr;
 use std::fs;
+use std::path::Path;
 
 use rustix::process::DumpableBehavior;
 
@@ -637,4 +638,231 @@ fn the_build_user_namespace_of_a_regular_user_maps_its_ranges_else_one_uid() {
         assert_eq!((d.outcome.as_str(), d.map.as_str()), ("ok", "one uid"));
         assert_eq!(d.passed_over, format!("newuidmap: not run ({why})"));
     }
+}
+
+/// The mount points of `/proc/<pid>/mountinfo` (`self` for this process).
+fn mount_points(pid: &str) -> Vec<(String, String)> {
+    fs::read_to_string(format!("/proc/{pid}/mountinfo"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(' ').collect();
+            let sep = f.iter().position(|x| *x == "-")?;
+            Some((f.get(4)?.to_string(), f[6..sep].join(" ")))
+        })
+        .collect()
+}
+
+/// Forks a child that runs `f`, then reports `ready` with what `f` said
+/// and waits until the returned pipe end is dropped; returns its pid,
+/// what it reported, and that end.
+fn hold(f: impl FnOnce() -> String) -> (i32, String, OwnedFd) {
+    use rustix::pipe::{PipeFlags, pipe_with};
+    let (report_r, report_w) = pipe_with(PipeFlags::CLOEXEC).unwrap();
+    let (go_r, go_w) = pipe_with(PipeFlags::CLOEXEC).unwrap();
+    // SAFETY: called from a single-threaded forked child; this child runs
+    // `f`, which allocates (the C library's allocator is safe after a fork),
+    // and ends with `_exit`.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        drop((report_r, go_w));
+        let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .unwrap_or_else(|_| "error: panicked".to_owned());
+        let _ = write_all(report_w.as_fd(), text.as_bytes());
+        drop(report_w);
+        let mut byte = [0u8];
+        while matches!(rustix::io::read(&go_r, &mut byte), Err(Errno::INTR)) {}
+        // SAFETY: `_exit` ends this process at once.
+        unsafe { libc::_exit(0) }
+    }
+    assert!(pid > 0);
+    drop((report_w, go_r));
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut fs::File::from(report_r), &mut out).unwrap();
+    (pid, out, go_w)
+}
+
+/// Ends a child [`hold`] started.
+fn release(pid: i32, go: OwnedFd) {
+    drop(go);
+    let mut status = 0;
+    // SAFETY: `waitpid` writes the status, which lives across the call.
+    unsafe { libc::waitpid(pid, &raw mut status, 0) };
+}
+
+/// As root that may mount, in a private mount namespace of a forked child
+/// (no mount outlives the test): a shared tmpfs at `base`; a plain mount
+/// namespace's mount below it shows here (the control), the build's
+/// mount namespace's does not. `control\tmap\tinside\toutside\tshared`.
+fn mount_below_a_shared_one(base: &Path) -> String {
+    use rustix::mount::{MountFlags, MountPropagationFlags as P, mount, mount_change};
+    let base = base.to_owned();
+    in_subreaper(move || {
+        let setup = || -> std::result::Result<(), String> {
+            // SAFETY: `NEWNS` does not unshare the descriptor table; this
+            // forked child is single-threaded.
+            unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWNS) }
+                .map_err(|e| format!("unshare(CLONE_NEWNS): {e}"))?;
+            mount_change(c"/", P::PRIVATE | P::REC).map_err(|e| format!("private /: {e}"))?;
+            mount(c"none", &base, c"tmpfs", MountFlags::empty(), None)
+                .map_err(|e| format!("tmpfs: {e}"))?;
+            mount_change(&base, P::SHARED).map_err(|e| format!("shared: {e}"))?;
+            for d in ["control", "inner"] {
+                fs::create_dir(base.join(d)).map_err(|e| format!("{d}: {e}"))?;
+            }
+            Ok(())
+        };
+        if let Err(e) = setup() {
+            return format!("error: {e}");
+        }
+        let at = |d: &str| base.join(d).display().to_string();
+        let mounted = |pid: &str, d: &str| mount_points(pid).iter().any(|(p, _)| *p == at(d));
+        let tmpfs = |d: &Path| mount(c"none", d, c"tmpfs", MountFlags::empty(), None);
+        // The control: a mount namespace of the same user namespace.
+        let control_dir = base.join("control");
+        let (pid, said, go) = hold(move || {
+            // SAFETY: as above, in this forked child.
+            match unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWNS) }
+                .and_then(|()| tmpfs(&control_dir))
+            {
+                Ok(()) => "mounted".to_owned(),
+                Err(e) => format!("error: {e}"),
+            }
+        });
+        let control = format!("{said}:{}", mounted("self", "control"));
+        release(pid, go);
+        // The build's: entered, then a tmpfs and a file in it.
+        let inner = base.join("inner");
+        let (pid, said, go) = hold(move || match crate::enter_build_user_namespace(None) {
+            Ok(ns) => match tmpfs(&inner).and_then(|()| {
+                fs::write(inner.join("x"), b"x").map_err(|e| Errno::from_io_error(&e).unwrap())
+            }) {
+                Ok(()) => ns.map.to_string(),
+                Err(e) => format!("error: mount: {e}"),
+            },
+            Err(e) => format!("error: {e}"),
+        });
+        let line = [
+            control,
+            said,
+            mounted(&pid.to_string(), "inner").to_string(),
+            (mounted("self", "inner") || base.join("inner/x").exists()).to_string(),
+            mount_points("self")
+                .iter()
+                .any(|(p, opt)| *p == base.display().to_string() && opt.contains("shared:"))
+                .to_string(),
+        ]
+        .join("\t");
+        release(pid, go);
+        line
+    })
+}
+
+/// Checks [`mount_below_a_shared_one`]'s line: the control's mount
+/// propagated, the build's was made and stayed inside, and the parent's
+/// mount is still shared.
+fn check_mount_stays_inside(line: &str) {
+    let f: Vec<&str> = line.split('\t').collect();
+    assert_eq!(f.len(), 5, "{line}");
+    assert_eq!(
+        f[0], "mounted:true",
+        "the control did not propagate: {line}"
+    );
+    assert!(!f[1].starts_with("error"), "{line}");
+    assert_eq!(&f[2..], ["true", "false", "true"], "{line}");
+}
+
+/// T1: root of a privileged rootless Podman container enters the build's
+/// user namespace below a shared mount; a mount made there never shows
+/// outside (T5, ADR-0098).
+#[test]
+#[ignore = "T1: privileged: mounts in a private mount namespace and the build's user namespace"]
+fn red_team_a_mount_in_the_build_s_namespace_never_shows_outside() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let tmp = tempfile::tempdir().unwrap();
+    let line = mount_below_a_shared_one(tmp.path());
+    measured(&format!(
+        "mount below a shared one, rootless Podman: {line}"
+    ));
+    check_mount_stays_inside(&line);
+}
+
+/// T2: the same as real root, whose map is every id.
+#[test]
+#[ignore = "T2: mounts in a private mount namespace and the build's user namespace as root"]
+fn red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let tmp = tempfile::tempdir().unwrap();
+    let line = mount_below_a_shared_one(tmp.path());
+    measured(&format!("mount below a shared one, root: {line}"));
+    check_mount_stays_inside(&line);
+}
+
+/// In a one-id user namespace of a forked child whose `/proc/sys/user/<knob>`
+/// is `limit`, the build's user namespace entered `rounds` times, each in
+/// a child of its own: [`describe`]'s lines.
+fn under_limit(knob: &str, limit: u32, rounds: usize) -> Vec<String> {
+    let knob = knob.to_owned();
+    let out = in_subreaper(move || {
+        if let Err(e) = one_id_parent() {
+            return format!("error: {e}");
+        }
+        if let Err(e) = fs::write(format!("/proc/sys/user/{knob}"), limit.to_string()) {
+            return format!("error: {knob}: {e}");
+        }
+        (0..rounds)
+            .map(|_| in_subreaper(|| describe(None)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    out.lines().map(str::to_owned).collect()
+}
+
+/// T1: limits on new user and mount namespaces that a trial's namespace,
+/// freed late, may still hold when this process enters: entered whole; or
+/// unchanged, by an error other than [`Error::UserNamespaceBroken`], which
+/// may fall back; or that error, in the new user namespace (ADR-0098).
+#[test]
+#[ignore = "T1: privileged: namespace limits in a user namespace of the test's own"]
+fn red_team_namespace_limits_leave_the_build_whole_or_unchanged() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    for (knob, limit) in [
+        ("max_user_namespaces", 0),
+        ("max_user_namespaces", 1),
+        ("max_mnt_namespaces", 0),
+        ("max_mnt_namespaces", 1),
+    ] {
+        let lines = under_limit(knob, limit, 8);
+        assert_eq!(lines.len(), 8, "{knob}={limit}: {lines:?}");
+        for line in &lines {
+            let d = Described::parse(line);
+            assert_eq!(d.dumpable, "0", "{line}");
+            let broken = d.outcome.starts_with("err the build's user namespace: ");
+            let kind = match d.outcome.as_str() {
+                "ok" => {
+                    assert_eq!((d.userns.as_str(), d.mountns.as_str()), ("new", "new"));
+                    assert_eq!(d.euid, "0", "{line}");
+                    "entered"
+                }
+                _ if broken => {
+                    assert_eq!(d.userns, "new", "{line}");
+                    "broken"
+                }
+                _ => {
+                    assert_eq!(
+                        (d.userns.as_str(), d.mountns.as_str(), d.euid.as_str()),
+                        ("same", "same", "0"),
+                        "not left as it was, but may fall back: {line}"
+                    );
+                    "unchanged"
+                }
+            };
+            *seen.entry(format!("{knob}={limit}: {kind}")).or_default() += 1;
+        }
+        if limit == 0 {
+            assert!(lines.iter().all(|l| l.starts_with("err\t")), "{lines:?}");
+        }
+    }
+    measured(&format!("namespace limits: {seen:?}"));
 }

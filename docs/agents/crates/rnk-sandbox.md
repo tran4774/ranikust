@@ -572,8 +572,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   with its ranges mirrored and `setgroups` allowed;
   `the_build_user_namespace_below_one_id_is_told_one_uid`: root of a one-id
   namespace, `setgroups` denied (as `unshare -r`), enters with its map
-  mirrored and is told one uid, `setgroups` denied. Not yet: the sandbox's
-  fallbacks.
+  mirrored and is told one uid, `setgroups` denied. Profile `privileged`:
+  `red_team_a_mount_in_the_build_s_namespace_never_shows_outside` (a tmpfs
+  mounted in the build's namespaces below a shared mount of the parent
+  never shows there, where a plain mount namespace's does);
+  `red_team_namespace_limits_leave_the_build_whole_or_unchanged` (in a user
+  namespace of the test's own, `user.max_user_namespaces` and
+  `user.max_mnt_namespaces` at 0 and 1: entered whole, or unchanged by
+  an error other than `UserNamespaceBroken`; prints how often each).
+  Not yet: the sandbox's fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`);
@@ -588,6 +595,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and with `newuidmap` hidden; where AppArmor restricts, every leg is
   refused at the `uid_map` write and nothing changed, elsewhere the ranges
   through `newuidmap`, else one uid, named as such);
+  `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
+  T1 mount red team as real root, whose map is every id);
   `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
