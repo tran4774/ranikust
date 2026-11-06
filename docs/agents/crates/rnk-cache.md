@@ -74,11 +74,16 @@ pub trait LayerCache {                               // [design] RegistryCache, 
 }
 ```
 
+Never append heredoc bodies to the instruction string, because that would
+shift a field boundary.
+
 ### Byte form
 
-The fields and the form of the tag are [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s, and what each hash covers
-is [cache-and-store](../../design/cache-and-store.md#cache-keys)'s; this is
-how it is written. Each hash is SHA-256 over self-delimiting fields, so two
+The fields and the form of the tag are
+[ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
+and what each hash covers is
+[cache-and-store](../../design/cache-and-store.md#cache-keys)'s; this is how
+it is written. Each hash is SHA-256 over self-delimiting fields, so two
 different inputs never feed the same bytes:
 
 - a string or byte field: its length as a big-endian `u64`, then its bytes;
