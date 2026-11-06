@@ -91,14 +91,14 @@ pub enum Refusal {
     },
     /// The layer's media type is not the entry encoding's.
     LayerType {
-        /// The layer's media type, cut to an excerpt; empty when it names
-        /// none.
+        /// The layer's media type, cut to an excerpt; empty for
+        /// `"mediaType": ""` (a missing one is [`Refusal::Malformed`]).
         media_type: String,
     },
     /// The config's media type is not an OCI image config.
     ConfigType {
-        /// The config's media type, cut to an excerpt; empty when it names
-        /// none.
+        /// The config's media type, cut to an excerpt; empty for
+        /// `"mediaType": ""` (a missing one is [`Refusal::Malformed`]).
         media_type: String,
     },
     /// The manifest is an artifact or refers to another manifest.

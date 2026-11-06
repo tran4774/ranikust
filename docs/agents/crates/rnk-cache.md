@@ -128,8 +128,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 - A new algorithm, or a change to the entry form a lookup checks
   ([design](../../design/cache-and-store.md#cache-keys)), bumps
   `KEY_VERSION`; old entries are never matched again and never rewritten.
-  The goldens fail on any change to the byte form or the encoding
-  annotation.
+  The goldens fail on any change to the byte form, the encoding annotation
+  or what a push writes (`src/entry.rs`; the platform fields there need no
+  bump).
 - A change to the layer format bumps `KEY_VERSION` too (ADR-0005): an
   `Encoding` has no encoder version.
 - Same inputs, same key, in either mode, with any `--jobs`, whatever the
@@ -178,18 +179,22 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   files, the chunking of content and any mtime the header does not carry,
   that changing any one field changes it, that field boundaries cannot
   shift, and that every encoding field changes the tag. `golden.rs` also
-  pins the encoding annotation, and `src/entry.rs` the entry form (a
-  manifest and config in canonical bytes, the layer type per compression).
+  pins the encoding annotation, and `src/entry.rs` what a push writes (a
+  manifest and config in canonical bytes, the layer type per compression);
+  `src/error.rs` checks excerpts and that a refusal names a missing media
+  type in words.
   `tests/registry/` runs `RegistryCache` against `rnk-registry`'s fake
   registry (compiled in through `#[path]`): a push then a lookup is a hit
-  with the same digests, carrying the layer's type, digest and size only;
+  with the same digests, carrying the layer's type, digest and size only,
+  and the pushed config names the platform;
   an unknown key is a miss after one request; a 500, a stall past
   `registry-idle` and bad credentials are `Miss::Failed`; an expired entry
   is `Miss::Expired`; another encoding misses, and an entry copied under
   its tag is refused; hostile entries (an index, a Docker manifest, a
   manifest with no media type, zero or two layers, another layer or config
   type, an artifact, annotations of another key, version or encoding, two
-  diff IDs, a bad `created`) and documents over `--limit` are refused; a
+  diff IDs, a bad `created`) and documents over `--limit` are refused, and
+  a config naming another platform is still a hit; a
   held blob is not uploaded again and one in a destination is mounted; a
   failed push publishes nothing; a cache repository with a tag or digest
   is refused. `tests/spans.rs` checks the three spans.
@@ -232,6 +237,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   that task 3 (#126) adds.
 - Give `KeyInputs::new` and `EntryId::new` the same `Encoding`, or a
   `--reproducible` hit can carry other mtimes.
+- Give `BuiltLayer` the platform `CacheKey::root` was given: nothing can
+  check it (the key is a hash), and another would misname the entry's
+  layer.
 - A `RegistryCache` gets the build's `Client`: its registry needs a
   destination's options there (credentials over plain HTTP only if the
   operator named it, verified TLS only on `/`), or it gets none or too

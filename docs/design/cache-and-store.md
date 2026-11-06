@@ -232,10 +232,13 @@ An entry, under its tag
   (`gzip;level=6;times=kept`, `zstd;level=3;times=clamped;epoch=0`,
   `uncompressed;times=kept`);
 - an OCI config holding the push time as `created` (RFC 3339, UTC), the
-  layer's diff ID, and the `architecture`, `os` and `variant` of the
-  platform the stage is built for: OCI requires the first two (kaniko's
-  entries leave them empty), and the key's root holds the platform already,
-  so they disclose nothing new. A lookup does not check them.
+  layer's diff ID, and the `architecture` and `os` of the platform the
+  stage is built for, with its `variant` when it has one. OCI requires the
+  first two, which kaniko's entries leave empty
+  (`kaniko@44aa7ddc0 pkg/executor/push.go:404`, `pushLayerToCache`); the
+  platform is no secret (the layer's own binaries show it), and the key,
+  whose root holds it, keeps an entry to one platform, so a lookup does not
+  check them.
 
 A lookup reads the manifest under the tag and then the config, each bounded
 by its `--limit` limit (ADR-0079):
@@ -254,8 +257,11 @@ by its `--limit` limit (ADR-0079):
 A hit returns the layer's descriptor and diff ID, which prove nothing: the
 caller checks the blob against both as it checks a base layer's, and
 extracts it under the same rules (in kaniko mode:
-[a cache hit](kaniko-mode.md#a-cache-hit)). A blob found bad makes the stage
-start again from its base without that entry, which counts as a miss
+[a cache hit](kaniko-mode.md#a-cache-hit)). In kaniko mode with a directory
+per stage, a blob found bad after extraction began makes the stage start
+again from its base without that entry, which counts as a miss; elsewhere
+(overlay mode, kaniko mode on `/`) it is found before the layer is used and
+is a plain miss
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md);
 how often a stage may restart is not settled, decided before
 [#130](https://github.com/tran4774/ranikust/issues/130)).

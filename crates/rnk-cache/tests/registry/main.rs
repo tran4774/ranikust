@@ -462,6 +462,12 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
         rnk_registry::Error::Manifest { .. }
     ));
 
+    // The key, not the config, keeps an entry to one platform.
+    let mut arm = config.clone();
+    arm["architecture"] = json!("arm64");
+    store(&registry, &tag, manifest.clone(), &arm);
+    hit(cache.lookup(&entry).await);
+
     // The control: the entry as pushed is still a hit.
     store(&registry, &tag, manifest, &config);
     hit(cache.lookup(&entry).await);

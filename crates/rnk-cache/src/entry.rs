@@ -63,12 +63,12 @@ fn document(media_type: MediaType, bytes: Vec<u8>) -> Document {
     }
 }
 
-/// The entry's config: the one layer's diff ID, `created`, the push time,
-/// which `--cache-ttl` counts from, and the stage's platform.
+/// The entry's config: the one layer's diff ID, `created` (the push time,
+/// which `--cache-ttl` counts from) and the stage's platform.
 ///
-/// OCI requires `architecture` and `os` (kaniko's entries leave them
-/// empty); the key's root holds the platform already, so naming it
-/// discloses nothing new. A lookup does not check them: the key does.
+/// The platform is named because OCI requires `architecture` and `os`; it
+/// is no secret, and the key, whose root holds it, keeps the entry to one
+/// platform, so a lookup does not check it.
 pub(crate) fn config(
     diff_id: &Digest,
     platform: &Platform,
@@ -221,7 +221,11 @@ mod tests {
         let blob = Descriptor::new(layer_type(&entry), Digest::from_sha256_bytes(&[2; 32]), 7);
         let manifest = manifest(&entry, config.descriptor, blob).unwrap();
         let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
-        let bump = format!("the entry form changed: bump KEY_VERSION (now {KEY_VERSION})");
+        let bump = format!(
+            "what a push writes changed: bump KEY_VERSION (now {KEY_VERSION}) if a lookup \
+             checks it (annotations, layer or config type, rootfs, created); the platform \
+             fields need none"
+        );
         assert_eq!(
             text(&config.bytes),
             concat!(
