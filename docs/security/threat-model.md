@@ -244,8 +244,8 @@ These follow from decisions and are documented to users rather than fixed:
   To restrict an argument, let the default action refuse and allow only the
   values a build needs, with `SCMP_CMP_EQ`, `SCMP_CMP_LT`, `SCMP_CMP_LE` or
   `SCMP_CMP_MASKED_EQ` conditions, and allow neither `clone3` nor the
-  `io_uring_*` calls, as the default profile does for a `RUN`; it is not
-  affected.
+  `io_uring_*` calls, as the default profile does for a `RUN`; the default
+  profile is not affected.
 - A `RUN`'s profile that refuses `close` with an errno (a kill or a trap
   fails the `RUN` instead) hangs that `RUN` until the build is cancelled, a
   limit of reliability, not of security: the go pipe that starts the

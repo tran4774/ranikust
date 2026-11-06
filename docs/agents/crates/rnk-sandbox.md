@@ -289,10 +289,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `add_key` and `request_key`; random profiles against a reference, x32
   numbers, keys given twice, nesting and odd bytes, numbers in other forms,
   rules that disagree, the kernel's 4096 instructions);
-  `errno_0_reads_as_eproto`.
-  `docker_default_restricts_arguments_by_allowing_values` checks moby's
-  profile's argument-rule form and its refusal of `clone3` and
-  `io_uring_*`. The `tests::kernel` modules, skipped under qemu-user, install filters in forked
+  `errno_0_reads_as_eproto`. Moby's profile's argument-rule form
+  (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
+  of `clone3` and `io_uring_*`
+  (`docker_default_gives_a_run_neither_clone3_nor_io_uring`). The
+  `tests::kernel` modules, skipped under qemu-user, install filters in forked
   children: `seccomp::profile`'s (compiled profiles; random ones answering as
   their rules say; 4096 instructions; on x86_64, x32 and, where the kernel
   has it, i386 calls refused), `caps`'s (an `EINVAL` from a bounding drop)

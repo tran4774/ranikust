@@ -170,17 +170,17 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   runc and libseccomp do, and does not change the compiler. The default
   profile is not affected; the
   [threat model, section 6](../security/threat-model.md#6-accepted-risks)
-  says how to write a profile that is not.
+  gives advice for a profile that is not.
 - **A profile that refuses `exit` and `exit_group`, or refuses everything,
   keeps the behaviour it has** ("Để như Docker, mở task", leave it as Docker
   does, and open a task). Where it refuses with an errno, the build then runs
   until it is cancelled; `SCMP_ACT_KILL_PROCESS`, `SCMP_ACT_KILL` in a
   single-threaded program, or a trap in a program without a `SIGSYS`
-  handler, fails the `RUN` instead. This is not a security matter. It is tracked in
-  [#103](https://github.com/tran4774/ranikust/issues/103), which lists the
-  options left open: refuse such a profile at start-up, or end such a `RUN`
-  from the parent. Docker's behaviour with the same profiles was not checked
-  here.
+  handler, fails the `RUN` instead. This is not a security matter. It is
+  tracked in [#103](https://github.com/tran4774/ranikust/issues/103), which
+  lists the options left open: refuse such a profile at start-up, or end
+  such a `RUN` from the parent. Docker's behaviour with the same profiles was
+  not checked here.
 
 ### Consequences
 
@@ -235,7 +235,7 @@ Answered by the maintainer on 2026-11-06 as well, on two more points of
   `SCMP_CMP_EQ`, `SCMP_CMP_LT` or `SCMP_CMP_MASKED_EQ` conditions, and a
   `RUN` gets neither `clone3` nor the `io_uring_*` calls, as threat model
   section 6 advises; `docker_default_restricts_arguments_by_allowing_values`
-  checks both.
+  and `docker_default_gives_a_run_neither_clone3_nor_io_uring` check them.
 - **[inferred]** from `seccomp(2)`: `SECCOMP_RET_KILL_PROCESS` ends the
   process and `SECCOMP_RET_TRAP` sends a `SIGSYS` that ends a program
   without a handler, so either fails the `RUN` at the refused call, where
