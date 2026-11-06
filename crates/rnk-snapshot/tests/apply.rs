@@ -264,6 +264,7 @@ impl Applies for KanikoRoot {
 struct Stages {
     _tmp: tempfile::TempDir,
     top: PathBuf,
+    stages_dir: PathBuf,
     snap: KanikoStages,
 }
 
@@ -277,9 +278,12 @@ impl Stages {
         ignore.insert("/proc").unwrap();
         ignore.insert("/ignored").unwrap();
         let snap = KanikoStages::new(&store, ignore, walk()).unwrap();
+        // From the store's id: `builds/` also holds the build's lock file.
+        let stages_dir = store.build_dir().join("stages");
         Self {
             _tmp: tmp,
             top,
+            stages_dir,
             snap,
         }
     }
@@ -289,10 +293,8 @@ impl Stages {
     }
 
     /// `builds/<id>/stages`, where every stage directory is made.
-    fn stages_dir(&self) -> PathBuf {
-        let builds = self.top.join("state/builds");
-        let id = fs::read_dir(&builds).unwrap().next().unwrap().unwrap();
-        id.path().join("stages")
+    fn stages_dir(&self) -> &Path {
+        &self.stages_dir
     }
 }
 
