@@ -137,6 +137,10 @@ T0 (`cargo test -p rnk-layer`); tiers: [`docs/testing.md`](../../testing.md#tier
   single-threaded stream at level 3 (236 MB of rlibs: 66.48 MB against
   66.20 MB). libzstd's version, the level and the frame size are part of
   every zstd digest.
+- When the same tree and encoding give other bytes (a golden of
+  `tests/it/` moves: the tar writer, zlib-rs, libzstd, a block or frame
+  size), bump `rnk-cache`'s `KEY_VERSION` (ADR-0005), or a cache hit
+  carries the old bytes. A level is in the cache tag already.
 - libzstd allocates with libc's `malloc` (musl's in the release binary),
   not mimalloc: keep a context alive per worker rather than creating one
   per block.

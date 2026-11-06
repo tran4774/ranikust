@@ -267,7 +267,7 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | Phase 4: kaniko's `cache.key`. |
+| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next`: the regular files it holds and their content bytes; kaniko's `cache.key`. |
 | `rnk_cache.lookup` | `hit` | Phase 4: misses = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
 | `rnk_cache.push` | `bytes_out` | Phase 4: background push, parented to `rnk_sched.run`; kaniko's `cache.push`. |
 
