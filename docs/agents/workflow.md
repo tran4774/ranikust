@@ -233,8 +233,8 @@ ignores.
   `createRef` mutation, a `gh api` write to `releases` or to `refs/heads`
   and any `gh api` naming `refs/tags` (`ADR-0112`: the spellings its
   patterns list; a few reads are refused too, and the `gh api` forms of `gh
-  repo rename`/`archive`/`deploy-key` still run); whatever prints or hands out the
-  `gh` token, and reading `~/.config/gh/`, `~/.docker/config.json`, the
+  repo rename`/`archive`/`deploy-key` still run); whatever prints or hands
+  out the `gh` token, and reading `~/.config/gh/`, `~/.docker/config.json`, the
   Podman `auth.json` files and `~/.ssh` (with `rg` too), since they would
   land in the transcript; executing `tests/vm/runner.sh` (reading it stays
   allowed), which runs suites as root and belongs to CI; and the options
@@ -262,11 +262,11 @@ ignores.
   alone also covers replying to or closing other people's issues and pull
   requests (`gh issue comment`/`close`, `gh pr comment`/`close` look the
   same for anyone's); which issues an agent opens; when an agent adds
-  `ci:full` (`ADR-0095`: GitHub cannot tell who labelled); the allowed read-only `gh` commands
-  taking a URL or `-R`, which can read another repository or another host;
-  and any command wrapped in another (`bash -c`, a script, an alias) or
-  spelled differently (`--'config'`, `git -C . fetch <url>`), which no
-  pattern sees.
+  `ci:full` (`ADR-0095`: GitHub cannot tell who labelled); the allowed
+  read-only `gh` commands taking a URL or `-R`, which can read another
+  repository or another host; and any command wrapped in another (`bash
+  -c`, a script, an alias) or spelled differently (`--'config'`, `git -C .
+  fetch <url>`), which no pattern sees.
 
 The patterns are guardrails, not a boundary: they match command text, and
 agents use the maintainer's `gh` account, so GitHub does not tell them
