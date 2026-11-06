@@ -90,8 +90,10 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   uses a fixed epoch or `SOURCE_DATE_EPOCH`.
 - Tested: with `--reproducible`, `--jobs 1` and the default give the same
   digests; overlay and kaniko mode give the same flattened content apart
-  from `ADR-0012`'s accepted differences. Cache keys ignore mode, host, time,
-  thread count.
+  from `ADR-0012`'s accepted differences. Cache keys ignore the snapshot
+  mode, the host, the build's time and thread counts, and hold a file's
+  mtime only under `--reproducible`, clamped to the epoch
+  ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
 
 ## Tests
 
