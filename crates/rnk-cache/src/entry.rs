@@ -155,6 +155,9 @@ pub(crate) fn check_manifest(
             media_type: excerpt(layer.media_type.as_str()),
         });
     }
+    // The entry's `urls`, `data` and annotations never reach the caller's
+    // image or pull.
+    let layer = Descriptor::new(layer.media_type, layer.digest, layer.size);
     Ok(Form { config, layer })
 }
 

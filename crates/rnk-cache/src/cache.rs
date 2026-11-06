@@ -68,7 +68,8 @@ pub enum Miss {
 pub struct CachedLayer {
     /// Where the blob is pulled from.
     pub source: Source,
-    /// The compressed blob, of the entry encoding's OCI media type.
+    /// The compressed blob: the entry encoding's OCI media type, its digest
+    /// and size, and nothing else the entry said.
     pub blob: Descriptor,
     /// The digest of the uncompressed tar.
     pub diff_id: Digest,

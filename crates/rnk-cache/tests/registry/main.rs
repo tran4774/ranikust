@@ -439,6 +439,31 @@ async fn an_entry_not_of_this_form_is_refused_as_a_miss() {
 }
 
 #[tokio::test]
+async fn a_hit_carries_only_the_layers_type_digest_and_size() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    let cache = cache(&registry, WEEK);
+    let entry = entry("RUN make");
+    let built = layer(b"l");
+    done(cache.push(&entry, &built).await);
+    let (mut manifest, config) = stored(&registry, &entry.tag());
+    let blob = &mut manifest["layers"][0];
+    blob["urls"] = json!(["https://elsewhere.example/blob"]);
+    blob["data"] = json!("bA==");
+    blob["annotations"] = json!({"org.opencontainers.image.title": "x"});
+    blob["platform"] = json!({"architecture": "arm64", "os": "linux"});
+    store(&registry, &entry.tag(), manifest, &config);
+    let found = hit(cache.lookup(&entry).await);
+    assert_eq!(
+        found.blob,
+        rnk_oci::Descriptor::new(
+            MediaType::OCI_LAYER_GZIP,
+            built.blob.digest,
+            built.blob.size
+        )
+    );
+}
+
+#[tokio::test]
 async fn documents_over_the_limits_are_a_miss_with_a_warning() {
     let registry = FakeRegistry::start(Auth::Open).await;
     let entry = entry("RUN make");
