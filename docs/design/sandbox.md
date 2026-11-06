@@ -193,11 +193,10 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   the default sets, since the install needs `CAP_SYS_ADMIN` without
   `no_new_privs`, so that a setuid binary of the `RUN` keeps working, and
   the init's and the command's steps that must follow the fork (step 5 on).
-  A filter around ranikust may still fake a
-  success; the child checks what it can (the init's fork, an `execve` or
-  `execveat` back without an error and a blocking `waitpid` back with no
-  child fail the `RUN`, and a read goes into a value set beforehand), and
-  the rest is in the
+  A filter around ranikust may still fake a success; the child checks what
+  it can (the init's fork, an `execve` or `execveat` back without an error
+  and a blocking `waitpid` back with no child fail the `RUN`, and a read
+  goes into a value set beforehand), and the rest is in the
   [threat model](../security/threat-model.md#6-accepted-risks). A failed
   install names the filter: the profile's points to `--seccomp=unconfined`,
   ADR-0033's to `--allow network.none-userns`.
@@ -343,11 +342,11 @@ The steps, in order:
    full bounding set, which a setuid binary in the image would regain. The
    drops go up to the kernel's last capability; an `EINVAL` ends them only
    where it could not be read and 63 was assumed. In the full sandbox the
-   init and the command keep `CAP_SYS_ADMIN`, already out of the bounding
-   set, in the effective and permitted sets until each has installed its
-   filters (step 4), the command's cgroup namespace before them
-   ([`RUN` cgroups](#run-cgroups)): the init then drops every capability,
-   the command all but the defaults, both before the go.
+   init and the command keep ranikust's effective and permitted sets until
+   each has installed its filters (step 4), which needs `CAP_SYS_ADMIN`,
+   already out of the bounding set; the command makes its cgroup namespace
+   before them ([`RUN` cgroups](#run-cgroups)). The init then drops every
+   capability, the command all but the defaults, both before the go.
 
    Then the full sandbox's child becomes the `RUN`'s **init**
    ([ADR-0080](../adr/0080-a-full-sandbox-run-runs-under-an-init-that-dies-with-ranikust.md)):
@@ -362,18 +361,18 @@ The steps, in order:
      capability sets (step 4), waits on a close-on-exec go pipe, then runs
      steps 6 to 8 and becomes the command.
    - The init keeps the death signal of step 1, installs its filters (step
-     4), drops every capability, names
-     itself `ranikust-init`, checks the death signal is still armed and the
-     parent alive, and closes every descriptor but the status pipe's write end
-     and the go pipe's, the latter last: that lets the command go on (a failure
-     before kills the command unrun and is reported as `Step::Init`, or as
-     the filter's step, unless a filter around ranikust fakes the command's
-     read of that pipe).
-   - A read of the init's or the command's answered with `EINTR` (the argument areas',
-     the parent check's, the go pipe's) fails the `RUN` as `Step::Init`
-     instead of reading again: with no handler, the kernel restarts a read
-     a signal interrupts, so only a filter answers so, and it could
-     forever.
+     4), drops every capability, names itself `ranikust-init`, checks the
+     death signal is still armed and the parent alive, and closes every
+     descriptor but the status pipe's write end and the go pipe's, the
+     latter last: that lets the command go on (a failure before kills the
+     command unrun and is reported as `Step::Init`, or as the filter's
+     step, unless a filter around ranikust fakes the command's read of that
+     pipe).
+   - A read of the init's or the command's answered with `EINTR` (the
+     argument areas', the parent check's, the go pipe's) fails the `RUN` as
+     `Step::Init` instead of reading again: with no handler, the kernel
+     restarts a read a signal interrupts, so only a filter answers so, and
+     it could forever.
    - It then reaps every process that reparents to it until the command exits
      or is killed (detaching from a command that made it its tracer), writes
      the command's wait status on the status pipe, and exits; a `waitpid`

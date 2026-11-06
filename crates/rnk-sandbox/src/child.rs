@@ -535,8 +535,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // the init and the command each install the filters after it
     // ([`run_init`]), the command once in its cgroup namespace (ADR-0110).
     // After them come the capability cut, since the install needs
-    // `CAP_SYS_ADMIN`, and the steps of the init's and the command's that
-    // must follow the fork, which only a filter around ranikust could fake
+    // `CAP_SYS_ADMIN`, and the init's and the command's steps that must
+    // follow the fork, which only a filter around ranikust could fake
     // (threat model, section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
@@ -580,17 +580,17 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// The fork comes before the `RUN`'s filters, which each process installs
 /// itself: the command makes its cgroup namespace first, which the profile
 /// refuses (ADR-0110), and a profile cannot fake the fork. The init then
-/// keeps only what it needs to wait: no capability, no
-/// descriptor but the status pipe's write end, no signal handler (the
-/// kernel drops every signal a process of the namespace sends to its PID 1
-/// whose disposition is the default), its copy of ranikust's argument and
-/// environment strings zeroed; [`run`] made it not dumpable and gave it a
-/// session of its own, so that no terminal signal reaches it, before the
-/// `RUN`'s profile. The command waits on the go pipe until the init has
-/// given all that up, so a failure of the init's own steps (`Step::Init`)
-/// comes before the command ran, unless a filter around ranikust fakes the
-/// command's `read` of that pipe (threat model, section 6). The init reaps every
-/// process that reparents to it; when the command exits, it writes the
+/// keeps only what it needs to wait: no capability, no descriptor but the
+/// status pipe's write end, no signal handler (the kernel drops every
+/// signal a process of the namespace sends to its PID 1 whose disposition
+/// is the default), its copy of ranikust's argument and environment
+/// strings zeroed; [`run`] made it not dumpable and gave it a session of
+/// its own, so that no terminal signal reaches it, before the `RUN`'s
+/// profile. The command waits on the go pipe until the init has given all
+/// that up, so a failure of the init's own steps (`Step::Init`, or the
+/// filter's step) comes before the command ran, unless a filter around
+/// ranikust fakes the command's `read` of that pipe (threat model, section
+/// 6). The init reaps every process that reparents to it; when the command exits, it writes the
 /// command's wait status on the status pipe and exits, and the kernel kills
 /// the rest, as when the command was PID 1 itself.
 fn run_init(
@@ -2736,7 +2736,7 @@ mod tests {
         /// this process's `stat` and its real parent, so that unfiltered it
         /// holds.
         #[test]
-        fn an_eintr_on_a_read_after_the_profile_fails_instead_of_looping() {
+        fn an_eintr_on_a_read_after_a_filter_fails_instead_of_looping() {
             let stat = rustix::fs::open(
                 c"/proc/self/stat",
                 OFlags::RDONLY | OFlags::CLOEXEC,

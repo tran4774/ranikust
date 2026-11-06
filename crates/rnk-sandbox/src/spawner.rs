@@ -166,8 +166,9 @@ impl Sandbox {
         }
         // After the replay, which no profile error may hold up.
         runner.seccomp = Some(SeccompProfile::docker_default()?);
-        // Only where the full sandbox runs (ADR-0110); after the last step
-        // that can fail, so a failed start leaves no cgroup to undo.
+        // Only where the full sandbox runs (ADR-0110); after the profile,
+        // whose error then leaves no cgroup to undo, and a later failure
+        // drops the tree, which unnests it.
         if caps.is_some() {
             runner.cgroups = cgroup::Tree::start();
         }
@@ -3552,7 +3553,8 @@ mod tests {
     /// profile faking it and the command's `setsid` still runs the `RUN`,
     /// under its profile. The same calls faked by a filter around ranikust
     /// (one on this thread stands in) fail the `RUN` before the command
-    /// runs, never leaving it as PID 1 without an init.
+    /// runs, never leaving it as PID 1 without an init, and so does a
+    /// filter install refused there, as the filter's step.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_profile_cannot_fake_the_steps_before_it() {
@@ -3579,8 +3581,9 @@ mod tests {
                  else echo environ=refused; fi";
             let defaults = format!("{:016x}", caps::docker_default_mask());
             // `clone(SIGCHLD, ...)`, the init's fork of the command, and
-            // `setsid`, which the command, its init a session leader, would
-            // otherwise fail without the parent check.
+            // `setsid`: after a faked fork the init goes on as the command,
+            // and its second `setsid`, as a session leader, would fail and
+            // hide a missing parent check.
             let fork = format!(
                 "{},{}",
                 errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs())),
@@ -3632,8 +3635,9 @@ mod tests {
             let mut got = Vec::new();
             for (name, rules, network) in cases {
                 if name.starts_with("capset") {
-                    // Last: this thread keeps them. Root's `execve` adds the
-                    // inheritable set to the permitted one.
+                    // Last of the profile cases: this thread keeps them.
+                    // Root's `execve` adds the inheritable set to the
+                    // permitted one.
                     let sets = rustix::thread::capabilities(None).unwrap();
                     rustix::thread::set_capabilities(
                         None,
@@ -3667,6 +3671,24 @@ mod tests {
                 println!("{name}: {st:?}\n{text}");
                 got.push((name, st.map(|s| s.success()).ok(), text));
             }
+            // An install refused around ranikust, on a thread of its own so
+            // that this one can still install the next filter: the init and
+            // the command each fail at it, before the command runs.
+            let (refused, refused_text) = std::thread::scope(|s| {
+                s.spawn(|| {
+                    filter_this_thread(&errno_rule("seccomp", libc::EPERM, None));
+                    runner.seccomp = Some(SeccompProfile::docker_default().unwrap());
+                    let out = top.join("out-install-refused");
+                    let mut spec =
+                        RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+                    output_to(&out, &mut spec);
+                    let st = runner.run(spec, None, |job| clone_child(job, parent));
+                    (st, fs::read_to_string(&out).unwrap_or_default())
+                })
+                .join()
+                .unwrap()
+            });
+            println!("install, refused around ranikust: {refused:?}\n{refused_text}");
             // Last, as this thread keeps it: the fork faked around ranikust.
             // The `RUN` fails, and the command never runs, so it writes
             // nothing.
@@ -3688,6 +3710,16 @@ mod tests {
             if !parent_checked || !forked_text.is_empty() {
                 wrong.push(format!(
                     "fork, faked around ranikust: {forked:?}, output {forked_text:?}"
+                ));
+            }
+            let install_failed = matches!(
+                &refused,
+                Err(Error::Setup { step: Step::Seccomp, source })
+                    if source.raw_os_error() == Some(libc::EPERM)
+            );
+            if !install_failed || !refused_text.is_empty() {
+                wrong.push(format!(
+                    "install, refused around ranikust: {refused:?}, output {refused_text:?}"
                 ));
             }
             for (name, ok, text) in &got {

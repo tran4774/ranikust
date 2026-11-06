@@ -209,22 +209,22 @@ What a change here must keep, with where it lives:
   checks that its parent is the init (`Step::Init`), an `execve` (trying no
   next candidate) or `execveat` back without an error fails as `Step::Exec`
   (`EPROTO`), a blocking `waitpid` back with 0 or an error, `EINTR` included,
-  ends the init (125), an `EINTR` on a read of the init's or the command's fails the `RUN`
-  (only a filter gives it, possibly forever), `last_errno` reads errno 0 as
-  `EPROTO`, and the pipe, capability, death-signal, `fstatfs` and
-  `RLIMIT_NOFILE` reads go through `libc` into values set beforehand. A failed
-  install is `Step::Seccomp`, whose message points to `--seccomp=unconfined`,
-  or `Step::NetworkFilter`. `Direct` gets no filter and joins its keyring
-  after its capability drop, before `setsid`. The default profile refuses
-  `keyctl`, `add_key` and `request_key`; root's user and persistent keyrings
-  stay reachable under `--seccomp=unconfined`, a profile file that allows
-  them, and in `Direct`. After a refused join, whatever the errno, the child
-  looks ranikust's session keyring up before the profile
-  (`KeyringJoin::Required`): found, the `RUN` fails as `Step::KeyringRefused`;
-  the lookup refused too, it goes on. A profile that refuses all three calls
-  (`SeccompProfile::refuses_keyrings`) and the probe skip the lookup
-  (`Optional`); `Direct` goes on after `EPERM`, `ENOSYS` or `EACCES` and fails
-  as `Step::SessionKeyring` otherwise.
+  ends the init (125), an `EINTR` on a read of the init's or the command's
+  fails the `RUN` (only a filter gives it, possibly forever), `last_errno`
+  reads errno 0 as `EPROTO`, and the pipe, capability, death-signal,
+  `fstatfs` and `RLIMIT_NOFILE` reads go through `libc` into values set
+  beforehand. A failed install is `Step::Seccomp`, whose message points to
+  `--seccomp=unconfined`, or `Step::NetworkFilter`. `Direct` gets no filter
+  and joins its keyring after its capability drop, before `setsid`. The
+  default profile refuses `keyctl`, `add_key` and `request_key`; root's user
+  and persistent keyrings stay reachable under `--seccomp=unconfined`, a
+  profile file that allows them, and in `Direct`. After a refused join,
+  whatever the errno, the child looks ranikust's session keyring up before
+  the profile (`KeyringJoin::Required`): found, the `RUN` fails as
+  `Step::KeyringRefused`; the lookup refused too, it goes on. A profile that
+  refuses all three calls (`SeccompProfile::refuses_keyrings`) and the probe
+  skip the lookup (`Optional`); `Direct` goes on after `EPERM`, `ENOSYS` or
+  `EACCES` and fails as `Step::SessionKeyring` otherwise.
 - **Capabilities, for every `USER`:** bounding set cut to Docker's 14
   defaults, ambient cleared, effective/permitted the defaults the process has,
   inheritable empty. The drops go up to the kernel's last capability; an
@@ -446,12 +446,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   profile that refuses the keyring join; each `RUN` in a keyring of its own;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
-  `--seccomp` refuses; compiled for the test) leave the
-  bounding set, the session, the init's dump flag, ADR-0033's filter and
-  the capability sets as they are and the umask at 022 whatever
-  ranikust's; one faking the init's fork and `setsid` runs the `RUN`, the
-  fork being before the profile, while the same filter around ranikust
-  (on the test thread) fails it;
+  `--seccomp` refuses; compiled for the test) leave the bounding set, the
+  session, the init's dump flag, ADR-0033's filter and the capability sets
+  as they are and the umask at 022 whatever ranikust's; one faking the
+  init's fork and `setsid` runs the `RUN`, the fork being before the
+  profile, while the same filter around ranikust (on the test thread)
+  fails it, and a filter install refused around ranikust fails it as
+  `Step::Seccomp` before the command runs;
   `a_refused_keyring_join_fails_a_run_whose_profile_allows_keyctl`: under
   filters on the test thread, while the keyring can be looked up, a join
   refused with `EPERM` fails `unconfined`, not `default`, and one refused with
@@ -464,12 +465,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   cgroups a `RUN` made below its own up to the limits (`EAGAIN` past them,
   whatever it wrote to the limit files it could see) removed, a failed
   probe, a planted `run-` name, a scope without `Delegate=` and the ssh
-  session's, and what a
-  `RUN` under Docker's default profile reads in `/proc/self/cgroup` and
-  `/proc/1/cgroup`, refused a user namespace, the same for a later
-  unconfined `RUN`, with Docker's capabilities alone and its init with
-  none; the `RUN`s that make a user namespace, there and below, are
-  unconfined, as `--seccomp=unconfined`;
+  session's, and what a `RUN` under Docker's default profile reads in
+  `/proc/self/cgroup` and `/proc/1/cgroup`, with Docker's capabilities
+  alone and its init with none, and the same reads for a later unconfined
+  `RUN`; the default profile refuses the first a user namespace, which an
+  unconfined `RUN` gets (the control); the `RUN`s that make a user
+  namespace, there and below, are unconfined, as `--seccomp=unconfined`;
   `run_cgroup_limits_on_a_cgroupfs_without_nsdelegate`, the same `RUN`s with
   the VM's cgroupfs remounted without `nsdelegate`, where the limits hold
   too;

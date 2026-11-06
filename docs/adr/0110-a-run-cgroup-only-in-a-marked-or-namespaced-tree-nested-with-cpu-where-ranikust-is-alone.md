@@ -308,12 +308,34 @@ After red-team's tests of these cgroups, the maintainer answered one more on
   same; a root `RUN` held Docker's capabilities alone and its init none.
   Under 22.04 the limits held as above, with `nsdelegate` and without, and
   every cgroup and process went with the `RUN`.
+- [measured] T1 (rootless podman `--privileged` on the development host,
+  kernel 7.0, nested), 2026-11-06, after the merge with ADR-0109. With the
+  profile installed before the init's fork, the `run-cgroup` case's first
+  `RUN` failed at its cgroup namespace (`EPERM`), which the profile
+  refuses. With the fork first and the namespace before the command's
+  filters, the `run-cgroup` case passed, in the kaniko leg too, and in
+  `run-cgroup-escape` a `RUN` under the default profile read `0::/` and
+  `0::/../init` and was refused a user namespace (`unshare`, `EPERM`),
+  while an unconfined one made one and its cgroupfs showed only its own
+  cgroup.
+- [measured] T2 in the test VM under both images (Ubuntu 24.04, kernel 6.8;
+  22.04, kernel 5.15), 2026-11-06, `cgroup_tests.rs`, after the same
+  change: in a delegated scope and in a `--privileged` container, nested
+  and single, a `RUN` under the default profile read `0::/` and its init's
+  cgroup as before and was refused a user namespace. Under 22.04 unconfined
+  `RUN`s met the limits as above (31 levels, 4062 more nested and 4063
+  single, `EAGAIN` past them), `nsdelegate` or not.
 
 ## More Information
 
 Refines
 [ADR-0083](0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
-(a). Implemented in `rnk-sandbox` (`cgroup.rs`) and described in
+(a), and the order of
+[ADR-0109](0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md):
+the init's fork comes before the seccomp filters, which the init and the
+command each install, the command after its cgroup namespace, as that ADR's
+rule (every step that need not come after the profile comes before it)
+asks. Implemented in `rnk-sandbox` (`cgroup.rs`) and described in
 [`design/sandbox.md`](../design/sandbox.md). Task 8
 ([#79](https://github.com/tran4774/ranikust/issues/79)) checks the rootless case:
 a user with a delegated tree. Revisit if the W1–W3 cost of nesting, measured

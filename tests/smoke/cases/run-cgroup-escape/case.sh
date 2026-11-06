@@ -30,7 +30,8 @@ case_run() {
   line="$(sed -n 's/^setns-userns=//p' <<<"$r")"
   case "$line" in
   open:* | setns:*) ;;
-  unshare:* | setgroups:* | uid_map:* | gid_map:*) echo "  $CASE: no user namespace for an unconfined RUN here ($line): its setns check did not run" ;;
+  unshare:*) echo "  $CASE: an unconfined RUN is refused a user namespace too ($line): its setns check did not run, and the default profile's refusal is not told apart here" ;;
+  setgroups:* | uid_map:* | gid_map:*) echo "  $CASE: no user namespace for an unconfined RUN here ($line): its setns check did not run" ;;
   *) fail "setns-userns recorded $line: $r" ;;
   esac
   line="$(sed -n 's/^mount-ns=//p' <<<"$r")"

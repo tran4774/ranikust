@@ -389,7 +389,8 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
     let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
     runner.use_cgroups(tree);
     // Docker's default profile, as a build has without `--seccomp`: the
-    // command makes its cgroup namespace before it, which it refuses.
+    // command makes its cgroup namespace before this profile, which refuses
+    // that.
     runner.seccomp = Some(SeccompProfile::docker_default().unwrap());
     let running = Running::default();
     let run = |script: &str, out: &Path| {
@@ -494,12 +495,16 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
     // the limits hold, and all go with the RUN (ADR-0110). Unconfined, as
     // `--seccomp=unconfined`, from here on: this measures what a RUN that
     // may make a user namespace can do, which the default profile refuses.
+    // Its `unshare -U`, step 1's, is the control: unconfined it runs, even
+    // where AppArmor leaves the namespace no capability.
     runner.seccomp = None;
     let third = dir.join(format!("run-{pid}-3"));
     let out = top.join("limits.out");
     // `running` stays cancelled.
     let running_again = Running::default();
-    let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), LIMITS.into()]);
+    let script =
+        format!("if unshare -U true; then echo userns=ok; else echo userns=refused; fi; {LIMITS}");
+    let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
     output_to(&out, &mut spec);
     let status = runner
         .run(spec, Some(&running_again), |job| clone_child(job, parent))
@@ -511,6 +516,7 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     );
     assert_eq!(status.code(), Some(0), "{text}");
+    assert!(text.contains("userns=ok\n"), "{text}");
     if text.contains("limits=ran") {
         let field = |key: &str| {
             text.split_whitespace()
