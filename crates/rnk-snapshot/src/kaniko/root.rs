@@ -1463,10 +1463,12 @@ impl KanikoRoot {
         if self.open {
             return Err(Error::State("a layer is open"));
         }
-        clear_views(&self.shared)?;
         let shared = Arc::clone(&self.shared);
         let mut hold = shared.hold();
         self.check_usable(&hold)?;
+        // The step it stands for ends as an instruction does: no view of
+        // another stage outlives it.
+        clear_views(&shared)?;
         let span = tracing::info_span!("rnk_snapshot.apply");
         let _entered = span.enter();
         hold.walked = false;
