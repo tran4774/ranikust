@@ -185,6 +185,67 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
     rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))
 }
 
+/// Guidance where no user namespace with a map can be made for a user
+/// other than root.
+const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
+     its own with an id map: where kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu \
+     23.10 and later), only a program an AppArmor profile allows gets one; otherwise run \
+     ranikust as root";
+
+/// The build's user namespace, entered, and the store opened in it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "`prune --all` (#76) and rootless overlay mode (#79) read it"
+    )
+)]
+pub(crate) struct UsernsSetup {
+    /// Its map, and the maps passed over on the way.
+    pub(crate) userns: rnk_sandbox::BuildUserNamespace,
+    /// The store in the state directory, opened as root of the namespace.
+    pub(crate) store: Store,
+}
+
+/// Enters the build's user namespace and opens the store in it (M2): the
+/// state directory's check first, outside, where its owners read as the
+/// host's ([`crate::statedir::prepare`]); then, for a user other than root,
+/// its subordinate ids ([`crate::subids`]); then
+/// [`rnk_sandbox::enter_build_user_namespace`], which also enters the build's
+/// mount namespace; then [`Store::open`], whose start-up clean-up removes
+/// a dead build's files as root of the namespace, those of subordinate ids
+/// too, which the user outside could not. Logs the map, one uid as such
+/// (ADR-0098). Call while single-threaded, in place of [`enter_namespace`].
+///
+/// # Errors
+///
+/// A [`Refusal`]. A failure once the process is in the namespace is one
+/// too ([`rnk_sandbox::Error::UserNamespaceBroken`]): the process must end.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "`prune --all` (#76) and rootless overlay mode (#79) call it"
+    )
+)]
+pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
+    prepare_state_dir(state_dir)?;
+    let subordinate = crate::subids::lookup(euid);
+    let userns = rnk_sandbox::enter_build_user_namespace(subordinate).map_err(|e| Refusal {
+        kind: Kind::Other,
+        guidance: if euid != 0 && matches!(e, SandboxError::NoUserNamespace { .. }) {
+            NO_USER_NAMESPACE
+        } else {
+            ""
+        },
+        reason: e.to_string(),
+    })?;
+    tracing::info!("ranikust: the build's user namespace: {userns}");
+    let store = open_store(state_dir, state_dir)?;
+    Ok(UsernsSetup { userns, store })
+}
+
 /// Sets overlay mode up for a build whose state directory is `state_dir`,
 /// once [`enter_namespace`] succeeded: the state directory's check
 /// ([`crate::statedir::prepare`]; refused on overlayfs, a container's own

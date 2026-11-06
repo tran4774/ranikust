@@ -578,3 +578,5 @@ fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
         }
     }
 }
+
+mod userns;

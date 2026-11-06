@@ -48,6 +48,7 @@ mod limits;
 mod setup;
 mod startup;
 mod statedir;
+mod subids;
 
 use std::io::Write as _;
 use std::path::Path;
