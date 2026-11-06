@@ -3795,8 +3795,9 @@ mod tests {
 
     /// T2 (ADR-0080): a `RUN`'s command starts only once its init has
     /// finished every step. Under a profile that fails one of the init's
-    /// last steps, or its closes (`close` and `close_range`), the `RUN`
-    /// fails as `Step::Init`, before its command ran, and the command leaves
+    /// last steps, or its closes (`close` and `close_range`, or
+    /// `close_range` and the `close` of one descriptor), the `RUN` fails as
+    /// `Step::Init`, before its command ran, and the command leaves
     /// no mark, which it leaves under a control profile that lets the init
     /// finish. These check the outcome; the go byte itself is checked in
     /// `child.rs`. A profile that refuses `close` alone holds nothing up:
@@ -3828,6 +3829,14 @@ mod tests {
                     format!(
                         "{},{}",
                         errno_rule("close", libc::EPERM, None),
+                        errno_rule("close_range", libc::EPERM, None)
+                    ),
+                ),
+                (
+                    "one close refused",
+                    format!(
+                        "{},{}",
+                        errno_rule("close", libc::EPERM, Some(0)),
                         errno_rule("close_range", libc::EPERM, None)
                     ),
                 ),
@@ -3865,7 +3874,7 @@ mod tests {
             let mut wrong = Vec::new();
             for (name, st, marked, text) in &got {
                 let ok = match *name {
-                    "the init fails" | "closes refused" => {
+                    "the init fails" | "closes refused" | "one close refused" => {
                         marked.is_none()
                             && text.is_empty()
                             && matches!(

@@ -420,8 +420,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   pipe, another byte or a read faked with no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; a refused `close` reported by the closing of every descriptor,
-  after `close_range` was refused too, and nothing left where `close_range`
-  alone is; a refused `umask` after the profile; a faked `setsid`, `pipe2`
+  after `close_range` was refused too, with at most one descriptor more
+  left, or of its listing alone, and nothing left where `close_range` alone
+  is; a refused `umask` after the profile; a faked `setsid`, `pipe2`
   or `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
@@ -453,8 +454,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (ADR-0033's filter); each `RUN` in a keyring of its own, its init under
   the same filters as its command;
   `a_runs_command_starts_only_once_its_init_has_finished`: under a profile
-  that fails one of the init's last steps, or its closes, the `RUN` fails
-  as `Step::Init` and its command leaves no mark, which it leaves under a
+  that fails one of the init's last steps, or its closes (all, or one
+  with `close_range`), the `RUN` fails as `Step::Init` and its command leaves no mark, which it leaves under a
   control profile; a profile refusing `close` alone still starts the
   command, whose status ends the `RUN`;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,

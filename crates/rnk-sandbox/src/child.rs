@@ -659,8 +659,8 @@ fn run_init(
     init_keep_nothing(err, parent, command, args);
     // Every other descriptor goes first, then the error pipe, so that the
     // go byte lets the command go on only once the init holds nothing but
-    // the status pipe; where one may be left, no go, and the error pipe,
-    // still open, says why. After the go, the command's own copy of it says
+    // the status pipe and the go pipe's write end; where one may be left,
+    // no go, and the error pipe, still open, says why. After the go, the command's own copy of it says
     // whether it reached `execve`.
     let go_w = go_w.into_raw_fd();
     let mut keep = [err, go_w, status_w];
@@ -2134,8 +2134,9 @@ fn nofile_bound(hard: bool, cap: u32) -> RawFd {
 
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
 /// passing again until one pass finds none; `false` if the list cannot be
-/// read, or a pass closes none of those it found (each `close` refused),
-/// rather than pass again.
+/// read, a pass closes none of those it found (each `close` refused),
+/// rather than pass again, or the listing's own descriptor cannot be
+/// closed.
 fn close_listed(keep: &[RawFd]) -> bool {
     loop {
         let Ok(dir) = rustix::fs::openat(
@@ -2169,10 +2170,13 @@ fn close_listed(keep: &[RawFd]) -> bool {
                 }
             }
         }
+        // SAFETY: closing the listing's own descriptor, which nothing uses
+        // after this.
+        let own_closed = unsafe { libc::close(dir.into_raw_fd()) } == 0;
         if found == 0 {
-            return true;
+            return own_closed;
         }
-        if closed == 0 {
+        if closed == 0 || !own_closed {
             return false;
         }
     }
@@ -2903,37 +2907,70 @@ mod tests {
         }
 
         /// Closing every descriptor but some reports a `close` refused,
-        /// after `close_range` was too, so the init sends no go; with the
-        /// calls allowed, or `close_range` alone refused, nothing but those
-        /// kept is left. The descriptor limits are lowered first, which
-        /// bounds the last pass, one `close` per number.
+        /// after `close_range` was too, so the init sends no go: of
+        /// descriptors a pass finds, opening at most one more on the way
+        /// (its listing), or of the listing alone, where every other is
+        /// kept. With the calls allowed, or `close_range` alone refused,
+        /// nothing but those kept is left. The soft descriptor limit is
+        /// lowered first, which bounds a pass that would open one each time.
         #[test]
         fn closing_every_descriptor_reports_a_refused_close() {
-            let close = |rule: &str| {
+            // The child exits 0 or with the error's errno; 3 to 8 say what
+            // else went wrong.
+            let close = |rule: &str, keep_all: bool| {
                 let json =
                     format!(r#"{{"defaultAction": "SCMP_ACT_ALLOW", "syscalls": [{rule}]}}"#);
                 let prog = crate::SeccompProfile::faking(json.as_bytes())
                     .unwrap()
                     .program;
                 crate::seccomp::under_filter(&prog, || {
-                    let lim = libc::rlimit {
-                        rlim_cur: 64,
-                        rlim_max: 64,
-                    };
-                    // SAFETY: `setrlimit` reads one `rlimit`; lowering is
-                    // allowed.
-                    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) } != 0 {
-                        return 2;
+                    // SAFETY: `F_GETFD` on a descriptor number only reads.
+                    let is_open = |fd: RawFd| unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0;
+                    // Ascending, as `close_all_except` wants; no allocation
+                    // in a forked child.
+                    let mut open = [0; 256];
+                    let mut n = 0;
+                    for fd in (0..4096).filter(|&fd| is_open(fd)) {
+                        let Some(slot) = open.get_mut(n) else {
+                            return 3;
+                        };
+                        *slot = fd;
+                        n += 1;
                     }
-                    match close_all_except(&[0, 1, 2]) {
-                        Ok(()) => {
-                            let left = (3..64)
-                                // SAFETY: `F_GETFD` on a descriptor number
-                                // only reads.
-                                .filter(|&fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0)
-                                .count();
-                            i32::from(left > 0) * 3
+                    let mut lim = libc::rlimit {
+                        rlim_cur: 0,
+                        rlim_max: 0,
+                    };
+                    // SAFETY: `getrlimit` writes one `rlimit`, `setrlimit`
+                    // reads one; lowering the soft limit is allowed.
+                    let lowered = unsafe {
+                        libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) == 0 && {
+                            lim.rlim_cur = 64;
+                            libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) == 0
                         }
+                    };
+                    if !lowered {
+                        return 4;
+                    }
+                    let keep: &[RawFd] = if keep_all {
+                        open.get(..n).unwrap_or_default()
+                    } else {
+                        // Descriptors for a pass to find.
+                        for _ in 0..3 {
+                            // SAFETY: `dup` makes a new descriptor.
+                            if unsafe { libc::dup(0) } < 0 {
+                                return 5;
+                            }
+                        }
+                        &[0, 1, 2]
+                    };
+                    let count = || (3..64).filter(|&fd| is_open(fd)).count();
+                    let before = count();
+                    match close_all_except(keep) {
+                        Ok(()) if keep_all => 6,
+                        Ok(()) if count() > 0 => 7,
+                        Ok(()) => 0,
+                        Err(_) if count() > before + 1 => 8,
                         Err(e) => e.raw_os_error(),
                     }
                 })
@@ -2944,14 +2981,20 @@ mod tests {
                     libc::EPERM
                 )
             };
-            for (rule, exit) in [
-                (String::new(), 0),
-                (refused(r#""close_range""#), 0),
-                (refused(r#""close", "close_range""#), libc::EPERM),
+            let both = refused(r#""close", "close_range""#);
+            for (rule, keep_all, exit) in [
+                (String::new(), false, 0),
+                (refused(r#""close_range""#), false, 0),
+                (both.clone(), false, libc::EPERM),
+                (both, true, libc::EPERM),
             ] {
-                let status = close(&rule);
+                let status = close(&rule, keep_all);
                 assert!(libc::WIFEXITED(status), "{rule}: status {status:#x}");
-                assert_eq!(libc::WEXITSTATUS(status), exit, "{rule}");
+                assert_eq!(
+                    libc::WEXITSTATUS(status),
+                    exit,
+                    "{rule}, keep all {keep_all}"
+                );
             }
         }
 
