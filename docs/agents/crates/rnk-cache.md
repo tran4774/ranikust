@@ -262,7 +262,13 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   many.
 - Warn on `Miss::Failed`, `Pushed::Failed` and a hit's blob found bad,
   never on `Miss::Expired` (kaniko's expired entry is a plain miss too), and
-  never change the exit status for any of them.
+  never change the exit status for any of them. A blob is found bad as
+  [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) says: a decompression error, a bad tar header, a `--limit`
+  overrun, or a digest or diff ID mismatch. A connection dropped in the
+  middle of a hit is not a bad blob: it is resumed with Range requests, and
+  only when that fails is the entry a miss
+  ([ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md); planned in
+  [#130](https://github.com/tran4774/ranikust/issues/130)).
 - The `LayerCache` futures are not `Send` (the registry client's are not):
   `tokio::spawn` refuses them; drive them with `Handle::block_on`.
 - No cache measurement exists: claim no speed-up before W2 runs.
