@@ -4,23 +4,26 @@
 # without no_new_privs (the `seccomp` case shows the profile among a RUN's
 # filters); a setuid-root program run by another user gets exactly Docker's
 # 14 capabilities and keeps those filters; and the profile never changes a
-# layer: one --reproducible digest
-# without the flag, with --seccomp=unconfined and with an allow-all profile
-# file. In the T1 kaniko leg a RUN runs on the container's `/` under the
-# container's own profile (the `seccomp` case): nothing of ranikust's here.
+# layer: one --reproducible digest without the flag, with
+# --seccomp=unconfined and with an allow-all profile file. In the T1 kaniko
+# leg a RUN runs on the container's `/` under the container's own profile
+# (the `seccomp` case): nothing of ranikust's here.
 
 case_run() {
   if [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; then
     return 0
   fi
-  local procs bg sid seen filters suid f a b c
+  local procs sh bg sid shs seen filters suid f a b c
   build scope >/dev/null
   procs="$(run scope cat /procs)"
+  sh="$(run scope cat /sh)"
   bg="$(run scope cat /bg)"
   sid="$(run scope cat /sid)"
   grep -q '^1 ' <<<"$procs" || fail "no init among the RUN's processes: $procs"
-  awk -v p="$bg" '$1 == p && $2 != p { ok = 1 } END { exit !ok }' <<<"$procs" ||
-    fail "the background process $bg, in the shell's session: $procs"
+  shs="$(awk -v p="$sh" '$1 == p { print $2 }' <<<"$procs")"
+  [ -n "$shs" ] || fail "no shell $sh among the RUN's processes: $procs"
+  awk -v p="$bg" -v s="$shs" '$1 == p && $2 == s && p != s { ok = 1 } END { exit !ok }' <<<"$procs" ||
+    fail "the background process $bg, in the shell's session $shs: $procs"
   awk -v p="$sid" '$1 == p && $2 == p { ok = 1 } END { exit !ok }' <<<"$procs" ||
     fail "the process $sid, in a session of its own: $procs"
   seen="$(cut -d' ' -f3- <<<"$procs" | sort -u)"

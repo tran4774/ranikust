@@ -8,10 +8,12 @@ FROM ${BASE}
 # Every process of the RUN's namespace, its init and processes left in the
 # background or in a session of their own included: pid, session,
 # NoNewPrivs, Seccomp and Seccomp_filters, one line per process; and the
-# pids of the two left running.
-RUN sh -c 'echo $$ > /bg; exec sleep 60' & \
+# pids of the shell and the two it leaves running, waited for at most 10 s.
+RUN echo $$ > /sh; \
+    sh -c 'echo $$ > /bg; exec sleep 60' & \
     setsid sh -c 'echo $$ > /sid; exec sleep 60' & \
-    sleep 1; \
+    i=0; \
+    while [ "$i" -lt 100 ] && ! { [ -s /bg ] && [ -s /sid ]; }; do sleep 0.1; i=$((i + 1)); done; \
     for s in /proc/[0-9]*/status; do \
       awk '/^Pid:/ { p = $2 } /^NSsid:/ { i = $2 } /^(NoNewPrivs|Seccomp|Seccomp_filters):/ { f = f $1 $2 " " } END { if (p != "") print p, i, f }' "$s"; \
     done | sort -n > /procs
