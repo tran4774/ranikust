@@ -64,9 +64,12 @@ check-aarch64:
 #   statx leaves `stx_mnt_id` at 0 (QEMU 10.0 and 10.2), so the mount id
 #   they assert is not seen (a fallback through /proc/self/fdinfo is #95);
 # - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
-#   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`:
+#   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
+#   `the_store_opens_inside_the_user_namespace_or_not_at_all`,
+#   `red_team_the_build_user_namespace_is_whole_or_not_entered`:
 #   qemu-user runs a thread of its own, so the set-up stops at its
-#   single-thread check before the privilege refusal the tests expect;
+#   single-thread check before the privilege refusal or the user namespace
+#   the tests expect;
 # - `the_filter_refuses_what_it_should_and_nothing_else` and the tests of every
 #   `tests::kernel` module: a seccomp filter written for aarch64
 #   syscall numbers cannot be installed in the x86_64 host kernel through
@@ -159,6 +162,8 @@ test-aarch64 *args:
       --skip without_root_the_set_up_refuses_before_touching_the_state_dir
       --skip kaniko_variables_are_not_read
       --skip logging_flags_change_what_is_written
+      --skip setup::tests::userns::the_store_opens_inside_the_user_namespace_or_not_at_all
+      --skip userns::build::tests::red_team_the_build_user_namespace_is_whole_or_not_entered
       --skip seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else
       --skip tests::kernel::)
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then

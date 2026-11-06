@@ -61,7 +61,9 @@ pub fn enter_build_namespace() -> Result<()> {
 /// and `subordinate` from 1 through `newuidmap` and `newgidmap`
 /// ([`crate::IdMap::Newuidmap`]); else one id, its own as 0, with
 /// `setgroups` denied ([`crate::IdMap::OneId`], ADR-0098). The process is
-/// dumpable only while its map is written (ADR-0051).
+/// dumpable only while its map is written (ADR-0051). The map and
+/// `setgroups` returned are read back from `/proc/self` once inside: a map
+/// that gives one id is [`crate::IdMap::OneId`], whichever was written.
 ///
 /// Call before any thread exists, and before any credential is read: each
 /// trial's child is a copy of this process. Afterwards the effective uid is

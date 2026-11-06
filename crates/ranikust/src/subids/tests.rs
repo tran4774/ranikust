@@ -13,13 +13,21 @@ fn range(start: u32, count: u32) -> Option<IdRange> {
 
 #[test]
 fn the_name_is_the_first_entry_of_the_uid() {
-    assert_eq!(user_name(PASSWD_TEXT, 1000), Some("u"));
-    assert_eq!(user_name(PASSWD_TEXT, 1001), Some("v"));
-    assert_eq!(user_name(PASSWD_TEXT, 1002), None);
+    let passwd = PASSWD_TEXT.as_bytes();
+    assert_eq!(user_name(passwd, 1000), Some("u"));
+    assert_eq!(user_name(passwd, 1001), Some("v"));
+    assert_eq!(user_name(passwd, 1002), None);
     assert_eq!(
-        user_name(":x:1002:1002::/:/bin/sh\nbad:x:x:0::/:/\n", 1002),
+        user_name(b":x:1002:1002::/:/bin/sh\nbad:x:x:0::/:/\n", 1002),
         None
     );
+    assert_eq!(user_name(b"plus:x:+1002:1002::/:/bin/sh\n", 1002), None);
+    // The comment field need not be UTF-8; the name must be.
+    assert_eq!(
+        user_name(b"jose:x:1002:1002:Jos\xe9:/:/bin/sh\n", 1002),
+        Some("jose")
+    );
+    assert_eq!(user_name(b"jos\xe9:x:1002:1002::/:/bin/sh\n", 1002), None);
 }
 
 #[test]
@@ -98,12 +106,26 @@ fn an_unreadable_file_is_an_error_and_a_line_not_utf8_is_passed_over() {
     let etc = tempfile::tempdir().unwrap();
     let mut passwd = b"x:x:999:999:Jos\xe9:/:/bin/sh\n".to_vec();
     passwd.extend_from_slice(PASSWD_TEXT.as_bytes());
+    passwd.extend_from_slice(b"jose:x:1003:1003:Jos\xe9:/:/bin/sh\n");
     fs::write(etc.path().join(PASSWD), passwd).unwrap();
-    fs::write(etc.path().join(SUBUID), b"\xff:1:5\nu:100000:65536\n").unwrap();
-    fs::write(etc.path().join(SUBGID), "u:100000:65536\n").unwrap();
+    fs::write(
+        etc.path().join(SUBUID),
+        b"\xff:1:5\nu:100000:65536\njose:200000:65536\n",
+    )
+    .unwrap();
+    fs::write(
+        etc.path().join(SUBGID),
+        "u:100000:65536\njose:200000:65536\n",
+    )
+    .unwrap();
     assert_eq!(
         lookup_in(etc.path(), 1000).map(|s| s.map(|s| s.uids)),
         Ok(range(100_000, 65_536))
+    );
+    // By name, though the user's own comment field is Latin-1.
+    assert_eq!(
+        lookup_in(etc.path(), 1003).map(|s| s.map(|s| s.uids)),
+        Ok(range(200_000, 65_536))
     );
     // A directory where the file should be: read(2) fails with EISDIR,
     // which root's privileges do not lift, as they would a mode.

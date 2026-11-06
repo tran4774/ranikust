@@ -23,8 +23,8 @@ use rustix::thread::UnshareFlags;
 use super::{
     ATTEMPT_DEADLINE, CLOSURE_OK, CLOSURE_REFUSED, DONE, IdMap, NO_MAP, Plan, REAP_GRACE, SLAVE,
     SLAVE_OP, STOPPED, StepFailure, StepResult, SubordinateIds, Supervised, UNSHARE_MOUNT,
-    assemble, enter, enter_mount_namespace, plans, read_records, reap, result_frame, send,
-    supervise, write_all, write_map, write_own,
+    assemble, enter, enter_mount_namespace, map_lines, plans, read_records, reap, result_frame,
+    send, supervise, write_all, write_map, write_own,
 };
 use crate::child;
 use crate::error::{Error, Result, sys_err};
@@ -237,8 +237,12 @@ fn measure(plan: IdMap) -> std::result::Result<(IdMap, bool), StepFailure> {
             .map_err(|e| StepFailure::other(name, format!("cannot be read: {e}")))
     };
     let (uid_map, gid_map, setgroups) = (read("uid_map")?, read("gid_map")?, read("setgroups")?);
-    as_entered(plan, &uid_map, &gid_map, &setgroups)
-        .ok_or_else(|| StepFailure::other("check the map", "its /proc files are unreadable"))
+    as_entered(plan, &uid_map, &gid_map, &setgroups).ok_or_else(|| {
+        StepFailure::other(
+            "check the map",
+            "its /proc files are not as the kernel writes them",
+        )
+    })
 }
 
 /// What a namespace entered with a `plan` map has: one id when its uid or
@@ -264,16 +268,9 @@ fn as_entered(plan: IdMap, uid_map: &str, gid_map: &str, setgroups: &str) -> Opt
 /// How many ids a map's text gives: `None` when a line is not three
 /// numbers, or it gives none.
 fn ids(map: &str) -> Option<u64> {
-    let mut total = 0_u64;
-    for line in map.lines().filter(|l| !l.trim().is_empty()) {
-        let mut fields = line.split_whitespace().map(str::parse::<u32>);
-        let (Some(Ok(_)), Some(Ok(_)), Some(Ok(count)), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return None;
-        };
-        total = total.checked_add(u64::from(count))?;
-    }
+    let total = map_lines(map)?
+        .iter()
+        .try_fold(0_u64, |t, [_, _, count]| t.checked_add(u64::from(*count)))?;
     (total > 0).then_some(total)
 }
 

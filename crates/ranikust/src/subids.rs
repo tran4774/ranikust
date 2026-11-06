@@ -32,22 +32,22 @@ fn lookup_in(etc: &std::path::Path, uid: u32) -> Result<Option<SubordinateIds>, 
     let read = |name: &str| {
         let path = etc.join(name);
         match std::fs::read(&path) {
-            Ok(bytes) => Ok(valid_lines(&bytes)),
+            Ok(bytes) => Ok(bytes),
             // A missing file gives no range: the build maps one uid and says so.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
     };
     let passwd = read(PASSWD)?;
     let name = user_name(&passwd, uid);
-    let (subuid, subgid) = (read(SUBUID)?, read(SUBGID)?);
+    let (subuid, subgid) = (valid_lines(&read(SUBUID)?), valid_lines(&read(SUBGID)?));
     Ok(first_range(&subuid, name, uid)
         .zip(first_range(&subgid, name, uid))
         .map(|(uids, gids)| SubordinateIds { uids, gids }))
 }
 
-/// The lines of `bytes` that are UTF-8: another (a Latin-1 comment field
-/// of `/etc/passwd`) names no one this lookup could match.
+/// The lines of `bytes` that are UTF-8: the name or uid another names is
+/// neither a UTF-8 name nor a decimal uid.
 fn valid_lines(bytes: &[u8]) -> String {
     bytes
         .split(|b| *b == b'\n')
@@ -56,12 +56,14 @@ fn valid_lines(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-/// The name of `uid` in `passwd` (`name:x:uid:...`), its first entry.
-fn user_name(passwd: &str, uid: u32) -> Option<&str> {
-    passwd.lines().find_map(|line| {
-        let mut f = line.split(':');
+/// The name of `uid` in `passwd` (`name:x:uid:...`), its first entry; only
+/// the name and the uid need be UTF-8, not the comment field after them.
+fn user_name(passwd: &[u8], uid: u32) -> Option<&str> {
+    passwd.split(|b| *b == b'\n').find_map(|line| {
+        let mut f = line.split(|b| *b == b':');
         let (name, _, id) = (f.next()?, f.next()?, f.next()?);
-        (!name.is_empty() && id.parse::<u32>().ok()? == uid).then_some(name)
+        let name = std::str::from_utf8(name).ok().filter(|n| !n.is_empty())?;
+        (decimal(std::str::from_utf8(id).ok()?)? == uid).then_some(name)
     })
 }
 

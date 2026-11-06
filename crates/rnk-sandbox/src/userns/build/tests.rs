@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::fs;
 
 use rustix::process::DumpableBehavior;
@@ -477,6 +478,52 @@ fn the_build_user_namespace_of_root_maps_every_id_it_has() {
     );
     assert_eq!((d.uid_map, d.gid_map), (uid_map, gid_map), "{line}");
     assert_eq!(d.setgroups, "allow");
+    assert_eq!(d.passed_over, "");
+}
+
+/// Moves this (forked, single-threaded) process into a user namespace of
+/// its own whose map is its own uid and gid as 0, `setgroups` denied, as
+/// `unshare -r` makes it.
+fn one_id_parent() -> std::result::Result<(), String> {
+    let uid = rustix::process::geteuid().as_raw();
+    let gid = rustix::process::getegid().as_raw();
+    // SAFETY: `NEWUSER` does not unshare the descriptor table; this forked
+    // child is single-threaded.
+    unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWUSER) }
+        .map_err(|e| format!("unshare(CLONE_NEWUSER): {e}"))?;
+    let write = |path: &CStr, text: String| {
+        write_own(path, text.as_bytes()).map_err(|e| format!("write {path:?}: {e}"))
+    };
+    write(c"/proc/self/uid_map", format!("0 {uid} 1\n"))?;
+    write(c"/proc/self/setgroups", "deny".to_owned())?;
+    write(c"/proc/self/gid_map", format!("0 {gid} 1\n"))
+}
+
+/// T1: root of a one-id user namespace, `setgroups` denied, mirrors its
+/// map, which passes: the build's namespace is told as the kernel gives it,
+/// one uid, `setgroups` denied, not as the map planned.
+#[test]
+#[ignore = "T1: default: root of a one-id user namespace in a rootless Podman container enters the build's"]
+fn the_build_user_namespace_below_one_id_is_told_one_uid() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let line = in_subreaper(|| match one_id_parent() {
+        Ok(()) => describe(None),
+        Err(e) => format!("error: {e}"),
+    });
+    measured(&format!("build user namespace below one id: {line}"));
+    let d = Described::parse(&line);
+    check_kept(&d, 0, 0, &line);
+    assert_eq!(
+        (d.outcome.as_str(), d.map.as_str()),
+        ("ok", "one uid"),
+        "{line}"
+    );
+    assert_eq!((d.uid_map.as_str(), d.gid_map.as_str()), ("0 0 1", "0 0 1"));
+    assert_eq!(
+        (d.setgroups.as_str(), d.told_setgroups.as_str()),
+        ("deny", "deny")
+    );
+    // Root's own map, mirrored, is the one that passed.
     assert_eq!(d.passed_over, "");
 }
 

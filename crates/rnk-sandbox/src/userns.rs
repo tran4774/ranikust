@@ -84,8 +84,7 @@ pub enum IdMap {
     /// `newuidmap` and `newgidmap`: the user's own ids as 0 and its
     /// subordinate ranges from 1.
     Newuidmap,
-    /// One id: this process's own uid and gid as 0, written by the
-    /// namespace's process itself.
+    /// One id: this process's own uid and gid as 0.
     OneId,
 }
 
@@ -620,17 +619,28 @@ fn ranges() -> std::result::Result<Plan, StepFailure> {
 /// `inside inside count` for each `inside outside count` line of this
 /// process's own map. `None` when a line is not three numbers.
 fn mirror(map: &str) -> Option<Vec<u8>> {
-    let mut out = String::new();
-    for line in map.lines().filter(|l| !l.trim().is_empty()) {
-        let mut fields = line.split_whitespace().map(str::parse::<u32>);
-        let (Some(Ok(inside)), Some(Ok(_)), Some(Ok(count)), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return None;
-        };
-        out.push_str(&format!("{inside} {inside} {count}\n"));
-    }
+    let out: String = map_lines(map)?
+        .iter()
+        .map(|[inside, _, count]| format!("{inside} {inside} {count}\n"))
+        .collect();
     (!out.is_empty()).then(|| out.into_bytes())
+}
+
+/// The `inside outside count` lines of a map's text, blank ones skipped;
+/// `None` when a line is not three numbers.
+fn map_lines(map: &str) -> Option<Vec<[u32; 3]>> {
+    map.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split_whitespace().map(str::parse::<u32>);
+            match (fields.next(), fields.next(), fields.next(), fields.next()) {
+                (Some(Ok(inside)), Some(Ok(outside)), Some(Ok(count)), None) => {
+                    Some([inside, outside, count])
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// The smallest id other than 0 a map's text gives the namespace.

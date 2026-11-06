@@ -22,9 +22,9 @@ fn private_tempdir() -> tempfile::TempDir {
 /// Marks the test binary [`alone`] starts.
 const ALONE: &str = "RNK_USERNS_TEST_ALONE";
 
-/// Whether the test `name` of this module runs alone in its process. Else
-/// runs it again so, in this test binary with one test thread, asserts it
-/// passed and returns false. There, the only other
+/// Whether the test `name` of this module runs alone in its process; if
+/// not, starts this test binary again for that test only, with one test
+/// thread, asserts it passed and returns false. There, the only other
 /// thread is libtest's main one, waiting for the test's result: at
 /// [`in_child`]'s fork, no other thread is inside mimalloc, which has no
 /// fork handler.
@@ -60,13 +60,22 @@ fn alone(name: &str) -> bool {
 }
 
 /// This process's user and mount namespaces.
-fn namespaces() -> String {
-    ["user", "mnt"]
-        .map(|ns| {
-            fs::read_link(format!("/proc/self/ns/{ns}"))
-                .map_or_else(|e| e.to_string(), |p| p.display().to_string())
-        })
-        .join(" ")
+fn namespaces() -> [String; 2] {
+    ["user", "mnt"].map(|ns| {
+        fs::read_link(format!("/proc/self/ns/{ns}"))
+            .map_or_else(|e| e.to_string(), |p| p.display().to_string())
+    })
+}
+
+/// Whether both namespaces differ from `before` (`new`), neither does
+/// (`same`), or only one (`partly`).
+fn moved(before: &[String; 2]) -> &'static str {
+    let now = namespaces();
+    match (now[0] == before[0], now[1] == before[1]) {
+        (false, false) => "new",
+        (true, true) => "same",
+        (true, false) | (false, true) => "partly",
+    }
 }
 
 /// Runs `f` in a forked child, as `user` (uid, gid) when given; the child
@@ -86,8 +95,8 @@ fn in_child(user: Option<(u32, u32)>, f: impl FnOnce() -> String) -> String {
     let pid = unsafe { libc::fork() };
     if pid == 0 {
         // SAFETY: plain system calls in this child, which uses or drops no
-        // owner of what they close. Best effort: another test's pipe left
-        // open here would only hold that test until this child ends.
+        // owner of what they close. Best effort: a descriptor left open
+        // stays open only until this child ends.
         unsafe {
             libc::syscall(libc::SYS_close_range, 3_u32, keep - 1, 0_u32);
             libc::syscall(libc::SYS_close_range, keep + 1, u32::MAX, 0_u32);
@@ -151,8 +160,8 @@ fn dead_build(state: &Path, user: Option<(u32, u32)>) -> String {
             Ok(s) => s,
             Err(r) => return format!("refused\t{r}"),
         };
-        if namespaces() == before {
-            return "error: the namespaces did not change".to_owned();
+        if moved(&before) != "new" {
+            return format!("error: the namespaces: {}", moved(&before));
         }
         let id = set_up.store.build_id().to_owned();
         let dirs = [
@@ -180,8 +189,8 @@ fn next_build(state: &Path, user: Option<(u32, u32)>, id: &str) -> String {
             Ok(s) => s,
             Err(r) => return format!("refused\t{r}"),
         };
-        if namespaces() == before {
-            return "error: the namespaces did not change".to_owned();
+        if moved(&before) != "new" {
+            return format!("error: the namespaces: {}", moved(&before));
         }
         let left: Vec<String> = ["builds", "tmp"]
             .iter()
@@ -218,11 +227,7 @@ fn the_store_opens_inside_the_user_namespace_or_not_at_all() {
         match enter_user_namespace(&state) {
             Ok(s) => {
                 let owner = fs::metadata(s.store.state_dir()).map(|m| m.uid());
-                let changed = if namespaces() == before {
-                    "same"
-                } else {
-                    "new"
-                };
+                let changed = moved(&before);
                 let line = format!(
                     "ok\t{}\t{changed}\t{}\t{owner:?}",
                     s.userns.map,
@@ -238,11 +243,7 @@ fn the_store_opens_inside_the_user_namespace_or_not_at_all() {
                 r.reason,
                 r.guidance,
                 r.kind,
-                if namespaces() == before {
-                    "same"
-                } else {
-                    "new"
-                }
+                moved(&before)
             ),
         }
     });
