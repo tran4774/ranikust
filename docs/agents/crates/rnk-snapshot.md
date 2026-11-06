@@ -221,7 +221,8 @@ that found a bug stay as its regression test.
   links into a lower layer a regular file, a file swapped in since the walk
   refused, and the property `apply(base layer, diff layer) == tree` on random
   trees. `tests/memory.rs`: a deep chain is refused past `PATH_MAX` with
-  linear memory (T15).
+  linear memory, and a cached layer that decompresses to 64 MiB is applied
+  with a few MiB of heap, per stage and on `/` (T15).
 - **T0, shared root** (`src/kaniko/root/tests.rs`, `tests/keep.rs`): a kept
   stage read after the root is reused, only the paths asked for, a stage
   `FROM` a kept one, `COPY --from` image unpacked beside the root, the `/`
