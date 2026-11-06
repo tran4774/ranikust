@@ -524,12 +524,15 @@ impl OutputDir {
 
     /// Writes the file `name` through a temporary file in this directory,
     /// renamed over `name` once `write` succeeded and the data is synced: a
-    /// reader never sees a partial file. Only a regular file at `name` is
-    /// replaced (a hardlink's other names keep the old content), and only
-    /// where nothing is otherwise (`RENAME_NOREPLACE`): a symlink, a device
-    /// node (`/dev/null`), a FIFO, a socket or a directory is refused,
-    /// before anything is written, and so is a directory on procfs, sysfs
-    /// or another filesystem of kernel interfaces. The temporary file has a
+    /// reader never sees a partial file. A regular file at `name` is
+    /// replaced (a hardlink's other names keep the old content); otherwise
+    /// the file goes only where nothing is (`RENAME_NOREPLACE`): a symlink,
+    /// a device node (`/dev/null`), a FIFO, a socket or a directory is
+    /// refused, before anything is written, and so is a directory on
+    /// procfs, sysfs or another filesystem of kernel interfaces. Anything
+    /// but a directory a writer of this directory swaps in after the last
+    /// look, a symlink included, may still be replaced, but is never
+    /// followed or opened. The temporary file has a
     /// random name and is made exclusively (`O_CREAT | O_EXCL`) with `mode`
     /// (less the umask); it is removed on every error.
     ///
