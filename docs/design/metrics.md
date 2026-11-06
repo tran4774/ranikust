@@ -269,7 +269,7 @@ Stage wait = `rnk_sched.stage` − `rnk_builder.stage`, per stage record.
 
 | Span | Fields | Why |
 |---|---|---|
-| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next`: the regular files it holds and their content bytes, plus its heredoc bodies' bytes; kaniko's `cache.key`. |
+| `rnk_cache.key` | `files_hashed`, `bytes_hashed` | One step's key, from `KeyInputs::new` to `CacheKey::next` or `next_entry`: the regular files it holds and their content bytes, plus its heredoc bodies' bytes; kaniko's `cache.key`. |
 | `rnk_cache.lookup` | `hit` | One lookup, from its manifest request to its answer; misses (absent, expired or failed) = `count` − `hit`; kaniko's `cache.lookup_hit`/`_miss`. |
 | `rnk_cache.push` | `bytes_out` | One entry's push, beside the build: the layer and config bytes uploaded (not held or mounted) plus the manifest's; `rnk_registry.push_blob` and `push_manifest` nested; the caller parents it to `rnk_sched.run`; kaniko's `cache.push`. |
 

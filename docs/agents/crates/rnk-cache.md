@@ -55,8 +55,9 @@ pub struct CacheKey;                 // version + SHA-256; Copy, Eq, Hash; versi
 impl CacheKey {
     pub fn root(base: Option<&Digest>, platform: &Platform) -> Self; // platform manifest digest; None: FROM scratch
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self; // instruction expanded, with its flags
+    pub fn next_entry(&self, instruction: &str, inputs: KeyInputs) -> EntryId; // the same key, with the inputs' encoding
 }
-pub struct EntryId;                  // new(CacheKey, Encoding); key(), encoding(); Copy, Eq, Hash
+pub struct EntryId;                  // only from next_entry; key(), encoding(); Copy, Eq, Hash
 impl EntryId { pub fn tag(&self) -> String; } // "rnk-v<version>-<64 hex>"; the annotations and layer type come from it too
 pub struct KeyInputs;                // new(&Encoding) opens rnk_cache.key; arg, env, user, workdir, shell, network, mount, copy_from, file, heredoc(name, body)
 pub enum Network { Default, None, Host }               // BuildKit's: the RUN's --network, else none under the build's --network=none; never what a mode gives
@@ -164,6 +165,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   does, is [inferred].
 - One `EntryId` gives the tag, the annotations a hit must carry and its
   layer type: a lookup never takes a layer of another encoding than its tag.
+  Its encoding is the one its key's inputs were made for: only
+  `CacheKey::next_entry` makes one.
 - A hit is an entry of [the entry form](../../design/cache-and-store.md#cache-entries)
   naming this key, version and encoding, younger than `--cache-ttl`;
   anything else under the tag is `Miss::Failed`. Every document read is
@@ -192,8 +195,9 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   shows that a key ignores the order of build arguments, environment and
   files, the chunking of content and any mtime the header does not carry,
   that changing any one field changes it, that field boundaries cannot
-  shift, that every encoding field changes the tag, and that a key ignores
-  the compression and its level (`a_key_ignores_the_compression_and_its_level`).
+  shift, that every encoding field changes the tag, that a key ignores the
+  compression and its level (`a_key_ignores_the_compression_and_its_level`),
+  and that an entry names the encoding its inputs were made for.
   `golden.rs` also pins the encoding annotation, and `src/entry.rs` what a
   push writes (a manifest and config in canonical bytes, the layer type per
   compression); `src/error.rs` checks excerpts and that a refusal names an
@@ -220,8 +224,8 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
 ## Metrics
 
 - `rnk_cache.key` (`files_hashed`, `bytes_hashed`): one per step, from
-  `KeyInputs::new` to `CacheKey::next`; the regular files the key holds and
-  their bytes, plus the bytes of its heredoc bodies.
+  `KeyInputs::new` to `CacheKey::next` or `next_entry`; the regular files
+  the key holds and their bytes, plus the bytes of its heredoc bodies.
 - `rnk_cache.lookup` (`hit`): one per lookup, a miss of any kind included.
 - `rnk_cache.push` (`bytes_out`): one per push; the layer and config bytes
   uploaded (not held or mounted) plus the manifest's
@@ -249,8 +253,6 @@ The tag is `rnk-v<version>-` followed by the tag hash in lower-case hex.
   share a path: paths are relative to the build context.
 - The instruction holds no heredoc body: `rnk-builder` adds each one (of a
   `RUN`, `#!` or not, a `COPY` or an `ADD`) through `KeyInputs::heredoc`.
-- Give `KeyInputs::new` and `EntryId::new` the same `Encoding`, or a
-  `--reproducible` hit can carry other mtimes.
 - Give `BuiltLayer` the platform `CacheKey::root` was given: nothing can
   check it (the key is a hash), and another would misname the entry's
   layer.

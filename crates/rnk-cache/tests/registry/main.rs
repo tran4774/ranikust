@@ -13,14 +13,14 @@ use base64::Engine as _;
 use fake::{Auth, FakeRegistry, Fault};
 use hyper::Method;
 use rnk_cache::{
-    ENCODING_ANNOTATION, Encoding, EntryId, Error, KEY_ANNOTATION, KEY_VERSION, LayerCache, Lookup,
-    Miss, Pushed, Refusal, RegistryCache, Source, TimePolicy, VERSION_ANNOTATION,
+    ENCODING_ANNOTATION, Encoding, Error, KEY_ANNOTATION, KEY_VERSION, LayerCache, Lookup, Miss,
+    Pushed, Refusal, RegistryCache, Source, TimePolicy, VERSION_ANNOTATION,
 };
 use rnk_oci::{Compression, MediaType, Reference, Timestamp};
 use rnk_registry::{Credentials, PushOutcome};
 use serde_json::{Value, json};
 use support::{
-    GZIP, REPO, WEEK, cache, client, entry, hit, key, layer, options, repository, store,
+    GZIP, REPO, WEEK, cache, client, entry, entry_as, hit, key, layer, options, repository, store,
     store_manifest, stored,
 };
 
@@ -232,7 +232,8 @@ async fn an_entry_under_another_encoding_is_a_miss() {
     let (manifest, _) = stored(&registry, &gzip.tag());
     let bytes = serde_json::to_vec(&manifest).unwrap();
     for encoding in others {
-        let other = EntryId::new(*gzip.key(), encoding);
+        let other = entry_as("RUN make", &encoding);
+        assert_eq!(other.key(), gzip.key());
         let lookup = cache.lookup(&other).await;
         assert!(matches!(lookup, Lookup::Miss(Miss::Absent)), "{lookup:?}");
         // The gzip entry copied under the other encoding's tag names the

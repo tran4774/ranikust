@@ -213,8 +213,8 @@ mod tests {
         };
         let mut platform = Platform::new("linux", "arm64");
         platform.variant = Some("v8".to_owned());
-        let key = CacheKey::root(None, &platform).next("RUN make", KeyInputs::new(&encoding));
-        let entry = EntryId::new(key, encoding);
+        let root = CacheKey::root(None, &platform);
+        let entry = root.next_entry("RUN make", KeyInputs::new(&encoding));
         let diff_id = Digest::from_sha256_bytes(&[1; 32]);
         let created = Timestamp::parse_rfc3339("2026-11-07T01:02:03.5Z").unwrap();
         let config = config(&diff_id, &platform, created).unwrap();
@@ -260,13 +260,11 @@ mod tests {
             Compression::Zstd,
         ]
         .map(|c| {
-            let entry = EntryId::new(
-                key,
-                Encoding {
-                    compression: c,
-                    ..encoding
-                },
-            );
+            let encoding = Encoding {
+                compression: c,
+                ..encoding
+            };
+            let entry = root.next_entry("RUN make", KeyInputs::new(&encoding));
             layer_type(&entry).as_str().to_owned()
         });
         assert_eq!(

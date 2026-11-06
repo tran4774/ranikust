@@ -2,8 +2,8 @@
 //! or a tag hashes, or how, fails here.
 
 use rnk_cache::{
-    CacheKey, CopyFrom, Encoding, EntryId, File, FileKind, KEY_VERSION, KeyInputs, Mount, Network,
-    Sharing, TimePolicy,
+    CacheKey, CopyFrom, Encoding, File, FileKind, KEY_VERSION, KeyInputs, Mount, Network, Sharing,
+    TimePolicy,
 };
 use rnk_oci::{Compression, Digest, Platform};
 
@@ -137,16 +137,20 @@ fn copy_keys() {
     );
 }
 
+/// Each tag's key holds `full`'s inputs made for the tag's encoding, as
+/// an entry's always does.
 #[test]
 fn tags() {
-    let key = full().key(&root());
+    let spec = full();
     let tag = |compression, level, times| {
         let encoding = Encoding {
             compression,
             level,
             times,
         };
-        EntryId::new(key, encoding).tag()
+        root()
+            .next_entry(&spec.instruction, spec.encoded_as(&encoding))
+            .tag()
     };
     golden(
         "gzip tag",
@@ -156,7 +160,7 @@ fn tags() {
     golden(
         "zstd reproducible tag",
         &tag(Compression::Zstd, 3, TimePolicy::Clamped { epoch: 0 }),
-        "rnk-v2-4c0be455b28f53568ffe1ff1292acf63d1ae87fb3af1ef0bb8524cbabe788193",
+        "rnk-v2-d2b40a1044e564a8368137771e1dbc91191e0e44dbbf88f4a5bacfbfd8c2cc44",
     );
     golden(
         "uncompressed tag",
@@ -167,7 +171,7 @@ fn tags() {
                 epoch: 1_700_000_000,
             },
         ),
-        "rnk-v2-fab985be670211bd2a2ace5aaf692beec32ffdcc269d9624bf0797ef9715cfc9",
+        "rnk-v2-5f48e7cee48743c54873ffe8fb557c3fa933d8f1af017e65137a77bad6d5a7b5",
     );
 }
 

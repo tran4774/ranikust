@@ -6,9 +6,10 @@
 //!
 //! A chain starts at [`CacheKey::root`]; each step's key is
 //! [`CacheKey::next`] of the previous one, over the step's expanded
-//! instruction and its [`KeyInputs`]. An [`EntryId`] pairs a key with the
-//! layer's [`Encoding`]: the tag, the entry's annotations and its layer
-//! type all come from it, so a hit was encoded with this build's settings.
+//! instruction and its [`KeyInputs`]. [`CacheKey::next_entry`] gives the
+//! step's [`EntryId`] instead: its key with the [`Encoding`] the inputs
+//! were made for. The tag, the entry's annotations and its layer type all
+//! come from it, so a hit was encoded with this build's settings.
 //! File content is hashed by a [`ContentHasher`] from bytes the caller
 //! reads. A [`LayerCache`] lookup or push returns a value, never an error:
 //! a cache that fails is a miss or a warning.

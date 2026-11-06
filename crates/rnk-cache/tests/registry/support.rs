@@ -60,12 +60,19 @@ pub(crate) fn cache(registry: &FakeRegistry, ttl: Duration) -> RegistryCache {
 
 /// A step's key, told apart by `instruction`.
 pub(crate) fn key(instruction: &str) -> CacheKey {
-    let root = CacheKey::root(None, &Platform::new("linux", "amd64"));
-    root.next(instruction, KeyInputs::new(&GZIP))
+    *entry(instruction).key()
 }
 
+/// The entry of [`key`]'s step, in gzip.
 pub(crate) fn entry(instruction: &str) -> EntryId {
-    EntryId::new(key(instruction), GZIP)
+    entry_as(instruction, &GZIP)
+}
+
+/// The entry of [`key`]'s step encoded as `encoding`: the step holds no
+/// file, so its key is the same under every encoding.
+pub(crate) fn entry_as(instruction: &str, encoding: &Encoding) -> EntryId {
+    let root = CacheKey::root(None, &Platform::new("linux", "amd64"));
+    root.next_entry(instruction, KeyInputs::new(encoding))
 }
 
 /// A gzip layer of `content` (the cache never decodes it), its diff ID

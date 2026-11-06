@@ -66,7 +66,8 @@ impl CacheKey {
     }
 
     /// The key of the step after `self`: `instruction` is the step's text
-    /// after variable expansion, with its flags.
+    /// after variable expansion, with its flags. The key names no encoding:
+    /// [`next_entry`](Self::next_entry) gives the step's entry.
     #[must_use]
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self {
         let mut c = Canonical::new("rnk-cache step");
@@ -78,6 +79,17 @@ impl CacheKey {
         Self {
             version: KEY_VERSION,
             hash: c.finish(),
+        }
+    }
+
+    /// The entry of the step after `self`: the key [`next`](Self::next)
+    /// gives, with the encoding `inputs` were made for.
+    #[must_use]
+    pub fn next_entry(&self, instruction: &str, inputs: KeyInputs) -> EntryId {
+        let encoding = inputs.encoding();
+        EntryId {
+            key: self.next(instruction, inputs),
+            encoding,
         }
     }
 
@@ -106,6 +118,10 @@ impl fmt::Debug for CacheKey {
 /// lookup checks and the layer it accepts all name one encoding
 /// ([ADR-0113]).
 ///
+/// Only [`CacheKey::next_entry`] makes one, with the encoding the key's
+/// inputs were made for: a key that left mtimes out never names an entry
+/// of `--reproducible` layers, nor the reverse.
+///
 /// [ADR-0113]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntryId {
@@ -114,13 +130,6 @@ pub struct EntryId {
 }
 
 impl EntryId {
-    /// The entry of `key`'s layer encoded as `encoding`: the encoding the
-    /// step's [`KeyInputs::new`] was given.
-    #[must_use]
-    pub fn new(key: CacheKey, encoding: Encoding) -> Self {
-        Self { key, encoding }
-    }
-
     /// The step's key.
     #[must_use]
     pub fn key(&self) -> &CacheKey {

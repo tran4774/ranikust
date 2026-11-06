@@ -160,7 +160,7 @@ pub struct PlanInput<'a> { pub graph: &StageGraph, pub stages: &[Stage], pub ima
     pub threads: NonZeroUsize }                          // threads hashing context files; no key depends on it
 pub struct PlanImage<'a> { pub digest: &Digest, pub config: &ImageConfig }  // a FROM or COPY --from image: platform manifest digest, config
 pub struct StageKeys;                                   // root(), base_stage(), steps() -> &[Option<StepKey>], final_key()
-pub struct StepKey { pub key: CacheKey, pub reads_stage: Option<usize> }  // a COPY --from=<stage>: a miss when that stage runs (ADR-0114)
+pub struct StepKey { pub entry: EntryId, pub reads_stage: Option<usize> }  // entry: the key with the plan's encoding; a COPY --from=<stage>: a miss when that stage runs (ADR-0114)
 ```
 
 - Fail closed: a step the build refuses (the Phase 5 features, `ONBUILD`
