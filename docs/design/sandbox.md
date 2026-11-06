@@ -363,10 +363,12 @@ The steps, in order:
    - The init keeps the death signal of step 1, installs its filters (step
      4), drops every capability, names itself `ranikust-init`, checks the
      death signal is still armed and the parent alive, and closes every
-     descriptor but the status pipe's write end and the go pipe's (where a
-     `close` is refused, after `close_range` was, that fails the `RUN` as
-     `Step::Init`). Last, it writes the go byte on the go pipe and closes
-     its end.
+     descriptor but the status pipe's write end and the go pipe's, the
+     error pipe last (where a `close` is refused, after `close_range` was,
+     that fails the `RUN` as `Step::Init`, its command killed, after one
+     refused `close` per descriptor number up to ranikust's hard
+     `RLIMIT_NOFILE`, at most 2^20). Last, it writes the go byte on the go
+     pipe and closes its end.
    - The command goes on only on that byte, never on the end of the pipe:
      the end (`EPIPE`, a read a filter around ranikust faked with no error
      included), another byte (`EPROTO`) or an error fails the `RUN` as

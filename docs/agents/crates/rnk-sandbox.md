@@ -420,8 +420,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   pipe, another byte or a read faked with no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; a refused `close` reported by the closing of every descriptor,
-  after `close_range` was refused too; a refused `umask` after the profile; a faked `setsid`, `pipe2` or
-  `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
+  after `close_range` was refused too, and nothing left where `close_range`
+  alone is; a refused `umask` after the profile; a faked `setsid`, `pipe2`
+  or `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
   overwrites that stack).
@@ -433,8 +434,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (PID 2 under `ranikust-init`; the init under the command's filters; host
   name; capability sets `a80425fb` with empty inheritable and ambient;
   `nodev` root and `/dev`; read-only `/proc/sys` and `/dev/null`; masked
-  kernel files; no terminal; only stdio descriptors; no stub in the layer); `sealed-exe`: a `RUN` reaches no
-  thread of ranikust's or its init's (ADR-0101). Not yet: the fallbacks.
+  kernel files; no terminal; only stdio descriptors; no stub in the
+  layer); `sealed-exe`: a `RUN` reaches no thread of ranikust's or its
+  init's (ADR-0101). Not yet: the fallbacks.
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`); `a_device_node_planted_as_a_journal_is_never_opened`

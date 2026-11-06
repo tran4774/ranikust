@@ -657,14 +657,23 @@ fn run_init(
     };
     drop(go_r);
     init_keep_nothing(err, parent, command, args);
-    // Nothing is left to report on the error pipe: the command's own copy
-    // says whether it reached `execve`. Every other descriptor goes first,
-    // so that the go byte lets the command go on only once the init holds
-    // nothing but the status pipe; where one may be left, no go. The error
-    // pipe is still open then, as nothing could close it.
+    // Every other descriptor goes first, then the error pipe, so that the
+    // go byte lets the command go on only once the init holds nothing but
+    // the status pipe; where one may be left, no go, and the error pipe,
+    // still open, says why. After the go, the command's own copy of it says
+    // whether it reached `execve`.
     let go_w = go_w.into_raw_fd();
-    if let Err(e) = close_all_except(&[go_w.min(status_w), go_w.max(status_w)]) {
+    let mut keep = [err, go_w, status_w];
+    keep.sort_unstable();
+    if let Err(e) = close_all_except(&keep) {
         kill_and_fail(err, command, Step::Init, e);
+    }
+    // `close_range` first: a profile may refuse `close` alone.
+    // SAFETY: plain syscalls on a descriptor this process holds.
+    let closed = unsafe { libc::syscall(libc::SYS_close_range, err, err, 0u32) } == 0
+        || unsafe { libc::close(err) } == 0;
+    if !closed {
+        kill_and_fail(err, command, Step::Init, last_errno());
     }
     send_go(go_w);
     let status = reap_until(command);
@@ -1996,8 +2005,8 @@ fn send_ready(chan: RawFd, fd: Option<RawFd>) {
 
 /// Closes every descriptor except `keep`, from 0, as [`close_all_except`].
 fn close_all_but(keep: RawFd) {
-    // Before any filter of the `RUN`'s: only one around ranikust could
-    // refuse both calls, a limit [`close_all_except`] accepts.
+    // Before the `RUN`'s filters: only a filter around ranikust makes this
+    // fail, a limit `close_all_except` lists.
     let _ = close_all_except(&[keep]);
 }
 
@@ -2053,11 +2062,10 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
 /// `/proc/self/fd` is there; a filter around ranikust that answers
 /// `close_range` with success without running it goes unnoticed, as no
 /// call here checks that the descriptors are gone (a `RUN`'s profile
-/// cannot answer so, ADR-0109); and in the init, under a profile that
-/// refuses `close_range` and `close`, `close_listed` counts attempts, not
-/// successes, so it passes again, leaking its own directory descriptor each
-/// time, until `openat` fails at `RLIMIT_NOFILE`, before the last pass
-/// returns the error (threat model, section 6).
+/// cannot answer so, ADR-0109); and a filter around ranikust that refuses
+/// both calls leaves descriptors open in the callers that run before the
+/// `RUN`'s filters, which do not act on the error; only the init, under
+/// the `RUN`'s profile, does.
 fn close_all_except(keep: &[RawFd]) -> Result<(), Errno> {
     let mut ok = true;
     let mut next: u32 = 0;
@@ -2126,7 +2134,8 @@ fn nofile_bound(hard: bool, cap: u32) -> RawFd {
 
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
 /// passing again until one pass finds none; `false` if the list cannot be
-/// read.
+/// read, or a pass closes none of those it found (each `close` refused),
+/// rather than pass again.
 fn close_listed(keep: &[RawFd]) -> bool {
     loop {
         let Ok(dir) = rustix::fs::openat(
@@ -2141,6 +2150,7 @@ fn close_listed(keep: &[RawFd]) -> bool {
             return false;
         }
         let own = dir.as_raw_fd();
+        let mut found = 0;
         let mut closed = 0;
         let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
         let mut entries = RawDir::new(&dir, &mut buf);
@@ -2152,13 +2162,18 @@ fn close_listed(keep: &[RawFd]) -> bool {
                 && !keep.contains(&fd)
                 && fd != own
             {
+                found += 1;
                 // SAFETY: closing a listed descriptor number.
-                unsafe { libc::close(fd) };
-                closed += 1;
+                if unsafe { libc::close(fd) } == 0 {
+                    closed += 1;
+                }
             }
         }
-        if closed == 0 {
+        if found == 0 {
             return true;
+        }
+        if closed == 0 {
+            return false;
         }
     }
 }
@@ -2889,9 +2904,9 @@ mod tests {
 
         /// Closing every descriptor but some reports a `close` refused,
         /// after `close_range` was too, so the init sends no go; with the
-        /// calls allowed, nothing but those kept is left. The descriptor
-        /// limits are lowered first, which bounds the passes over
-        /// `/proc/self/fd` that each leak one under the refusal.
+        /// calls allowed, or `close_range` alone refused, nothing but those
+        /// kept is left. The descriptor limits are lowered first, which
+        /// bounds the last pass, one `close` per number.
         #[test]
         fn closing_every_descriptor_reports_a_refused_close() {
             let close = |rule: &str| {
@@ -2923,11 +2938,17 @@ mod tests {
                     }
                 })
             };
-            let refused = format!(
-                r#"{{"names": ["close", "close_range"], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}"#,
-                libc::EPERM
-            );
-            for (rule, exit) in [(String::new(), 0), (refused, libc::EPERM)] {
+            let refused = |names: &str| {
+                format!(
+                    r#"{{"names": [{names}], "action": "SCMP_ACT_ERRNO", "errnoRet": {}}}"#,
+                    libc::EPERM
+                )
+            };
+            for (rule, exit) in [
+                (String::new(), 0),
+                (refused(r#""close_range""#), 0),
+                (refused(r#""close", "close_range""#), libc::EPERM),
+            ] {
                 let status = close(&rule);
                 assert!(libc::WIFEXITED(status), "{rule}: status {status:#x}");
                 assert_eq!(libc::WEXITSTATUS(status), exit, "{rule}");
