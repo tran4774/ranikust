@@ -744,9 +744,9 @@ const GO: u8 = b'G';
 /// the pipe ends and reports that (`Step::Init`, `EPIPE`), not the write's
 /// error, as the error pipe is closed by then; the init reaps it as any
 /// command. Where the pipe cannot end either (`close_range` and `close`
-/// refused), the init ends (125) rather than leave both waiting. A command already gone fails only the write:
-/// the init, PID 1 of its namespace, gets no `SIGPIPE` it has no handler
-/// for.
+/// refused), the init ends (125) rather than leave both waiting. A command
+/// already gone fails only the write: the init, PID 1 of its namespace,
+/// gets no `SIGPIPE` it has no handler for.
 fn send_go(go_w: RawFd) {
     // SAFETY: `go_w` is open in this process until the `close` below.
     let sent = matches!(
@@ -2065,7 +2065,8 @@ fn close_all_except(keep: &[RawFd]) {
         Listed::Unreadable | Listed::Refused(_) => {
             let limit = nofile_bound(true, 1 << 20);
             for fd in (0..=limit).filter(|fd| !keep.contains(fd)) {
-                // A closed number fails with `EBADF`; nothing to act on.
+                // Best effort before the `RUN`'s filters; the init checks
+                // its own closing.
                 let _ = close_raw(fd);
             }
         }
@@ -2079,7 +2080,10 @@ fn close_all_except(keep: &[RawFd]) {
 /// errno, whatever that is: in this single-threaded process a listed
 /// descriptor is open, so even `EBADF` is a refusal. Where the list cannot
 /// be read or does not shrink, `close_range`'s errno. There is no pass over
-/// every number: the cost is bounded by the descriptors open.
+/// every number: the cost is bounded by the descriptors open. A
+/// `close_range` answered with success is trusted, which only a filter
+/// around ranikust can fake (ADR-0109); a `close` so faked is caught by
+/// the pass that does not shrink.
 fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
     let Err(range) = close_gaps(keep) else {
         return Ok(());
@@ -2093,10 +2097,13 @@ fn close_all_except_checked(keep: &[RawFd]) -> Result<(), Errno> {
 
 /// `close_range` over every gap of `keep` (sorted as for
 /// [`close_all_except`]); the first error, after every gap was tried.
+/// Only for a forked child that ends in `_exit` or `execve`, as the other
+/// two below: none of them asks whether an `OwnedFd` holds what it closes.
 fn close_gaps(keep: &[RawFd]) -> Result<(), Errno> {
     let mut first = None;
     let mut range = |from: u32, to: u32| {
-        // SAFETY: plain syscall on a descriptor range.
+        // SAFETY: a plain syscall; the child drops no owner of a descriptor
+        // it closes before it ends.
         if unsafe { libc::syscall(libc::SYS_close_range, from, to, 0u32) } != 0 {
             first.get_or_insert(last_errno());
         }
@@ -2118,7 +2125,7 @@ fn close_gaps(keep: &[RawFd]) -> Result<(), Errno> {
 /// `close` as the kernel answers it, through `syscall`: musl's `close`
 /// turns `EINTR` into success.
 fn close_raw(fd: RawFd) -> Result<(), Errno> {
-    // SAFETY: closing a descriptor number.
+    // SAFETY: as in `close_gaps`.
     if unsafe { libc::syscall(libc::SYS_close, fd) } == 0 {
         Ok(())
     } else {
@@ -2130,7 +2137,7 @@ fn close_raw(fd: RawFd) -> Result<(), Errno> {
 /// refuses `close`, else with `close`, whose error it returns.
 fn close_one(fd: RawFd) -> Result<(), Errno> {
     let n = u32::try_from(fd).map_err(|_| Errno::BADF)?;
-    // SAFETY: plain syscall on a one-descriptor range.
+    // SAFETY: as in `close_gaps`.
     if unsafe { libc::syscall(libc::SYS_close_range, n, n, 0u32) } == 0 {
         return Ok(());
     }
@@ -2184,7 +2191,8 @@ enum Listed {
 /// Closes every descriptor `/proc/self/fd` lists except those in `keep`,
 /// passing again until a pass finds none; each `close`, the listing's
 /// included, counts only as the kernel answers it ([`close_raw`]), and the
-/// first refused one ends it.
+/// first refused one ends it. A pass that finds no fewer descriptors than
+/// the one before ends it too, as [`Listed::Unreadable`].
 fn close_listed(keep: &[RawFd]) -> Listed {
     let mut before = usize::MAX;
     loop {

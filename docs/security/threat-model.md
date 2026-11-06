@@ -298,12 +298,13 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   A filter around ranikust, which the operator's runtime installs and
   ranikust does not control, may still fake one, for ranikust's own calls
   and every step of the `RUN`'s set-up. The child checks what it can: a
-  faked fork of the init, read of the init's go byte, `execve`, `execveat`
-  or blocking `waitpid` fails the `RUN`, and a read goes into a value set
-  beforehand. The other steps
-  trust the answer, such as the capability cut, the command's session and
-  `USER` switch and the `PATH` search. Docker's default profile fakes no
-  call.
+  faked fork of the init, read of the init's go byte, `close` in the
+  init's closing (a pass over `/proc/self/fd` that does not shrink),
+  `execve`, `execveat` or blocking `waitpid` fails the `RUN`, and a read
+  goes into a value set beforehand. The other steps trust the answer, such
+  as the capability cut, the init's `close_range`, the command's session
+  and `USER` switch and the `PATH` search. Docker's default profile fakes
+  no call.
 - A `RUN`'s seccomp profile rule that refuses particular values of an
   argument may not catch every way of passing them. ranikust accepts this
   as a residual risk ([ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),

@@ -420,10 +420,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   pipe, another byte or a read faked with no error, and the init's go byte
   sent, or the pipe ended without it, or the init ended where neither can
   be done; the init's closing: a refused `close` reported with its errno,
-  `EBADF` and `EINTR` included (also run for the musl target), with at most
-  the pass's listing left open, or of the listing alone; a pass that does
-  not shrink ends it; nothing left where `close_range` alone is refused; a refused `umask` after the profile; a faked `setsid`, `pipe2`
-  or `fstatfs`, a faked or refused `prlimit64`; the last two on a stack filled
+  `EBADF` and `EINTR` included (also run for the musl target), whether
+  there are descriptors to close (at most the pass's listing left open) or
+  only the listing; a pass that does not shrink ends it; nothing left where
+  `close_range` alone is refused; a refused `umask` after the profile; a
+  faked `setsid`, `pipe2` or `fstatfs`, a faked or refused `prlimit64`; the
+  last two on a stack filled
   beforehand, which shows an unwritten buffer in a debug build only; these
   test the helpers, not their call sites, whose `/proc/self/fd` opening
   overwrites that stack).
@@ -457,8 +459,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   that fails one of the init's last steps, or its closes (all, or one
   with `close_range`, refused with `EPERM` or `EBADF`), the `RUN` fails as
   `Step::Init` with that errno and its command leaves no mark, which it
-  leaves under a control profile; a profile refusing `close` alone still starts the
-  command, whose status ends the `RUN`;
+  leaves under a control profile; a profile refusing `close` alone still
+  starts the command, whose status ends the `RUN`;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
   `--seccomp` refuses; compiled for the test) leave the bounding set, the

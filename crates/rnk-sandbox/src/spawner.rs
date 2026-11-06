@@ -3798,11 +3798,11 @@ mod tests {
     /// last steps, or its closes (`close` and `close_range`, or
     /// `close_range` and the `close` of one descriptor, whatever the
     /// errno), the `RUN` fails as `Step::Init` with that errno, before its
-    /// command ran, and the command leaves no mark, which it leaves under a control profile that lets the init
-    /// finish. These check the outcome; the go byte itself is checked in
-    /// `child.rs`. A profile that refuses `close` alone holds nothing up:
-    /// the command starts on the byte, not on the end of the pipe, and the
-    /// `RUN` ends with its status.
+    /// command ran, and the command leaves no mark, which it leaves under a
+    /// control profile that lets the init finish. These check the outcome;
+    /// the go byte itself is checked in `child.rs`. A profile that refuses
+    /// `close` alone holds nothing up: the command starts on the byte, not
+    /// on the end of the pipe, and the `RUN` ends with its status.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_runs_command_starts_only_once_its_init_has_finished() {
