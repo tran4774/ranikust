@@ -181,8 +181,8 @@ request (`ADR-0088`).
    session runs `just prune-worktrees`: every agent worktree carries its
    own `target/` of several GB, and 32 left behind once held about 125 GB.
 
-What agents may do (`ADR-0087` D1, amended by `ADR-0093`, until the
-maintainer changes it):
+What agents may do (`ADR-0087` D1, amended by `ADR-0093` and `ADR-0112`,
+until the maintainer changes it):
 
 | Without asking | Only when the maintainer says so |
 |---|---|
@@ -228,7 +228,11 @@ ignores.
   --no-preserve-root`; `cargo publish`; force pushes (also a `+<ref>`
   refspec), `--mirror` and every tag push; `gh release
   create`/`delete`/`edit`/`upload`, `gh issue delete`, `gh repo
-  delete`/`rename`/`archive`/`deploy-key`; whatever prints or hands out the
+  delete`/`rename`/`archive`/`deploy-key` (by their `gh` spelling); a `gh
+  api` with `-X`/`--method` `DELETE`, a GraphQL `delete…` mutation, a `gh
+  api` write to `releases` and any `gh api` naming `refs/tags`
+  (`ADR-0112`; they refuse a few reads too, and the other `gh api` forms of
+  the commands above still run); whatever prints or hands out the
   `gh` token, and reading `~/.config/gh/`, `~/.docker/config.json`, the
   Podman `auth.json` files and `~/.ssh` (with `rg` too), since they would
   land in the transcript; executing `tests/vm/runner.sh` (reading it stays
@@ -241,31 +245,33 @@ ignores.
   repository, and `rg --pre`.
 - **Left to the session's permission mode:** every command the allow and
   deny lists do not name (`cargo run`/`add`/`install`, `docker`, `podman`,
-  the push of a named feature branch, `gh issue create`, a `gh api`
-  read…).
-- **The rule alone, no pattern or prompt:** the right-hand column above,
-  whatever command does it: `gh pr ready` and `merge`, a push to `main`,
-  `git tag`, any `gh api` write, `gh repo edit`, `gh
-  secret`/`variable`/`ruleset`/`workflow`, `gh issue transfer`, `gh label
-  edit`/`delete`, `gh auth` changes, `gh run delete`, `gh cache delete`. The
-  agent asks the maintainer in the conversation (`ADR-0112`); GitHub's
-  `main` ruleset and the `release` environment's reviewer do not stop the
-  maintainer's account. The rule alone also covers replying to or closing
-  other people's issues and pull requests (`gh issue comment`/`close`, `gh pr
-  comment`/`close` look the same for anyone's); which issues an agent opens;
-  when an agent adds `ci:full` (`ADR-0095`: GitHub cannot tell who
-  labelled); the allowed read-only `gh` commands taking a URL or `-R`, which
-  can read another repository or another host; and any command wrapped in
-  another (`bash -c`, a script, an alias) or spelled differently
-  (`--'config'`, `git -C . fetch <url>`), which no pattern sees.
+  the push of a named feature branch, `gh issue create`, a `gh api` read,
+  and the former ask commands outside the next bullet: `gh workflow`, `gh
+  issue transfer`, `gh label edit`/`delete`, `gh auth` changes, `gh run
+  delete`, `gh cache delete`, the `gh api` writes of D1's left column
+  such as a commit status or a sub-issue…).
+- **The rule alone, no pattern (and no prompt under `bypassPermissions`):**
+  what the right-hand column above names: `gh pr ready` and `merge`, a push
+  to `main`, creating or pushing a tag, `gh repo
+  edit`/`secret`/`variable`/`ruleset`, and a `gh api` write that does one of
+  these (a merge, a tag, a repository setting, a ruleset, an environment;
+  `ADR-0112`). The agent asks the maintainer in the conversation; GitHub's
+  `main` ruleset, the `release tags` ruleset and the `release`
+  environment's reviewer do not stop the maintainer's account. The rule alone also covers
+  replying to or closing other people's issues and pull requests (`gh issue
+  comment`/`close`, `gh pr comment`/`close` look the same for anyone's);
+  which issues an agent opens; when an agent adds `ci:full` (`ADR-0095`:
+  GitHub cannot tell who labelled); the allowed read-only `gh` commands
+  taking a URL or `-R`, which can read another repository or another host;
+  and any command wrapped in another (`bash -c`, a script, an alias) or
+  spelled differently (`--'config'`, `git -C . fetch <url>`), which no
+  pattern sees.
 
 The patterns are guardrails, not a boundary: they match command text, and
 agents use the maintainer's `gh` account, so GitHub does not tell them
 apart. The boundary would be a bot identity with its own permissions
 (`ADR-0087`), the Claude Code sandbox, or a `PreToolUse` hook that parses
-argv; that is a follow-up for the maintainer. There is no ask list because
-an `ask` rule prompts in every mode, `bypassPermissions` included, and
-`settings.local.json` cannot lift a rule of the project file (`ADR-0112`).
+argv; that is a follow-up for the maintainer. No ask list (`ADR-0112`).
 
 ## Claude Code
 

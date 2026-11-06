@@ -335,6 +335,7 @@ AI coding tools are welcome; the repository ships instructions for them
   [ADR-0087](docs/adr/0087-work-flows-through-github-issues-pull-requests-and-a-project.md)
   as amended by
   [ADR-0093](docs/adr/0093-agents-ask-rules-are-tightened-guardrails-and-agents-may-open-question-and-bug-issues.md)
+  and [ADR-0112](docs/adr/0112-the-agents-ask-rules-are-dropped-and-gh-api-deletes-and-release-writes-are-denied.md)
   and label what they open `agent`.
 - **Write the description yourself**, for a reader who never saw your
   session. Do not paste conversation logs.
