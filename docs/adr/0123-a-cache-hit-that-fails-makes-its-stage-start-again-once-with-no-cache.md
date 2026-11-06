@@ -171,9 +171,9 @@ recommended":
   extractor does and applies its `tar-header` limit
   ([ADR-0079](0079-resource-limits-with-a-limit-flag.md)); `rnk-snapshot` gets no
   tar parser of its own. Only a failure while writing makes the stage start again
-  from its base: an entry refused under the base-layer rules in the root, and any
-  failure while extracting a blob already in the store (that blob is never
-  spooled). The new base empties `/`, as between stages, and the restart follows
+  from its base: an entry refused under the base-layer rules in the root, a full
+  disk or another I/O error, and any failure while extracting a blob already in
+  the store (that blob is never spooled). The new base empties `/`, as between stages, and the restart follows
   1. No hit is decompressed one more time. The check is not built:
   [#174](https://github.com/tran4774/ranikust/issues/174).
 
