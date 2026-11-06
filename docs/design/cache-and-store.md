@@ -147,17 +147,28 @@ under `volatile` is never trusted after a crash.
 
 ## Prune
 
-Not built. Phase 3 plans a minimal `ranikust prune --all` that empties a
-rootless state directory inside the user namespace and refuses when root runs
-it ([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
-the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
-entries by total size and by age. Both forms open the store as a build does
-(state-directory checks, the `.ranikust-state` marker), so they refuse a
-directory ranikust did not make; they take the same locks as a build and never
-remove an entry a running build uses (the mechanism is
-[#76](https://github.com/tran4774/ranikust/issues/76)'s, in Phase 3; decided by
+`ranikust prune --all` (Phase 3,
+[ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md))
+empties the state directory of a user other than root, files of
+subordinate ids included, so the user can then remove it. In order: root
+is refused (euid 0 in any user namespace, a container's root included),
+naming Phase 5's `prune`; a state directory that does not exist is left so;
+then, as a build, the state directory's checks outside and the build's
+user namespace; in it, `Store::prune_all`. That takes the state
+directory's `flock` exclusive without waiting, as an anonymous store does,
+and holds it to the end: every build holds it shared for its life, so
+`prune --all` removes nothing while any build runs there (it says so and
+exits 1), and a build that starts meanwhile is refused. It refuses a
+non-empty directory without a regular `.ranikust-state` file, deletes by
+descriptor (no symlink followed, no mount crossed), removes the marker last
+so that a prune cut short can run again, and names what it could not
+remove. It creates nothing, not even the marker of an empty directory.
+
+The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
+entries by total size and by age, as a build opens the store, taking the
+same locks, and never removing an entry a running build uses: decided by
 [ADR-0122](../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
-not built yet: a shared `flock` on each entry a build uses, and the entry's
+not built yet (a shared `flock` on each entry a build uses, and the entry's
 marker mtime as its last use). The defaults are BuildKit's tiers, aging by last
 use ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
 mounts and contexts after 48 h unused beyond 512 MB, anything after 60 days

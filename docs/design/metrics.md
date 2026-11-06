@@ -145,6 +145,7 @@ gets the code.
 |---|---|---|
 | `ranikust.run` | | The whole process, already emitted. Parent of everything; `meta.wall_ns` adds metrics set-up. |
 | `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
+| `ranikust.prune` | | The `prune` subcommand: the state directory's checks, the build's user namespace and `rnk_store.prune` inside it (ADR-0105). |
 | `ranikust.setup` | | Mount namespace, the state directory's checks (ADR-0050), the kaniko-mode root, store open, probes, spawner start: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
 | `ranikust.probe_userns` | `passes` | `--mode=auto` as root, inside `ranikust.setup`: the user-namespace probe, reported only (#74); `passes` when every step a `RUN` there needs and the overlay mount in the namespace worked; its start-up cost. |
@@ -203,7 +204,7 @@ No span per HTTP request or body chunk.
 | `rnk_store.lock` | `contended` | A per-digest lock that may block; total time is lock wait; concurrent builds and stages sharing the store (`ADR-0007`). |
 | `rnk_store.fill` | `reused`, `bytes_written`, `bytes_reused` | One entry: published by this build or found ready (`bytes_reused` from its recorded size, else 0); what the store saves (`ADR-0006`). |
 | `rnk_store.cleanup` | `entries_removed` | Start-up clean-up. |
-| `rnk_store.prune` | `entries_removed`, `bytes_freed` | Phase 5. |
+| `rnk_store.prune` | | `ranikust prune --all` emptying the state directory (ADR-0105), `rnk_rootfs.delete` inside, whose fields count what went; Phase 5's `prune` by size and age adds `entries_removed` and `bytes_freed`. |
 
 ### `rnk-sandbox`
 

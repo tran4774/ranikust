@@ -38,14 +38,32 @@ ranikust --context=/workspace --dockerfile=Dockerfile \
 ```
 
 `ranikust build …` is the same thing spelt out. `ranikust version` (or
-`--version`) prints the version, and `ranikust --help` lists every flag. `push`
-and `prune` do not exist yet; there is no `login`: ranikust reads existing
+`--version`) prints the version, and `ranikust --help` lists every flag.
+`ranikust prune --all` empties a state directory ([below](#emptying-the-state-directory)).
+`push` does not exist yet; there is no `login`: ranikust reads existing
 credentials and never writes them.
 
 Before anything else, ranikust checks that the kernel is Linux 5.8 or later
 and that `openat2` and `statx` are allowed, and stops with a message naming
 the kernel if not (see [Choosing where to run it](where-to-run.md)). `version`
 and `--help` work on any kernel.
+
+### Emptying the state directory
+
+```sh
+ranikust prune --all                  # ~/.local/share/ranikust
+ranikust prune --all --state-dir=DIR
+```
+
+As a user other than root, `prune --all` empties the state directory, files a
+build's user namespace left under the user's subordinate ids included, which
+the user cannot remove otherwise; `rmdir` then removes the directory. It
+removes nothing while a build uses the directory, refuses a directory
+ranikust did not make (one without `.ranikust-state`), leaves a missing one
+missing, and prints what it did. Root is refused, a container's root
+included: it removes its state directory with `rm -rf` while no build uses
+it ([ADR-0105]). Without `--all`, `prune` is a usage error: removing by size
+and age comes in Phase 5.
 
 ## kaniko flags it accepts
 
@@ -262,6 +280,7 @@ behaviour, which for most of them is what the flag turns on.
 [ADR-0076]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0076-the-build-context-owner-is-a-lower-trust-principal.md
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
+[ADR-0105]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
 [ADR-0114]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md
 [threat model]: https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks

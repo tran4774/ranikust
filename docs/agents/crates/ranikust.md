@@ -13,9 +13,10 @@ writer) before `unshare`, the probes and the state directory's checks.
 
 ## Owns
 
-- Parsing the subcommands and flags: `build` (the default) and `version` are
-  built; `push` (an OCI layout only, ADR-0052) and `prune` (Phase 5; a minimal
-  `prune --all` in Phase 3, ADR-0105) are later; there is no `login` (ADR-0049).
+- Parsing the subcommands and flags: `build` (the default), `prune` (only
+  `--all` and `--state-dir`; by size and age in Phase 5, ADR-0032) and
+  `version` are built; `push` (an OCI layout only, ADR-0052) is later;
+  there is no `login` (ADR-0049).
   Kaniko's common flags plus `--mode` (ADR-0011, ADR-0023).
 - Process set-up while single-threaded: a private mount namespace when
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
@@ -35,8 +36,16 @@ writer) before `unshare`, the probes and the state directory's checks.
   clean-up removes a dead build's files of subordinate ids. A refusal
   once the process may be in the namespace is `Kind::Broken`, which never
   routes to another mode: the process must end. No build calls it yet:
-  `prune --all` (#76) and rootless overlay mode (#79) will; a user other
-  than root is still refused before the state directory (`NEEDS_ROOT`).
+  rootless overlay mode (#79) will; a user other than root is still
+  refused before the state directory (`NEEDS_ROOT`).
+- `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
+  in any user namespace), naming Phase 5's `prune`; a missing state
+  directory left so; then `setup::enter_user_namespace_for` (the state
+  directory's checks outside, the namespace, no store opened) and
+  `rnk_store::Store::prune_all` in it. Where the user gets no namespace,
+  its guidance (`prune::NO_USER_NAMESPACE`) replaces the build's, which
+  would send the user to root. Prints one line on stdout; a refusal exits
+  1, `prune` without `--all` 2.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -61,9 +70,10 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | Module | What it holds |
 |---|---|
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
-| `cli.rs` | `Command { Build(Box<BuildArgs>), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
+| `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
+| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (the namespace, then `Store::prune_all`), `Pruned`, `summary` |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_user_namespace_for` (without the store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
@@ -288,7 +298,7 @@ kaniko flag or an invalid combination.
 ## Refs
 
 - **Design:** [design/modes-and-detection.md](../../design/modes-and-detection.md) ([probe order](../../design/modes-and-detection.md#probe-order---modeauto), [build root and state directory](../../design/modes-and-detection.md#build-root-and-state-directory), [refusal and guidance](../../design/modes-and-detection.md#refusal-and-guidance)); [design/sandbox.md#process-set-up-once-per-build](../../design/sandbox.md#process-set-up-once-per-build); [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks)
-- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map, reading the map from `/proc/self/uid_map` and `gid_map` in the second case), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (planned, Phase 3: a minimal `prune --all`, refused when root runs it), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (planned, Phase 3: routing in a user namespace ranikust did not create)
+- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map, reading the map from `/proc/self/uid_map` and `gid_map` in the second case), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune --all`, refused when root runs it), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (planned, Phase 3: routing in a user namespace ranikust did not create)
 - **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries the probe outcome), [#4](https://github.com/tran4774/ranikust/issues/4) (where the probe mounts its test overlay); tasks [#38](https://github.com/tran4774/ranikust/issues/38) (`unit_chain`); Phase 3 [#41](https://github.com/tran4774/ranikust/issues/41)
 - **Evidence:** [exp-05 Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (5.1 MB static-pie runs in an empty rootfs), [Q2](../../research/experiments/05-rust-ecosystem.md#q2-allocator) (musl 2.8 Mops/s vs 663-753 with mimalloc, 16 threads)
 - **kaniko:** `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:336-389` (build flags), `:391-410` (registry flags), `:71-119` (env, mirrors), `:177-188` and `:200-202` (output checks), `:240-245` (container check), `:595-633` (context); `cmd/executor/cmd/push.go:40-80`; `login.go:46-60`
@@ -317,7 +327,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
   the overlay probe was left, and only then; `setup/tests/userns.rs`: the
   store opened inside the build's user namespace, as root of it, or the
-  set-up refused before the store, whatever the machine allows), `statedir`
+  set-up refused before the store, whatever the machine allows; `prune
+  --all` emptying a state directory there, or refused before it with the
+  directory unchanged, no process or mount left), `prune` (`--all` and
+  `--state-dir` parsed, `--kaniko-dir` refused; without `--all` a usage
+  error naming Phase 5; root refused before anything, a missing directory
+  left missing, one without the marker refused before the namespace,
+  modes unchanged), `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
@@ -371,7 +387,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `without_root_the_set_up_never_makes_the_default_state_dir` run only
   as a normal user (skipped as root): nothing is created, a `--state-dir`
   is left empty with `ranikust.setup` in the report, and without one
-  `$HOME` is left empty in every `--mode`.
+  `$HOME` is left empty in every `--mode`. `prune`: without `--all` exit 2
+  naming Phase 5; `--all` as root exit 1 naming Phase 5, as a user a
+  missing state directory, the default one included, left missing (exit
+  0); as a user, a directory without the marker refused unchanged, and a
+  state directory emptied or, without a user namespace, refused with
+  `prune`'s guidance and unchanged.
   `red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed`
   (`setup/tests/userns.rs`): the T1 red team's links out as the user who
   ran sudo, with files of subordinate ids, through `newuidmap`'s map;
@@ -411,7 +432,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   owners and modes); `red_team_a_home_of_another_user_gives_no_state_directory`
   (as uid 3000: a `$HOME` of another uid, a sticky one of another uid or
   of its own, a group-writable one and `/` give a default state directory
-  refused with nothing made; its own home gets one, `0700`).
+  refused with nothing made; its own home gets one, `0700`);
+  `prune_all_empties_a_state_directory_of_other_ids` (a build in the
+  namespace leaves files and `0555` directories of ids 1 and 2 in a layer,
+  a cache mount and its own directories, with the links out above:
+  `prune --all`'s emptying, below the root check, leaves the directory
+  empty for `rmdir`, nothing outside changed, no process or mount left);
+  `prune_all_leaves_what_a_running_build_uses` (refused, nothing removed,
+  while another store is open; emptied once it closed);
+  `prune_all_refuses_root_of_a_rootless_container`.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
@@ -451,7 +480,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   user who ran sudo: where AppArmor restricts user namespaces, Ubuntu
   24.04, refused before the store with the guidance; elsewhere, 22.04, a
   dead build's files of subordinate ids, which the user cannot remove
-  outside, removed by the next store in the namespace).
+  outside, removed by the next store in the namespace);
+  `a_regular_user_s_prune_all_empties_a_state_directory_of_subordinate_ids`
+  (the same user's whole `prune --all`: on 24.04 refused with `prune`'s
+  guidance, the directory unchanged; on 22.04, after a build through
+  `newuidmap` with links out, the state directory emptied, then removed
+  by the user with `rmdir`, nothing outside changed, no process or mount
+  left).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
   ranikust build is using / in this container"); `exposure.rs`, profile
