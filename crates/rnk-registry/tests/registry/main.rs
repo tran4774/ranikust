@@ -549,8 +549,8 @@ async fn transient_failures_are_retried() {
 
 /// A 408 or 429 is retried by its status, whatever its body: none, an
 /// error envelope asking for it (`TOOMANYREQUESTS`) or one with another
-/// code; on every request that can get one: manifest and blob pulls,
-/// `find_manifest`, uploads, manifest pushes and token requests.
+/// code; on manifest and blob pulls, `find_manifest`, blob uploads,
+/// manifest pushes and token requests.
 #[tokio::test]
 async fn a_408_or_429_is_retried_whatever_its_body() {
     let envelope =
