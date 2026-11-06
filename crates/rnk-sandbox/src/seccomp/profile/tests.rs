@@ -417,12 +417,11 @@ fn restricts_arguments_by_allowing(json: &[u8]) -> bool {
         })
 }
 
-/// Docker's default profile has the argument-rule form threat model section
-/// 6 advises and gives a `RUN` neither `clone3` nor the `io_uring_*` calls.
-/// The controls show the form check tells the profiles that do otherwise.
+/// Docker's default profile gives a `RUN` neither `clone3` nor the
+/// `io_uring_*` calls, as threat model section 6 advises: each is refused,
+/// with an errno, a trap or a kill.
 #[test]
-fn docker_default_restricts_arguments_by_allowing_values() {
-    assert!(restricts_arguments_by_allowing(DOCKER_DEFAULT));
+fn docker_default_gives_a_run_neither_clone3_nor_io_uring() {
     let p = compile(DOCKER_DEFAULT, &cx((6, 8))).unwrap().program;
     for call in [
         libc::SYS_clone3,
@@ -432,10 +431,18 @@ fn docker_default_restricts_arguments_by_allowing_values() {
     ] {
         let v = verdict(&p, call, a0(0));
         assert!(
-            precedence(v) < precedence(libc::SECCOMP_RET_LOG),
+            precedence(v) < precedence(libc::SECCOMP_RET_USER_NOTIF),
             "call {call}: {v:#x}"
         );
     }
+}
+
+/// Docker's default profile has the argument-rule form threat model section
+/// 6 advises. The controls show the check tells apart the profiles that do
+/// otherwise.
+#[test]
+fn docker_default_restricts_arguments_by_allowing_values() {
+    assert!(restricts_arguments_by_allowing(DOCKER_DEFAULT));
     let with = |default: &str, act: &str, op: &str| {
         format!(
             r#"{{"defaultAction":"{default}","syscalls":[
@@ -2159,9 +2166,10 @@ mod kernel {
                 }
                 let x32_calls = [libc::SYS_getpid, libc::SYS_keyctl, libc::SYS_unshare];
                 for (i, n) in (10..).zip(x32_calls) {
-                    // SAFETY: harmless if they run: an x32 `getpid`, a
-                    // `keyctl` lookup of the session keyring with create 0,
-                    // `unshare(0)`.
+                    // SAFETY: each changes at most the child, or makes the
+                    // user's own keyrings exist, if it runs: an x32
+                    // `getpid`, a `keyctl` lookup of the session keyring
+                    // with create 0, `unshare(0)`.
                     let r = unsafe { libc::syscall(x32 | n, 0, -3, 0) };
                     if !refused(r, libc::EPERM) {
                         return i;
