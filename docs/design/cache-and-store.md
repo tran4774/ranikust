@@ -143,42 +143,66 @@ unused, and size caps of 10% reserved, 20% minimum free, 80% maximum used.
 
 ## Cache keys
 
-Not built (Phase 4). Each instruction's key is a hash over a version field
-and the inputs the instruction depends on, chained to the previous key:
+The keys are built in `rnk-cache`; nothing computes or looks them up during
+a build yet (Phase 4). Each step's key is a SHA-256 over a version field and
+the inputs the step depends on, chained to the previous key (ADR-0005; the
+fields are
+[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)'s,
+BuildKit's):
 
 ```
 key(k) = H(version, key(k-1), instruction, inputs(k))
 ```
 
-- **version:** bumped whenever the algorithm changes; old entries are simply
-  never matched again.
-- **chain root:** the base's platform manifest digest together with the
-  platform.
-- **instruction:** the instruction after variable expansion, with every
-  declared build argument, the environment in effect, `USER`, `WORKDIR` and
-  `SHELL`.
-- **inputs:** for `COPY`/`ADD`, each file's path relative to the source,
-  content, mode, owner after `--chown`, type, link target and
-  `security.capability`, read from the context (after `.dockerignore`), never
-  its mtime, except under `--reproducible`: the mtime of a file older than the
-  epoch; for `COPY --from=<stage>`, the source stage's final key
-  (a forced miss when that stage ran in this build); for `COPY --from=<image>`,
-  that image's platform manifest digest; for `RUN`, its network and its mounts
-  (a secret's id, target, mode and owner, never its value; a cache mount's id
-  and sharing, and a cache mount marked as dropped where
-  [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md) drops
-  it).
-- **never:** the snapshot mode, the host, timestamps (apart from the mtime of a
-  file older than the epoch under `--reproducible`,
-  [ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
-  thread counts.
+- **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
+  entries are simply never matched again.
+- **chain root:** the base image's platform manifest digest (none for
+  `FROM scratch`) and the platform.
+- **instruction:** the instruction after variable expansion, with its flags.
+- **inputs:**
+  - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
+    and `SHELL`;
+  - for a `RUN`, its `--network`, each secret mount's id, target, mode and
+    owner, given or not (below), and each cache mount's id and sharing,
+    marked as dropped where
+    [ADR-0057](../adr/0057-direct-run-heredoc-from-memfd-and-refusals.md)
+    drops it;
+  - for `COPY` and `ADD` from the build context, each file read (after
+    `.dockerignore`): its path relative to the context, content, mode, owner
+    after `--chown`, type, link target, `security.capability` and, under
+    `--reproducible`, its mtime clamped to the epoch, so only the mtime of a
+    file older than the epoch counts;
+  - for `COPY --from=<image>`, the image's platform manifest digest; for
+    `COPY --from=<stage>`, the source stage's final key (a forced miss when
+    that stage ran in this build,
+    [ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md)).
 
-The field list is decided by
-[ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)
-and the input of `COPY --from=<stage>` by
-[ADR-0114](../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md),
-not built yet; the cold, warm and partial cache scenarios of workload W2 test
-them.
+  The instruction holds no heredoc body: `rnk-builder` adds each one (of a
+  `RUN`, `#!` or not, a `COPY` or an `ADD`) through a `KeyInputs` method
+  that task 3 (#126) adds.
+- **never:** the snapshot mode, the host, its users or id maps, the time,
+  an mtime outside `--reproducible`, thread counts, the order of an
+  unordered collection.
+
+`ADD <url>` and `RUN --mount=type=bind` get their keys with those Phase 5
+features. How the fields are written into the hash:
+[the `rnk-cache` card](../agents/crates/rnk-cache.md#byte-form).
+
+A secret mount is keyed whether or not the build is given the secret, as
+BuildKit, which builds the mount from the Dockerfile alone and hashes the
+whole exec op (ADR-0032;
+`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert_secrets.go:14-90`,
+`solver/llbsolver/ops/exec.go:114-179`).
+
+A cached layer is looked up and pushed under a tag, `rnk-v<version>-<hex>`,
+whose `<hex>` hashes the key with the layer's encoding: the compression, its
+level (none for a plain tar), and whether file times are kept or clamped to
+an epoch, with the epoch. A hit was then encoded with this build's settings,
+so under `--reproducible` a warm build gives a cold build's digests when the
+layers it reuses were cached by a build in the same mode (below); builds
+with another encoding share no entries
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
+The cold, warm and partial cache scenarios of workload W2 test the keys.
 
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
 layout. A cache hit adds the layer to the lower stack (overlay mode) or
