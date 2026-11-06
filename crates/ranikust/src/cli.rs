@@ -46,8 +46,26 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Build an image from a Dockerfile (the default without a subcommand).
     Build(Box<BuildArgs>),
+    /// Empty the state directory of a user other than root (`--all`).
+    /// Removing by size and age comes in Phase 5.
+    Prune(PruneArgs),
     /// Print the version.
     Version,
+}
+
+/// The flags of `prune` (ADR-0105). Phase 5 adds the limits by size and
+/// age (ADR-0032), after which `--all` stops being required.
+#[derive(Clone, Debug, Default, Args)]
+pub(crate) struct PruneArgs {
+    /// Remove everything: empty the state directory, inside the build's
+    /// user namespace, while no build uses it. Required until Phase 5.
+    #[arg(long)]
+    pub(crate) all: bool,
+
+    /// The state directory to empty [default: ~/.local/share/ranikust];
+    /// one without ranikust's marker file is refused.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) state_dir: Option<PathBuf>,
 }
 
 impl Cli {

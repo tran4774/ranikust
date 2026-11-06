@@ -975,3 +975,128 @@ fn red_team_whole_root_ignore_paths_are_refused_in_every_spelling_before_any_io(
         }
     }
 }
+
+/// Every path below `dir`, never following a symlink, sorted.
+fn names(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).expect("read_dir") {
+            let p = e.expect("entry").path();
+            if fs::symlink_metadata(&p).expect("lstat").is_dir() {
+                todo.push(p.clone());
+            }
+            out.push(p.strip_prefix(dir).expect("below").to_owned());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `prune` takes `--all` only until Phase 5: without it, a usage error
+/// naming Phase 5, before any state directory is looked at.
+#[test]
+fn prune_without_all_is_a_usage_error_naming_phase_5() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    let out = ranikust(tmp.path(), &["prune", &arg], &[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Phase 5"), "{}", stderr(&out));
+    assert!(!state.exists());
+    let out = ranikust(tmp.path(), &["prune", "--help"], &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    for flag in ["--all", "--state-dir"] {
+        assert!(stdout(&out).contains(flag), "{flag}: {}", stdout(&out));
+    }
+}
+
+/// As root, a container's root included, `prune --all` is refused before
+/// it looks at the state directory, naming Phase 5's `prune`; as a user,
+/// a state directory that does not exist, the default one included, is
+/// left so.
+#[test]
+fn prune_all_refuses_root_and_leaves_a_missing_state_directory() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).expect("home");
+    let state = tmp.path().join("state");
+    let arg = format!("--state-dir={}", state.display());
+    let env = [("HOME", home.to_str().expect("utf-8 temp dir"))];
+    let default = home.join(".local/share/ranikust");
+    for (args, dir) in [
+        (&["prune", "--all"][..], &default),
+        (&["prune", "--all", &arg], &state),
+    ] {
+        let out = ranikust(tmp.path(), args, &env);
+        if running_as_root() {
+            assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+            let err = stderr(&out);
+            assert!(err.contains("refuses root"), "{args:?}: {err}");
+            assert!(err.contains("Phase 5"), "{args:?}: {err}");
+        } else {
+            assert_eq!(out.status.code(), Some(0), "{args:?}: {}", stderr(&out));
+            assert_eq!(
+                stdout(&out),
+                format!("nothing to prune: {} does not exist\n", dir.display())
+            );
+        }
+    }
+    assert!(!state.exists());
+    assert_eq!(names(&home), Vec::<std::path::PathBuf>::new());
+}
+
+/// As a user, `prune --all` refuses a directory without the store's
+/// marker, changing nothing; on a state directory a build left, it either
+/// empties it in the build's user namespace, or, where the machine gives
+/// the user none, says what to do and changes nothing.
+#[test]
+fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // The state directory's checks refuse a parent others may write.
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).expect("chmod");
+    let precious = tmp.path().join("precious");
+    fs::create_dir(&precious).expect("precious");
+    fs::set_permissions(&precious, fs::Permissions::from_mode(0o755)).expect("chmod");
+    fs::write(precious.join("keep"), b"keep").expect("keep");
+    let out = ranikust(tmp.path(), &["prune", "--all", "--state-dir=precious"], &[]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("has no regular file .ranikust-state"), "{err}");
+    assert_eq!(names(&precious), [Path::new("keep")]);
+    assert_eq!(fs::read(precious.join("keep")).expect("keep"), b"keep");
+    let mode = fs::metadata(&precious)
+        .expect("precious")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7777, 0o755);
+
+    let state = tmp.path().join("state");
+    rnk_store::Store::open(&rnk_store::BuildPaths::new(&state, &state))
+        .and_then(rnk_store::Store::close)
+        .expect("a state directory");
+    let before = names(&state);
+    assert!(
+        before.contains(&rnk_store::STATE_MARKER.into()),
+        "{before:?}"
+    );
+    let out = ranikust(tmp.path(), &["prune", "--all", "--state-dir=state"], &[]);
+    match out.status.code() {
+        Some(0) => {
+            assert_eq!(stdout(&out), format!("emptied {}\n", state.display()));
+            assert_eq!(names(&state), Vec::<std::path::PathBuf>::new());
+            fs::remove_dir(&state).expect("rmdir");
+        }
+        Some(1) => {
+            let err = stderr(&out);
+            assert!(err.contains("no user namespace for the build: "), "{err}");
+            assert!(err.contains("rm -rf"), "{err}");
+            assert_eq!(names(&state), before);
+        }
+        other => panic!("{other:?}: {}", stderr(&out)),
+    }
+}

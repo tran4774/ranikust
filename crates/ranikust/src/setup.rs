@@ -193,7 +193,7 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 
 /// Guidance where no user namespace with a map can be made for a user
 /// other than root.
-const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
+pub(crate) const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
      its own with an id map: where kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu \
      23.10 and later), only a program an AppArmor profile allows gets one; otherwise run \
      ranikust as root";
@@ -201,10 +201,7 @@ const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user 
 /// The build's user namespace, entered, and the store opened in it.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "`prune --all` (#76) and rootless overlay mode (#79) read it"
-    )
+    expect(dead_code, reason = "rootless overlay mode (#79) reads it")
 )]
 pub(crate) struct UsernsSetup {
     /// Its map, and the maps passed over on the way.
@@ -213,30 +210,43 @@ pub(crate) struct UsernsSetup {
     pub(crate) store: Store,
 }
 
-/// Enters the build's user namespace and opens the store in it (M2): the
-/// state directory's check first, outside, where its owners read as the
-/// host's ([`crate::statedir::prepare`]); then, for a user other than root,
-/// its subordinate ids ([`crate::subids`]); then
-/// [`rnk_sandbox::enter_build_user_namespace`], which also enters the build's
-/// mount namespace; then [`Store::open`], whose start-up clean-up removes
-/// a dead build's files as root of the namespace, those of subordinate ids
-/// too, which the user outside could not. Logs the map, one uid as such
-/// (ADR-0098). Call while single-threaded, in place of [`enter_namespace`].
+/// Enters the build's user namespace and opens the store in it (M2):
+/// [`enter_user_namespace_for`], then [`Store::open`], whose start-up
+/// clean-up removes a dead build's files as root of the namespace, those of
+/// subordinate ids too, which the user outside could not. Call while
+/// single-threaded, in place of [`enter_namespace`].
+///
+/// # Errors
+///
+/// As [`enter_user_namespace_for`]; a store refused is of [`Kind::Broken`].
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "rootless overlay mode (#79) calls it")
+)]
+pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
+    let userns = enter_user_namespace_for(state_dir)?;
+    let store = open_store(state_dir, state_dir).map_err(inside_userns)?;
+    Ok(UsernsSetup { userns, store })
+}
+
+/// Enters the build's user namespace for the state directory `state_dir`,
+/// opening nothing in it: the state directory's check first, outside, where
+/// its owners read as the host's ([`crate::statedir::prepare`]); then, for
+/// a user other than root, its subordinate ids ([`crate::subids`]); then
+/// [`rnk_sandbox::enter_build_user_namespace`], which also enters the
+/// build's mount namespace. Logs the map, one uid as such (ADR-0098). Call
+/// while single-threaded.
 ///
 /// # Errors
 ///
 /// A [`Refusal`]. Where the process may be in the namespace already (an
 /// error of [`rnk_sandbox::enter_build_user_namespace`] not known to leave
-/// the process unchanged, or the store refused), it is of [`Kind::Broken`]:
-/// the process must end, and no caller, in any mode, may ignore it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "`prune --all` (#76) and rootless overlay mode (#79) call it"
-    )
-)]
-pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
+/// the process unchanged), it is of [`Kind::Broken`]: the process must end,
+/// and no caller, in any mode, may ignore it. A caller's own failure once
+/// in the namespace is made one with [`inside_userns`].
+pub(crate) fn enter_user_namespace_for(
+    state_dir: &Path,
+) -> Result<rnk_sandbox::BuildUserNamespace, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
     let subordinate = crate::subids::lookup(euid).map_err(|e| Refusal {
@@ -247,13 +257,12 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
     let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
         .map_err(|e| userns_refusal(e, euid))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
-    let store = open_store(state_dir, state_dir).map_err(inside_userns)?;
-    Ok(UsernsSetup { userns, store })
+    Ok(userns)
 }
 
 /// `refusal`, made once the process is in the build's user namespace: no
 /// other mode may follow it.
-fn inside_userns(refusal: Refusal) -> Refusal {
+pub(crate) fn inside_userns(refusal: Refusal) -> Refusal {
     Refusal {
         kind: Kind::Broken,
         ..refusal

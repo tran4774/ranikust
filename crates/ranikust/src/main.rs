@@ -1,9 +1,12 @@
 //! The `ranikust` command-line tool.
 //!
-//! Parses the `build` and `version` subcommands; `build` is the default and
-//! accepts kaniko's common executor flags, plus `--mode=auto|overlay|kaniko`
-//! to choose the snapshot mode (ADR-0011, ADR-0023, ADR-0049). `push` and
-//! `prune` come later (Q-048); there is no `login` (ADR-0049).
+//! Parses the `build`, `prune` and `version` subcommands; `build` is the
+//! default and accepts kaniko's common executor flags, plus
+//! `--mode=auto|overlay|kaniko` to choose the snapshot mode (ADR-0011,
+//! ADR-0023, ADR-0049). `prune` takes only `--all`, which empties the state
+//! directory of a user other than root inside the build's user namespace
+//! (`prune`, ADR-0105); by size and age it comes in Phase 5, `push` later
+//! (Q-048); there is no `login` (ADR-0049).
 //!
 //! Set-up order, each step before the next: parse the flags (no I/O;
 //! refused kaniko flags are reported first) → the Linux 5.8 check of
@@ -45,6 +48,7 @@ mod config;
 mod container;
 mod exposure;
 mod limits;
+mod prune;
 mod setup;
 mod startup;
 mod statedir;
@@ -455,6 +459,18 @@ fn run(
         }
         Command::Build(args) => tracing::debug_span!("ranikust.build")
             .in_scope(|| build(args, telemetry, metrics_file, binary, fault)),
+        Command::Prune(args) => {
+            let (state_dir, pruned) = tracing::debug_span!("ranikust.prune")
+                .in_scope(|| prune::run(args))
+                .map_err(|failed| match failed {
+                    prune::Failed::Usage(message) => Failure::usage(message),
+                    prune::Failed::Refused(refusal) => Failure::refused(refusal),
+                })?;
+            let line = prune::summary(&state_dir, pruned);
+            // As `version`: a closed stdout is no reason to fail what is done.
+            let _ = writeln!(std::io::stdout(), "{}", rnk_metrics::terminal_text(&line));
+            Ok(())
+        }
     }
 }
 

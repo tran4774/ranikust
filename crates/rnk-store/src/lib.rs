@@ -3,8 +3,9 @@
 //! Owns the store in the state directory: compressed blobs (`blobs/`),
 //! extracted layers (`layers/`), `RUN --mount=type=cache` directories
 //! (`caches/`) and entries being written (`tmp/`). Provides per-digest locks,
-//! publication by atomic rename, start-up clean-up and `prune`, and defines
-//! `BuildPaths`, the paths handed down to every crate.
+//! publication by atomic rename, start-up clean-up and the emptying of
+//! `ranikust prune --all` (ADR-0105; `prune` by size and age is Phase 5),
+//! and defines `BuildPaths`, the paths handed down to every crate.
 //!
 //! ```text
 //! <state-dir>/
@@ -19,7 +20,8 @@
 //!
 //! A build is alive while it holds the `flock` on `builds/<build-id>.lock`;
 //! [`Store::open`] removes the `builds/` and `tmp/` directories of every
-//! build that is not.
+//! build that is not. [`Store::prune_all`] empties the whole directory only
+//! while no build holds it.
 //!
 //! # Boundaries
 //!

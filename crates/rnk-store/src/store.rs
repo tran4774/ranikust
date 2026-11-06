@@ -1250,6 +1250,95 @@ impl Store {
         emptied
     }
 
+    /// Empties the state directory `state`, for `ranikust prune --all`
+    /// (ADR-0105): every entry, lock and build directory, then the
+    /// [`STATE_MARKER`] last, so that a prune cut short leaves a directory
+    /// the next one accepts. `false` when it was empty already.
+    ///
+    /// Takes the state directory's `flock` exclusive without waiting, as
+    /// an anonymous store does, and holds it to the end: every build's
+    /// store holds it shared for its life, so nothing a running build uses
+    /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
+    /// Before removing anything it refuses, as [`Store::open`] does, a
+    /// non-empty directory without a regular [`STATE_MARKER`] and one
+    /// holding [`BUILDING_MARKER`]; it creates nothing, not even the marker
+    /// of an empty directory. Deletes through `rnk-rootfs` by descriptor:
+    /// no symlink followed, no mount crossed or emptied.
+    ///
+    /// Files of ids the process may not remove (a rootless build's, of
+    /// subordinate ids) need the caller in the build's user namespace,
+    /// whose root removes them; nothing here knows which namespace it runs
+    /// in.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InUse`] while a build holds the state directory;
+    /// [`Error::NotAStateDir`], [`Error::UsedOnSlash`] and
+    /// [`Error::NoFlock`] as [`Store::open`]; [`Error::NotPruned`] naming
+    /// what is left when anything but the marker stays (an entry on another
+    /// mount, one this process may not remove); [`Error::Io`] or
+    /// [`Error::Rootfs`] when the directory cannot be resolved or opened.
+    pub fn prune_all(state: &Path) -> Result<bool> {
+        let span = tracing::info_span!("rnk_store.prune");
+        let _entered = span.enter();
+        let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
+            op: "resolve",
+            path: state.to_owned(),
+            source,
+        })?;
+        let root = RootPath::open(&state_path)?;
+        let lock = root.open_at(".", &OpenHow::read().directory().no_follow())?;
+        match lock::try_lock(&lock) {
+            Ok(true) => {}
+            Ok(false) => return Err(Error::InUse { path: state_path }),
+            Err(source) => {
+                return Err(Error::NoFlock {
+                    path: state_path,
+                    source,
+                });
+            }
+        }
+        refuse_used_on_slash(&root, &state_path)?;
+        if list(&root, Path::new("."))?.is_empty() {
+            return Ok(false);
+        }
+        match root.statx(MARKER) {
+            Ok(st) if st.file_type() == FileType::Regular => {}
+            Ok(_) => return Err(Error::NotAStateDir { path: state_path }),
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                return Err(Error::NotAStateDir { path: state_path });
+            }
+            Err(e) => return Err(e.into()),
+        }
+        let mut keep = IgnoreList::new();
+        keep.insert(MARKER)?;
+        let deleted = delete_contents(&root, &keep);
+        let left: Vec<OsString> = list(&root, Path::new("."))?
+            .into_iter()
+            .filter(|n| n != MARKER)
+            .collect();
+        let left = match (left.is_empty(), deleted) {
+            (true, Ok(())) => None,
+            (_, Err(e)) => Some(format!(
+                "{} (removing them failed: {e})",
+                shown_names(&left)
+            )),
+            (false, Ok(())) => Some(format!("{} (on another mount?)", shown_names(&left))),
+        };
+        if let Some(left) = left {
+            return Err(Error::NotPruned {
+                path: state_path,
+                left,
+            });
+        }
+        match root.remove_file(MARKER) {
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {}
+            r => r?,
+        }
+        drop(lock);
+        Ok(true)
+    }
+
     /// Removes the `tmp/` and `builds/` directories of every build that no
     /// longer holds its lock. Anything that fails for one build (its lock
     /// file, its directories) is left with a warning: it must not stop

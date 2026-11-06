@@ -1,4 +1,5 @@
-//! The build's user namespace and the store opened in it (#75).
+//! The build's user namespace and the store opened in it (#75), and
+//! `prune --all` emptying a state directory there (#76).
 
 use std::fs;
 use std::io::Read as _;
@@ -653,4 +654,355 @@ fn red_team_a_home_of_another_user_gives_no_state_directory() {
     assert_eq!(out, "made");
     let st = fs::metadata(&state).unwrap();
     assert_eq!((st.uid(), st.mode() & 0o7777), (ME, 0o700));
+}
+
+/// A rootless build as `user` (else as this process's user): enters the
+/// build's user namespace, publishes a blob, and a layer and a cache mount
+/// holding [`plant`]'s files of other ids; leaves the same in its `tmp/`
+/// and `builds/` directories, with what `extra` makes there; dies without
+/// closing the store. `map\tid`, or `refused\t<refusal>`.
+fn rootless_build(
+    state: &Path,
+    user: Option<(u32, u32)>,
+    extra: impl Fn(&Path) -> std::io::Result<()>,
+) -> String {
+    in_child(user, || {
+        let set_up = match enter_user_namespace(state) {
+            Ok(s) => s,
+            Err(r) => return format!("refused\t{r}"),
+        };
+        let store = &set_up.store;
+        let digest = |n: u8| rnk_oci::Digest::from_sha256_bytes(&[n; 32]);
+        let blob = store.fill(&rnk_store::EntryKey::Blob(digest(1)), |e| {
+            std::io::Write::write_all(&mut e.file().expect("a blob"), b"blob")?;
+            Ok::<_, std::io::Error>(4)
+        });
+        if let Err(e) = blob {
+            return format!("error: blob: {e}");
+        }
+        let layer = store.fill(&rnk_store::EntryKey::Layer(digest(2)), |e| {
+            plant(e.path()).map(|()| 0)
+        });
+        if let Err(e) = layer {
+            return format!("error: layer: {e}");
+        }
+        let cache = store
+            .cache_lease("cache", rnk_store::CacheSharing::Shared, None, &|| false)
+            .map_err(|e| e.to_string())
+            .and_then(|lease| plant(lease.path()).map_err(|e| e.to_string()));
+        if let Err(e) = cache {
+            return format!("error: cache: {e}");
+        }
+        let id = store.build_id().to_owned();
+        let dirs = [
+            store.build_dir().to_owned(),
+            store.state_dir().join("tmp").join(&id),
+        ];
+        for d in dirs {
+            if let Err(e) = plant(&d).and_then(|()| extra(&d)) {
+                return format!("error: plant in {}: {e}", d.display());
+            }
+        }
+        // Dropped unclosed, as by a killed build.
+        format!("{}\t{id}", set_up.userns.map)
+    })
+}
+
+/// Runs `f` (a `prune`) on `state` in a child as `user`: `Emptied`,
+/// `Empty`, `Missing` or `refused\t<reason>\t<guidance>\t<kind>`, then `\t`
+/// and the processes left once it returned (the child is their
+/// subreaper): `none` when nothing outlived it.
+fn prune_in_child(
+    state: &Path,
+    user: Option<(u32, u32)>,
+    f: impl FnOnce(&Path) -> Result<crate::prune::Pruned, Refusal>,
+) -> String {
+    in_child(user, || {
+        let out = match f(state) {
+            Ok(pruned) => format!("{pruned:?}"),
+            Err(r) => format!("refused\t{}\t{}\t{:?}", r.reason, r.guidance, r.kind),
+        };
+        let left = match rustix::process::waitpid(None, rustix::process::WaitOptions::NOHANG) {
+            Err(rustix::io::Errno::CHILD) => "none".to_owned(),
+            other => format!("{other:?}"),
+        };
+        format!("{out}\t{left}")
+    })
+}
+
+/// This process's mounts, to tell that a child left none.
+fn mounts() -> String {
+    fs::read_to_string("/proc/self/mountinfo").unwrap()
+}
+
+/// The owners of everything below `dir`.
+fn owners_below(dir: &Path) -> std::collections::BTreeSet<u32> {
+    tree(dir).into_iter().map(|e| e.uid).collect()
+}
+
+/// [`plant_links_out`] in `dir`, aimed at `outside`, made with its victims
+/// ([`plant_victims`]) and [`GHOSTS`] on the first call: an `extra` for
+/// [`rootless_build`].
+fn links_out(state: &Path, outside: &Path, dir: &Path) -> std::io::Result<()> {
+    if !outside.exists() {
+        plant_victims(outside)?;
+        plant_ghosts(state, outside)?;
+    }
+    plant_links_out(dir, outside)
+}
+
+/// [`tree`] of `outside` as it must be once the hardlinks [`links_out`]
+/// made from both of a build's directories are gone.
+fn outside_without_links(outside: &Path) -> Vec<Entry> {
+    let mut entries = tree(outside);
+    let names: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(names, ["dir", "dir/f", "own", "sub"]);
+    for e in &mut entries {
+        if e.path != "dir" {
+            assert_eq!(e.links, 3, "{e:?}");
+            e.links = 1;
+        }
+    }
+    entries
+}
+
+/// Whatever the machine allows, as the test user: `prune --all` on a state
+/// directory a build left either empties it in the build's user namespace,
+/// marker included, or is refused before the namespace, saying what to do,
+/// with the directory unchanged. Either way no process or mount is left.
+#[test]
+fn prune_all_empties_in_the_user_namespace_or_changes_nothing() {
+    if !alone("prune_all_empties_in_the_user_namespace_or_changes_nothing") {
+        return;
+    }
+    let euid = rustix::process::geteuid().as_raw();
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    // A build that ran in no namespace: the test user's own files.
+    let store = Store::open(&BuildPaths::new(&state, &state)).unwrap();
+    store
+        .fill(
+            &rnk_store::EntryKey::Blob(rnk_oci::Digest::from_sha256_bytes(&[3; 32])),
+            |e| {
+                std::io::Write::write_all(&mut e.file().expect("a blob"), b"blob")?;
+                Ok::<_, std::io::Error>(4)
+            },
+        )
+        .unwrap();
+    store.close().unwrap();
+    let before = tree(&state);
+    let mounted = mounts();
+    let out = prune_in_child(&state, None, |s| crate::prune::prune_all(euid, s));
+    assert_eq!(mounts(), mounted);
+    match out.split('\t').collect::<Vec<_>>()[..] {
+        ["Emptied", "none"] => {
+            assert_ne!(euid, 0, "{out}");
+            assert!(tree(&state).is_empty(), "{out}");
+        }
+        ["refused", reason, guidance, "Other", "none"] => {
+            if euid == 0 {
+                assert!(reason.contains("refuses root"), "{out}");
+            } else {
+                assert!(
+                    reason.starts_with("no user namespace for the build: "),
+                    "{out}"
+                );
+                assert_eq!(guidance, crate::prune::NO_USER_NAMESPACE, "{out}");
+            }
+            assert_eq!(tree(&state), before, "{out}");
+        }
+        _ => panic!("{out}"),
+    }
+}
+
+/// T1, as root of a rootless Podman container, whose ids are a range of
+/// the host user's: after a rootless build that left files and read-only
+/// directories of other ids in a layer, a cache mount and its own
+/// directories, with links out of the state directory, `prune --all`'s
+/// emptying in the build's user namespace leaves the directory empty, to
+/// be removed with `rmdir`; nothing outside it changes, and no process or
+/// mount is left.
+#[test]
+#[ignore = "T1: default: root in a rootless Podman container enters the build's user namespace"]
+fn prune_all_empties_a_state_directory_of_other_ids() {
+    if !alone("prune_all_empties_a_state_directory_of_other_ids") {
+        return;
+    }
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run as root of a rootless Podman container (just test-rootless)"
+    );
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    let outside = tmp.path().join("outside");
+    let built = rootless_build(&state, None, |d| links_out(&state, &outside, d));
+    let Some(("multi-range", _)) = built.split_once('\t') else {
+        panic!("{built}");
+    };
+    let owners = owners_below(&state);
+    assert!(owners.is_superset(&OWNERS.into()), "{owners:?}");
+    let outside_after = outside_without_links(&outside);
+    let mounted = mounts();
+    // Below the root check, which refuses this container's root (the next
+    // test): the namespace, then the store's emptying.
+    let out = prune_in_child(&state, None, crate::prune::empty);
+    assert_eq!(out, "Emptied\tnone");
+    assert_eq!(mounts(), mounted);
+    assert_eq!(tree(&outside), outside_after);
+    assert!(tree(&state).is_empty());
+    fs::remove_dir(&state).unwrap();
+}
+
+/// T1, as root of a rootless Podman container: euid 0 in a user namespace
+/// is root all the same, so `prune --all` refuses it before it looks at
+/// the state directory, naming Phase 5's `prune` (ADR-0105).
+#[test]
+#[ignore = "T1: default: root of a rootless Podman container is refused"]
+fn prune_all_refuses_root_of_a_rootless_container() {
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run as root of a rootless Podman container (just test-rootless)"
+    );
+    let map = fs::read_to_string("/proc/self/uid_map").unwrap();
+    let whole = map.split_whitespace().eq(["0", "0", "4294967295"]);
+    assert!(!whole, "real root, not a container's: {map}");
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    Store::open(&BuildPaths::new(&state, &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    let before = tree(&state);
+    let euid = rustix::process::geteuid().as_raw();
+    let refusal = crate::prune::prune_all(euid, &state).unwrap_err();
+    assert!(refusal.reason.contains("refuses root"), "{refusal}");
+    assert!(refusal.guidance.contains("Phase 5"), "{refusal}");
+    assert_eq!(tree(&state), before);
+}
+
+/// T1, as root of a rootless Podman container: while a build holds the
+/// store, `prune --all` in the build's user namespace removes nothing; once
+/// the build ended, it empties the directory.
+#[test]
+#[ignore = "T1: default: root in a rootless Podman container enters the build's user namespace"]
+fn prune_all_leaves_what_a_running_build_uses() {
+    if !alone("prune_all_leaves_what_a_running_build_uses") {
+        return;
+    }
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run as root of a rootless Podman container (just test-rootless)"
+    );
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    let built = rootless_build(&state, None, |_| Ok(()));
+    let Some(("multi-range", _)) = built.split_once('\t') else {
+        panic!("{built}");
+    };
+    // A build running beside, its store open in this process.
+    let running = Store::open(&BuildPaths::new(&state, &state)).unwrap();
+    fs::write(running.build_dir().join("in-use"), b"x").unwrap();
+    let before = tree(&state);
+    let out = prune_in_child(&state, None, crate::prune::empty);
+    assert!(
+        out.starts_with("refused\ta build is using the state directory "),
+        "{out}"
+    );
+    assert!(out.ends_with("\tBroken\tnone"), "{out}");
+    assert_eq!(tree(&state), before);
+    running.close().unwrap();
+    assert_eq!(
+        prune_in_child(&state, None, crate::prune::empty),
+        "Emptied\tnone"
+    );
+    assert!(tree(&state).is_empty());
+}
+
+/// T2: as the user who ran sudo (the VM's `rnk`), with the user's
+/// subordinate ids through `newuidmap` (Ubuntu 22.04): after a rootless
+/// build, `prune --all` empties the state directory of files of
+/// subordinate ids the user cannot remove outside the namespace, and the
+/// user then removes it with `rmdir`; nothing outside changes, and no
+/// process or mount is left. Where AppArmor restricts unprivileged user
+/// namespaces (Ubuntu 24.04), it is refused, naming what to do, and the
+/// state directory stays as it is.
+#[test]
+#[ignore = "T2: drops from root to the sudo user to prune in the build's user namespace"]
+fn a_regular_user_s_prune_all_empties_a_state_directory_of_subordinate_ids() {
+    if !alone("a_regular_user_s_prune_all_empties_a_state_directory_of_subordinate_ids") {
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
+    let (Some(uid), Some(gid)) = (var("SUDO_UID"), var("SUDO_GID")) else {
+        panic!("run through sudo by a regular user, as the T2 unit suite does");
+    };
+    assert_ne!(uid, 0, "run through sudo by a regular user");
+    let user = Some((uid, gid));
+    let restricted = fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim() == "1");
+    let tmp = private_tempdir();
+    chown(tmp.path(), Some(uid), Some(gid)).unwrap();
+    let state = tmp.path().join("state");
+    let outside = tmp.path().join("outside");
+    // The whole command's checks, the root one included: the user is not
+    // root.
+    let prune = |s: &Path| crate::prune::prune_all(rustix::process::geteuid().as_raw(), s);
+    let mounted = mounts();
+    if restricted {
+        // A state directory of the user's own files, made in no namespace.
+        let made = in_child(user, || {
+            match Store::open(&BuildPaths::new(&state, &state)).and_then(Store::close) {
+                Ok(()) => "made".to_owned(),
+                Err(e) => format!("error: {e}"),
+            }
+        });
+        assert_eq!(made, "made");
+        let before = tree(&state);
+        let out = prune_in_child(&state, user, prune);
+        assert!(
+            out.starts_with("refused\tno user namespace for the build: "),
+            "{out}"
+        );
+        let guidance = crate::prune::NO_USER_NAMESPACE;
+        assert!(
+            out.ends_with(&format!("\t{guidance}\tOther\tnone")),
+            "{out}"
+        );
+        assert_eq!(tree(&state), before);
+        assert_eq!(mounts(), mounted);
+        return;
+    }
+    let built = rootless_build(&state, user, |d| links_out(&state, &outside, d));
+    let Some(("newuidmap", id)) = built.split_once('\t') else {
+        panic!("{built}");
+    };
+    let sub = crate::subids::lookup(uid)
+        .unwrap()
+        .expect("the VM's user has subordinate ids");
+    // Outside, the files are the subordinate ids', from the second one on
+    // (the namespace's 0 is the user).
+    let host = |ns: u32| sub.uids.start + ns - 1;
+    let owners = owners_below(&state);
+    assert!(
+        owners.contains(&host(OWNERS[0])) && owners.contains(&host(OWNERS[1])),
+        "{owners:?}"
+    );
+    // The control: outside the namespace, the user cannot remove them.
+    let g = state.join("tmp").join(id).join("ro/g");
+    let outside_try = in_child(user, || match fs::remove_file(&g) {
+        Ok(()) => "removed".to_owned(),
+        Err(e) => format!("{:?}", e.kind()),
+    });
+    assert_eq!(outside_try, "PermissionDenied");
+    let outside_after = outside_without_links(&outside);
+    assert_eq!(prune_in_child(&state, user, prune), "Emptied\tnone");
+    assert_eq!(mounts(), mounted);
+    assert_eq!(tree(&outside), outside_after);
+    assert!(tree(&state).is_empty());
+    let removed = in_child(user, || match fs::remove_dir(&state) {
+        Ok(()) => "removed".to_owned(),
+        Err(e) => e.to_string(),
+    });
+    assert_eq!(removed, "removed");
 }

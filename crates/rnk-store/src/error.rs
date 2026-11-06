@@ -44,15 +44,44 @@ pub enum Error {
     /// volume would see and remove each other's names (ADR-0056), and a
     /// `Direct` `RUN` would reach a persistent store's entries and build
     /// directories (ADR-0077). Persistent stores share a state directory.
+    /// Also a build's store opened while [`crate::Store::prune_all`] empties
+    /// the directory.
     #[error(
         "another build is using the state directory {}: a kaniko-mode build on / shares its \
-         state directory with no other build; give each container its own volume or \
-         --state-dir",
+         state directory with no other build, and ranikust prune --all empties it alone; wait \
+         for it to end, or give each container its own volume or --state-dir",
         path.display()
     )]
     Busy {
         /// The state directory.
         path: PathBuf,
+    },
+
+    /// [`crate::Store::prune_all`] found a build holding the state
+    /// directory: it removes nothing a running build uses (ADR-0105).
+    #[error(
+        "a build is using the state directory {}: ranikust prune --all empties it only while no \
+         build runs there; run it again once they end",
+        path.display()
+    )]
+    InUse {
+        /// The state directory.
+        path: PathBuf,
+    },
+
+    /// [`crate::Store::prune_all`] left more than the marker in the state
+    /// directory: an entry on another mount, or one this process may not
+    /// remove. The marker stays, so the next `prune --all` accepts the
+    /// directory.
+    #[error(
+        "ranikust prune --all could not empty the state directory {}: it still holds {left}",
+        path.display()
+    )]
+    NotPruned {
+        /// The state directory.
+        path: PathBuf,
+        /// What is left, with the names quoted.
+        left: String,
     },
 
     /// An anonymous store (kaniko mode on `/`) was opened on a state
