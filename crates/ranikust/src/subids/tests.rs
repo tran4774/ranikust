@@ -138,3 +138,71 @@ fn an_unreadable_file_is_an_error_and_a_line_not_utf8_is_passed_over() {
         "{e}"
     );
 }
+
+/// Hostile id files (ADR-0098): many lines of other owners, binary and
+/// overlong lines, NULs, the user's malformed ranges first, a second
+/// entry of the uid: the user's first well-formed range only, never two
+/// ranges joined or another owner's, and no panic.
+#[test]
+fn red_team_hostile_id_files_give_only_the_user_s_first_range() {
+    const OTHERS: u32 = 100_000;
+    let etc = tempfile::tempdir().unwrap();
+    let mut passwd = Vec::new();
+    let mut subuid = Vec::new();
+    for n in 0..OTHERS {
+        let uid = 2000 + n;
+        passwd.extend_from_slice(format!("o{n}:x:{uid}:{uid}::/:/bin/sh\n").as_bytes());
+        subuid.extend_from_slice(format!("o{n}:{}:65536\n", 200_000 + n).as_bytes());
+    }
+    let junk: [&[u8]; 8] = [
+        b"\xff\xfe\x00\x01:\x00:\x00\n",
+        b"\n\n\n",
+        b":::::::\n",
+        b"u:x\n",
+        b"u:x:\n",
+        b"u:x::1000::/:/bin/sh\n",
+        b"u:x:4294967296:1000::/:/bin/sh\n",
+        b"u:x:-1000:1000::/:/bin/sh\n",
+    ];
+    for j in junk {
+        passwd.extend_from_slice(j);
+        subuid.extend_from_slice(j);
+    }
+    passwd.extend(std::iter::repeat_n(b'a', 1 << 20));
+    passwd.extend_from_slice(b"\nu:x:1000:1000::/home/u:/bin/sh\nw:x:1000:1000::/:/bin/sh\n");
+    // Before the user's well-formed range: every way a range can be wrong
+    // for it, and lines another user's name or uid owns.
+    subuid.extend(std::iter::repeat_n(b'9', 1 << 20));
+    subuid.extend_from_slice(
+        b"\nu:1:0\nu:4294967295:1\nu:1:4294967295\nu:4294967294:2\nu:+5:5\nu: 5:5\n\
+          u:5:5:5\nu:5\n\x75\xff:5:5\nu\x00:6:6\nw:7:7\n1001:8:8\n01000:9:9\nU:10:10\nu :11:11\n\
+          u:300000:65536\nu:400000:65536\n1000:500000:65536\n",
+    );
+    let write = |name: &str, bytes: &[u8]| fs::write(etc.path().join(name), bytes).unwrap();
+    write(PASSWD, &passwd);
+    write(SUBUID, &subuid);
+    write(SUBGID, &subuid);
+    let want = IdRange {
+        start: 300_000,
+        count: 65_536,
+    };
+    assert_eq!(
+        lookup_in(etc.path(), 1000),
+        Ok(Some(SubordinateIds {
+            uids: want,
+            gids: want
+        }))
+    );
+    // Another user of the files gets its own, by name.
+    assert_eq!(
+        lookup_in(etc.path(), 2000 + 7).map(|s| s.map(|s| s.uids)),
+        Ok(range(200_007, 65_536))
+    );
+    // A uid without a name gets its line by number only; one without a
+    // line of its own, nothing.
+    assert_eq!(
+        lookup_in(etc.path(), 1001).map(|s| s.map(|s| s.uids)),
+        Ok(range(8, 8))
+    );
+    assert_eq!(lookup_in(etc.path(), 1002), Ok(None));
+}

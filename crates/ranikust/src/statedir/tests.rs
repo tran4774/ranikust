@@ -352,3 +352,29 @@ fn the_traces_of_a_kaniko_build_cut_short_on_slash_are_taken() {
     let why = prepare(&state).unwrap_err().0;
     assert!(why.contains("not a state directory"), "{why}");
 }
+
+/// A `$HOME` that reaches its directory through a `/proc` link (T4): the
+/// default below it is refused, and nothing is made where the link leads.
+#[test]
+fn red_team_a_home_through_a_proc_link_is_refused_and_nothing_is_made() {
+    use std::os::fd::AsRawFd as _;
+    let tmp = private_tempdir();
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let fd = fs::File::open(&home).unwrap();
+    let n = fd.as_raw_fd();
+    for via in [
+        format!("/proc/self/fd/{n}"),
+        format!("/proc/{}/fd/{n}", std::process::id()),
+        format!("/proc/thread-self/fd/{n}"),
+        format!("/proc/self/root{}", home.display()),
+        format!("/dev/fd/{n}"),
+    ] {
+        let state =
+            crate::config::default_state_dir(1000, Some(std::ffi::OsStr::new(&via))).unwrap();
+        let why = prepare(&state).unwrap_err().0;
+        assert!(why.contains("without following a symlink"), "{via}: {why}");
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0, "{via}");
+    }
+}

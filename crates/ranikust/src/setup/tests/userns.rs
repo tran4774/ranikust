@@ -154,6 +154,15 @@ fn plant(dir: &Path) -> std::io::Result<()> {
 /// [`plant`]'s files in its `tmp/` and `builds/` directories, and dies
 /// without closing the store. `map\tid`, or `refused\t<refusal>`.
 fn dead_build(state: &Path, user: Option<(u32, u32)>) -> String {
+    dead_build_leaving(state, user, plant)
+}
+
+/// [`dead_build`], leaving what `plant` makes in each of its directories.
+fn dead_build_leaving(
+    state: &Path,
+    user: Option<(u32, u32)>,
+    plant: impl Fn(&Path) -> std::io::Result<()>,
+) -> String {
     in_child(user, || {
         let before = namespaces();
         let set_up = match enter_user_namespace(state) {
@@ -362,4 +371,286 @@ fn a_regular_user_s_store_removes_a_dead_build_of_subordinate_ids() {
     for d in ["builds", "tmp"] {
         assert!(!state.join(d).join(id).exists(), "{d}/{id}");
     }
+}
+
+/// What [`plant_links_out`] aims at: files of the namespace's root and of
+/// [`OWNERS`] in `outside`, beside the state directory.
+fn plant_victims(outside: &Path) -> std::io::Result<()> {
+    fs::create_dir(outside)?;
+    fs::write(outside.join("own"), b"keep")?;
+    fs::write(outside.join("sub"), b"keep")?;
+    chown(outside.join("sub"), Some(OWNERS[0]), Some(OWNERS[0]))?;
+    let dir = outside.join("dir");
+    fs::create_dir(&dir)?;
+    fs::write(dir.join("f"), b"keep")?;
+    chown(dir.join("f"), Some(OWNERS[1]), Some(OWNERS[1]))?;
+    chown(&dir, Some(OWNERS[1]), Some(OWNERS[1]))
+}
+
+/// What a `RUN` of a dead build may leave in `dir` (`<state>/<tmp or
+/// builds>/<id>`), aimed at `outside`: symlinks out (absolute, climbing,
+/// to a file, at the end of a deep tree), hardlinks to files of each
+/// owner, a loop, a FIFO, a socket and a directory no one may search.
+fn plant_links_out(dir: &Path, outside: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+    symlink(outside, dir.join("abs"))?;
+    symlink("../../../outside", dir.join("rel"))?;
+    symlink(outside.join("own"), dir.join("file"))?;
+    for (name, target) in [
+        ("hard-own", "own"),
+        ("hard-sub", "sub"),
+        ("hard-f", "dir/f"),
+    ] {
+        fs::hard_link(outside.join(target), dir.join(name))?;
+    }
+    symlink("loop", dir.join("loop"))?;
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        dir.join("fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )?;
+    drop(std::os::unix::net::UnixListener::bind(dir.join("sock"))?);
+    let deep: std::path::PathBuf = std::iter::once(dir.join("deep"))
+        .chain(std::iter::repeat_n("d".into(), 100))
+        .collect();
+    fs::create_dir_all(&deep)?;
+    symlink(outside, deep.join("out"))?;
+    let shut = dir.join("shut");
+    fs::create_dir(&shut)?;
+    fs::write(shut.join("x"), b"x")?;
+    chown(&shut, Some(OWNERS[1]), Some(OWNERS[1]))?;
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o000))
+}
+
+/// Ids of builds that never ran, as a dead build may leave them: `tmp/` and
+/// `builds/` entries that are symlinks to `outside`, and a build whose lock
+/// file is a symlink to a file there.
+const GHOSTS: [&str; 2] = ["ghost-links", "ghost-lock"];
+
+/// [`GHOSTS`] in `state`, aimed at `outside`.
+fn plant_ghosts(state: &Path, outside: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+    symlink(outside, state.join("tmp").join(GHOSTS[0]))?;
+    symlink(outside.join("dir"), state.join("builds").join(GHOSTS[0]))?;
+    fs::create_dir(state.join("tmp").join(GHOSTS[1]))?;
+    symlink(
+        outside.join("own"),
+        state.join("builds").join(format!("{}.lock", GHOSTS[1])),
+    )
+}
+
+/// One entry of [`tree`].
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Entry {
+    path: String,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    /// The contents of a regular file.
+    body: Vec<u8>,
+    links: u64,
+}
+
+/// Every entry below `dir`, never following a symlink.
+fn tree(dir: &Path) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let m = fs::symlink_metadata(&p).unwrap();
+            if m.is_dir() {
+                todo.push(p.clone());
+            }
+            out.push(Entry {
+                path: p.strip_prefix(dir).unwrap().display().to_string(),
+                uid: m.uid(),
+                gid: m.gid(),
+                mode: m.mode(),
+                body: if m.is_file() {
+                    fs::read(&p).unwrap()
+                } else {
+                    Vec::new()
+                },
+                links: m.nlink(),
+            });
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The dead build of [`dead_build_leaving`] with [`plant_links_out`]'s
+/// links and [`GHOSTS`], then the next build's clean-up as root of the
+/// namespace: what lies outside the state directory keeps its contents,
+/// owners and modes, and only the planted links to it go. `None` when the
+/// set-up was refused (asserted by the caller), else the dead build's map.
+fn links_out_stay_out(tmp: &Path, user: Option<(u32, u32)>) -> Option<String> {
+    let state = tmp.join("state");
+    let outside = tmp.join("outside");
+    let dead = dead_build_leaving(&state, user, |d| {
+        if !outside.exists() {
+            plant_victims(&outside)?;
+            plant_ghosts(&state, &outside)?;
+        }
+        plant(d)?;
+        plant_links_out(d, &outside)
+    });
+    if dead.starts_with("refused\t") {
+        return None;
+    }
+    let Some((map, id)) = dead.split_once('\t') else {
+        panic!("{dead}");
+    };
+    let mut before = tree(&outside);
+    let names: Vec<&str> = before.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(names, ["dir", "dir/f", "own", "sub"], "{dead}");
+    // Each file outside has a link from both of the dead build's directories.
+    for e in &mut before {
+        if e.path != "dir" {
+            assert_eq!(e.links, 3, "{e:?}");
+            e.links = 1;
+        }
+    }
+    assert_eq!(next_build(&state, user, id), "gone");
+    assert_eq!(tree(&outside), before);
+    assert_eq!(fs::read(outside.join("own")).unwrap(), b"keep");
+    // The ghost whose entries are links: unlinked, never followed.
+    for d in ["tmp", "builds"] {
+        assert!(
+            fs::symlink_metadata(state.join(d).join(GHOSTS[0])).is_err(),
+            "{d}/{}",
+            GHOSTS[0]
+        );
+    }
+    Some(map.to_owned())
+}
+
+/// T1, as root of a rootless Podman container: a dead build's links and
+/// hardlinks to files outside the state directory, of root and of other
+/// ids, are removed by the next build's store in the user namespace; what
+/// they lead to is left as it was (T4).
+#[test]
+#[ignore = "T1: default: root in a rootless Podman container enters the build's user namespace"]
+fn red_team_a_dead_build_s_links_out_are_removed_and_never_followed() {
+    if !alone("red_team_a_dead_build_s_links_out_are_removed_and_never_followed") {
+        return;
+    }
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run as root of a rootless Podman container (just test-rootless)"
+    );
+    let tmp = private_tempdir();
+    let map = links_out_stay_out(tmp.path(), None).expect("the set-up was refused");
+    assert_eq!(map, "multi-range");
+}
+
+/// T2, as the user who ran sudo, with the user's subordinate ids: the same
+/// with files of subordinate ids, removed through `newuidmap`'s map.
+/// Where AppArmor restricts unprivileged user namespaces (Ubuntu 24.04),
+/// the set-up is refused and nothing outside is made.
+#[test]
+#[ignore = "T2: drops from root to the sudo user to open the store in the build's user namespace"]
+fn red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed() {
+    if !alone("red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed") {
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let var = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok());
+    let (Some(uid), Some(gid)) = (var("SUDO_UID"), var("SUDO_GID")) else {
+        panic!("run through sudo by a regular user, as the T2 unit suite does");
+    };
+    assert_ne!(uid, 0, "run through sudo by a regular user");
+    let restricted = fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim() == "1");
+    let tmp = private_tempdir();
+    chown(tmp.path(), Some(uid), Some(gid)).unwrap();
+    match links_out_stay_out(tmp.path(), Some((uid, gid))) {
+        None => {
+            assert!(
+                restricted,
+                "refused where user namespaces are not restricted"
+            );
+            assert!(!tmp.path().join("outside").exists());
+        }
+        Some(map) => {
+            assert!(!restricted, "{map}");
+            assert_eq!(map, "newuidmap");
+        }
+    }
+}
+
+/// T1, as root of a rootless Podman container dropping to another uid: a
+/// `$HOME` another user owns or may let others write (a `sudo -u` that kept
+/// the caller's `$HOME`, a shared sticky directory, `/`) gives a default
+/// state directory that is refused before anything is made in it (T4).
+#[test]
+#[ignore = "T1: default: root in a rootless Podman container makes homes of other ids"]
+fn red_team_a_home_of_another_user_gives_no_state_directory() {
+    if !alone("red_team_a_home_of_another_user_gives_no_state_directory") {
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    const ME: u32 = 3000;
+    const OTHER: u32 = 2000;
+    let tmp = private_tempdir();
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let home = |name: &str, owner: u32, mode: u32| {
+        let h = tmp.path().join(name);
+        fs::create_dir(&h).unwrap();
+        chown(&h, Some(owner), Some(owner)).unwrap();
+        fs::set_permissions(&h, fs::Permissions::from_mode(mode)).unwrap();
+        h
+    };
+    let others = home("other", OTHER, 0o755);
+    let local = others.join(".local");
+    fs::create_dir(&local).unwrap();
+    chown(&local, Some(OTHER), Some(OTHER)).unwrap();
+    let sticky = home("sticky", OTHER, 0o1777);
+    let my_sticky = home("my-sticky", ME, 0o1777);
+    let group = home("group", ME, 0o775);
+    let mine = home("mine", ME, 0o755);
+    for (h, why) in [
+        (others.as_path(), format!("is owned by uid {OTHER}")),
+        (sticky.as_path(), format!("is owned by uid {OTHER}")),
+        (
+            my_sticky.as_path(),
+            "writable by group or others".to_owned(),
+        ),
+        (group.as_path(), "writable by group or others".to_owned()),
+        (
+            Path::new("/"),
+            "cannot create the state directory".to_owned(),
+        ),
+    ] {
+        let state = crate::config::default_state_dir(ME, Some(h.as_os_str())).unwrap();
+        let out = in_child(Some((ME, ME)), || match crate::statedir::prepare(&state) {
+            Ok(()) => "made".to_owned(),
+            Err(r) => r.0,
+        });
+        assert!(out.contains(&why), "{}: {out}", h.display());
+        let made: Vec<_> = fs::read_dir(h)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let want: &[&str] = match h {
+            _ if h == others => &[".local"],
+            _ => &[],
+        };
+        if h != Path::new("/") {
+            assert_eq!(made, want, "{}", h.display());
+        }
+    }
+    assert!(!local.join("share").exists());
+    // The control: the user's own home gets it, the user's and private.
+    let state = crate::config::default_state_dir(ME, Some(mine.as_os_str())).unwrap();
+    let out = in_child(Some((ME, ME)), || match crate::statedir::prepare(&state) {
+        Ok(()) => "made".to_owned(),
+        Err(r) => r.0,
+    });
+    assert_eq!(out, "made");
+    let st = fs::metadata(&state).unwrap();
+    assert_eq!((st.uid(), st.mode() & 0o7777), (ME, 0o700));
 }

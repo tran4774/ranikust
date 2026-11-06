@@ -321,12 +321,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
-  advice), `subids` (ranges by name or uid, the first well-formed one,
+  advice, a `$HOME` reached through a `/proc` link is refused with nothing
+  made), `subids` (ranges by name or uid, the first well-formed one,
   malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
   not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
   no name, an end past
   32 bits refused, both files needed, none for root, an unreadable file an
-  error),
+  error; its red team: files of many lines with binary, overlong and NUL
+  lines and the user's malformed ranges first give that user's first
+  well-formed range only),
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
@@ -369,6 +372,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   as a normal user (skipped as root): nothing is created, a `--state-dir`
   is left empty with `ranikust.setup` in the report, and without one
   `$HOME` is left empty in every `--mode`.
+  `red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed`
+  (`setup/tests/userns.rs`): the T1 red team's links out as the user who
+  ran sudo, with files of subordinate ids, through `newuidmap`'s map;
+  where AppArmor restricts user namespaces (24.04) the set-up is refused
+  and nothing is made.
 - **T1** (`just smoke`, `RANIKUST_CASE_MODE=kaniko just smoke-case`): the
   release binary's set-up and builds in rootless podman (overlay as root in
   a user namespace; kaniko mode on the container's `/`, `RUN` `Direct`);
@@ -394,7 +402,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`setup/tests/userns.rs`: root of a rootless Podman container; a build
   dies with files and a `0555` directory of ids 1 and 2 in its `tmp/` and
   `builds/` directories; the next store, opened in the namespace, removes
-  them).
+  them); `red_team_a_dead_build_s_links_out_are_removed_and_never_followed`
+  (the same build also leaves symlinks out, absolute, climbing and at the
+  end of a deep tree, hardlinks to files outside the state directory of
+  root and of ids 1 and 2, a loop, a FIFO, a socket and a `0000`
+  directory, and `tmp/` and `builds/` entries and a lock file that are
+  symlinks out: the links go, what they lead to keeps its contents,
+  owners and modes); `red_team_a_home_of_another_user_gives_no_state_directory`
+  (as uid 3000: a `$HOME` of another uid, a sticky one of another uid or
+  of its own, a group-writable one and `/` give a default state directory
+  refused with nothing made; its own home gets one, `0700`).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
