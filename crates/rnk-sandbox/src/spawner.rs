@@ -1920,7 +1920,15 @@ fn execute(
     // `Setup` and `Exec` come from the child before `execve` and are
     // returned only here, after the tree is reaped and swept (`killed?`):
     // `Error::ran_no_command` relies on it (ADR-0056). Keep it so.
-    ending(status, init_killed_by, failure?, profile, program).map(|s| (s, usage))
+    let failure = failure.inspect_err(|_| {
+        if let Some(signal) = init_killed_by {
+            tracing::debug!(
+                signal,
+                "rnk-sandbox: a RUN's init was killed by a signal; its set-up record could not be read"
+            );
+        }
+    })?;
+    ending(status, init_killed_by, failure, profile, program).map(|s| (s, usage))
 }
 
 /// How a reaped `RUN` that was not cancelled ended: its status, the
@@ -1943,14 +1951,13 @@ fn ending(
     match (failure, init_killed_by) {
         (None, None) => Ok(status),
         (None, Some(signal)) => Err(killed(signal)),
-        // The init's end ends the go pipe (`EPIPE`) and makes the command,
-        // if it has not checked its parent yet, an orphan (`EPROTO`): a
-        // record of `Step::Init` may only follow from it.
+        // The init's end ends the go pipe, which a command still waiting
+        // reports (`EPIPE`): a record of `Step::Init` may be its consequence.
         (Some((Step::Init, errno)), Some(signal)) => {
             tracing::debug!(
                 errno,
                 signal,
-                "rnk-sandbox: a RUN's set-up failure record, its init killed after it"
+                "rnk-sandbox: a RUN's init was killed by a signal; its failure record of the init step is not returned"
             );
             Err(killed(signal))
         }
@@ -1959,7 +1966,7 @@ fn ending(
                 tracing::debug!(
                     %step,
                     signal,
-                    "rnk-sandbox: a RUN's init killed after its set-up failed"
+                    "rnk-sandbox: a RUN's init was also killed by a signal"
                 );
             }
             let source = io::Error::from_raw_os_error(errno);
@@ -2323,7 +2330,7 @@ mod tests {
             (sigsys, None, false, false),
             (Some(libc::SIGKILL), None, true, false),
             (sigsys, Some((Step::Init, libc::EPIPE)), true, true),
-            (sigsys, Some((Step::Init, libc::EPROTO)), true, true),
+            (sigsys, Some((Step::Init, libc::EPERM)), true, true),
         ] {
             let r = end(killed, failure, profile);
             assert!(

@@ -650,6 +650,7 @@ fn run_init(
         set_capability_sets(err, args);
         wait_for_go(err, &go_r);
         drop(go_r);
+        // No parent check: a record the init's death causes stays `Step::Init`.
         switch_user_and_exec(err, None, args, ptrs);
     }
     let Ok(command) = libc::pid_t::try_from(ret) else {

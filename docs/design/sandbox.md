@@ -464,8 +464,8 @@ status of the command's, which may not have run: the `RUN` fails as
 `Error::SetupKilled`, which names the signal and, for `SIGSYS` under a
 profile, the profile as the likely cause, and is not one that ran no command.
 It wins over a failure record of `Step::Init`, which the init's end may cause
-(the go pipe ended, the command orphaned before its parent check), and loses
-to any other record, the more precise; the one not returned is logged. A kill
+(the go pipe ended under a command still waiting), and loses to any other
+record, the more precise; the one not returned is logged. A kill or trap
 of a call only the command makes after its filters and before `execve` (its
 go read, `setsid`, the `USER` switch) leaves the init alive, and the `RUN`
 fails with the command's status (`SIGSYS`, code 159), as one killed after
