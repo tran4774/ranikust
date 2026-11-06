@@ -396,7 +396,10 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     if let Some(fd) = args.cgroup_init {
         join_cgroup(err, fd);
     }
-    close_inherited(args, fds, parent);
+    // SAFETY: this function's contract: the child of a `clone` without
+    // `CLONE_VM`, which ends with `_exit` or `execve` and uses the kept
+    // descriptors through their raw numbers only.
+    unsafe { close_inherited(args, fds, parent) };
     early_stdio(err, &args.stdio, parent);
     // First, so that `sysfs` below is mounted for this namespace.
     if let Some(fd) = args.netns {
@@ -1916,7 +1919,9 @@ pub(crate) unsafe fn create_network(chan: RawFd, parent: i32, userns: bool) -> !
     }
     // A forked copy of every descriptor of the build, stdio included:
     // closed, so that the helper holds no lock, pipe end or terminal of it.
-    close_all_but(chan);
+    // SAFETY: this function's contract: the child of a `clone` without
+    // `CLONE_VM`, which ends with `_exit` and uses only `chan` of those.
+    unsafe { close_all_but(chan) };
     let mut flags = libc::CLONE_NEWNET;
     if userns {
         flags |= libc::CLONE_NEWUSER;
@@ -1999,9 +2004,12 @@ fn send_ready(chan: RawFd, fd: Option<RawFd>) {
 }
 
 /// Closes every descriptor except `keep`, from 0, as [`close_all_except`].
-fn close_all_but(keep: RawFd) {
-    // SAFETY: called only in a forked child that ends with `_exit` or
-    // `execve`, which drops no owner of a descriptor this closes.
+///
+/// # Safety
+///
+/// As [`close_all_except`].
+unsafe fn close_all_but(keep: RawFd) {
+    // SAFETY: the caller's contract, which is `close_all_except`'s.
     unsafe { close_all_except(&[keep]) };
 }
 
@@ -2014,7 +2022,12 @@ fn close_all_but(keep: RawFd) {
 /// `PATH` entry or a mount target to them (runc's CVE-2024-21626). None of
 /// those kept is a directory. Close-on-exec acts only at `execve`, after the
 /// child has looked up paths the `RUN` chooses.
-pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentCheck) {
+///
+/// # Safety
+///
+/// As [`close_all_except`]: in the child, right after the clone, which then
+/// uses no descriptor of ranikust's but those kept, through no owner.
+pub(crate) unsafe fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentCheck) {
     let [s0, s1, s2] = args.stdio.map(|s| match s {
         ChildStdio::Fd(fd) => fd,
         ChildStdio::Inherit | ChildStdio::Null => -1,
@@ -2041,8 +2054,7 @@ pub(crate) fn close_inherited(args: &ChildArgs, fds: ChildFds, parent: ParentChe
             j -= 1;
         }
     }
-    // SAFETY: right after the clone, in the child, which ends with `_exit`
-    // or `execve` and drops no owner of a descriptor this closes.
+    // SAFETY: the caller's contract, which is `close_all_except`'s.
     unsafe { close_all_except(&keep) };
 }
 

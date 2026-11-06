@@ -323,7 +323,10 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
     let r = report_of(vec![(IdMap::OneId, a.map.clone())], Some((plan, a)));
     assert_eq!(r.map(), None);
     assert_eq!(r.stop(), Some("map"));
-    assert!(r.in_namespace(|| Ok(String::new())).is_none());
+    assert!(
+        r.in_namespace(|_| Ok(String::new()), Path::new("/"))
+            .is_none()
+    );
     assert!(
         r.to_string().starts_with(
             "unshare(CLONE_NEWUSER): ok; map: none (one uid: write uid_map: EPERM); chown: \
@@ -435,7 +438,7 @@ fn a_closure_is_not_run_beside_other_threads() {
         // `Err` once `done` drops: the signal to end.
         let _ = wait.recv();
     });
-    let ran = r.in_namespace(|| Ok("ran".to_owned()));
+    let ran = r.in_namespace(|_| Ok("ran".to_owned()), Path::new("/"));
     drop(done);
     spare.join().unwrap();
     match ran {
@@ -685,11 +688,14 @@ fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker
     assert_eq!(report.chown, StepResult::Ok);
     assert!(is_eperm(&report.mknod), "{report}");
     let plan = report.plan.as_ref().unwrap();
-    let euid = || Ok(rustix::process::geteuid().as_raw().to_string());
-    assert_eq!(run_closure(plan, euid).unwrap(), Ok("0".to_owned()));
-    let refused = || Err("refused".to_owned());
+    let euid = |_: &Path| Ok(rustix::process::geteuid().as_raw().to_string());
     assert_eq!(
-        run_closure(plan, refused).unwrap(),
+        run_closure(plan, euid, dir.path()).unwrap(),
+        Ok("0".to_owned())
+    );
+    let refused = |_: &Path| Err("refused".to_owned());
+    assert_eq!(
+        run_closure(plan, refused, dir.path()).unwrap(),
         Err("refused".to_owned())
     );
 }

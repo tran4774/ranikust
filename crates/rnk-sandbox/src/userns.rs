@@ -288,8 +288,8 @@ impl UsernsReport {
         }
     }
 
-    /// Runs `f` as root of a new user and mount namespace with the map this
-    /// probe got, in a forked child. `None` when no map worked; `Err` with
+    /// Runs `f(path)` as root of a new user and mount namespace with the map
+    /// this probe got, in a forked child. `None` when no map worked; `Err` with
     /// why `f` did not run or finish ([`Error::NotSingleThreaded`], a
     /// host-side error, [`Error::ProbeChildLeft`], else
     /// [`Error::ProbeClosure`]); else what `f` returned. Like the steps,
@@ -297,16 +297,16 @@ impl UsernsReport {
     ///
     /// Call while the process is single-threaded, as the set-up is: the
     /// child runs `f`, which may allocate; and before any credential is
-    /// read, as for [`probe_user_namespace`]. `f` must capture and reach no
-    /// owner of a descriptor of this process (`OwnedFd`, `File`): every one
-    /// but stdio and the probe's pipes is closed in the child before `f`
-    /// runs, so `f` opens what it uses.
+    /// read, as for [`probe_user_namespace`].
     pub fn in_namespace(
         &self,
-        f: impl FnOnce() -> std::result::Result<String, String>,
+        // A function, not a closure: it captures no descriptor of this
+        // process, each closed in the child before it runs.
+        f: fn(&Path) -> std::result::Result<String, String>,
+        path: &Path,
     ) -> Option<Result<std::result::Result<String, String>>> {
         let plan = self.plan.as_ref()?;
-        Some(crate::setup::require_single_thread().and_then(|()| run_closure(plan, f)))
+        Some(crate::setup::require_single_thread().and_then(|()| run_closure(plan, f, path)))
     }
 }
 
@@ -871,11 +871,11 @@ fn reap(pid: Pid, mut killed: bool, grace: Duration) -> rustix::io::Result<Optio
 /// # Safety
 ///
 /// As [`child::close_all_except`]: only in a forked child that ends with
-/// `_exit` and drops no owner of a descriptor this closes.
+/// `_exit` and uses or drops no owner of a descriptor this closes.
 unsafe fn close_unused(a: &ChildArgs<'_>) {
     let mut keep = [0, 1, 2, a.report, a.go, a.dir, a.chown.map_or(-1, |c| c.0)];
     keep.sort_unstable();
-    // SAFETY: the caller's contract.
+    // SAFETY: the caller's contract, which is `close_all_except`'s.
     unsafe { child::close_all_except(&keep) };
 }
 
@@ -1402,18 +1402,19 @@ fn last_errno() -> Errno {
     Errno::from_raw_os_error(io::Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
-/// [`UsernsReport::in_namespace`]: `f` in a child with `plan`'s map. The
-/// child runs `f`, which may allocate: call while single-threaded (tests
-/// rely on the C library's allocator, safe after a fork).
+/// [`UsernsReport::in_namespace`]: `f(path)` in a child with `plan`'s map.
+/// The child runs `f`, which may allocate: call while single-threaded
+/// (tests rely on the C library's allocator, safe after a fork).
 fn run_closure(
     plan: &Plan,
-    f: impl FnOnce() -> std::result::Result<String, String>,
+    f: fn(&Path) -> std::result::Result<String, String>,
+    path: &Path,
 ) -> Result<std::result::Result<String, String>> {
     let user = !rustix::process::geteuid().is_root();
     let run = supervise(plan, user, None, -1, CLOSURE_DEADLINE, |args| {
         // SAFETY: the child of the fork, right after it returned 0, of a
         // single-threaded process (the caller's contract): it may run `f`.
-        unsafe { closure_child(args, f) }
+        unsafe { closure_child(args, || f(path)) }
     })?;
     if let Some((status, text)) = run.records.payload {
         return closure_outcome(status, String::from_utf8_lossy(&text).into_owned());

@@ -40,7 +40,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     arm_death_signal(fds.err_w, parent);
     // As in the full sandbox: a root other than `/` must not be left
     // through a descriptor of ranikust's.
-    close_inherited(args, fds, parent);
+    // SAFETY: this function's contract, as `crate::child::run`'s.
+    unsafe { close_inherited(args, fds, parent) };
     // The parent opened `/dev/null` for a `Null` slot: the root's, which
     // an earlier `RUN` may have replaced, is never opened here.
     if args.stdio.contains(&ChildStdio::Null) {

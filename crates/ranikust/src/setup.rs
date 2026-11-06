@@ -546,7 +546,8 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
 }
 
 /// The probes in `scratch`, at `path`; and whether their directory stays
-/// ([`keeps_dir`]).
+/// ([`keeps_dir`]; never when `overlay` cannot be made in it, before any
+/// child of the overlay probe).
 fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), String>, bool) {
     let report = match rnk_sandbox::probe_user_namespace(path, None) {
         Ok(report) => report,
@@ -557,12 +558,7 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), 
             if let Err(e) = scratch.create_dir("overlay", 0o700) {
                 return (Err(e.to_string()), false);
             }
-            let dir = path.join("overlay");
-            report.in_namespace(|| {
-                rnk_snapshot::probe(&dir)
-                    .map(|caps| mount_api_name(caps.api).to_owned())
-                    .map_err(|e| e.to_string())
-            })
+            report.in_namespace(overlay_in_namespace, &path.join("overlay"))
         }
         None => None,
     };
@@ -575,6 +571,14 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), 
     };
     let line = userns_summary(report.stop(), &report.to_string(), overlay, &apparmor);
     (Ok(line), keep)
+}
+
+/// `rnk-snapshot`'s overlay probe in `dir`, run in the user namespace: the
+/// mount API's name.
+fn overlay_in_namespace(dir: &Path) -> Result<String, String> {
+    rnk_snapshot::probe(dir)
+        .map(|caps| mount_api_name(caps.api).to_owned())
+        .map_err(|e| e.to_string())
 }
 
 /// Whether the probe's directory stays: the steps' error or the overlay
