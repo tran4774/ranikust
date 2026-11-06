@@ -536,7 +536,7 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     // ([`run_init`]), the command once in its cgroup namespace (ADR-0110).
     // After them come the capability cut, since the install needs
     // `CAP_SYS_ADMIN`, and the init's and the command's steps that must
-    // follow the fork, which only a filter around ranikust could fake
+    // follow the fork; only a filter around ranikust could fake the fork
     // (threat model, section 6).
     //
     // The keyring before the profile, which refuses `keyctl` (runc's
@@ -589,10 +589,11 @@ pub(crate) const INIT_NAME: &CStr = c"ranikust-init";
 /// profile. The command waits on the go pipe until the init has given all
 /// that up, so a failure of the init's own steps (`Step::Init`, or the
 /// filter's step) comes before the command ran, unless a filter around
-/// ranikust fakes the command's `read` of that pipe (threat model, section
-/// 6). The init reaps every process that reparents to it; when the command exits, it writes the
-/// command's wait status on the status pipe and exits, and the kernel kills
-/// the rest, as when the command was PID 1 itself.
+/// ranikust fakes the command's `read` of that pipe (threat model,
+/// section 6). The init reaps every process that reparents to it; when the
+/// command exits, it writes the command's wait status on the status pipe
+/// and exits, and the kernel kills the rest, as when the command was PID 1
+/// itself.
 fn run_init(
     err: RawFd,
     parent: ParentCheck,

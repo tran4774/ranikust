@@ -495,8 +495,9 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
     // the limits hold, and all go with the RUN (ADR-0110). Unconfined, as
     // `--seccomp=unconfined`, from here on: this measures what a RUN that
     // may make a user namespace can do, which the default profile refuses.
-    // Its `unshare -U`, step 1's, is the control: unconfined it runs, even
-    // where AppArmor leaves the namespace no capability.
+    // The same `unshare -U` as step 1's is the control: unconfined it runs,
+    // even where AppArmor leaves the namespace no capability, unless no
+    // AppArmor profile lets it.
     runner.seccomp = None;
     let third = dir.join(format!("run-{pid}-3"));
     let out = top.join("limits.out");
@@ -516,7 +517,10 @@ fn runs_in_cgroups(tree: Tree, rel: &str, dir: &Path, pid: i32, others: usize) {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     );
     assert_eq!(status.code(), Some(0), "{text}");
-    assert!(text.contains("userns=ok\n"), "{text}");
+    assert!(
+        text.contains("userns=ok\n") || userns_restricted(),
+        "an unconfined RUN is refused a user namespace: {text}"
+    );
     if text.contains("limits=ran") {
         let field = |key: &str| {
             text.split_whitespace()

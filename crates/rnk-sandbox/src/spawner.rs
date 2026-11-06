@@ -3552,7 +3552,7 @@ mod tests {
     /// The init's fork comes before the profile too (ADR-0110), so a
     /// profile faking it and the command's `setsid` still runs the `RUN`,
     /// under its profile. The same calls faked by a filter around ranikust
-    /// (one on this thread stands in) fail the `RUN` before the command
+    /// (one on a test thread stands in) fail the `RUN` before the command
     /// runs, never leaving it as PID 1 without an init, and so does a
     /// filter install refused there, as the filter's step.
     #[test]
@@ -3683,7 +3683,7 @@ mod tests {
                         RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
                     output_to(&out, &mut spec);
                     let st = runner.run(spec, None, |job| clone_child(job, parent));
-                    (st, fs::read_to_string(&out).unwrap_or_default())
+                    (st, fs::read_to_string(&out).unwrap())
                 })
                 .join()
                 .unwrap()
