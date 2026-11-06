@@ -2,8 +2,9 @@
 //!
 //! Memory, not CPU, bounds parallel stages (exp-08, exp-12). Before a
 //! stage starts, the gate compares free memory with a threshold: the
-//! cgroup's `memory.max` minus its working set when a limit exists
-//! (ADR-0007: cgroups are only read), else `MemAvailable`.
+//! `memory.max` of the cgroup charged with ranikust's memory minus its
+//! working set when a limit exists (ADR-0007: cgroups are only read), else
+//! `MemAvailable`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,8 +76,10 @@ struct Reading {
 }
 
 impl SystemMemory {
-    /// Finds this process's cgroup v2 directory, if `memory.max` is
-    /// readable there; cgroup v1 falls back to `MemAvailable`.
+    /// Finds the cgroup v2 directory charged with this process's memory:
+    /// its own, or the parent of the leaf `rnk-sandbox` nests it in, if
+    /// either has `memory.max`; elsewhere, cgroup v1 included,
+    /// `MemAvailable`.
     #[must_use]
     pub fn detect() -> Self {
         // No /proc/self/cgroup (no procfs, or not Linux): no cgroup, and
@@ -84,7 +87,7 @@ impl SystemMemory {
         let cgroup = fs::read_to_string("/proc/self/cgroup")
             .ok()
             .and_then(|s| cgroup_dir(&s, Path::new("/sys/fs/cgroup")))
-            .filter(|d| d.join("memory.max").is_file());
+            .and_then(|d| memory_dir(d, std::process::id()));
         match &cgroup {
             Some(d) => tracing::debug!(cgroup = %d.display(), "memory gate reads the cgroup"),
             None => tracing::debug!("memory gate reads /proc/meminfo"),
@@ -196,6 +199,22 @@ fn cgroup_dir(proc_cgroup: &str, mount: &Path) -> Option<PathBuf> {
     })
 }
 
+/// `dir`, the cgroup of process `pid`, if it has `memory.max`; else, when
+/// `dir` is the leaf `ranikust-<pid>` that `rnk-sandbox` nests ranikust in
+/// (only `cpu` enabled, ADR-0110), its parent, the cgroup ranikust started
+/// in, if that has one. Never further up: an ancestor's limit is shared
+/// with cgroups ranikust knows nothing of.
+fn memory_dir(dir: PathBuf, pid: u32) -> Option<PathBuf> {
+    if dir.join("memory.max").is_file() {
+        return Some(dir);
+    }
+    if dir.file_name()? != format!("ranikust-{pid}").as_str() {
+        return None;
+    }
+    let parent = dir.parent()?.to_owned();
+    parent.join("memory.max").is_file().then_some(parent)
+}
+
 /// `memory.max`: a number, or `max` for no limit (`None`).
 fn parse_max(s: &str) -> Option<u64> {
     // `max` does not parse: no limit.
@@ -239,6 +258,25 @@ mod tests {
         );
         assert_eq!(cgroup_dir("0::/../etc\n", m), None);
         assert_eq!(cgroup_dir("12:memory:/docker/abc\n", m), None);
+    }
+
+    #[test]
+    fn the_memory_cgroup_is_its_own_or_above_ranikusts_leaf_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mount = tmp.path();
+        let unit = mount.join("slice/unit.scope");
+        let leaf = unit.join("ranikust-7");
+        fs::create_dir_all(&leaf).unwrap();
+        // A limit two levels up is shared with others: not read.
+        fs::write(mount.join("slice/memory.max"), "1073741824\n").unwrap();
+        assert_eq!(memory_dir(leaf.clone(), 7), None);
+        assert_eq!(memory_dir(unit.clone(), 7), None);
+        fs::write(unit.join("memory.max"), "max\n").unwrap();
+        assert_eq!(memory_dir(leaf.clone(), 7), Some(unit.clone()));
+        // Another process's leaf, or a cgroup of that name above, is not ours.
+        assert_eq!(memory_dir(leaf.clone(), 8), None);
+        fs::write(leaf.join("memory.max"), "max\n").unwrap();
+        assert_eq!(memory_dir(leaf.clone(), 8), Some(leaf));
     }
 
     #[test]

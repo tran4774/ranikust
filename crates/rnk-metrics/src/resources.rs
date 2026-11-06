@@ -32,6 +32,8 @@ const CGROUP_COUNTERS: [&str; 3] = ["cpu.stat", "io.stat", "memory.events"];
 /// Where the readers look; tests point them at a temporary directory.
 #[derive(Clone, Debug)]
 pub(crate) struct HostPaths {
+    /// This process's pid, to know `rnk-sandbox`'s leaf for it.
+    pub(crate) pid: u32,
     pub(crate) proc_self_cgroup: PathBuf,
     pub(crate) cgroup_root: PathBuf,
     pub(crate) proc_self_status: PathBuf,
@@ -41,6 +43,7 @@ pub(crate) struct HostPaths {
 impl Default for HostPaths {
     fn default() -> Self {
         Self {
+            pid: std::process::id(),
             proc_self_cgroup: PathBuf::from("/proc/self/cgroup"),
             cgroup_root: PathBuf::from("/sys/fs/cgroup"),
             proc_self_status: PathBuf::from("/proc/self/status"),
@@ -180,9 +183,11 @@ fn cgroup(paths: &HostPaths) -> Value {
 }
 
 /// The path from `/proc/self/cgroup` under the cgroup root when the whole
-/// hierarchy is mounted, else the root itself (a container's own cgroup under
-/// a cgroup namespace); the first that has `memory.current` (the root cgroup
-/// has none).
+/// hierarchy is mounted, then, when that is the leaf `ranikust-<pid>` that
+/// `rnk-sandbox` nests ranikust in (only `cpu` enabled, ADR-0110), its
+/// parent, else the root itself (a container's own cgroup under a cgroup
+/// namespace); the first that has `memory.current` (the root cgroup has
+/// none). No other ancestor: its counters are shared with others.
 fn cgroup_dir(paths: &HostPaths) -> (Option<PathBuf>, Vec<String>) {
     let mut candidates = Vec::new();
     // Unreadable (no procfs, cgroup v1 only): only the root is tried, and
@@ -193,11 +198,19 @@ fn cgroup_dir(paths: &HostPaths) -> (Option<PathBuf>, Vec<String>) {
                 && !rel.is_empty()
                 && rel != "/"
             {
-                candidates.push(paths.cgroup_root.join(rel.trim_start_matches('/')));
+                let own = paths.cgroup_root.join(rel.trim_start_matches('/'));
+                let parent = own
+                    .ends_with(format!("ranikust-{}", paths.pid))
+                    .then(|| own.parent().map(Path::to_path_buf))
+                    .flatten();
+                candidates.push(own);
+                candidates.extend(parent);
             }
         }
     }
-    candidates.push(paths.cgroup_root.clone());
+    if !candidates.contains(&paths.cgroup_root) {
+        candidates.push(paths.cgroup_root.clone());
+    }
     let mut tried = Vec::new();
     for candidate in candidates {
         tried.push(candidate.display().to_string());
@@ -331,6 +344,7 @@ mod tests {
 
     fn fake_host(dir: &Path) -> HostPaths {
         HostPaths {
+            pid: 7,
             proc_self_cgroup: dir.join("proc-self-cgroup"),
             cgroup_root: dir.join("cgroup"),
             proc_self_status: dir.join("proc-self-status"),
@@ -405,6 +419,36 @@ mod tests {
         fs::write(paths.cgroup_root.join("memory.current"), "1\n").expect("write");
         let (dir, tried) = cgroup_dir(&paths);
         assert_eq!(dir, Some(paths.cgroup_root.clone()));
+        assert_eq!(tried.len(), 2);
+    }
+
+    /// Nested by `rnk-sandbox` (ADR-0110), ranikust's leaf has no memory
+    /// controller: the cgroup it started in, its parent, is read, and no
+    /// cgroup further up.
+    #[test]
+    fn reads_the_parent_of_ranikusts_own_leaf_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = fake_host(tmp.path());
+        let unit = paths.cgroup_root.join("build.slice/job.scope");
+        fs::create_dir_all(unit.join("ranikust-7")).expect("mkdir");
+        fs::create_dir_all(unit.join("ranikust-8")).expect("mkdir");
+        fs::write(paths.cgroup_root.join("build.slice/memory.current"), "1\n").expect("write");
+        fs::write(
+            &paths.proc_self_cgroup,
+            "0::/build.slice/job.scope/ranikust-7\n",
+        )
+        .expect("write");
+        assert_eq!(cgroup_dir(&paths).0, None);
+        fs::write(unit.join("memory.current"), "1\n").expect("write");
+        assert_eq!(cgroup_dir(&paths).0, Some(unit.clone()));
+        // Another process's leaf is not ranikust's.
+        fs::write(
+            &paths.proc_self_cgroup,
+            "0::/build.slice/job.scope/ranikust-8\n",
+        )
+        .expect("write");
+        let (dir, tried) = cgroup_dir(&paths);
+        assert_eq!(dir, None);
         assert_eq!(tried.len(), 2);
     }
 

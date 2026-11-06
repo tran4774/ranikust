@@ -31,9 +31,11 @@ ranikust keeps its own files, including the persistent store and every build
 root it makes, in one state directory (`--state-dir`, default
 `/var/lib/ranikust`); there is no work-directory flag
 ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
-It never writes outside the state directory, the requested outputs and, in
-kaniko mode in a container, `/`, but for the `O_TMPFILE` fallback of the
-sealed copy of its binary, a file with no name in `TMPDIR`
+It never writes outside the state directory, the requested outputs, its own
+delegated cgroup with the cgroups it makes below it
+([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)),
+and, in kaniko mode in a container, `/`, but for the `O_TMPFILE` fallback of
+the sealed copy of its binary, a file with no name in `TMPDIR`
 ([host safety](#host-safety)).
 
 ## Code map
@@ -142,15 +144,20 @@ stub mount points, `USER` resolved inside the root, exec. Also the probes of
 its own capabilities, each tried for real, and the sealed copy of ranikust's
 binary a build runs from, with the mount of the binary as installed, for
 `ranikust`'s refusal in kaniko mode on `/`
-([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)). In
-sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
+([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
+Where ranikust's cgroup v2 tree is delegated, each `RUN` also gets cgroups of
+its own, ended with `cgroup.kill`, its command in a cgroup namespace rooted at
+its `command` cgroup
+([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
+In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
 **Must not** snapshot or diff a root, mount or probe overlays
-(`rnk-snapshot`; the seal only reads whether `/` is one, ADR-0101), or look
-up users on the host.
+(`rnk-snapshot`; the seal only reads whether `/` is one, ADR-0101), look up
+users on the host, or write the cgroupfs outside its own cgroup and those
+below it, or there unless it is delegated (ADR-0110).
 
 ### `rnk-snapshot`
 
@@ -320,10 +327,13 @@ Images from the two modes may differ in documented ways
 ranikust runs `RUN` as root, mounts filesystems and empties build roots.
 
 - Nothing is written outside the state directory or store, the requested
-  outputs and, in kaniko mode in a container, `/`. One exception, made
-  before the state directory is checked: where the kernel refuses the
-  sealed memfd copy of the binary, its `O_TMPFILE` fallback, a file with
-  no name in `TMPDIR`, gone with the build
+  outputs, ranikust's own cgroup where it is delegated and the cgroups it
+  makes below it
+  ([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)),
+  and, in kaniko mode in a container, `/`. One exception, made before the
+  state directory is checked: where the kernel refuses the sealed memfd copy
+  of the binary, its `O_TMPFILE` fallback, a file with no name in `TMPDIR`,
+  gone with the build
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md)).
 - Every path that comes from an image, a context or a Dockerfile is reached
   through `rnk_rootfs::RootPath`, never through `std::fs` on a joined host
@@ -361,6 +371,11 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
   mtimes later than it are clamped to it while earlier ones are kept.
 - With `--reproducible`, a build with `--jobs 1` and one with the default give
   the same digests.
+- A `RUN` with cgroups of its own runs in a cgroup namespace rooted at its
+  `command` cgroup, so what it reads in `/proc/self/cgroup` names neither
+  ranikust's pid nor the `RUN`'s number (it still depends on the host where
+  a `RUN` gets no cgroup, and `/proc/1/cgroup` on the layout)
+  ([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
 
 ### No global state
 

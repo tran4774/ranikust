@@ -49,8 +49,9 @@ review is fixing. A residual the maintainer accepts has no fix release; the
 These are vulnerabilities in ranikust, whatever the Dockerfile or image:
 
 - **Escaping the state directory or store.** ranikust itself reads, writes
-  or deletes anything outside its state directory, store, requested outputs
-  and, in kaniko mode in a container, `/`
+  or deletes anything outside its state directory, store, requested
+  outputs, its own cgroup where it is delegated with the cgroups it makes
+  below it (ADR-0110), and, in kaniko mode in a container, `/`
   because of a crafted layer, build context or Dockerfile: `..` components,
   symlinks, hardlinks, whiteouts, device nodes, setuid files, or races
   between a check and a use.

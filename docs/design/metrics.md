@@ -209,8 +209,9 @@ No span per HTTP request or body chunk.
 | Span | Fields | Why |
 |---|---|---|
 | `rnk_sandbox.run` | `user_ns`, `sys_ns`, `max_rss_kb`, `minflt`, `majflt`, `inblock`, `oublock`, `nvcsw`, `nivcsw`, `failed` | One `RUN` process from fork to reap; rusage from `wait4` (the child and the descendants it waited for). Becomes kaniko's `run.child`, `child_*` and `overhead_ns`; `exp-02`, `exp-15`. |
-| `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal. |
+| `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal, the `RUN`'s cgroups where it gets them. |
 | `rnk_sandbox.probe` | `ok` | One probe step (userns, `proc`, `pivot_root`, `sysfs`); start-up cost. |
+| `rnk_sandbox.cgroups` | `layout` (`nested`, `single`, `none`) | Finding and probing the `RUN` cgroups at `Sandbox::start` ([sandbox](sandbox.md#run-cgroups)); start-up cost. |
 
 ### `rnk-snapshot`
 
@@ -288,6 +289,13 @@ A command with `rnk_sandbox.run` spans also gets kaniko's values:
 `child_maxrss_kb`, `child_minflt`, `child_majflt`, `child_inblock`,
 `child_oublock`, `child_nvcsw`, `child_nivcsw`, and `overhead_ns` =
 `wall_ns − child_wall_ns`: what ranikust spent around the process.
+
+The cgroup read is ranikust's own, from `/proc/self/cgroup`; nested by
+`rnk-sandbox` in the leaf `ranikust-<pid>`, which has no memory controller,
+its parent ([sandbox](sandbox.md#run-cgroups)); else the cgroup root, a
+container's own under a cgroup namespace. The first of these with
+`memory.current` is read, and no other ancestor: others share its
+numbers.
 
 Reading cgroup numbers, as for kaniko: `memory.peak` includes page cache
 and covers the cgroup's whole life (kernel ≥ 5.19); `memory.stat` `anon`

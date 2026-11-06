@@ -17,7 +17,9 @@ Off means off; never per file; never reaches the image.
   (stage, instruction, snapshot) and per registry host
   ([records](../../design/metrics.md#records)).
 - Process counters at start and exit, with deltas: `getrusage` (self and
-  children), `/proc/self/status`, cgroup v2, `/proc/net/dev`.
+  children), `/proc/self/status`, cgroup v2 (ranikust's cgroup, or the
+  parent of the leaf `ranikust-<pid>` `rnk-sandbox` nests it in, else the
+  cgroup root), `/proc/net/dev`.
 - The report (`ranikust.metrics/v1`, canonical JSON), its atomic write, the
   human summary and the panic hook that writes it before an abort.
 - `Capture`, the test helper other crates use to check their spans.

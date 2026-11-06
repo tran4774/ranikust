@@ -67,9 +67,11 @@ parent's lower stack, so a parent is never squashed into its children.
   have limits of their own.
 - **Memory gate.** Memory, not CPU, binds parallel stages. The gate sits in
   front of each stage, not each `RUN`:
-  - It reads free memory: the cgroup's working set (`memory.current` less
-    `inactive_file`) against `memory.max` when a limit exists, otherwise
-    `MemAvailable`.
+  - It reads free memory: the working set (`memory.current` less
+    `inactive_file`) of ranikust's cgroup, or of its parent when that
+    cgroup is the leaf `ranikust-<pid>` that `rnk-sandbox` nests it in
+    (only `cpu`, ADR-0110), and of no cgroup further up, against
+    `memory.max` when a limit exists, otherwise `MemAvailable`.
   - A stage starts while free memory is at least an eighth of the limit and
     at least 512 MiB, and always when no stage runs, so the gate slows a
     build but never stops it.

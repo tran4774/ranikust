@@ -104,10 +104,15 @@ pub enum Step {
     /// Starting the `RUN`'s init, PID 1 of its namespace, which forks the
     /// command and gives up its own capabilities (ADR-0080).
     Init,
+    /// Moving the `RUN`'s init or command into its cgroup (ADR-0110).
+    JoinCgroup,
+    /// Making the command's cgroup namespace, rooted at its cgroup
+    /// (ADR-0110).
+    CgroupNamespace,
 }
 
 impl Step {
-    const ALL: [Step; 43] = [
+    const ALL: [Step; 45] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -151,6 +156,8 @@ impl Step {
         Step::FileLimit,
         Step::CoreLimit,
         Step::Init,
+        Step::JoinCgroup,
+        Step::CgroupNamespace,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -223,6 +230,8 @@ impl Step {
             Step::FileLimit => "set RLIMIT_NOFILE",
             Step::CoreLimit => "set RLIMIT_CORE",
             Step::Init => "start the RUN's init",
+            Step::JoinCgroup => "join the RUN's cgroup",
+            Step::CgroupNamespace => "make the RUN's cgroup namespace",
         }
     }
 }
@@ -243,6 +252,18 @@ pub enum Error {
         /// The failing step.
         step: Step,
         /// The errno it failed with.
+        #[source]
+        source: io::Error,
+    },
+    /// The parent could not make the `RUN`'s cgroups in the delegated tree,
+    /// before the clone (ADR-0110).
+    #[error("RUN sandbox: cannot {op} {path:?}: {source}")]
+    Cgroup {
+        /// The step that failed.
+        op: &'static str,
+        /// The cgroup it failed in.
+        path: PathBuf,
+        /// The errno.
         #[source]
         source: io::Error,
     },
@@ -379,13 +400,14 @@ impl Error {
     /// spec and privileges are checked before the fork; the child reports
     /// [`Error::Setup`] or [`Error::Exec`] only from before `execve`, and
     /// the parent returns them only after the process tree is swept
-    /// (`Survivors` otherwise). A variant returned after the command
-    /// starts must not be added here.
+    /// (`Survivors` otherwise), and [`Error::Cgroup`] before the clone. A
+    /// variant returned after the command starts must not be added here.
     #[must_use]
     pub fn ran_no_command(&self) -> bool {
         matches!(
             self,
             Self::Setup { .. }
+                | Self::Cgroup { .. }
                 | Self::Exec { .. }
                 | Self::InvalidSpec(_)
                 | Self::Privilege(_)

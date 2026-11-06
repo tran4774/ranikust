@@ -33,6 +33,38 @@ and the
 [mode selection chapter](https://github.com/tran4774/ranikust/blob/main/docs/research/survey/06-overlay-and-parallelism.md).
 Real Kubernetes clusters have not been tested yet.
 
+## Cgroups of `RUN` commands
+
+Where the cgroup tree ranikust starts in was delegated to it, each `RUN` gets
+cgroups of its own, and when it ends everything it started is killed through
+them, with any cgroup a command made below its own: in a
+`docker run --privileged` container, or wherever ranikust starts at the root
+of its own cgroup namespace with a writable cgroupfs, and in a systemd unit or
+scope with `Delegate=yes` whose cgroup systemd marks as delegated with
+`trusted.delegate` (Ubuntu 22.04's systemd 249 and 24.04's 255 do). Anywhere
+else nothing changes. They set no resource limit, only how many cgroups a
+`RUN` may make below its own, and how deep: 4095 cgroups and 32 levels at
+most, past which `mkdir` fails with `EAGAIN`. ranikust logs which layout it
+uses:
+
+- **nested**, when ranikust is the only process in its cgroup and the `cpu`
+  controller is delegated: ranikust moves into a cgroup of its own below it
+  for the build, and each `RUN` gets one cgroup for its init and one for its
+  command. `docker exec` into the container still works; its process joins
+  ranikust's cgroup, and one still running when the build ends keeps that
+  cgroup, which ranikust then leaves with a warning.
+- **single** otherwise: the command alone gets a cgroup.
+
+Either way the command runs in a cgroup namespace of its own, so a `RUN`
+reads `0::/` in `/proc/self/cgroup`, as in a Docker container, and a file
+that records it is the same whatever the build's `--jobs`. Its init's cgroup
+in `/proc/1/cgroup` still differs between the two layouts, and where a `RUN`
+gets no cgroup it reads ranikust's own, which depends on where ranikust
+runs.
+
+A ranikust killed with `SIGKILL` leaves these cgroups, empty, until its unit
+or container ends; systemd and Docker then remove them.
+
 ## An amd64 container on Apple Silicon
 
 On an Apple Silicon Mac, OrbStack runs `linux/amd64` containers through

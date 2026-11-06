@@ -26,12 +26,14 @@ use tracing::Span;
 use tracing::field::Empty;
 
 use crate::caps;
+use crate::cgroup::{self, Killer, RunCgroup};
 use crate::child::{
     self, ChildArgs, ChildFds, ChildMount, ChildSecret, ChildSecrets, ChildStdio, ExecPtrs,
     KeyringJoin, MadeMounts, RootEntry,
 };
 use crate::direct;
 use crate::error::{Error, Result, Step, io_err, sys_err};
+use crate::fd::fd_above_stdio;
 use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
 use crate::probe::Caps;
@@ -65,6 +67,11 @@ impl Sandbox {
     /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
     /// under [`SeccompProfile::docker_default`] until
     /// [`Sandbox::set_seccomp`] says otherwise (ADR-0103).
+    ///
+    /// Where ranikust's cgroup v2 tree is delegated, it also probes the
+    /// cgroups each [`Isolation::Full`] `RUN` gets there, and may move this
+    /// process into a cgroup of its own until the `Sandbox` is dropped
+    /// (ADR-0110); elsewhere, or when that probe fails, nothing changes.
     ///
     /// # Errors
     ///
@@ -159,6 +166,12 @@ impl Sandbox {
         }
         // After the replay, which no profile error may hold up.
         runner.seccomp = Some(SeccompProfile::docker_default()?);
+        // Only where the full sandbox runs (ADR-0110); after the profile,
+        // whose error then leaves no cgroup to undo, and a later failure
+        // drops the tree, which unnests it.
+        if caps.is_some() {
+            runner.cgroups = cgroup::Tree::start();
+        }
         Self::spawn_thread(runner)
     }
 
@@ -228,9 +241,10 @@ impl Sandbox {
     }
 
     /// Cancels the build's `RUN`s: kills every one running with `SIGKILL`,
-    /// as BuildKit does on a cancel, and makes every later [`Sandbox::run`]
-    /// fail with [`Error::Cancelled`]. Stubs are cleaned up as after any
-    /// `RUN`, before `run` returns. Any thread may call it.
+    /// as BuildKit does on a cancel, through its `cgroup.kill` too where it
+    /// has a cgroup, and makes every later [`Sandbox::run`] fail with
+    /// [`Error::Cancelled`]. Stubs are cleaned up as after any `RUN`, before
+    /// `run` returns. Any thread may call it.
     pub fn cancel(&self) {
         self.running.cancel();
     }
@@ -243,6 +257,9 @@ impl Drop for Sandbox {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        // No `RUN` is left: the nesting is undone, ranikust back in its
+        // cgroup (ADR-0110).
+        drop(self.runner.cgroups.take());
     }
 }
 
@@ -326,14 +343,9 @@ impl ParentPid {
     }
 }
 
-/// `fd`, or a close-on-exec duplicate numbered 3 or higher when it is 0, 1
-/// or 2 (ranikust started with a standard stream closed): the child's
-/// `dup2` onto 0–2 must not overwrite it.
+/// [`fd_above_stdio`], as the crate's error.
 fn above_stdio(fd: OwnedFd) -> Result<OwnedFd> {
-    if fd.as_raw_fd() >= 3 {
-        return Ok(fd);
-    }
-    rustix::io::fcntl_dupfd_cloexec(&fd, 3).map_err(|e| sys_err("fcntl(F_DUPFD_CLOEXEC)", e))
+    fd_above_stdio(fd).map_err(|e| sys_err("fcntl(F_DUPFD_CLOEXEC)", e))
 }
 
 fn spawner(requests: &mpsc::Receiver<Request>, parent: ParentPid) {
@@ -673,6 +685,9 @@ pub(crate) struct Runner {
     /// Whether a full-sandbox child may use `open_tree` and `move_mount`;
     /// `None` probes ([`mount_api_supported`]).
     mount_api: Option<bool>,
+    /// The delegated cgroup tree each [`Isolation::Full`] `RUN` gets
+    /// cgroups in (ADR-0110); `None` where there is none.
+    cgroups: Option<cgroup::Tree>,
     /// The profile of a [`Isolation::Full`] `RUN`; `None` for the probe's
     /// runner, [`Sandbox::start_direct`]'s and `--seccomp=unconfined`.
     seccomp: Option<SeccompProfile>,
@@ -734,6 +749,7 @@ impl Runner {
             shared_root: None,
             direct_only: false,
             mount_api: None,
+            cgroups: None,
             seccomp: None,
             probe: false,
         })
@@ -754,6 +770,7 @@ impl Runner {
             shared_root: None,
             direct_only: true,
             mount_api: None,
+            cgroups: None,
             seccomp: None,
             probe: false,
         }
@@ -790,6 +807,13 @@ impl Runner {
         self.mount_api = Some(false);
     }
 
+    /// Gives full-sandbox `RUN`s cgroups in `tree`, as [`Sandbox::start`]
+    /// does where one is delegated.
+    #[cfg(test)]
+    pub(crate) fn use_cgroups(&mut self, tree: cgroup::Tree) {
+        self.cgroups = Some(tree);
+    }
+
     /// Runs `spec`, cloning through `spawn`. With `running` (a
     /// [`Sandbox`]'s, not the probe's), the `RUN` can be cancelled and
     /// records the `rnk_sandbox.setup` and `rnk_sandbox.run` spans.
@@ -824,6 +848,22 @@ impl Runner {
         };
         let (mut job, journal) = setup.in_scope(|| self.prepare(&mut spec, root_entry))?;
         setup.record("stubs", journal.as_ref().map_or(0, Journal::stub_count));
+        // The full sandbox only: `Direct` on `/` keeps ranikust's cgroup
+        // (ADR-0110).
+        let cgroup = match (job.isolation, &self.cgroups) {
+            (Isolation::Full, Some(tree)) => match setup.in_scope(|| tree.run_cgroup()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    abandon(journal, None);
+                    return Err(e);
+                }
+            },
+            (Isolation::Full, None) | (Isolation::Direct, _) => None,
+        };
+        if let Some(c) = &cgroup {
+            job.args.cgroup_init = c.init_procs();
+            job.args.cgroup_command = Some(c.command_procs());
+        }
         let relay = match Relay::start(
             &mut job.args.stdio,
             &mut job.fds,
@@ -832,11 +872,7 @@ impl Runner {
         ) {
             Ok(relay) => relay,
             Err(e) => {
-                if let Some(j) = journal
-                    && let Err(c) = j.finish()
-                {
-                    tracing::warn!("rnk-sandbox: stub clean-up failed: {c}");
-                }
+                abandon(journal, cgroup);
                 return Err(e);
             }
         };
@@ -859,8 +895,10 @@ impl Runner {
         } else {
             Span::none()
         };
-        let result = span.in_scope(|| execute(job, spawn, &program, running, self.direct_only));
-        match &result {
+        let killer = cgroup.as_ref().map(RunCgroup::killer);
+        let ran =
+            span.in_scope(|| execute(job, spawn, &program, running, self.direct_only, killer));
+        match &ran {
             Ok((status, usage)) => {
                 record_usage(&span, usage);
                 span.record("failed", !status.success());
@@ -870,6 +908,17 @@ impl Runner {
             }
         }
         drop(span);
+        // Reaped: what is left of the `RUN` is killed and its cgroups
+        // removed before the caller diffs the root.
+        let removed = cgroup.map_or(Ok(()), RunCgroup::remove);
+        let result = match (ran, removed) {
+            (ran, Ok(())) => ran,
+            (Ok(_), Err(e)) => Err(e),
+            (Err(e), Err(c)) => {
+                tracing::warn!("rnk-sandbox: {c}, after a failed RUN");
+                Err(e)
+            }
+        };
         // The RUN is reaped and swept (or failed): the relay copies what is
         // left without waiting for a write end that outlived it.
         if let Some(relay) = relay {
@@ -1195,6 +1244,9 @@ impl Runner {
             envp,
             candidates: candidates.iter().map(cstring).collect::<Result<_>>()?,
             script: None,
+            // Set by `run` once the `RUN`'s cgroups are made.
+            cgroup_init: None,
+            cgroup_command: None,
         };
         Ok(Job {
             args,
@@ -1216,6 +1268,21 @@ impl Runner {
             rustix::process::getpid().as_raw_nonzero(),
             now.as_nanos()
         )
+    }
+}
+
+/// Cleans up after a `RUN` that failed before its clone: the stubs, and
+/// its cgroups, which no process joined.
+fn abandon(journal: Option<Journal>, cgroup: Option<RunCgroup<'_>>) {
+    if let Some(c) = cgroup
+        && let Err(e) = c.remove()
+    {
+        tracing::warn!("rnk-sandbox: {e}");
+    }
+    if let Some(j) = journal
+        && let Err(c) = j.finish()
+    {
+        tracing::warn!("rnk-sandbox: stub clean-up failed: {c}");
     }
 }
 
@@ -1678,7 +1745,7 @@ pub(crate) struct Running(Mutex<RunningState>);
 #[derive(Debug, Default)]
 struct RunningState {
     cancelled: bool,
-    pids: Vec<(Pid, Isolation)>,
+    pids: Vec<(Pid, Isolation, Option<Killer>)>,
 }
 
 impl Running {
@@ -1691,8 +1758,8 @@ impl Running {
     fn cancel(&self) {
         let mut state = self.state();
         state.cancelled = true;
-        for &(pid, isolation) in &state.pids {
-            kill_run(pid, isolation);
+        for (pid, isolation, killer) in &state.pids {
+            kill_run(*pid, *isolation, killer.as_ref());
         }
     }
 
@@ -1700,20 +1767,21 @@ impl Running {
         self.state().cancelled
     }
 
-    /// Records a cloned child; kills it at once after a cancel.
-    fn add(&self, pid: Pid, isolation: Isolation) {
+    /// Records a cloned child and its cgroup's killer; kills it at once
+    /// after a cancel.
+    fn add(&self, pid: Pid, isolation: Isolation, killer: Option<Killer>) {
         let mut state = self.state();
-        state.pids.push((pid, isolation));
         if state.cancelled {
-            kill_run(pid, isolation);
+            kill_run(pid, isolation, killer.as_ref());
         }
+        state.pids.push((pid, isolation, killer));
     }
 
     /// Forgets a child that has exited and is not reaped yet, so that its pid
     /// cannot have been reused; returns whether the build was cancelled.
     fn remove(&self, pid: Pid) -> bool {
         let mut state = self.state();
-        state.pids.retain(|&(p, _)| p != pid);
+        state.pids.retain(|&(p, _, _)| p != pid);
         state.cancelled
     }
 }
@@ -1721,9 +1789,19 @@ impl Running {
 /// `SIGKILL` to a `RUN`, as BuildKit kills the process on a cancel
 /// (`executor/runcexecutor/executor.go`). A `Full` child is the `RUN`'s
 /// init, PID 1 of its namespace, so the kernel kills the rest, the command
-/// included (ADR-0080); a `Direct` one leads its process group. Called only while the child is not reaped, so the pid is its own;
-/// `ESRCH` (already gone) is no error.
-fn kill_run(pid: Pid, isolation: Isolation) {
+/// included (ADR-0080); with a cgroup, `cgroup.kill` first reaches the
+/// command's processes at once, however little CPU the init gets
+/// (ADR-0110). A `Direct` one leads its process group. Called only while the
+/// child is not reaped, so the pid is its own; `ESRCH` (already gone) is no
+/// error.
+fn kill_run(pid: Pid, isolation: Isolation, killer: Option<&Killer>) {
+    if let Some(k) = killer
+        && let Err(e) = k.kill()
+    {
+        // The init's `SIGKILL` below still ends the `RUN`; its cgroup's
+        // removal reports the failure again.
+        tracing::debug!("rnk-sandbox: cgroup.kill of a cancelled RUN: {e}");
+    }
     // Nothing to report: the RUN is gone either way, and the caller's reap
     // says how it ended.
     let _ = rustix::process::kill_process(pid, Signal::KILL);
@@ -1735,15 +1813,17 @@ fn kill_run(pid: Pid, isolation: Isolation) {
 }
 
 /// Clones the child, learns whether it reached `execve`, and reaps it. With
-/// `running`, the child can be killed by [`Sandbox::cancel`] until it exits.
-/// With `sweep` (a [`Sandbox::start_direct`] sandbox: a subreaper running
-/// one `RUN` at a time), what the `RUN` left is killed and reaped too.
+/// `running`, the child can be killed by [`Sandbox::cancel`] until it exits,
+/// through `killer` too when it has a cgroup. With `sweep` (a
+/// [`Sandbox::start_direct`] sandbox: a subreaper running one `RUN` at a
+/// time), what the `RUN` left is killed and reaped too.
 fn execute(
     job: Job,
     spawn: impl FnOnce(Job) -> Result<Spawned>,
     program: &str,
     running: Option<&Running>,
     sweep: bool,
+    killer: Option<Killer>,
 ) -> Result<(ExitStatus, libc::rusage)> {
     let isolation = job.isolation;
     if running.is_some_and(Running::is_cancelled) {
@@ -1765,7 +1845,7 @@ fn execute(
         netns,
     } = spawn(job)?;
     if let Some(r) = running {
-        r.add(pid, isolation);
+        r.add(pid, isolation, killer.clone());
     }
     // The child is reaped whatever the read, the wait or the kill gave.
     let failure = read_failure(&failures);
@@ -1782,7 +1862,7 @@ fn execute(
         // so nothing is killed.
         Error::Sys { source, .. } if source.raw_os_error() == Some(libc::ECHILD) => Err(e),
         _ => {
-            kill_run(pid, isolation);
+            kill_run(pid, isolation, killer.as_ref());
             wait_exited(pid).map_err(|_| e)
         }
     });
@@ -2049,6 +2129,8 @@ fn timeval_ns(t: libc::timeval) -> u64 {
         .saturating_add(count(t.tv_usec).saturating_mul(1_000))
 }
 
+#[cfg(test)]
+mod cgroup_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2620,7 +2702,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
-        running.add(pid, Isolation::Direct);
+        running.add(pid, Isolation::Direct, None);
         let start = std::time::Instant::now();
         std::thread::scope(|s| {
             s.spawn(|| {
@@ -2641,7 +2723,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
-        running.add(pid, Isolation::Full);
+        running.add(pid, Isolation::Full, None);
         wait_exited(pid).unwrap();
         assert!(running.remove(pid));
         assert_eq!(reap(pid).unwrap().0.signal(), Some(libc::SIGKILL));
@@ -2924,27 +3006,27 @@ mod tests {
     /// its private mount namespace. On drop, panics included, each mount is
     /// detached, last first, before the directory is removed; if one cannot
     /// be, the directory is kept rather than removed through the mount.
-    struct TestMounts {
+    pub(super) struct TestMounts {
         dir: Option<tempfile::TempDir>,
         targets: Vec<PathBuf>,
     }
 
     impl TestMounts {
-        fn new(dir: tempfile::TempDir) -> Self {
+        pub(super) fn new(dir: tempfile::TempDir) -> Self {
             Self {
                 dir: Some(dir),
                 targets: Vec::new(),
             }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             self.dir
                 .as_ref()
                 .map_or(Path::new("/nonexistent"), |d| d.path())
         }
 
         /// Records a mount just made, right after it succeeded.
-        fn add(&mut self, target: PathBuf) {
+        pub(super) fn add(&mut self, target: PathBuf) {
             self.targets.push(target);
         }
     }
@@ -3241,7 +3323,7 @@ mod tests {
     /// Runs `body` as a T2 test does: on a thread of its own, in a new
     /// mount namespace with every mount private, so that nothing it mounts
     /// reaches another namespace.
-    fn in_private_mount_namespace(body: impl FnOnce() + Send + 'static) {
+    pub(super) fn in_private_mount_namespace(body: impl FnOnce() + Send + 'static) {
         std::thread::spawn(|| {
             use rustix::mount::MountPropagationFlags;
             use rustix::thread::UnshareFlags;
@@ -3264,7 +3346,7 @@ mod tests {
     /// A root at `root` that runs `/bin/sh`: the host's `/usr` bound
     /// read-only, so that neither a `RUN` nor a removal reaches it, and the
     /// `bin`, `lib`, `lib64`, `sbin` symlinks into it.
-    fn root_with_usr(mounts: &mut TestMounts, root: &Path) {
+    pub(super) fn root_with_usr(mounts: &mut TestMounts, root: &Path) {
         fs::create_dir_all(root.join("usr")).unwrap();
         for l in ["bin", "lib", "lib64", "sbin"] {
             std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).unwrap();
@@ -3279,7 +3361,7 @@ mod tests {
     /// what it prints survives a root it made read-only.
     /// Its stdin is the host's `/dev/null`, so that a `RUN` whose own
     /// `/dev/null` no longer opens still starts.
-    fn output_to(path: &Path, spec: &mut RunSpec) {
+    pub(super) fn output_to(path: &Path, spec: &mut RunSpec) {
         let file = File::create(path).unwrap();
         spec.stdin = Stdio::Fd(File::open("/dev/null").unwrap().into());
         spec.stdout = Stdio::Fd(file.try_clone().unwrap().into());
@@ -3414,6 +3496,29 @@ mod tests {
         .unwrap()
     }
 
+    /// Installs [`allow_but`]`(rules)` on this thread only, standing in for
+    /// a filter around ranikust; as root, so without `no_new_privs`. It
+    /// stays until the thread ends; each stacks on the last, and the
+    /// newest's errno wins.
+    fn filter_this_thread(rules: &str) {
+        let prog = allow_but(rules).program;
+        let fprog = libc::sock_fprog {
+            len: u16::try_from(prog.insns.len()).unwrap(),
+            filter: prog.insns.as_ptr().cast_mut(),
+        };
+        // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the program,
+        // which lives across the call.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0u32,
+                &raw const fprog,
+            )
+        };
+        assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
+    }
+
     /// A rule answering `name` (with `arg0`, if given) with `errno`, 0
     /// being a faked success.
     fn errno_rule(name: &str, errno: i32, arg0: Option<u32>) -> String {
@@ -3444,8 +3549,12 @@ mod tests {
     /// its umask is 022 whatever ranikust's is, and ADR-0033's filter is
     /// still installed under a held network namespace: `unshare -U` is
     /// refused, which a control without that filter shows it would not be.
-    /// A faked fork of the init fails the `RUN` before the command runs,
-    /// never leaving it as PID 1 without an init.
+    /// The init's fork comes before the profile too (ADR-0110), so a
+    /// profile faking it and the command's `setsid` still runs the `RUN`,
+    /// under its profile. The same calls faked by a filter around ranikust
+    /// (one on a test thread stands in) fail the `RUN` before the command
+    /// runs, never leaving it as PID 1 without an init, and so does a
+    /// filter install refused there, as the filter's step.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn a_profile_cannot_fake_the_steps_before_it() {
@@ -3471,6 +3580,15 @@ mod tests {
                  if cat /proc/1/environ >/dev/null 2>&1; then echo environ=read; \
                  else echo environ=refused; fi";
             let defaults = format!("{:016x}", caps::docker_default_mask());
+            // `clone(SIGCHLD, ...)`, the init's fork of the command, and
+            // `setsid`: after a faked fork the init goes on as the command,
+            // and its second `setsid`, as a session leader, would fail and
+            // hide a missing parent check.
+            let fork = format!(
+                "{},{}",
+                errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs())),
+                errno_rule("setsid", 0, None)
+            );
             let cases = [
                 (
                     "bounding, faked",
@@ -3493,6 +3611,7 @@ mod tests {
                     Network::Host,
                 ),
                 ("umask, faked", errno_rule("umask", 0, None), Network::Host),
+                ("fork, faked", fork.clone(), Network::Host),
                 (
                     "seccomp, faked, held network",
                     errno_rule("seccomp", 0, None),
@@ -3513,24 +3632,12 @@ mod tests {
                     Network::Host,
                 ),
             ];
-            // `clone(SIGCHLD, ...)`, the init's fork of the command, faked,
-            // and `setsid` too, which the init, a session leader already,
-            // would otherwise fail: the `RUN` fails, and the command never
-            // runs, so it writes nothing.
-            let fork = errno_rule("clone", 0, Some(libc::SIGCHLD.unsigned_abs()));
-            let setsid = errno_rule("setsid", 0, None);
-            runner.seccomp = Some(allow_but(&format!("{fork},{setsid}")));
-            let out = top.join("out-fork");
-            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
-            output_to(&out, &mut spec);
-            let forked = runner.run(spec, None, |job| clone_child(job, parent));
-            let forked_text = fs::read_to_string(&out).unwrap();
-            println!("fork, faked: {forked:?}\n{forked_text}");
             let mut got = Vec::new();
             for (name, rules, network) in cases {
                 if name.starts_with("capset") {
-                    // Last: this thread keeps them. Root's `execve` adds the
-                    // inheritable set to the permitted one.
+                    // Last of the profile cases: this thread keeps them.
+                    // Root's `execve` adds the inheritable set to the
+                    // permitted one.
                     let sets = rustix::thread::capabilities(None).unwrap();
                     rustix::thread::set_capabilities(
                         None,
@@ -3564,6 +3671,35 @@ mod tests {
                 println!("{name}: {st:?}\n{text}");
                 got.push((name, st.map(|s| s.success()).ok(), text));
             }
+            // An install refused around ranikust, on a thread of its own so
+            // that this one can still install the next filter: the init and
+            // the command each fail at it, before the command runs.
+            let (refused, refused_text) = std::thread::scope(|s| {
+                s.spawn(|| {
+                    filter_this_thread(&errno_rule("seccomp", libc::EPERM, None));
+                    runner.seccomp = Some(SeccompProfile::docker_default().unwrap());
+                    let out = top.join("out-install-refused");
+                    let mut spec =
+                        RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+                    output_to(&out, &mut spec);
+                    let st = runner.run(spec, None, |job| clone_child(job, parent));
+                    (st, fs::read_to_string(&out).unwrap())
+                })
+                .join()
+                .unwrap()
+            });
+            println!("install, refused around ranikust: {refused:?}\n{refused_text}");
+            // Last, as this thread keeps it: the fork faked around ranikust.
+            // The `RUN` fails, and the command never runs, so it writes
+            // nothing.
+            filter_this_thread(&fork);
+            runner.seccomp = None;
+            let out = top.join("out-fork-around");
+            let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), probe.into()]);
+            output_to(&out, &mut spec);
+            let forked = runner.run(spec, None, |job| clone_child(job, parent));
+            let forked_text = fs::read_to_string(&out).unwrap();
+            println!("fork, faked around ranikust: {forked:?}\n{forked_text}");
             drop(mounts);
             let mut wrong = Vec::new();
             let parent_checked = matches!(
@@ -3572,7 +3708,19 @@ mod tests {
                     if source.raw_os_error() == Some(libc::EPROTO)
             );
             if !parent_checked || !forked_text.is_empty() {
-                wrong.push(format!("fork, faked: {forked:?}, output {forked_text:?}"));
+                wrong.push(format!(
+                    "fork, faked around ranikust: {forked:?}, output {forked_text:?}"
+                ));
+            }
+            let install_failed = matches!(
+                &refused,
+                Err(Error::Setup { step: Step::Seccomp, source })
+                    if source.raw_os_error() == Some(libc::EPERM)
+            );
+            if !install_failed || !refused_text.is_empty() {
+                wrong.push(format!(
+                    "install, refused around ranikust: {refused:?}, output {refused_text:?}"
+                ));
             }
             for (name, ok, text) in &got {
                 let mut want: Vec<(&str, String)> = vec![
@@ -3586,6 +3734,8 @@ mod tests {
                         want.push(("userns", "refused".into()));
                     }
                     "seccomp, faked, control" => want.push(("userns", "ok".into())),
+                    // The command still installed its profile.
+                    "fork, faked" => want.push(("Seccomp_filters", (own + 1).to_string())),
                     "capset and ambient, faked" => {
                         for key in ["CapInh", "CapAmb"] {
                             want.push((key, format!("{:016x}", 0)));
@@ -3641,27 +3791,6 @@ mod tests {
             root_with_usr(&mut mounts, &root);
             let parent = ParentPid::new().unwrap();
             let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
-            // On this thread only, which ends with the test; as root, so
-            // without `no_new_privs`. Each stacks on the last; the newest's
-            // errno wins.
-            let around = |rules: &str| {
-                let prog = allow_but(rules).program;
-                let fprog = libc::sock_fprog {
-                    len: u16::try_from(prog.insns.len()).unwrap(),
-                    filter: prog.insns.as_ptr().cast_mut(),
-                };
-                // SAFETY: `seccomp(SECCOMP_SET_MODE_FILTER)` reads the
-                // program, which lives across the call.
-                let r = unsafe {
-                    libc::syscall(
-                        libc::SYS_seccomp,
-                        libc::SECCOMP_SET_MODE_FILTER,
-                        0u32,
-                        &raw const fprog,
-                    )
-                };
-                assert_eq!(r, 0, "{}", std::io::Error::last_os_error());
-            };
             let keyrings = ["keyctl", "add_key", "request_key"]
                 .map(|n| errno_rule(n, libc::EPERM, None))
                 .join(",");
@@ -3707,7 +3836,7 @@ mod tests {
             ];
             let mut got = Vec::new();
             for (outer, cases) in phases {
-                around(&outer);
+                filter_this_thread(&outer);
                 for (name, profile, fails) in cases {
                     runner.seccomp = profile;
                     let spec = RunSpec::new(&root, vec!["/bin/true".into()]);
@@ -4289,7 +4418,7 @@ mod tests {
     }
 
     /// SIGKILLs every process whose `comm` is `name`; how many there were.
-    fn kill_named(name: &str) -> usize {
+    pub(super) fn kill_named(name: &str) -> usize {
         let want = format!("({name})");
         let mut killed = 0;
         for entry in fs::read_dir("/proc").unwrap().flatten() {
@@ -4568,77 +4697,120 @@ mod tests {
         });
     }
 
+    /// The `RUN` script that makes its init `SCHED_IDLE` (`chrt -i -p 0 1`)
+    /// and pins it to CPU 0 (`taskset -p 1 1`), both allowed to a process of
+    /// the same uid without `CAP_SYS_NICE`; it writes the init's policy to
+    /// `/r/policy`.
+    pub(super) const IDLE_INIT: &str =
+        "chrt -i -p 0 1 && taskset -p 1 1 >/dev/null && chrt -p 1 >/r/policy && ";
+
+    /// A root for [`slow_init`] at `top/root`: the host's `/usr`, a
+    /// world-writable `/r`, and copies of `yes` and `sleep` under names of
+    /// their own.
+    pub(super) fn spinner_root(mounts: &mut TestMounts, top: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = top.join("root");
+        root_with_usr(mounts, &root);
+        fs::create_dir(root.join("r")).unwrap();
+        fs::set_permissions(root.join("r"), Permissions::from_mode(0o777)).unwrap();
+        fs::copy("/usr/bin/yes", root.join("rnkspin")).unwrap();
+        fs::copy("/usr/bin/sleep", root.join("rnkslow")).unwrap();
+        root
+    }
+
+    /// How a [`slow_init`] `RUN` ended.
+    pub(super) struct SlowInit {
+        /// From the end of the thread that cloned the init to its reap,
+        /// which follows the death of every process of the namespace.
+        pub(super) delay: std::time::Duration,
+        /// The `RUN`'s processes the test had to kill afterwards.
+        pub(super) left: usize,
+        pub(super) ready: bool,
+        pub(super) report: String,
+    }
+
+    /// Runs `{frob}` then `spinners` copies of `yes` pinned to CPU 0 on
+    /// `runner`, cloned on a thread that ends once they run, so that the
+    /// init's death signal fires; case `i` names its files.
+    pub(super) fn slow_init(
+        runner: &Runner,
+        top: &Path,
+        root: &Path,
+        i: usize,
+        frob: &str,
+        spinners: usize,
+    ) -> SlowInit {
+        use std::time::{Duration, Instant};
+        let parent = ParentPid::new().unwrap();
+        let ready = root.join("r").join(format!("ready{i}"));
+        let script = format!(
+            "{frob}n=0; while [ $n -lt {spinners} ]; do taskset -c 0 /rnkspin >/dev/null & \
+             n=$((n + 1)); done; touch /r/ready{i}; exec /rnkslow 300"
+        );
+        let mut spec = RunSpec::new(root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+        output_to(&top.join(format!("slow{i}.out")), &mut spec);
+        let ended = std::sync::Mutex::new(None);
+        let r = runner.run(spec, None, |job| {
+            let ready = ready.clone();
+            let spawned = std::thread::spawn(move || {
+                let spawned = clone_child(job, parent);
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !ready.exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+                spawned
+            })
+            .join()
+            .unwrap();
+            *ended.lock().unwrap() = Some(Instant::now());
+            spawned
+        });
+        let reaped = Instant::now();
+        let delay = reaped - ended.lock().unwrap().expect("the cloning thread ended");
+        let left = kill_named("rnkspin") + kill_named("rnkslow");
+        let text = fs::read_to_string(top.join(format!("slow{i}.out"))).unwrap_or_default();
+        SlowInit {
+            delay,
+            left,
+            ready: ready.exists(),
+            report: format!(
+                "namespace gone {delay:?} after the cloning thread ended; {left} process(es) \
+                 left; run: {r:?}; output {text:?}"
+            ),
+        }
+    }
+
     /// Red team (T2, the VM only; T8, ADR-0080): a root `RUN` can slow its
     /// init's death, not stop it. The command makes the init `SCHED_IDLE`
-    /// (`chrt -i -p 0 1`) and pins it to CPU 0 (`taskset -p 1 1`), both
-    /// allowed to a process of the same uid without `CAP_SYS_NICE`, then
-    /// starts eight spinners pinned to CPU 0; once ready, the thread that
-    /// cloned the init ends, so its death signal fires. The time from that
-    /// thread's end to the init's reap (which follows the death of every
-    /// process of the namespace) is printed for this case and for a control
-    /// without `chrt` and `taskset`; no process of either `RUN` may be left.
+    /// and pins it to CPU 0 ([`IDLE_INIT`]), then starts eight spinners
+    /// pinned to CPU 0; once ready, the thread that cloned the init ends, so
+    /// its death signal fires. The time from that thread's end to the
+    /// init's reap is printed for this case and for a control without
+    /// `chrt` and `taskset`; no process of either `RUN` may be left. The
+    /// `RUN` has no cgroup of its own here; the nested variant is
+    /// `cgroup_tests::a_nested_tree_shortens_the_spinner_cases_init_death`.
     #[test]
     #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
     fn red_team_a_run_can_slow_its_inits_death_but_not_stop_it() {
         in_private_mount_namespace(|| {
-            use std::os::unix::fs::PermissionsExt as _;
-            use std::time::{Duration, Instant};
+            use std::time::Duration;
 
             let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
             let top = mounts.path().canonicalize().unwrap();
-            let root = top.join("root");
-            root_with_usr(&mut mounts, &root);
-            fs::create_dir(root.join("r")).unwrap();
-            fs::set_permissions(root.join("r"), Permissions::from_mode(0o777)).unwrap();
-            fs::copy("/usr/bin/yes", root.join("rnkspin")).unwrap();
-            fs::copy("/usr/bin/sleep", root.join("rnkslow")).unwrap();
-            let parent = ParentPid::new().unwrap();
+            let root = spinner_root(&mut mounts, &top);
             let cases = [
                 ("control", ""),
-                (
-                    "init idle and pinned under 8 spinners",
-                    "chrt -i -p 0 1 && taskset -p 1 1 >/dev/null && chrt -p 1 >/r/policy && ",
-                ),
+                ("init idle and pinned under 8 spinners", IDLE_INIT),
             ];
             let mut report = Vec::new();
             for (i, (case, frob)) in cases.into_iter().enumerate() {
-                let ready = root.join("r").join(format!("ready{i}"));
-                let script = format!(
-                    "{frob}for n in 1 2 3 4 5 6 7 8; do taskset -c 0 /rnkspin >/dev/null & done; \
-                     touch /r/ready{i}; exec /rnkslow 300"
-                );
                 let runner =
                     Runner::new(&top.join(format!("sandbox{i}")), Some(RootEntry::PivotRoot))
                         .unwrap();
-                let mut spec =
-                    RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
-                output_to(&top.join(format!("slow{i}.out")), &mut spec);
-                let ended = std::sync::Mutex::new(None);
-                let r = runner.run(spec, None, |job| {
-                    let ready = ready.clone();
-                    let spawned = std::thread::spawn(move || {
-                        let spawned = clone_child(job, parent);
-                        let deadline = Instant::now() + Duration::from_secs(20);
-                        while !ready.exists() && Instant::now() < deadline {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        std::thread::sleep(Duration::from_millis(500));
-                        spawned
-                    })
-                    .join()
-                    .unwrap();
-                    *ended.lock().unwrap() = Some(Instant::now());
-                    spawned
-                });
-                let reaped = Instant::now();
-                let delay = reaped - ended.lock().unwrap().expect("the cloning thread ended");
-                let left = kill_named("rnkspin") + kill_named("rnkslow");
-                let text = fs::read_to_string(top.join(format!("slow{i}.out"))).unwrap_or_default();
-                println!(
-                    "{case}: namespace gone {delay:?} after the cloning thread ended; \
-                     {left} process(es) left; run: {r:?}; output {text:?}"
-                );
-                report.push((case, delay, left, ready.exists()));
+                let slow = slow_init(&runner, &top, &root, i, frob, 8);
+                println!("{case}: {}", slow.report);
+                report.push((case, slow));
             }
             let policy = fs::read_to_string(root.join("r/policy")).unwrap_or_default();
             println!("the init's policy as the RUN set it: {policy:?}");
@@ -4647,12 +4819,16 @@ mod tests {
                 policy.contains("SCHED_IDLE"),
                 "the RUN could not make its init idle: the test proves nothing ({policy:?})"
             );
-            for (case, delay, left, ready) in report {
-                assert!(ready, "{case}: the RUN never got ready");
-                assert_eq!(left, 0, "{case}: a process of the RUN outlived its init");
+            for (case, slow) in report {
+                assert!(slow.ready, "{case}: the RUN never got ready");
+                assert_eq!(
+                    slow.left, 0,
+                    "{case}: a process of the RUN outlived its init"
+                );
                 assert!(
-                    delay < Duration::from_secs(60),
-                    "{case}: the namespace took {delay:?} to die"
+                    slow.delay < Duration::from_secs(60),
+                    "{case}: the namespace took {:?} to die",
+                    slow.delay
                 );
             }
         });

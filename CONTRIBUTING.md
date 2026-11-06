@@ -106,7 +106,9 @@ rules):
 | T3 | CI: format, clippy, T0, cargo-deny, docs, docs-lint; on a full run also the static build and the native aarch64 tests | GitHub Actions, by lanes ([above](#what-ci-runs)) |
 
 Tests above T0 are marked `#[ignore = "T1: ..."]`, `"T2c: ..."` or
-`"T2: ..."` and run only through their harness. **Never run a T2 or T2c
+`"T2: ..."` and run only through their harness; `"inner: ..."` marks a step
+a T2 test starts again in a place of its own
+([testing.md](docs/testing.md#rules)). **Never run a T2 or T2c
 test on your own machine, nor ranikust in kaniko mode as root outside a
 throwaway container**: in a container it empties that container's `/`, and
 on a host it needs a fresh temporary `--state-dir`
