@@ -111,6 +111,8 @@ seccomp v0.2.4's `default.json`, embedded verbatim), with or without
   rule, a rule without names (the message names the rule, `syscalls[N]`;
   ADR-0109), a filter longer than the kernel's 4096 instructions, and anything
   malformed; a file that is not a regular file or is over 1 MiB.
+- A rule that refuses particular values of an argument is a residual risk
+  ([threat model](../security/threat-model.md#6-accepted-risks)).
 - The profile is the operator's and may refuse any call with any errno
   `--seccomp` accepts, so every step that need not follow it comes before
   it, in the order of step 4. After it come the `capset` to the default

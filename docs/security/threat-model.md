@@ -237,6 +237,14 @@ These follow from decisions and are documented to users rather than fixed:
   trust the answer, such as the capability cut, the command's session and
   `USER` switch and the `PATH` search. Docker's default profile fakes no
   call.
+- A `RUN`'s seccomp profile rule that refuses particular values of an
+  argument may not catch every way of passing them. ranikust accepts this
+  as a residual risk ([ADR-0109](../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md)),
+  as runc and libseccomp do **[inferred]** (not tested against runc).
+  To restrict an argument, let the default action refuse and allow only the
+  values a build needs, with `SCMP_CMP_EQ`, `SCMP_CMP_LT`, `SCMP_CMP_LE` or
+  `SCMP_CMP_MASKED_EQ` conditions, as the default profile does; it is not
+  affected.
 - A `RUN`'s profile that refuses `close` with an errno (a kill or a trap
   fails the `RUN` instead) hangs that `RUN` until the build is cancelled, a
   limit of reliability, not of security: the go pipe that starts the

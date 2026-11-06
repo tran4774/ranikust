@@ -160,6 +160,26 @@ after the host-safety review of that order:
   Docker runs as before. `Direct` keeps its errno rule (`EPERM`, `ENOSYS`
   and `EACCES` go on).
 
+Answered by the maintainer on 2026-11-06 as well, on two more points of
+[#82](https://github.com/tran4774/ranikust/issues/82):
+
+- **A rule that refuses particular values of an argument is a residual
+  risk** ("Ghi là rủi ro còn lại (khuyến nghị)", write it down as a residual
+  risk, as recommended). A profile rule that refuses particular values of an
+  argument may not catch every way of passing them. ranikust accepts this, as
+  runc and libseccomp do, and does not change the compiler. The default
+  profile is not affected; the
+  [threat model, section 6](../security/threat-model.md#6-accepted-risks)
+  says how to write a profile that is not.
+- **A profile that refuses `exit` and `exit_group`, or refuses everything,
+  keeps the behaviour it has** ("Để như Docker, mở task", leave it as Docker
+  does, and open a task). The build then runs until it is cancelled. This is
+  not a security matter. It is tracked in
+  [#103](https://github.com/tran4774/ranikust/issues/103), which lists the
+  options left open: refuse such a profile at start-up, or end such a `RUN`
+  from the parent. Docker's behaviour with the same profiles was not checked
+  here.
+
 ### Consequences
 
 - Good, because the install stays under ranikust's control: setuid programs
@@ -181,6 +201,12 @@ after the host-safety review of that order:
   argument compares, an action per rule, long jumps), which needs its own
   tests: compiled filters run in a forked child, and moby's profile is checked
   against a table for x86_64 and aarch64.
+- Bad, because a profile rule that refuses particular values of an argument
+  may not catch every way of passing them; the default profile is not
+  affected (threat model, section 6).
+- Bad, because a profile that refuses `exit` and `exit_group`, or refuses
+  everything, leaves the build running until it is cancelled
+  ([#103](https://github.com/tran4774/ranikust/issues/103)).
 - Bad, because moby's profile has to be re-vendored by hand when it changes.
 - Neutral, because a profile that asks for what ranikust does not support is
   refused before the build starts, never weakened.
@@ -201,6 +227,14 @@ after the host-safety review of that order:
   needs `CAP_SYS_ADMIN` in the caller's user namespace; with several
   filters, every one runs, newest first, and the first-seen action of
   highest precedence wins, with its errno.
+- **[inferred]** runc and libseccomp leave the same limit on argument rules.
+  Not tested against runc.
+- Reported in #103 by red-team's run on this branch, 2026-11-06, and not
+  repeated for this ADR: a profile that refuses `exit` and `exit_group`
+  leaves the `RUN`'s shell retrying its exit, and a profile with a refusing
+  default action and no rules does the same to ranikust's own child before
+  `exec`, each with one process spinning at about one CPU; a `SIGTERM`
+  cancels the build at once.
 
 ## More Information
 
