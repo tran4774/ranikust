@@ -46,6 +46,6 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 rnk-metrics.workspace = true
-# `tar`: reading the Docker tarball back in tests.
+# `tar`: reading the Docker tarball back, and archives for `ADD`, in tests.
 tar.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

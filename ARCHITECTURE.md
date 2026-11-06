@@ -264,7 +264,8 @@ declares `rnk-oci`, and `rnk-builder` declares `rnk-cache` for its key
 plan.
 [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)
 fixes the edges Phases 4 and 5 may add (`rnk-cache` → `rnk-registry`,
-`rnk-rootfs`; `rnk-builder` → `rnk-cache`; `rnk-context` → `rnk-layer`) and
+`rnk-rootfs`; `rnk-builder` → `rnk-cache`, now declared; `rnk-context` →
+`rnk-layer`) and
 the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
 `rnk-layer`; `rnk-context` → `rnk-registry`);
 `rnk-cache` → `rnk-store` is [ADR-0021](docs/adr/0021-rnk-store-crate.md)'s.

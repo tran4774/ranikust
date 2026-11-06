@@ -532,6 +532,30 @@ mod tests {
         assert_eq!(e.get(Path::new("l")), Some(&link("t")));
     }
 
+    /// A directory's entries come before a sibling whose name extends the
+    /// directory's, in path order.
+    #[test]
+    fn below_lists_a_directorys_entries_and_nothing_else() {
+        let f = files(&[
+            ("sr", Kind::Other),
+            ("src", Kind::Dir),
+            ("src/a", Kind::Other),
+            ("src/b", Kind::Dir),
+            ("src/b/c", Kind::Other),
+            ("src-x", Kind::Other),
+            ("src.txt", Kind::Other),
+        ]);
+        let below = |d: &str| {
+            f.below(Path::new(d))
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(below("src"), ["src/a", "src/b", "src/b/c"]);
+        assert_eq!(below("src/b"), ["src/b/c"]);
+        assert_eq!(below("src/a"), Vec::<String>::new());
+        assert_eq!(below("").len(), 7);
+    }
+
     #[test]
     fn sources_are_cleaned_inside_the_root() {
         assert_eq!(clean_source("/a/./b/../c"), PathBuf::from("a/c"));

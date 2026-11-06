@@ -3,9 +3,11 @@
 
 mod support;
 
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use rnk_cache::{CacheKey, KEY_VERSION};
+use rnk_oci::Digest;
 use rnk_sandbox::{Isolation, Network};
 
 use crate::support::{Opts, context, encoding, keys, last};
@@ -181,7 +183,7 @@ fn each_input_changes_the_key() {
 }
 
 #[test]
-fn a_file_mode_chown_and_chmod_change_the_key() {
+fn a_file_mode_and_chmod_change_the_key() {
     let df = "FROM base\nCOPY run.sh /bin/\n";
     let files: [(&str, &[u8]); 1] = [("run.sh", b"#!/bin/sh\n")];
     let ca = context(&files);
@@ -189,16 +191,6 @@ fn a_file_mode_chown_and_chmod_change_the_key() {
     cb.chmod("run.sh", 0o755);
     let opts = Opts::default();
     assert_ne!(last(df, &ca.path, &opts), last(df, &cb.path, &opts), "mode");
-    let chown = |o: &str| format!("FROM base\nCOPY --chown={o} run.sh /bin/\n");
-    assert_ne!(
-        last(&chown("1:1"), &ca.path, &opts),
-        last(&chown("2:2"), &ca.path, &opts),
-        "--chown"
-    );
-    assert_ne!(
-        last(df, &ca.path, &opts),
-        last(&chown("0:0"), &ca.path, &opts)
-    );
     let chmod = |m: &str| format!("FROM base\nCOPY --chmod={m} run.sh /bin/\n");
     assert_ne!(
         last(&chmod("755"), &ca.path, &opts),
@@ -282,19 +274,38 @@ fn the_build_network_none_is_keyed_for_a_run_without_network() {
 /// Content `|fifo`: hashing would block on opening it.
 #[test]
 fn a_fifo_is_keyed_without_being_opened() {
+    let ctx = context(&[("a.txt", b"a"), ("pipe", b"|fifo")]);
+    let df = "FROM base\nCOPY . /\n";
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let ctx = context(&[("a.txt", b"a"), ("pipe", b"|fifo")]);
-        let df = "FROM base\nCOPY . /\n";
-        let with = last(df, &ctx.path, &Opts::default());
-        let file = context(&[("a.txt", b"a"), ("pipe", b"")]);
-        tx.send((with, last(df, &file.path, &Opts::default())))
-            .unwrap();
+    let path = ctx.path.clone();
+    let planner = std::thread::spawn(move || {
+        tx.send(last(df, &path, &Opts::default())).ok();
     });
-    let (fifo, file) = rx
-        .recv_timeout(Duration::from_secs(60))
-        .expect("the plan opened the FIFO");
-    assert_ne!(fifo, file, "a FIFO is not an empty file");
+    let fifo = match rx.recv_timeout(Duration::from_secs(60)) {
+        Ok(key) => key,
+        Err(RecvTimeoutError::Timeout) => {
+            // A writer unblocks the plan's open, so the thread and the
+            // context go before the test fails.
+            use rustix::fs::{Mode, OFlags, open};
+            drop(open(
+                ctx.file("pipe"),
+                OFlags::WRONLY | OFlags::NONBLOCK,
+                Mode::empty(),
+            ));
+            planner.join().ok();
+            panic!("the plan opened the FIFO");
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            std::panic::resume_unwind(planner.join().unwrap_err());
+        }
+    };
+    planner.join().unwrap();
+    let file = context(&[("a.txt", b"a"), ("pipe", b"")]);
+    assert_ne!(
+        fifo,
+        last(df, &file.path, &Opts::default()),
+        "a FIFO is not an empty file"
+    );
 }
 
 #[test]
@@ -372,6 +383,56 @@ fn tar(content: &[u8]) -> Vec<u8> {
     h.set_cksum();
     b.append_data(&mut h, "member", content).unwrap();
     b.into_inner().unwrap()
+}
+
+/// A `--chown` resolves in the stage's root, which the plan does not have:
+/// no key until #168 says what stands for the ids.
+#[test]
+fn a_chown_step_has_no_key_until_its_owner_can_be_keyed() {
+    let ctx = context(&[("run.sh", b"#!/bin/sh\n")]);
+    for df in [
+        "FROM base\nCOPY --chown=1:1 run.sh /bin/\nRUN true\n",
+        "FROM base\nADD --chown=app run.sh /bin/\n",
+        "FROM base AS one\nFROM base\nCOPY --from=one --chown=0:0 /etc /etc\n",
+    ] {
+        let stage = keys(df, &ctx.path, &Opts::default())
+            .pop()
+            .flatten()
+            .unwrap();
+        assert!(stage.steps().iter().all(Option::is_none), "{df}");
+    }
+}
+
+#[test]
+fn a_stage_built_on_a_stage_chains_from_its_final_key() {
+    let ctx = context(&[("a.txt", b"a")]);
+    let df = "FROM base AS one\nCOPY a.txt /\nFROM one\nRUN true\n";
+    let stages = keys(df, &ctx.path, &Opts::default());
+    let (one, two) = (stages[0].as_ref().unwrap(), stages[1].as_ref().unwrap());
+    assert_eq!((one.base_stage(), two.base_stage()), (None, Some(0)));
+    assert_eq!(Some(two.root()), one.final_key());
+    assert!(two.steps()[0].is_some());
+    let df = "FROM base AS one\nCOPY --chown=1 a.txt /\nFROM one\nRUN true\n";
+    let stages = keys(df, &ctx.path, &Opts::default());
+    assert!(stages[1].is_none(), "built on a stage with no final key");
+}
+
+/// The keys the plan derives, pinned: rnk-cache's goldens pin how inputs
+/// are hashed, these which inputs a Dockerfile and a context give.
+#[test]
+fn the_inputs_a_build_gives_are_pinned() {
+    let ctx = context(&[("a.txt", b"hello\n")]);
+    let df = "FROM base\nARG V=1\nENV MODE=release\nUSER app\nWORKDIR /srv/app\n\
+              COPY --chmod=755 a.txt ./\n\
+              RUN --mount=type=cache,target=/c --mount=type=secret,id=t,env=T <<EOF\n\
+              echo $V\nEOF\n";
+    let hex = |k: CacheKey| Digest::from_sha256_bytes(k.hash()).encoded().to_owned();
+    assert_eq!(
+        hex(last(df, &ctx.path, &Opts::default())),
+        "6aa888aa2ba053e7df528f17543cba13fdc7142e162e545bf6cc4653fe18e9b4",
+        "the plan's inputs changed: bump KEY_VERSION (now {KEY_VERSION}) and \
+         update this golden with rnk-cache's"
+    );
 }
 
 #[test]

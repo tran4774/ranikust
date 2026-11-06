@@ -159,7 +159,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
 - **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
   entries are simply never matched again.
 - **chain root:** the base image's platform manifest digest (none for
-  `FROM scratch`) and the platform.
+  `FROM scratch`) and the platform; for `FROM <stage>`, that stage's final
+  key, so a miss there is a miss for every step built on it (ADR-0114's
+  stop rule: no cached layer on a lower it was not made on).
 - **instruction:** the instruction after variable expansion, with its flags.
 - **inputs:**
   - every declared `ARG` and the environment in effect; `USER`, `WORKDIR`
@@ -172,9 +174,9 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
     drops it;
   - for `COPY` and `ADD` from the build context, each file read (after
     `.dockerignore`): its path relative to the context, content, mode, owner
-    after `--chown` (`0:0`, with the `--chown` in the instruction: a name
-    resolves in the stage's root, which the previous key fixes), type, link
-    target, `security.capability` and, under `--reproducible`, its mtime
+    after `--chown` (`0:0` without one; a step with `--chown`, which
+    resolves in a stage root the plan does not have, gets no key yet
+    [open: #168]), type, link target, `security.capability` and, under `--reproducible`, its mtime
     clamped to the epoch, so only the mtime of a file older than the epoch
     counts;
   - for `COPY --from=<image>`, the image's platform manifest digest; for
@@ -185,7 +187,8 @@ key(k) = H(version, key(k-1), instruction, inputs(k))
   The instruction holds no heredoc body: each one (of a `RUN`, `#!` or
   not, a `COPY` or an `ADD`) is an input of its own, after the expansion
   BuildKit does. An `ADD` of a local archive is keyed as one file, the
-  archive, as BuildKit keys it.
+  archive, as BuildKit keys it, already, though the build refuses it until
+  Phase 5.
 - **never:** the snapshot mode, the host, its users or id maps, the time,
   an mtime outside `--reproducible`, thread counts, the order of an
   unordered collection.

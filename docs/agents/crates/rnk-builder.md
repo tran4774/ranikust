@@ -159,21 +159,25 @@ pub struct PlanInput<'a> { pub graph: &StageGraph, pub stages: &[Stage], pub ima
     pub network: Network, pub allow_network_host: bool, pub encoding: &Encoding,
     pub threads: NonZeroUsize }                          // threads hashing context files; no key depends on it
 pub struct PlanImage<'a> { pub digest: &Digest, pub config: &ImageConfig }  // a FROM or COPY --from image: platform manifest digest, config
-pub struct StageKeys;                                   // root(), steps() -> &[Option<StepKey>], final_key()
+pub struct StageKeys;                                   // root(), base_stage(), steps() -> &[Option<StepKey>], final_key()
 pub struct StepKey { pub key: CacheKey, pub reads_stage: Option<usize> }  // a COPY --from=<stage>: a miss when that stage runs (ADR-0114)
 ```
 
 - Fail closed: a step the build refuses (the Phase 5 features, `ONBUILD`
-  triggers, a `Direct` refusal) or whose expansion or read fails has no key,
-  and neither has a later step of its stage nor a stage built on or reading
-  it.
+  triggers, a `Direct` refusal), a `COPY` or `ADD` with `--chown`
+  ([open: #168]) or a step whose expansion or read fails has no key, and
+  neither has a later step of its stage nor a stage built on or reading it.
+  The one exception: an `ADD` of a local archive is keyed, as one file, the
+  archive (BuildKit's way), though the build refuses it until Phase 5; no
+  build pushes a layer under that key before then.
 - A file is keyed as the copy writes it: under the name it is copied under,
-  owned by `0:0` (`--chown` is in the instruction), with `--chmod` applied;
-  hardlinks inside one directory source as links to the first; a socket as
-  an empty file; under `Isolation::Direct` special files left out, as the
-  copy leaves them. A FIFO, socket or device is described, never opened. An
-  `ADD` of a local archive is one file, the archive (BuildKit's way), though
-  the build still refuses it (Phase 5).
+  owned by `0:0`, with `--chmod` applied; hardlinks inside one directory
+  source as links to the first; a socket as an empty file; under
+  `Isolation::Direct` special files left out, as the copy leaves them. A
+  FIFO, socket or device is described, never opened.
+- `base_stage()`: a stage built on another chains from its final key; a
+  miss there is a miss for every step here, or a cached layer would sit on
+  a lower it was not made on (ADR-0114).
 - A `RUN` without `--network` is keyed with the network BuildKit gives it:
   `none` under the build's `--network=none`, else the default.
 
@@ -292,11 +296,13 @@ noted.
 - `tests/key_plan/`: keys the same on 1 or 8 threads, with the context
   listed in another order or touched; under `--reproducible` an mtime older
   than the epoch counts; each input (a declared build argument, `ENV`,
-  content, mode, name, `--chown`, `--chmod`, mounts, a dropped cache mount,
-  the network, a source stage, a heredoc body) changes the key, a secret's
-  value and an undeclared build argument do not; a FIFO keyed without
-  being opened; special files and hardlinks as the copy writes them; an
-  archive `ADD`; no key from a refused step on.
+  content, mode, name, `--chmod`, mounts, a dropped cache mount, the
+  network, a source stage, a heredoc body) changes the key, an undeclared
+  build argument does not (a secret's value cannot: `PlanInput` holds
+  none); a FIFO keyed without being opened; special files and hardlinks as
+  the copy writes them; an archive `ADD`; no key from a refused step or a
+  `--chown` on; a stage built on a stage; one golden pinning the inputs a
+  build gives.
 - `tests/outputs/` (layer bytes the same at 1, 2 and 8 threads;
   `--reproducible` scrubbing; the OCI layout and Docker tar file by file and
   through `skopeo inspect` when installed; push with mounts against

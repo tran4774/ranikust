@@ -20,9 +20,12 @@
 //!   stage's final key ([`StepKey::reads_stage`]).
 //!
 //! A step the plan cannot key as the build would run it (a feature the
-//! build refuses, an expansion or a read that fails) has no key, and
-//! neither has any later step of its stage or a stage reading it: fail
-//! closed, a miss. Which keys are looked up is the caller's choice.
+//! build refuses, an expansion or a read that fails, a `--chown`
+//! \[open: #168]) has no key, and neither has any later step of its stage
+//! or a stage built on it or reading it: fail closed, a miss. The one
+//! exception is an `ADD` of a local archive, keyed though the build refuses
+//! it until Phase 5: its key is defined, and no build pushes a layer under
+//! it before then. Which keys are looked up is the caller's choice.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -108,6 +111,7 @@ pub struct StepKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageKeys {
     root: CacheKey,
+    base_stage: Option<usize>,
     steps: Vec<Option<StepKey>>,
 }
 
@@ -118,6 +122,14 @@ impl StageKeys {
     #[must_use]
     pub fn root(&self) -> CacheKey {
         self.root
+    }
+
+    /// The stage this one is built on (`FROM <stage>`), whose final key is
+    /// [`root`](Self::root): a miss there is a miss for every step here,
+    /// or a cached layer would sit on a lower it was not made on (ADR-0114).
+    #[must_use]
+    pub fn base_stage(&self) -> Option<usize> {
+        self.base_stage
     }
 
     /// One entry per instruction, in order; `None` from the first step the
@@ -149,7 +161,7 @@ impl KeyPlan {
     /// `COPY`s and `ADD`s name, on `input.threads` threads.
     #[must_use]
     pub fn compute(input: &PlanInput<'_>) -> Self {
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "rnk_builder.key_plan",
             stages = Empty,
             steps = Empty,
@@ -205,6 +217,7 @@ impl KeyPlan {
     ) -> (StageKeys, Option<End>) {
         let Start {
             root,
+            base_stage,
             mut scope,
             mut config,
         } = start;
@@ -244,7 +257,14 @@ impl KeyPlan {
             scope,
             config,
         });
-        (StageKeys { root, steps }, end)
+        (
+            StageKeys {
+                root,
+                base_stage,
+                steps,
+            },
+            end,
+        )
     }
 }
 
@@ -255,6 +275,7 @@ fn len_u64(n: usize) -> u64 {
 /// What a stage starts from.
 struct Start {
     root: CacheKey,
+    base_stage: Option<usize>,
     scope: StageScope,
     config: ImageConfig,
 }
@@ -279,6 +300,7 @@ fn start(
     match &node.base {
         Base::Scratch => Ok(Start {
             root: CacheKey::root(None, input.platform),
+            base_stage: None,
             scope: input.graph.scope_from_image::<&str>(&[]),
             config: ImageConfig {
                 architecture: input.platform.architecture.clone(),
@@ -303,6 +325,7 @@ fn start(
             let env = run.and_then(|c| c.env.clone()).unwrap_or_default();
             Ok(Start {
                 root: CacheKey::root(Some(image.digest), input.platform),
+                base_stage: None,
                 scope: input.graph.scope_from_image(&env),
                 config: image.config.clone(),
             })
@@ -313,6 +336,7 @@ fn start(
                 .ok_or_else(|| "its base stage has no final key".to_owned())?;
             Ok(Start {
                 root: end.key,
+                base_stage: Some(*base),
                 scope: end.scope.clone(),
                 config: end.config.clone(),
             })
@@ -461,6 +485,7 @@ impl Step<'_, '_> {
 
     /// An `ADD`: a `COPY` from the context, its archives keyed as files.
     fn add(&self, a: &Add, inputs: &mut KeyInputs) -> Result<()> {
+        unkeyed_chown(&a.chown)?;
         if !a.checksum.is_empty() || a.keep_git_dir.is_some() || a.unpack == Some(true) {
             return Err(unsupported("ADD --checksum, --keep-git-dir or --unpack"));
         }
@@ -477,6 +502,7 @@ impl Step<'_, '_> {
     /// A `COPY`: the files it reads from the context, or what `--from`
     /// names; the stage it reads, if any.
     fn copy(&self, c: &Copy, inputs: &mut KeyInputs) -> Result<Option<usize>> {
+        unkeyed_chown(&c.chown)?;
         if c.link || c.parents || !c.excludes.is_empty() {
             return Err(unsupported("COPY --link, --parents or --exclude"));
         }
@@ -519,10 +545,9 @@ impl Step<'_, '_> {
     }
 
     /// The context files `sources` name, as the copy writes them: owned by
-    /// 0:0 (a `--chown` is resolved in the stage's root when the step runs,
-    /// from the instruction and what the previous key names), `--chmod`
-    /// applied, the special files a `Direct` build's copy leaves out left
-    /// out, and a socket as the empty file the copy makes of it.
+    /// 0:0 (no `--chown`), `--chmod` applied, the special files a `Direct`
+    /// build's copy leaves out left out, and a socket as the empty file the
+    /// copy makes of it.
     fn context_files(&self, sources: &[String], chmod: &str, inputs: &mut KeyInputs) -> Result<()> {
         if sources.iter().any(String::is_empty) {
             return Err(unsupported("an empty source"));
@@ -558,7 +583,9 @@ impl Step<'_, '_> {
             });
         }
         let described = self.reader.describe_all(&jobs)?;
-        let skip_special = self.input.isolation != Isolation::Full;
+        // `build_stage`'s `copy_skips_special`, for the one isolation known
+        // to skip: keying an entry the copy leaves out only costs a miss.
+        let skip_special = self.input.isolation == Isolation::Direct;
         // A copy links the later names of an inode to its first, within one
         // source, in the order it reads them (rnk-rootfs `Copier::node`).
         let mut first: HashMap<(usize, u32, u32, u64), Vec<u8>> = HashMap::new();
@@ -601,7 +628,15 @@ impl Step<'_, '_> {
             };
             let mode = match (&entry.kind, &chmod) {
                 (Raw::Symlink(_), _) | (_, None) => st.permissions(),
-                (_, Some(chmod)) => chmod.apply(st.permissions(), dir) & 0o7777,
+                (
+                    Raw::Regular(_)
+                    | Raw::Dir
+                    | Raw::Fifo
+                    | Raw::Char(..)
+                    | Raw::Block(..)
+                    | Raw::Socket,
+                    Some(chmod),
+                ) => chmod.apply(st.permissions(), dir) & 0o7777,
             };
             inputs.file(File {
                 path: job.name.clone(),
@@ -614,6 +649,18 @@ impl Step<'_, '_> {
             });
         }
         Ok(())
+    }
+}
+
+/// A `--chown` resolves in the stage's root, which does not exist before
+/// the build: such a step gets no key until #168 says what stands for the
+/// ids (ADR-0113 keys them).
+fn unkeyed_chown(chown: &str) -> Result<()> {
+    // [open: #168]
+    if chown.is_empty() {
+        Ok(())
+    } else {
+        Err(unsupported("--chown"))
     }
 }
 
@@ -698,30 +745,34 @@ impl<'a> Reader<'a> {
         let next = AtomicUsize::new(0);
         let stop = AtomicBool::new(false);
         let mut out: Vec<Option<Described>> = vec![None; jobs.len()];
+        let work = || -> Result<Vec<(usize, Described)>> {
+            let mut mine = Vec::new();
+            while !stop.load(Ordering::Relaxed) {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(job) = jobs.get(i) else { break };
+                match self.describe(&job.path) {
+                    Ok(d) => mine.push((i, d)),
+                    Err(e) => {
+                        stop.store(true, Ordering::Relaxed);
+                        return Err(e);
+                    }
+                }
+            }
+            Ok(mine)
+        };
         let done: Vec<Result<Vec<(usize, Described)>>> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    s.spawn(|| {
-                        let mut mine = Vec::new();
-                        while !stop.load(Ordering::Relaxed) {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(job) = jobs.get(i) else { break };
-                            match self.describe(&job.path) {
-                                Ok(d) => mine.push((i, d)),
-                                Err(e) => {
-                                    stop.store(true, Ordering::Relaxed);
-                                    return Err(e);
-                                }
-                            }
-                        }
-                        Ok(mine)
-                    })
-                })
+            // This thread works too and a thread the system refuses is
+            // skipped, so the jobs finish even with none spawned.
+            let handles: Vec<_> = (1..workers)
+                .filter_map(|_| std::thread::Builder::new().spawn_scoped(s, work).ok())
                 .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
-                .collect()
+            let mut done = vec![work()];
+            done.extend(
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))),
+            );
+            done
         });
         for part in done {
             for (i, d) in part? {
