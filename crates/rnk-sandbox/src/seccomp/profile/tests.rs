@@ -430,7 +430,11 @@ fn docker_default_restricts_arguments_by_allowing_values() {
         libc::SYS_io_uring_enter,
         libc::SYS_io_uring_register,
     ] {
-        assert_ne!(verdict(&p, call, a0(0)), ALLOW, "call {call}");
+        let v = verdict(&p, call, a0(0));
+        assert!(
+            precedence(v) < precedence(libc::SECCOMP_RET_LOG),
+            "call {call}: {v:#x}"
+        );
     }
     let with = |default: &str, act: &str, op: &str| {
         format!(
@@ -1719,7 +1723,7 @@ fn rules_that_disagree_settle_on_the_strictest_in_any_order() {
                 libc::SECCOMP_RET_KILL_PROCESS,
                 "{rules:?}"
             );
-            assert_eq!(verdict(&p, g, a0(0x1_0000_0007)), errno(9), "{rules:?}");
+            assert_eq!(verdict(&p, g, a0(8)), errno(9), "{rules:?}");
         }
     }
 }
@@ -2145,10 +2149,10 @@ mod kernel {
             let status = under(&p, || {
                 for (i, (n, a, b)) in (1..).zip(I386) {
                     // SAFETY: in this forked child, each call of `I386`
-                    // changes at most the child if it runs: a pid read,
-                    // its own personality or user namespace, a keyring
-                    // lookup with create 0, which at most makes the user's
-                    // own keyrings exist, a socket its exit closes.
+                    // changes at most the child, or makes the user's own
+                    // keyrings exist, if it runs: a pid read, its own
+                    // personality or user namespace, a keyring lookup with
+                    // create 0, a socket its exit closes.
                     if i386 && unsafe { int80(n, a, b, 0) } != -libc::EPERM {
                         return i;
                     }
