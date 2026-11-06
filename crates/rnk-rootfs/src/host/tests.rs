@@ -515,54 +515,63 @@ fn a_symlink_another_account_owns_is_not_followed() {
 /// digest file with a symlink to another and with a hard link to it.
 /// Whatever moment each swap lands at, nothing reaches the victim
 /// directory: after every round its two files keep their dummy text and no
-/// name appears there. Rounds go on until some writes got through meanwhile
-/// and some were refused, so the race was run, neither refused outright nor
-/// missed; still inconclusive at the deadline, the test fails.
+/// name appears there. Rounds go on until one let some writes through
+/// meanwhile and refused others, so the race was run, neither refused
+/// outright nor missed; still inconclusive at the deadline, the test fails.
 #[test]
 fn red_team_names_swapped_during_an_output_never_redirect_it() {
     use std::time::{Duration, Instant};
 
-    // A round takes well under a second; the rest is for a loaded or
-    // emulated runner.
+    // A round took 20 to 50 ms on a loaded 32-thread x86_64 (debug build,
+    // tmpfs); the rest is for a disk-backed, busy or emulated runner.
     const DEADLINE: Duration = Duration::from_secs(60);
     let start = Instant::now();
-    let mut seen = SwapRace::default();
+    let mut all = SwapRace::default();
     let mut rounds = 0_u32;
-    loop {
+    // Both in one round: a round where every write was refused and another
+    // where the swapper never ran would prove nothing together.
+    let conclusive = loop {
         rounds += 1;
         let round = swap_race_round(rounds);
-        seen.written += round.written;
-        seen.refused += round.refused;
-        seen.swaps += round.swaps;
-        if seen.written > 0 && seen.refused > 0 || start.elapsed() >= DEADLINE {
-            break;
+        all.written += round.written;
+        all.refused += round.refused;
+        all.swaps += round.swaps;
+        if round.written > 0 && round.refused > 0 {
+            break true;
         }
-    }
+        if start.elapsed() >= DEADLINE {
+            break false;
+        }
+    };
     let SwapRace {
         written,
         refused,
         swaps,
-    } = seen;
+    } = all;
     let took = start.elapsed();
     println!("{rounds} rounds in {took:?}: {written} written, {refused} refused, {swaps} swaps");
     assert!(
-        written > 0,
-        "no write got through in {rounds} rounds ({took:?}; {refused} refused, {swaps} swaps): \
-         the race proved nothing"
-    );
-    assert!(
-        refused > 0,
-        "no swap was ever seen in {rounds} rounds ({took:?}; {written} written, {swaps} swaps): \
-         the race proved nothing"
+        conclusive,
+        "no round both let a write through and refused one in {rounds} rounds ({took:?}; \
+         {written} written, {refused} refused, {swaps} swaps in all): the race proved nothing"
     );
 }
 
-/// What a round of the swap race saw.
+/// What the swap race saw, in one round or in all.
 #[derive(Default)]
 struct SwapRace {
     written: u32,
     refused: u32,
     swaps: u64,
+}
+
+/// Sets its flag when dropped.
+struct StopOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// One round of `red_team_names_swapped_during_an_output_never_redirect_it`
@@ -598,6 +607,8 @@ fn swap_race_round(round: u32) -> SwapRace {
     fs::hard_link(victim.join("digest"), out.join("digesthard")).unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
+    // Stops the swapper on a panic too, before the directory is removed.
+    let _stop_on_drop = StopOnDrop(Arc::clone(&stop));
     let started = Arc::new(Barrier::new(2));
     let top_fd = rustix::fs::open(&top, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
     // The real output directory, wherever its name is at the moment.
@@ -614,8 +625,8 @@ fn swap_race_round(round: u32) -> SwapRace {
                 (&out_fd, "digest", "digesthard"),
                 (&top_fd, "out", "outlink"),
             ];
-            // In a fixed order the swaps fall into step with the writer's
-            // steps, which then meet the same names every time (#44).
+            // In a fixed order the swaps can fall into step with the
+            // writer's steps, which then meet the same names every time.
             let mut x = 0x9e37_79b9_7f4a_7c15_u64.wrapping_mul(u64::from(round));
             let mut swaps = 0_u64;
             started.wait();

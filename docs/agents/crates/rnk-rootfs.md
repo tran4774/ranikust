@@ -170,7 +170,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/host/tests.rs`): a thread exchanging the output directory, the tar
   and the digest file with links to victims, in random order, while
   `OutputDir` writes; rounds of 3000 writes, the victim checked after each,
-  until some got through and some were refused (60 s at most).
+  until one round let some through and refused some (no new round after
+  60 s).
 - **T1** (`#[ignore = "T1: ..."]`, `RNK_T1_ROOT`): extraction and live
   extraction never write below or skip-wrongly real mounts; foreign owners
   and setuid kept raw in `extract`.
