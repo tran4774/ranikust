@@ -10,9 +10,10 @@ use crate::inputs::KeyInputs;
 
 /// The version of the key algorithm, hashed into every key and named in
 /// every tag. Any change to what a key or a tag hashes, or how, bumps it,
-/// and so does any change to the layer format, what a cached layer holds
-/// for given inputs: [`Encoding`] names no encoder version. New keys then
-/// miss the old entries, which are never rewritten (ADR-0005).
+/// and so does any change to the entry form a lookup checks or to the
+/// layer format, what a cached layer holds for given inputs: [`Encoding`]
+/// names no encoder version. New keys then miss the old entries, which are
+/// never rewritten (ADR-0005).
 pub const KEY_VERSION: u32 = 2;
 
 /// A step's cache key: `key(k) = SHA-256(version, key(k-1), instruction,
@@ -65,7 +66,8 @@ impl CacheKey {
     }
 
     /// The key of the step after `self`: `instruction` is the step's text
-    /// after variable expansion, with its flags.
+    /// after variable expansion, with its flags. The key names no encoding:
+    /// [`next_entry`](Self::next_entry) gives the step's entry.
     #[must_use]
     pub fn next(&self, instruction: &str, inputs: KeyInputs) -> Self {
         let mut c = Canonical::new("rnk-cache step");
@@ -80,6 +82,17 @@ impl CacheKey {
         }
     }
 
+    /// The entry of the step after `self`: the key [`next`](Self::next)
+    /// gives, with the encoding `inputs` were made for.
+    #[must_use]
+    pub fn next_entry(&self, instruction: &str, inputs: KeyInputs) -> EntryId {
+        let encoding = inputs.encoding();
+        EntryId {
+            key: self.next(instruction, inputs),
+            encoding,
+        }
+    }
+
     /// The version of the algorithm that made the key.
     #[must_use]
     pub fn version(&self) -> u32 {
@@ -91,21 +104,58 @@ impl CacheKey {
     pub fn hash(&self) -> &[u8; 32] {
         &self.hash
     }
+}
 
-    /// The tag this step's layer is looked up and pushed under when encoded
-    /// as `encoding`: `rnk-v<version>-<hex>`, where `<hex>` is the SHA-256
-    /// of the key and the encoding, so a hit was encoded with this build's
-    /// settings (ADR-0113).
+impl fmt::Debug for CacheKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hex = Digest::from_sha256_bytes(&self.hash);
+        write!(f, "CacheKey(v{}:{})", self.version, hex.encoded())
+    }
+}
+
+/// What a cache entry is looked up and pushed by: a step's key and the
+/// encoding of its layer, together, so that the tag, the annotations a
+/// lookup checks and the layer it accepts all name one encoding
+/// ([ADR-0113]).
+///
+/// Only [`CacheKey::next_entry`] makes one, with the encoding the key's
+/// inputs were made for: a key that left mtimes out never names an entry
+/// of `--reproducible` layers, nor the reverse.
+///
+/// [ADR-0113]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EntryId {
+    key: CacheKey,
+    encoding: Encoding,
+}
+
+impl EntryId {
+    /// The step's key.
     #[must_use]
-    pub fn tag(&self, encoding: &Encoding) -> String {
+    pub fn key(&self) -> &CacheKey {
+        &self.key
+    }
+
+    /// The layer's encoding.
+    #[must_use]
+    pub fn encoding(&self) -> &Encoding {
+        &self.encoding
+    }
+
+    /// The tag the entry is looked up and pushed under:
+    /// `rnk-v<version>-<hex>`, where `<hex>` is the SHA-256 of the key and
+    /// the encoding, so a hit was encoded with this build's settings.
+    #[must_use]
+    pub fn tag(&self) -> String {
+        let Self { key, encoding } = self;
         let Encoding {
             compression,
             level,
             times,
         } = *encoding;
         let mut c = Canonical::new("rnk-cache tag");
-        c.u32(self.version);
-        c.hash(&self.hash);
+        c.u32(key.version);
+        c.hash(&key.hash);
         match compression {
             // The encoder ignores the level of a plain tar.
             Compression::Uncompressed => c.str("uncompressed"),
@@ -126,14 +176,7 @@ impl CacheKey {
             }
         }
         let hex = Digest::from_sha256_bytes(&c.finish());
-        format!("rnk-v{}-{}", self.version, hex.encoded())
-    }
-}
-
-impl fmt::Debug for CacheKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex = Digest::from_sha256_bytes(&self.hash);
-        write!(f, "CacheKey(v{}:{})", self.version, hex.encoded())
+        format!("rnk-v{}-{}", key.version, hex.encoded())
     }
 }
 
@@ -150,6 +193,23 @@ pub struct Encoding {
     pub times: TimePolicy,
 }
 
+/// The form a cache entry's annotation names the encoding in:
+/// `gzip;level=6;times=kept`, `zstd;level=3;times=clamped;epoch=0`,
+/// `uncompressed;times=kept` (no level, which a plain tar ignores).
+impl fmt::Display for Encoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.compression {
+            Compression::Uncompressed => f.write_str("uncompressed")?,
+            Compression::Gzip => write!(f, "gzip;level={}", self.level)?,
+            Compression::Zstd => write!(f, "zstd;level={}", self.level)?,
+        }
+        match self.times {
+            TimePolicy::Kept => f.write_str(";times=kept"),
+            TimePolicy::Clamped { epoch } => write!(f, ";times=clamped;epoch={epoch}"),
+        }
+    }
+}
+
 /// The mtimes a layer's headers carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimePolicy {
@@ -161,4 +221,55 @@ pub enum TimePolicy {
         /// `SOURCE_DATE_EPOCH`, or 0.
         epoch: i64,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One key's tag under three encodings, two of which its inputs were
+    /// not made for: only this module can pair them, since `golden.rs`
+    /// reaches tags through `next_entry`, whose key already depends on the
+    /// time policy. A change here bumps `KEY_VERSION`.
+    #[test]
+    fn one_keys_tag_is_pinned_under_three_encodings() {
+        // `golden.rs`'s "step with every input" key, made with kept times.
+        let hex = "a949f4ffdf8c45cdd972d636face070a22bc8e7090b6d40f0cf971a06fdee1bf";
+        let mut hash = [0_u8; 32];
+        for (byte, pair) in hash.iter_mut().zip(hex.as_bytes().chunks(2)) {
+            *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+        }
+        let key = CacheKey {
+            version: KEY_VERSION,
+            hash,
+        };
+        let tag = |compression, level, times| {
+            let encoding = Encoding {
+                compression,
+                level,
+                times,
+            };
+            EntryId { key, encoding }.tag()
+        };
+        assert_eq!(
+            [
+                tag(Compression::Gzip, 6, TimePolicy::Kept),
+                tag(Compression::Zstd, 3, TimePolicy::Clamped { epoch: 0 }),
+                tag(
+                    Compression::Uncompressed,
+                    0,
+                    TimePolicy::Clamped {
+                        epoch: 1_700_000_000,
+                    },
+                ),
+            ],
+            [
+                "rnk-v2-94a5f7718b77018ac1be744ed70692af43c77d2716dcf501d6615008216e38a8",
+                "rnk-v2-4c0be455b28f53568ffe1ff1292acf63d1ae87fb3af1ef0bb8524cbabe788193",
+                "rnk-v2-fab985be670211bd2a2ace5aaf692beec32ffdcc269d9624bf0797ef9715cfc9",
+            ],
+            "the tag hash changed: bump KEY_VERSION (now {KEY_VERSION}) and update \
+             every golden"
+        );
+    }
 }

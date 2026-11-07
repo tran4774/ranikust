@@ -55,13 +55,22 @@ pub enum Error {
         target: String,
         /// The status and the registry's message, without credentials.
         message: String,
-        /// Whether trying again may succeed (network errors, 5xx, 429).
+        /// Whether trying again may succeed: a request that did not complete
+        /// (a connection failure, a timeout, a request or body cut short,
+        /// nothing sent for the `registry-idle` limit), a 408, 429, 500,
+        /// 502, 503 or 504 whatever the body says, or an error envelope's
+        /// `TOOMANYREQUESTS` code. Never a pull's 404 (`not_found`), nor a
+        /// transfer that cannot start over.
         retryable: bool,
         /// Whether the registry refused access: a 401 or 403, or an
         /// `UNAUTHORIZED` or `DENIED` code in its error envelope. Decided
         /// from the status and codes, never from `message`, which holds only
         /// an excerpt of what the registry said.
         refused: bool,
+        /// Whether the registry answered a manifest or blob `GET` with 404:
+        /// it holds no such manifest, blob or repository. Decided from the
+        /// status only; never retried.
+        not_found: bool,
     },
 
     /// Received content does not match the digest it was asked for.
@@ -143,6 +152,18 @@ impl Error {
         self
     }
 
+    /// Whether the registry answered 404 to a manifest or blob `GET`: it
+    /// holds no such manifest, blob or repository.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Registry {
+                not_found: true,
+                ..
+            }
+        )
+    }
+
     /// Whether the failed operation may succeed if repeated.
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -221,6 +242,7 @@ impl Op<'_> {
             message,
             retryable,
             refused,
+            not_found: false,
         }
     }
 }
@@ -232,12 +254,23 @@ pub(crate) fn retryable_status(code: u16) -> bool {
 }
 
 impl Op<'_> {
-    /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
-    /// refusal whatever its body said.
+    /// [`Op::error`] for an answer whose status is known: a status
+    /// [`refusal_status`] or [`retryable_status`] names decides, whatever
+    /// the body said; a 404 is "not found" and never retried, even with a
+    /// `TOOMANYREQUESTS` code.
     pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
         let mut e = self.error(err);
-        if let Error::Registry { refused, .. } = &mut e {
+        if let Error::Registry {
+            retryable,
+            refused,
+            not_found,
+            ..
+        } = &mut e
+        {
             *refused |= refusal_status(status);
+            *retryable |= retryable_status(status);
+            *not_found = status == 404;
+            *retryable &= !*not_found;
         }
         e
     }
@@ -262,6 +295,7 @@ pub(crate) fn idle_error(ctx: &Op<'_>, idle: Option<std::time::Duration>) -> Err
         ),
         retryable: true,
         refused: false,
+        not_found: false,
     }
 }
 
@@ -391,6 +425,47 @@ mod tests {
             });
             assert_eq!(err.is_retryable(), retryable, "status {code}");
         }
+    }
+
+    /// A 404 is "not found" from its status, and never retried, even when
+    /// its envelope asks for it.
+    #[test]
+    fn a_404_is_not_found_and_never_retried() {
+        let envelope = |code: &str| OciDistributionError::RegistryError {
+            envelope: serde_json::from_str(&format!(r#"{{"errors":[{{"code":"{code}"}}]}}"#))
+                .unwrap(),
+            url: "https://r.example/v2/".to_owned(),
+        };
+        let e = op().error_for_status(404, envelope("TOOMANYREQUESTS"));
+        assert!(e.is_not_found() && !e.is_retryable(), "{e:?}");
+        let e = op().error_for_status(429, envelope("TOOMANYREQUESTS"));
+        assert!(!e.is_not_found() && e.is_retryable(), "{e:?}");
+        let e = op().error_for_status(404, envelope("MANIFEST_UNKNOWN"));
+        assert!(e.is_not_found() && !e.is_retryable(), "{e:?}");
+    }
+
+    /// A 408 or 429 is retried from its status, whatever code its envelope
+    /// holds; another 4xx only for a `TOOMANYREQUESTS` code.
+    #[test]
+    fn a_408_or_429_is_retried_whatever_its_envelope() {
+        let envelope = |code: &str| OciDistributionError::RegistryError {
+            envelope: serde_json::from_str(&format!(r#"{{"errors":[{{"code":"{code}"}}]}}"#))
+                .unwrap(),
+            url: "https://r.example/v2/".to_owned(),
+        };
+        for status in [408, 429] {
+            for code in ["TOOMANYREQUESTS", "UNSUPPORTED", "DENIED", "SOMETHING_ELSE"] {
+                let e = op().error_for_status(status, envelope(code));
+                assert!(
+                    e.is_retryable() && !e.is_not_found(),
+                    "{status} {code}: {e:?}"
+                );
+            }
+        }
+        let e = op().error_for_status(400, envelope("UNSUPPORTED"));
+        assert!(!e.is_retryable(), "{e:?}");
+        let e = op().error_for_status(400, envelope("TOOMANYREQUESTS"));
+        assert!(e.is_retryable(), "{e:?}");
     }
 
     #[test]

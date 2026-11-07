@@ -4,7 +4,8 @@
 > **Depends on:** nothing internal (`serde`, `serde_json`, `thiserror`) ·
 > **Used by:** `rnk-registry`, `rnk-builder`, `rnk-store` (`Digest`),
 > `rnk-snapshot`, `ranikust`, `rnk-cache` (`Digest`, `Platform`,
-> `Compression`) · **Path:** `crates/rnk-oci/`
+> `Compression`, the cache entry's documents, `Timestamp`) ·
+> **Path:** `crates/rnk-oci/`
 
 **TL;DR:** OCI and Docker manifests, indexes, image configs and media types,
 owned here rather than taken from `oci-spec`. A digest covers exact bytes:
@@ -18,6 +19,7 @@ sorted keys.
 - Image references, normalized as docker/distribution does.
 - Canonical JSON, with sorted keys, of every config and manifest ranikust
   writes.
+- RFC 3339 timestamps (`Timestamp`), as a config's `created` holds them.
 
 ## Must not
 
@@ -54,6 +56,8 @@ pub enum Error;             // one enum for the crate; untrusted input quoted as
 pub fn to_canonical_json<T: Serialize + ?Sized>(v: &T) -> Result<Vec<u8>, Error>; // bytes to digest and write
 pub struct Reference; // parse (docker/distribution ParseNormalizedNamed), registry, repository, tag, digest, name,
                       // with_default_tag ("latest"), with_tag, with_digest; Display "registry/repo[:tag][@digest]"
+pub struct Timestamp; // seconds + nanos, years 1 to 9999; Copy, Ord; from_system_time (clamps), to_system_time, unix_seconds
+    // parse_rfc3339 (strict: upper-case T and Z, or ±HH:MM; no leap second); Display: Go's RFC3339Nano in UTC
 ```
 
 Canonical JSON is OLPC's, as OCI [considerations.md](https://github.com/opencontainers/image-spec/blob/v1.1.1/considerations.md#json)
@@ -141,6 +145,9 @@ All T0 (`cargo test -p rnk-oci`).
   EXPOSE and STOPSIGNAL validation, shell form), history and `diff_ids`
   appends in canonical bytes; `manifest.json` and layout files as
   go-containerregistry and the image-spec write them.
+- `Timestamp` (`src/time.rs`): Go's RFC3339Nano forms, offsets, refused
+  forms with short messages, `SystemTime` round trips and clamping, and
+  proptests (round trips, no panic on any text).
 - To do: config fields compared with kaniko's and BuildKit's (T1/T2, with
   `rnk-builder`). Multi-platform output is out of scope
   ([ADR-0008](../../adr/0008-out-of-scope-bake-warmer-cloud-contexts.md)).

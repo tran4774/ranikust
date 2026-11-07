@@ -795,8 +795,9 @@ layer is.
   the builder runs the stage again from its base
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
   On `/` it does the same, for a failure found while writing only (an entry
-  refused under the base-layer rules, or any failure while extracting a blob
-  already in the store, which is never spooled): the new base empties `/`, as
+  refused under the base-layer rules, a full disk or another I/O error, or
+  any failure while extracting a blob already in the store, which is never
+  spooled): the new base empties `/`, as
   between stages, and the root is usable again then. The restart
   happens at most once, with no cache at all, and always rebuilds its base from
   the layers of its chain

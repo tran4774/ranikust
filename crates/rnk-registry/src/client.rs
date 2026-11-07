@@ -435,6 +435,16 @@ impl Client {
         self.hint(reference.registry(), r).await
     }
 
+    /// [`Client::pull_manifest`], or `None` when the registry answers 404:
+    /// it holds no such manifest or repository. A 404 is never retried;
+    /// any other failure is an error as from [`Client::pull_manifest`].
+    pub async fn find_manifest(&self, reference: &Reference) -> Result<Option<RawManifest>, Error> {
+        match self.pull_manifest(reference).await {
+            Err(e) if e.is_not_found() => Ok(None),
+            r => r.map(Some),
+        }
+    }
+
     async fn pull_manifest_once(&self, reference: &Reference) -> Result<RawManifest, Error> {
         let oci_ref = oci_reference(reference)?;
         let host = self.host(reference.registry()).await?;
@@ -1634,6 +1644,7 @@ async fn ping(
             message: format!("HTTP {status}"),
             retryable: retryable_status(status),
             refused: refusal_status(status),
+            not_found: false,
         }),
     }
 }
@@ -1739,6 +1750,7 @@ fn exchange_error(ctx: &Op<'_>, err: ExchangeError, bounds: fetch::Bounds) -> Er
             message: format!("HTTP {code}"),
             retryable: true,
             refused: false,
+            not_found: false,
         },
         ExchangeError::Status(code) => Error::Auth {
             host: ctx.host.to_owned(),
@@ -1759,6 +1771,7 @@ fn not_retryable(err: Error) -> Error {
             target,
             message,
             refused,
+            not_found,
             ..
         } => Error::Registry {
             operation,
@@ -1767,6 +1780,7 @@ fn not_retryable(err: Error) -> Error {
             message,
             retryable: false,
             refused,
+            not_found,
         },
         other => other,
     }
