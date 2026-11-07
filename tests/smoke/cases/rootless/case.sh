@@ -5,8 +5,10 @@
 # host's PID namespace (--pid=host, ADR-0134). Its --reproducible
 # digest equals overlay mode as root's (--privileged), also at --jobs 1; a
 # file capability a RUN sets is exported; ranikust killed during a RUN
-# (SIGKILL, SIGINT, SIGINT to its group) leaves no process, and the next
-# build removes the killed builds' directories. In the kaniko leg, a set-up
+# (SIGKILL, SIGINT, SIGTERM, SIGINT to its group) leaves no process and
+# exits as a build that never forks does (137 for SIGKILL, else 1: one
+# stop cancels the build), and the next build removes the killed builds'
+# directories. In the kaniko leg, a set-up
 # that fails in the build's user namespace falls back to kaniko mode
 # (ADR-0136). Each mode has a persistent state directory of its own: the
 # leg's may be kaniko mode's.
@@ -65,7 +67,7 @@ case_run() {
   build caps --target caps --allow proc.rbind >/dev/null
   expect "$(run caps getcap /bin/pinger)" "/bin/pinger cap_net_raw=ep" "the file capability"
   local how
-  for how in KILL INT group; do killed_mid_run "$how"; done
+  for how in KILL INT TERM group; do killed_mid_run "$how"; done
   build after --target content --allow proc.rbind >/dev/null
   local left
   left="$(find "$WORK/builds" "$WORK/tmp" -mindepth 1 -maxdepth 1 2>/dev/null)"
@@ -105,21 +107,23 @@ falls_back() {
   [ ! -e "$o/image.tar" ] || fail "--mode=overlay with the hook: an image was written"
 }
 
-# killed_mid_run HOW: ranikust is sent SIGKILL (KILL), SIGINT (INT) or
-# SIGINT to its process group (group) once a RUN's `sleep` shows in
-# another user namespace; then no process of another user namespace is
-# left.
+# killed_mid_run HOW: ranikust is sent SIGKILL (KILL), SIGINT (INT),
+# SIGTERM (TERM) or SIGINT to its process group (group) once a RUN's
+# `sleep` shows in another user namespace; then no process of another user
+# namespace is left, and ranikust's status is 137 for SIGKILL, else 1.
 killed_mid_run() {
-  local o got
+  local o got want=1
+  [ "$1" != KILL ] || want=137
   o="$(out "kill-$1")"
   rm -rf "$o" && mkdir -p "$o"
   got="$(rnk_run_sh "how=$1 at=$IN/out
 $(kill_script)" "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target slow \
     --allow proc.rbind 2>&1)"
   printf '%s\n' "$got" >"$o/kill.log"
-  echo "  $CASE: killed during a RUN ($1): $(grep '^caught=' <<<"$got")" >&2
+  echo "  $CASE: killed during a RUN ($1): $(grep '^caught=\|^status=' <<<"$got" | paste -sd ' ')" >&2
   ! grep -q '^left: ' <<<"$got" || fail "killed during a RUN ($1): $got"
   grep -q '^caught=1$' <<<"$got" || fail "killed during a RUN ($1): no RUN caught: $got"
+  grep -q "^status=$want\$" <<<"$got" || fail "killed during a RUN ($1): not status $want: $got"
 }
 
 # The script killed_mid_run runs in the container, with $how and $at set.
@@ -155,10 +159,12 @@ rm -f "$at/pid" "$at/caught"
   done
 ) &
 poller=$!
-sh -c 'echo $$ >"$1/pid"; shift; exec setsid "$@"' sh "$at" "$0" "$@" >/dev/null 2>&1
+rc=0
+sh -c 'echo $$ >"$1/pid"; shift; exec setsid "$@"' sh "$at" "$0" "$@" >/dev/null 2>&1 || rc=$?
 kill "$poller" 2>/dev/null
 wait "$poller" 2>/dev/null
 if [ -s "$at/caught" ]; then echo caught=1; else echo caught=0; fi
+echo "status=$rc"
 i=0
 while left="$(foreign)" && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 [ -z "$left" ] || echo "left: process $left"
