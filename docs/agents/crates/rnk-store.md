@@ -59,7 +59,7 @@ impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
-    pub fn check_state_dir(state: &Path) -> Result<()>; // open's lock, marker and BUILDING checks, writing nothing: before rootless overlay mode's probe (Q-111, (a))
+    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker and BUILDING checks, writing nothing: before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -92,6 +92,8 @@ impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer); path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID, in a user namespace by chain ID and id map (rnk-snapshot, ADR-0032, ADR-0104) [open: #1]; digest() -> &Digest
 pub const SANDBOX_DIR: &str = "sandbox";  // the RUN sandbox's directory at the top, made by ranikust; a name prune_all takes
+pub const USERNS_PROBE_PREFIX: &str = ".ranikust-anon-userns-probe-"; // the user-namespace probe's directories, which alone stand in for the marker; the probe flocks its own while it uses it
+pub struct StateDirHold;  // check_state_dir's shared lock on the state directory, held until dropped
 pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 impl Error { pub fn is_symlink_on(&self, state: &Path) -> bool }  // check_prune could not open state as given for a symlink on its path (ELOOP), not a refusal of its contents
 ```
@@ -119,11 +121,11 @@ Design: [locks](../../design/cache-and-store.md#locks),
   finds it published.
 - A non-empty state directory without a regular `.ranikust-state` file is
   refused, so clean-up never runs in a directory the user pointed at by
-  mistake; names only ranikust makes there (`.ranikust-anon-*`: an anonymous
-  store's leftovers, the user-namespace probe's directory of a rootless build
-  cut short before its store opened) do not count: `check_marker` marks the
-  directory, and the names stay until an anonymous store's start removes
-  them. A new state directory is `0700`; one owned by another user or
+  mistake; only the user-namespace probe's own directories
+  (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
+  told by `statx` without following) do not count: `check_marker` marks the
+  directory, and `open` then removes each whose `flock` it takes (a probe
+  holds its own while it uses it), through descriptors. A new state directory is `0700`; one owned by another user or
   writable by others is used with a warning. The store's directories the
   user owns take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in
@@ -206,9 +208,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   directory refused, `fill` publishes once, a failing `f` publishes nothing,
   concurrent `fill` from threads runs `f` once, leftovers of a dead build
   removed and a running build's kept, `close`, `cache_dir`; a directory
-  holding only ranikust's `.ranikust-anon-*` names is marked, and anything
-  else with them still refused
-  (`open_marks_a_directory_holding_only_ranikusts_leftovers`).
+  holding only the probe's directories is marked and they are removed, and
+  anything else with them still refused
+  (`open_marks_a_directory_holding_only_ranikusts_leftovers`); another
+  anonymous name, a file or a symlink with the probe's prefix is refused and
+  left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
+  a probe directory whose lock is held is kept
+  (`open_removes_only_the_probe_directories_no_probe_holds`); the hold of
+  `check_state_dir` keeps a prune out until dropped
+  (`check_state_dir_holds_the_directory_until_dropped`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a

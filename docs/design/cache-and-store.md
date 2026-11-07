@@ -174,11 +174,14 @@ needs the same ownership).
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
 `.ranikust-state` file is refused, so this clean-up never runs in a directory
-the user pointed at by mistake. Names that only ranikust makes there
-(`.ranikust-anon-*`: an anonymous store's leftovers, or the user-namespace
-probe's directory of a rootless build cut short before its store opened) do
-not count: such a directory is a new store, gets the marker, and the names
-stay. In overlay mode an upper directory written
+the user pointed at by mistake. Only the directories of ranikust's own
+user-namespace probe (a rootless build cut short before its store opened)
+do not count, each a real directory on the state directory's mount, told
+without following a link: such a directory is a new store and gets the
+marker, and the store removes each whose lock it takes, through
+descriptors (a probe holds its own while it uses it). `check_state_dir`,
+which rootless overlay mode runs before its probe, keeps the state
+directory's shared lock until the store opens. In overlay mode an upper directory written
 under `volatile` is never trusted after a crash.
 
 ## Prune
