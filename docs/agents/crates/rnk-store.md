@@ -203,7 +203,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `setup/tests/userns/layers.rs` (#77): base layers filled and published in
   the namespace, `0555` roots included; a `SIGKILL`ed fill publishes nothing
   and the next build removes it; in T2, from a setgid state directory of a
-  gid no map holds.
+  gid no map holds. `setup/tests/userns/layers/hostile.rs`: in the
+  namespace, a store directory of another owner keeps its owner and setgid
+  bit, and one that is a symlink leaves its target, root's, unchanged.
 - To do: `prune` by size and age (Phase 5) and a minimal `prune --all` (Phase 3,
   ADR-0105); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device

@@ -421,7 +421,21 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   extraction, the `security.selinux` case skipped where SELinux runs, with a
   `measured:` line in the lane's log, while `security.rnktest`, a name no
   security module claims, is refused with `EPERM` everywhere) and
-  `a_killed_extraction_in_the_user_namespace_publishes_nothing`.
+  `a_killed_extraction_in_the_user_namespace_publishes_nothing`;
+  `setup/tests/userns/layers/hostile.rs`
+  `red_team_layers_extracted_under_one_map_are_never_used_under_another`
+  (one layer extracted with the container's map and in the build's
+  namespace: two entries, neither the one planted at its chain ID, each
+  reused by its own map) and
+  `red_team_a_planted_store_directory_is_never_chowned_in_the_user_namespace`
+  (a store directory of another owner, or a symlink at its name to a setgid
+  directory of root's, left unchanged; the store's own directory of another
+  group changed, the control); profile `privileged`:
+  `red_team_overlay_xattrs_from_a_layer_never_act_in_a_mount_of_the_user_namespace`
+  (overlay's own xattr names under `user.overlay.` and `trusted.overlay.` in
+  a layer make no opaque directory, redirect, metacopy or whiteout in a
+  stage's view in the namespace, nor after a copy-up into the next layer;
+  the layer's real whiteout and opaque directory work).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);

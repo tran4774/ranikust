@@ -801,3 +801,5 @@ fn a_regular_user_s_killed_extraction_publishes_nothing() {
         }
     }
 }
+
+mod hostile;
