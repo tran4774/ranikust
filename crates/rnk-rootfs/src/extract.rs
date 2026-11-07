@@ -874,11 +874,10 @@ fn is_file_capability(value: &[u8]) -> bool {
 /// Why the kernel's VFS refuses `value` as a POSIX ACL, the default one
 /// if `default`, on a directory if `dir`, wherever ACLs are taken: as
 /// `do_set_acl`, `posix_acl_from_xattr`, `set_posix_acl` and
-/// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order, for every
-/// filesystem since Linux 6.2 (before it, in the ACL handler most share;
-/// 9p, CIFS and, in the initial user namespace, FUSE without ACLs pass the
-/// value on unparsed). Not an id the user namespace does not map, nor ACLs
-/// on a filesystem without them: those fail where it is set.
+/// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order; which
+/// kernels and filesystems do: `docs/design/rootfs.md#extraction`. Not an
+/// id the user namespace does not map, nor ACLs on a filesystem without
+/// them: those fail where it is set.
 fn posix_acl_refusal(value: &[u8], default: bool, dir: bool) -> Option<&'static str> {
     // `posix_acl_xattr_header` (version) and `posix_acl_xattr_entry`
     // (tag, permissions, id), little-endian.

@@ -2455,11 +2455,13 @@ fn the_check_takes_a_posix_acl_where_the_kernel_does() {
     fs::write(&probe, b"").unwrap();
     let minimal = posix_acl(2, &ACL_MINIMAL);
     let flags = rustix::fs::XattrFlags::empty();
-    if let Err(Errno::NOTSUP) =
-        rustix::fs::setxattr(&probe, "system.posix_acl_access", &minimal, flags)
-    {
-        eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
-        return;
+    match rustix::fs::setxattr(&probe, "system.posix_acl_access", &minimal, flags) {
+        Ok(()) => {}
+        Err(Errno::NOTSUP) => {
+            eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
+            return;
+        }
+        Err(e) => panic!("probe: {e}"),
     }
     let f = Fixture::new();
     for (i, (what, name, value, dir, takes)) in acl_cases().into_iter().enumerate() {
