@@ -112,11 +112,12 @@ layout (`rnk-store`).
 
 All filesystem access inside a build root. `RootPath` resolves every path
 through file descriptors (`openat2` with `RESOLVE_IN_ROOT`), so `..` and
-symlinks cannot escape. Built on it: layer extraction, copy, ownership,
-xattrs, `USER` and `--chown` lookup in the root's own `/etc/passwd`, the
-ignore list's matching, and deletion by descriptor that never crosses a mount
-point (`rnk-snapshot` decides what to delete in a build root, `rnk-store` in
-the store). Also the operator's host paths that the build context's owner must
+symlinks cannot escape. Built on it: layer extraction (and its header check
+alone, which kaniko mode's spool pass on `/` runs before `/` changes,
+ADR-0123), copy, ownership, xattrs, `USER` and `--chown` lookup in the
+root's own `/etc/passwd`, the ignore list's matching, and deletion by
+descriptor that never crosses a mount point (`rnk-snapshot` decides what to
+delete in a build root, `rnk-store` in the store). Also the operator's host paths that the build context's owner must
 not steer, such as an output's directory (ADR-0076), and the parser of
 `/proc/self/mountinfo`. **Must not** reach a root
 path by joining strings onto a host path, follow symlinks or cross mount points

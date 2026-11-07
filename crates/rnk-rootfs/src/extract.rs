@@ -180,6 +180,43 @@ pub struct Extracted {
     pub root_set: bool,
 }
 
+/// Refuses what an extraction that applies whiteouts would refuse from
+/// the headers of the plain tar stream `tar` alone, and writes nothing.
+/// Values only the kernel refuses (a NUL byte or an over-long name, an
+/// xattr it does not take) still fail at write time (#179).
+///
+/// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
+/// the same framing, up to the end-of-archive block, and the same
+/// `tar-header` limit (ADR-0079). It refuses a name or hardlink target that
+/// leaves the root, a hardlink to itself or whose target is the layer's
+/// root, a link whose header names no target (an empty ustar link field
+/// and no PAX `linkpath` or GNU long link), a GNU sparse or unknown entry
+/// type, a whiteout that names nothing, a file or symlink as the layer's
+/// root, and ids, modes, device numbers and times that do not parse or are
+/// out of range.
+/// It refuses nothing such an extraction takes: what depends on the root
+/// or the ignore list (where an entry lands, a hardlink's target, a
+/// hardlink or device node as the layer's root) is left to the extraction.
+/// What follows the end-of-archive block is the caller's to read.
+///
+/// Public for `rnk-snapshot`'s spool pass on `/` (ADR-0123): the pass that
+/// decompresses a streamed layer to check its diff ID calls this on the
+/// same bytes, so a header it refuses fails the layer before `/` changes,
+/// with no second decompression and no tar parser of that crate's own that
+/// could take or refuse what the extraction does not.
+///
+/// # Errors
+///
+/// As [`extract`]: [`Error::Tar`] for a malformed or unreadable stream,
+/// [`Error::ExtensionHeader`] past the `tar-header` limit, [`Error::Entry`]
+/// for a refused entry.
+pub fn check_headers(tar: impl Read) -> Result<()> {
+    let (mut skipped, mut first_skipped) = (0, None);
+    for_each_entry(tar, |entry| {
+        read_header(entry, Whiteouts::Apply, &mut skipped, &mut first_skipped).map(drop)
+    })
+}
+
 fn extract_with(
     dst: &RootPath,
     tar: impl Read,
@@ -334,87 +371,283 @@ enum Kind {
     Node(RawFileType, u32, u32),
 }
 
+/// Why a layer's root entry (`./`) that is not a directory is refused.
+const ROOT_NOT_DIR: &str = "the root of a layer must be a directory";
+
+/// What an entry's header shows on its own, before the root is looked at
+/// ([`read_header`]).
+enum Header {
+    /// A PAX global header, which sets nothing here.
+    Global,
+    /// A whiteout: its name in the layer, its cleaned path and what its
+    /// name stands for.
+    Whiteout {
+        raw: PathBuf,
+        path: PathBuf,
+        name: WhiteoutName,
+    },
+    /// Any other entry: its name in the layer, its cleaned path, what it
+    /// asks for and its metadata.
+    Entry {
+        raw: PathBuf,
+        path: PathBuf,
+        kind: Kind,
+        meta: Meta,
+    },
+}
+
+/// Each entry of the plain tar stream `tar`, as every extraction and
+/// [`check_headers`] read it: framed by [`limit::Framed`] under the
+/// `tar-header` limit (ADR-0079), by the `tar` crate, up to the
+/// end-of-archive block.
+fn for_each_entry<R: Read>(
+    tar: R,
+    mut each: impl FnMut(&mut tar::Entry<'_, limit::Framed<R>>) -> Result<()>,
+) -> Result<()> {
+    let tar = limit::Framed::new(tar, limit::extension_header_limit());
+    let mut archive = tar::Archive::new(tar);
+    for entry in archive.entries().map_err(tar_error)? {
+        let mut entry = entry.map_err(tar_error)?;
+        each(&mut entry)?;
+    }
+    Ok(())
+}
+
+/// Reads `entry`'s header and PAX records, and refuses what no root can
+/// make right: a GNU sparse entry, a name or hardlink target that leaves
+/// the root, a hardlink to itself or whose target is the layer's root, a
+/// link whose header names no target (an empty ustar link field and no PAX
+/// `linkpath` or GNU long link), a whiteout that names nothing, an unknown
+/// entry type, a file or symlink as the layer's root, and ids, modes,
+/// device numbers and times that do not parse or are out of range. The
+/// first step of every extraction, and all of [`check_headers`]. `wh` tells
+/// what a whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`])
+/// are counted in `skipped`, the first of them kept in `first_skipped`.
+fn read_header<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    wh: Whiteouts,
+    skipped: &mut u64,
+    first_skipped: &mut Option<(PathBuf, OsString)>,
+) -> Result<Header> {
+    let etype = entry.header().entry_type();
+    if etype == EntryType::XGlobalHeader {
+        return Ok(Header::Global);
+    }
+    let raw = PathBuf::from(OsStr::from_bytes(&entry.path_bytes()));
+    let refuse = |reason: &str| Error::Entry {
+        path: raw.clone(),
+        reason: reason.to_owned(),
+    };
+    // Before anything else, a whiteout name included: `limit::Framed`
+    // stops following the framing at a sparse entry, so nothing after
+    // one may be read.
+    if etype == EntryType::GNUSparse {
+        return Err(refuse("GNU sparse entries are not supported"));
+    }
+    let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
+
+    if let Some(name) = path.file_name()
+        && wh != Whiteouts::Literal
+        && name.as_bytes().starts_with(WHITEOUT_PREFIX)
+    {
+        let name = whiteout_name(name.as_bytes(), &raw)?;
+        return Ok(Header::Whiteout { raw, path, name });
+    }
+
+    let kind = match etype {
+        EntryType::Directory => Kind::Dir,
+        EntryType::Regular | EntryType::Continuous => Kind::File,
+        EntryType::GNUSparse => {
+            // The `tar` crate fills holes with zeros, so a tiny entry could
+            // claim 2^62 bytes and fill the disk. Refused above already,
+            // before the whiteout names.
+            return Err(refuse("GNU sparse entries are not supported"));
+        }
+        EntryType::Symlink | EntryType::Link => {
+            let link = entry
+                .link_name_bytes()
+                .ok_or_else(|| refuse("a link entry without a target"))?;
+            let link = PathBuf::from(OsStr::from_bytes(&link));
+            if etype == EntryType::Symlink {
+                Kind::Symlink(link)
+            } else {
+                let target = path::clean(&link)
+                    .ok_or_else(|| refuse("the hardlink target leaves the root"))?;
+                if target == path || target.as_os_str().is_empty() {
+                    return Err(refuse("a hardlink to itself or to the root"));
+                }
+                Kind::Hardlink(target)
+            }
+        }
+        EntryType::Char | EntryType::Block | EntryType::Fifo => {
+            let h = entry.header();
+            let major = h.device_major().map_err(Error::Tar)?.unwrap_or(0);
+            let minor = h.device_minor().map_err(Error::Tar)?.unwrap_or(0);
+            let t = match etype {
+                EntryType::Char => RawFileType::CharacterDevice,
+                EntryType::Block => RawFileType::BlockDevice,
+                _ => RawFileType::Fifo,
+            };
+            Kind::Node(t, major, minor)
+        }
+        other => {
+            return Err(refuse(&format!(
+                "unsupported entry type {:?}",
+                char::from(other.as_byte())
+            )));
+        }
+    };
+    let meta = header_meta(entry, &raw, wh, skipped, first_skipped)?;
+    // A hardlink or a device node there is refused later: a live root may
+    // skip it first.
+    if path.as_os_str().is_empty() && matches!(kind, Kind::File | Kind::Symlink(_)) {
+        return Err(refuse(ROOT_NOT_DIR));
+    }
+    Ok(Header::Entry {
+        raw,
+        path,
+        kind,
+        meta,
+    })
+}
+
+/// Ownership, xattrs, raw mode and times from the header and its PAX
+/// records. Xattrs named [`SKIPPED_XATTR`] are left out and counted.
+fn header_meta<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    raw: &Path,
+    wh: Whiteouts,
+    skipped: &mut u64,
+    first_skipped: &mut Option<(PathBuf, OsString)>,
+) -> Result<Meta> {
+    let refuse = |reason: String| Error::Entry {
+        path: raw.to_owned(),
+        reason,
+    };
+    let h = entry.header();
+    let id = |v: u64, what: &str| {
+        u32::try_from(v).map_err(|_| refuse(format!("{what} {v} is out of range")))
+    };
+    let uid = id(h.uid().map_err(Error::Tar)?, "uid")?;
+    let gid = id(h.gid().map_err(Error::Tar)?, "gid")?;
+    let mode = h.mode().map_err(Error::Tar)? & PERMISSION_BITS;
+    let mtime = h.mtime().map_err(Error::Tar)?;
+    let mut mtime = FileTime::from_secs(
+        i64::try_from(mtime).map_err(|_| refuse(format!("mtime {mtime} is out of range")))?,
+    );
+    let mut atime = None;
+    let mut xattrs = Vec::new();
+    if let Some(pax) = entry.pax_extensions().map_err(Error::Tar)? {
+        for ext in pax {
+            let ext = ext.map_err(Error::Tar)?;
+            let key = ext.key_bytes();
+            if let Some(name) = key.strip_prefix(PAX_XATTR) {
+                if name.starts_with(SKIPPED_XATTR) {
+                    *skipped += 1;
+                    if first_skipped.is_none() {
+                        *first_skipped = Some((raw.to_owned(), OsStr::from_bytes(name).to_owned()));
+                    }
+                    continue;
+                }
+                xattrs.push((xattr_name(wh, name), ext.value_bytes().to_vec()));
+            } else if key == b"mtime" {
+                mtime = pax_time(ext.value_bytes())
+                    .ok_or_else(|| refuse("malformed PAX mtime".to_owned()))?;
+            } else if key == b"atime" {
+                atime = Some(
+                    pax_time(ext.value_bytes())
+                        .ok_or_else(|| refuse("malformed PAX atime".to_owned()))?,
+                );
+            }
+        }
+    }
+    Ok(Meta {
+        uid: Some(uid),
+        gid: Some(gid),
+        mode: Some(mode),
+        atime: Some(atime.unwrap_or(mtime)),
+        mtime: Some(mtime),
+        xattrs,
+    })
+}
+
+/// The name an xattr from the layer is stored under in the form `wh`.
+fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
+    match wh {
+        Whiteouts::Overlay if name.starts_with(OVERLAY_XATTR) => {
+            // Overlay hides `user.overlay.*`; since Linux 6.7 it shows
+            // `user.overlay.overlay.X` as `user.overlay.X`.
+            let mut escaped = OVERLAY_XATTR.to_vec();
+            escaped.extend_from_slice(b"overlay.");
+            escaped.extend_from_slice(&name[OVERLAY_XATTR.len()..]);
+            OsStr::from_bytes(&escaped).to_owned()
+        }
+        Whiteouts::Overlay | Whiteouts::Apply | Whiteouts::Literal => {
+            OsStr::from_bytes(name).to_owned()
+        }
+    }
+}
+
+/// What a whiteout's name (`.wh.` and more) stands for.
+enum WhiteoutName {
+    /// The opaque marker: what the layers below have in its directory is
+    /// hidden.
+    Opaque,
+    /// Other AUFS metadata (`.wh..wh.*`), which hides nothing.
+    Meta,
+    /// The name of the entry hidden.
+    Hides(OsString),
+}
+
+/// Reads the whiteout name `name` of the entry `raw`: refused when it
+/// names no entry.
+fn whiteout_name(name: &[u8], raw: &Path) -> Result<WhiteoutName> {
+    if name == OPAQUE {
+        return Ok(WhiteoutName::Opaque);
+    }
+    if name.starts_with(AUFS_META_PREFIX) {
+        return Ok(WhiteoutName::Meta);
+    }
+    let hidden = OsStr::from_bytes(&name[WHITEOUT_PREFIX.len()..]);
+    if hidden.is_empty() || hidden == "." || hidden == ".." {
+        return Err(Error::Entry {
+            path: raw.to_owned(),
+            reason: "a whiteout must name an entry".to_owned(),
+        });
+    }
+    Ok(WhiteoutName::Hides(hidden.to_owned()))
+}
+
 impl Extractor<'_> {
     fn run(&mut self, tar: impl Read) -> Result<()> {
-        let tar = limit::Framed::new(tar, limit::extension_header_limit());
-        let mut archive = tar::Archive::new(tar);
-        for entry in archive.entries().map_err(tar_error)? {
-            let mut entry = entry.map_err(tar_error)?;
+        for_each_entry(tar, |entry| {
             self.stats.entries += 1;
-            self.entry(&mut entry)?;
-        }
+            self.entry(entry)
+        })?;
         self.finish()
     }
 
     fn entry<R: Read>(&mut self, entry: &mut tar::Entry<'_, R>) -> Result<()> {
-        let etype = entry.header().entry_type();
-        if etype == EntryType::XGlobalHeader {
-            return Ok(());
-        }
-        let raw = PathBuf::from(OsStr::from_bytes(&entry.path_bytes()));
+        let header = read_header(
+            entry,
+            self.wh,
+            &mut self.stats.xattrs_skipped,
+            &mut self.first_skipped,
+        )?;
+        let (raw, path, kind, meta) = match header {
+            Header::Global => return Ok(()),
+            Header::Whiteout { raw, path, name } => return self.whiteout(&path, name, &raw),
+            Header::Entry {
+                raw,
+                path,
+                kind,
+                meta,
+            } => (raw, path, kind, meta),
+        };
         let refuse = |reason: &str| Error::Entry {
             path: raw.clone(),
             reason: reason.to_owned(),
         };
-        // Before anything else, a whiteout name included: `limit::Framed`
-        // stops following the framing at a sparse entry, so nothing after
-        // one may be read.
-        if etype == EntryType::GNUSparse {
-            return Err(refuse("GNU sparse entries are not supported"));
-        }
-        let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
-
-        if let Some(name) = path.file_name()
-            && self.wh != Whiteouts::Literal
-            && name.as_bytes().starts_with(WHITEOUT_PREFIX)
-        {
-            return self.whiteout(&path, name.as_bytes(), &raw);
-        }
-
-        let kind = match etype {
-            EntryType::Directory => Kind::Dir,
-            EntryType::Regular | EntryType::Continuous => Kind::File,
-            EntryType::GNUSparse => {
-                // The `tar` crate fills holes with zeros, so a tiny entry could
-                // claim 2^62 bytes and fill the disk. Refused above already,
-                // before the whiteout names.
-                return Err(refuse("GNU sparse entries are not supported"));
-            }
-            EntryType::Symlink | EntryType::Link => {
-                let link = entry
-                    .link_name_bytes()
-                    .ok_or_else(|| refuse("a link entry without a target"))?;
-                let link = PathBuf::from(OsStr::from_bytes(&link));
-                if etype == EntryType::Symlink {
-                    Kind::Symlink(link)
-                } else {
-                    let target = path::clean(&link)
-                        .ok_or_else(|| refuse("the hardlink target leaves the root"))?;
-                    if target == path || target.as_os_str().is_empty() {
-                        return Err(refuse("a hardlink to itself or to the root"));
-                    }
-                    Kind::Hardlink(target)
-                }
-            }
-            EntryType::Char | EntryType::Block | EntryType::Fifo => {
-                let h = entry.header();
-                let major = h.device_major().map_err(Error::Tar)?.unwrap_or(0);
-                let minor = h.device_minor().map_err(Error::Tar)?.unwrap_or(0);
-                let t = match etype {
-                    EntryType::Char => RawFileType::CharacterDevice,
-                    EntryType::Block => RawFileType::BlockDevice,
-                    _ => RawFileType::Fifo,
-                };
-                Kind::Node(t, major, minor)
-            }
-            other => {
-                return Err(refuse(&format!(
-                    "unsupported entry type {:?}",
-                    char::from(other.as_byte())
-                )));
-            }
-        };
-        let meta = self.header_meta(entry, &raw)?;
 
         // kaniko creates no device node or FIFO in its root (ADR-0041).
         if self.live.is_some() && matches!(kind, Kind::Node(..)) {
@@ -448,7 +681,7 @@ impl Extractor<'_> {
             return match kind {
                 Kind::Dir => self.dir_meta(&path, None, meta),
                 Kind::File | Kind::Symlink(_) | Kind::Hardlink(_) | Kind::Node(..) => {
-                    Err(refuse("the root of a layer must be a directory"))
+                    Err(refuse(ROOT_NOT_DIR))
                 }
             };
         }
@@ -529,61 +762,6 @@ impl Extractor<'_> {
         }
         self.mark_created(&path);
         Ok(())
-    }
-
-    /// Ownership, xattrs, raw mode and times from the header and its PAX
-    /// records. Xattrs named [`SKIPPED_XATTR`] are left out and counted.
-    fn header_meta<R: Read>(&mut self, entry: &mut tar::Entry<'_, R>, raw: &Path) -> Result<Meta> {
-        let refuse = |reason: String| Error::Entry {
-            path: raw.to_owned(),
-            reason,
-        };
-        let h = entry.header();
-        let id = |v: u64, what: &str| {
-            u32::try_from(v).map_err(|_| refuse(format!("{what} {v} is out of range")))
-        };
-        let uid = id(h.uid().map_err(Error::Tar)?, "uid")?;
-        let gid = id(h.gid().map_err(Error::Tar)?, "gid")?;
-        let mode = h.mode().map_err(Error::Tar)? & PERMISSION_BITS;
-        let mtime = h.mtime().map_err(Error::Tar)?;
-        let mut mtime = FileTime::from_secs(
-            i64::try_from(mtime).map_err(|_| refuse(format!("mtime {mtime} is out of range")))?,
-        );
-        let mut atime = None;
-        let mut xattrs = Vec::new();
-        if let Some(pax) = entry.pax_extensions().map_err(Error::Tar)? {
-            for ext in pax {
-                let ext = ext.map_err(Error::Tar)?;
-                let key = ext.key_bytes();
-                if let Some(name) = key.strip_prefix(PAX_XATTR) {
-                    if name.starts_with(SKIPPED_XATTR) {
-                        self.stats.xattrs_skipped += 1;
-                        if self.first_skipped.is_none() {
-                            self.first_skipped =
-                                Some((raw.to_owned(), OsStr::from_bytes(name).to_owned()));
-                        }
-                        continue;
-                    }
-                    xattrs.push((self.xattr_name(name), ext.value_bytes().to_vec()));
-                } else if key == b"mtime" {
-                    mtime = pax_time(ext.value_bytes())
-                        .ok_or_else(|| refuse("malformed PAX mtime".to_owned()))?;
-                } else if key == b"atime" {
-                    atime = Some(
-                        pax_time(ext.value_bytes())
-                            .ok_or_else(|| refuse("malformed PAX atime".to_owned()))?,
-                    );
-                }
-            }
-        }
-        Ok(Meta {
-            uid: Some(uid),
-            gid: Some(gid),
-            mode: Some(mode),
-            atime: Some(atime.unwrap_or(mtime)),
-            mtime: Some(mtime),
-            xattrs,
-        })
     }
 
     /// The hardlink `name` in `pfd` (at `path`) to `target`: linked within
@@ -748,23 +926,6 @@ impl Extractor<'_> {
             }
         }
         Ok(None)
-    }
-
-    /// The name an xattr from the layer is stored under.
-    fn xattr_name(&self, name: &[u8]) -> OsString {
-        match self.wh {
-            Whiteouts::Overlay if name.starts_with(OVERLAY_XATTR) => {
-                // Overlay hides `user.overlay.*`; since Linux 6.7 it shows
-                // `user.overlay.overlay.X` as `user.overlay.X`.
-                let mut escaped = OVERLAY_XATTR.to_vec();
-                escaped.extend_from_slice(b"overlay.");
-                escaped.extend_from_slice(&name[OVERLAY_XATTR.len()..]);
-                OsStr::from_bytes(&escaped).to_owned()
-            }
-            Whiteouts::Overlay | Whiteouts::Apply | Whiteouts::Literal => {
-                OsStr::from_bytes(name).to_owned()
-            }
-        }
     }
 
     /// Owner and xattrs of a directory now; mode and times at the end.
@@ -934,41 +1095,36 @@ impl Extractor<'_> {
             .collect()
     }
 
-    fn whiteout(&mut self, path: &Path, name: &[u8], raw: &Path) -> Result<()> {
+    fn whiteout(&mut self, path: &Path, name: WhiteoutName, raw: &Path) -> Result<()> {
         let dir = path.parent().unwrap_or(Path::new("")).to_owned();
-        if name == OPAQUE {
-            self.stats.whiteouts += 1;
-            return match self.wh {
-                Whiteouts::Overlay => {
-                    let dfd = self
-                        .root
-                        .mkdir_all(&dir, PARENT_MODE, Mounts::Stay)
-                        .map_err(|e| on_mount(e, raw))?;
-                    let m = Meta {
-                        xattrs: vec![(OsString::from(OVERLAY_OPAQUE), b"y".to_vec())],
-                        ..Meta::default()
-                    };
-                    let h = Handle::Path {
-                        fd: dfd.as_fd(),
-                        file_type: FileType::Directory,
-                        parent: None,
-                    };
-                    meta::apply(&h, &m, &dir)
-                }
-                Whiteouts::Apply => self.apply_opaque(&dir, raw),
-                Whiteouts::Literal => Err(literal_whiteout(raw)),
-            };
-        }
-        if name.starts_with(AUFS_META_PREFIX) {
-            return Ok(());
-        }
-        let hidden = OsStr::from_bytes(&name[WHITEOUT_PREFIX.len()..]);
-        if hidden.is_empty() || hidden == "." || hidden == ".." {
-            return Err(Error::Entry {
-                path: raw.to_owned(),
-                reason: "a whiteout must name an entry".to_owned(),
-            });
-        }
+        let hidden = match name {
+            WhiteoutName::Meta => return Ok(()),
+            WhiteoutName::Hides(hidden) => hidden,
+            WhiteoutName::Opaque => {
+                self.stats.whiteouts += 1;
+                return match self.wh {
+                    Whiteouts::Overlay => {
+                        let dfd = self
+                            .root
+                            .mkdir_all(&dir, PARENT_MODE, Mounts::Stay)
+                            .map_err(|e| on_mount(e, raw))?;
+                        let m = Meta {
+                            xattrs: vec![(OsString::from(OVERLAY_OPAQUE), b"y".to_vec())],
+                            ..Meta::default()
+                        };
+                        let h = Handle::Path {
+                            fd: dfd.as_fd(),
+                            file_type: FileType::Directory,
+                            parent: None,
+                        };
+                        meta::apply(&h, &m, &dir)
+                    }
+                    Whiteouts::Apply => self.apply_opaque(&dir, raw),
+                    Whiteouts::Literal => Err(literal_whiteout(raw)),
+                };
+            }
+        };
+        let hidden = hidden.as_os_str();
         let target = dir.join(hidden);
         self.stats.whiteouts += 1;
         match self.wh {

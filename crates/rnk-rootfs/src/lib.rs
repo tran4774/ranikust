@@ -53,7 +53,7 @@ pub use copy::{CopyOpts, copy, copy_filtered};
 pub use delete::{Pruned, delete_contents, prune};
 pub use error::{Error, Result};
 pub use extract::{
-    DEFAULT_EXTENSION_HEADER_LIMIT, Extracted, Whiteouts, extract, extract_live,
+    DEFAULT_EXTENSION_HEADER_LIMIT, Extracted, Whiteouts, check_headers, extract, extract_live,
     extract_live_literal, extract_overlay, set_extension_header_limit,
 };
 pub use host::{Fence, HostFile, OutputDir, Reached, reach};

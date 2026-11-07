@@ -262,3 +262,76 @@ fn a_cached_layer_applied_to_a_kaniko_stage_is_recorded() {
     // No walk: the next layer opened takes the baseline.
     assert!(phases["rnk_snapshot.baseline"].is_null(), "{report}");
 }
+
+/// A blob as a registry hands it out: opened anew for each read.
+#[derive(Debug)]
+struct Body(Vec<u8>);
+
+impl rnk_snapshot::LayerOpen for Body {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(std::io::Cursor::new(self.0.clone())))
+    }
+}
+
+/// A plain tar with one file, then an entry of `kind`, and its diff ID.
+fn layer_with(kind: tar::EntryType) -> (Vec<u8>, Digest) {
+    let mut b = tar::Builder::new(Vec::new());
+    for (name, kind) in [("file", tar::EntryType::Regular), ("next", kind)] {
+        let mut h = tar::Header::new_gnu();
+        h.set_path(name).unwrap();
+        h.set_entry_type(kind);
+        h.set_size(0);
+        h.set_mode(0o755);
+        h.set_uid(u64::from(rustix::process::geteuid().as_raw()));
+        h.set_gid(u64::from(rustix::process::getegid().as_raw()));
+        h.set_mtime(0);
+        h.set_cksum();
+        b.append(&h, std::io::empty()).unwrap();
+    }
+    let tar = b.into_inner().unwrap();
+    let hash: [u8; 32] = Sha256::digest(&tar).into();
+    (tar, Digest::from_sha256_bytes(&hash))
+}
+
+/// On `/` a streamed cached layer is decoded once to be verified, its tar
+/// headers checked in that same pass (ADR-0123), and once more as it is
+/// extracted. One whose header is refused is decoded once and never
+/// extracted.
+#[test]
+fn on_slash_a_streamed_layer_is_decoded_once_before_its_extraction() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let capture = Capture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap().join("root");
+    fs::create_dir_all(root.join("state")).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let store = Arc::new(Store::open_anonymous(&root.join("state")).unwrap());
+    let mut ignore = rnk_rootfs::IgnoreList::new();
+    ignore.insert("/state").unwrap();
+    let (good, good_id) = layer_with(tar::EntryType::Directory);
+    let (bad, bad_id) = layer_with(tar::EntryType::new(b'Q'));
+    capture.run(|| {
+        let kaniko = rnk_snapshot::Kaniko::new(
+            rnk_rootfs::RootPath::open(&root).unwrap(),
+            std::path::PathBuf::from("/"),
+            ignore,
+            rnk_snapshot::WalkOptions::default(),
+            rnk_rootfs::RootPath::open(root.join("state")).unwrap(),
+        );
+        kaniko.keep_in_anonymous_files(Arc::clone(&store)).unwrap();
+        let mut held = kaniko.prepare(Base::Scratch).unwrap();
+        let layer = kaniko
+            .streamed_layer(&good_id, Arc::new(Body(good)))
+            .unwrap();
+        held.apply_layer(&layer).unwrap();
+        let layer = kaniko.streamed_layer(&bad_id, Arc::new(Body(bad))).unwrap();
+        assert!(held.apply_layer(&layer).is_err());
+        held.release().unwrap();
+    });
+    assert!(root.join("next").is_dir());
+    let report = capture.report();
+    let phases = &report["phases"];
+    assert_eq!(phases["rnk_snapshot.apply"]["count"], 2);
+    assert_eq!(phases["rnk_layer.decode"]["count"], 3, "{report}");
+    assert_eq!(phases["rnk_rootfs.extract"]["count"], 1, "{report}");
+}
