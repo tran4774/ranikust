@@ -61,7 +61,8 @@ the user cannot remove otherwise; `rmdir` then removes the directory. It
 removes nothing while a build uses the directory, refuses a directory
 ranikust did not make (one without its `.ranikust-state` marker, or the
 `.ranikust-pruning` an interrupted prune leaves, or holding anything other
-than what ranikust puts there), leaves a missing or empty one as it is,
+than what ranikust puts there) and a path that ends in `..` (give the
+directory's own path), leaves a missing or empty one as it is,
 and prints what it did. If it is interrupted or cannot remove everything,
 builds refuse the directory until it is emptied, saying how: `prune --all`
 again for a user, root's commands below for root; where `prune --all`
@@ -92,9 +93,9 @@ and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
 
 The error gives no commands for an empty directory (ranikust removes
 only one that holds its marker), for a path that ends in `..` (give the
-directory's own path), or for a path ranikust cannot check as given (a
-symlink on it, say): give the path with no symbolic link on it, or, for
-a user's directory, run `ranikust prune --all` as that user.
+directory's own path), for a path with a symbolic link on it (give the
+path with none, or, for a user's directory, run `ranikust prune --all`
+as that user), or for a directory ranikust refuses, saying why.
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in
 Phase 5.

@@ -53,10 +53,12 @@ writer) before `unshare`, the probes and the state directory's checks.
   then name only `.`, under `flock -xn .`, so they act on that directory
   and fail while a build holds it; the emptying scripts first check that
   `find` is GNU findutils' and otherwise stop, changing nothing. No
-  commands where the check fails (give the path with no symbolic link
-  on it; to root only: for a user's directory, `prune --all` as that
-  user), for a path ending in `..`, or, for root, for an empty directory
-  (no marker, so maybe not a state directory). A prune that could not finish
+  commands where the check fails (for a symbolic link on the path, give
+  the path with none, and, to root only, for a user's directory,
+  `prune --all` as that user; else the check's reason), for a path
+  ending in `..` (which a user's `prune --all` refuses too, before
+  anything is opened), or, for root, for an empty directory (no marker,
+  so maybe not a state directory). A prune that could not finish
   (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
   by one cut short (`PruneCutShort`) is told the next step
   (`prune::cut_short`: `prune --all` for a user, root's commands for
@@ -371,23 +373,25 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   removed when its path is swapped for a symlink while they run; the pin
   what `stat -c %d:%i:%u` prints, each command failing with nothing
   changed when the pin is wrong or a parent is swapped for a symlink
-  after printing, root given none for a path through a symlink, a path
-  ending in `..` or an empty directory, and each script changing nothing
+  after printing, root given none for a path through a symlink (with the
+  advice to give one without, which no other refusal gets), a path
+  ending in `..` or an empty directory, a user's path ending in `..`
+  refused before anything is opened, and each script changing nothing
   with a `find` that answers `--version` as BusyBox's does or not at all;
   the ways out only in `prune`'s refusal of a prune that could not
   finish), `statedir` (each ADR-0050 refusal: `/`, system directories,
-  symlinks, writable parents, nothing created through a planted link;
-  `0700`; a user's default below `$HOME` passes, a group-writable home is
-  refused with that user's advice, a `$HOME` reached through a `/proc`
-  link is refused with nothing made; a regular `.ranikust-pruning` counts
-  as the marker, for the store to refuse), `subids` (ranges by name or
-  uid, the first well-formed one, malformed and empty ones and lines of
-  `/etc/subuid` and `/etc/subgid` not UTF-8 passed over, a `/etc/passwd`
-  comment field not UTF-8 hiding no name, an end past 32 bits refused,
-  both files needed, none for root, an unreadable file an error; its red
-  team: files of many lines with binary, overlong and NUL lines and the
-  user's malformed ranges first give that user's first well-formed range
-  only),
+  symlinks, writable parents, named rightly through `..`, nothing
+  created through a planted link; `0700`; a user's default below `$HOME`
+  passes, a group-writable home is refused with that user's advice, a
+  `$HOME` reached through a `/proc` link is refused with nothing made; a
+  regular `.ranikust-pruning` counts as the marker, for the store to
+  refuse), `subids` (ranges by name or uid, the first well-formed one,
+  malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
+  not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
+  no name, an end past 32 bits refused, both files needed, none for
+  root, an unreadable file an error; its red team: files of many lines
+  with binary, overlong and NUL lines and the user's malformed ranges
+  first give that user's first well-formed range only),
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
