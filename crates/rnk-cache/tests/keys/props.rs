@@ -504,10 +504,11 @@ fn every_field_of_a_root_changes_its_key() {
 
 #[test]
 fn every_field_of_an_encoding_changes_the_tag() {
-    let key = full().key(&root());
-    let other = root().next("", KeyInputs::new(&encoding(None)));
+    // The empty step holds no file, so its key is one under every encoding
+    // and only the tag's hash of the encoding tells its entries apart.
+    let specs = [full(), Spec::default()];
     let mut seen = HashMap::new();
-    for k in [key, other] {
+    for (step, spec) in specs.iter().enumerate() {
         for (compression, levels) in [
             // The encoder ignores the level of a plain tar.
             (Compression::Uncompressed, &[0][..]),
@@ -525,9 +526,9 @@ fn every_field_of_an_encoding_changes_the_tag() {
                         level,
                         times,
                     };
-                    let tag = k.tag(&encoding);
-                    if let Some(other) = seen.insert(tag, (k, encoding)) {
-                        panic!("{k:?} {encoding:?} and {other:?} give one tag");
+                    let entry = root().next_entry(&spec.instruction, spec.encoded_as(&encoding));
+                    if let Some(other) = seen.insert(entry.tag(), (step, encoding)) {
+                        panic!("{entry:?} and {other:?} give one tag");
                     }
                 }
             }
@@ -598,24 +599,31 @@ fn a_key_ignores_the_compression_and_its_level() {
 }
 
 #[test]
+fn an_entry_names_the_encoding_its_inputs_were_made_for() {
+    let spec = full();
+    for epoch in [None, Some(EPOCH)] {
+        let encoding = encoding(epoch);
+        let entry = root().next_entry(&spec.instruction, spec.encoded_as(&encoding));
+        assert_eq!(entry.encoding(), &encoding, "{epoch:?}");
+    }
+}
+
+#[test]
 fn an_uncompressed_tag_ignores_the_level() {
     let tag = |level| {
-        root().tag(&Encoding {
+        let encoding = Encoding {
             compression: Compression::Uncompressed,
             level,
             times: TimePolicy::Kept,
-        })
+        };
+        root().next_entry("", KeyInputs::new(&encoding)).tag()
     };
     assert_eq!(tag(0), tag(6));
 }
 
 #[test]
 fn a_tag_is_an_oci_tag_naming_the_version() {
-    let tag = root().tag(&Encoding {
-        compression: Compression::Gzip,
-        level: 6,
-        times: TimePolicy::Kept,
-    });
+    let tag = root().next_entry("", KeyInputs::new(&encoding(None))).tag();
     let prefix = format!("rnk-v{KEY_VERSION}-");
     let hex = tag.strip_prefix(&prefix).expect("the version prefix");
     assert_eq!(hex.len(), 64, "{tag}");

@@ -130,6 +130,20 @@ never called.
   a larger one, before its body is read. The limit is the crate's only
   process-wide setting (`set_extension_header_limit`). Fuzzing the extractor
   is a Phase 6 task.
+- **Headers alone.** `check_headers(tar)` reads a tar as an extraction that
+  applies whiteouts does, through the same code (`for_each_entry`,
+  `read_header`), and writes nothing: the framing, the `tar-header` limit and
+  every refusal a header shows on its own (names and hardlink targets out of
+  the root, sparse and unknown types, whiteouts naming nothing, a file or
+  symlink as the layer's root, ids and times that do not parse), with the
+  extraction's errors, except values only the kernel refuses (a NUL byte or an
+  over-long name, an xattr it does not take), which still fail at write time
+  ([#179](https://github.com/tran4774/ranikust/issues/179)).
+  It refuses nothing such an extraction takes; what the root or the ignore
+  list decides is the extraction's. Kaniko mode's spool pass on `/` calls it
+  on the bytes it already decompresses, so a header it refuses fails the
+  layer before `/` changes ([cache hit](kaniko-mode.md#a-cache-hit),
+  ADR-0123).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

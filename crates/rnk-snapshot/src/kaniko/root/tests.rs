@@ -1088,6 +1088,88 @@ fn on_slash_a_kept_spool_changed_after_its_check_fails_the_next_stage() {
     }
 }
 
+/// A streamed layer, made `uses` times, whose tar has a file `first` and
+/// then a name climbing out of the root, with its counting source.
+fn streamed_climbing(f: &Fixture, name: &str, uses: usize) -> (Vec<KanikoLayer>, Arc<Streamed>) {
+    let mut out = Vec::new();
+    for path in ["first", "../escape"] {
+        let mut h = Header::new_gnu();
+        h.as_old_mut().name[..path.len()].copy_from_slice(path.as_bytes());
+        h.set_entry_type(EntryType::Regular);
+        h.set_mode(0o644);
+        h.set_uid(u64::from(rustix::process::geteuid().as_raw()));
+        h.set_gid(u64::from(rustix::process::getegid().as_raw()));
+        h.set_mtime(1_000_000);
+        h.set_size(1);
+        h.set_cksum();
+        out.extend_from_slice(h.as_bytes());
+        out.push(b'x');
+        out.extend(std::iter::repeat_n(0, 511));
+    }
+    out.extend(std::iter::repeat_n(0, 1024));
+    let blob = f.tmp.path().join(name);
+    fs::write(&blob, &out).unwrap();
+    let hash: [u8; 32] = Sha256::digest(&out).into();
+    let source = Arc::new(Streamed {
+        blob,
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layers = (0..uses)
+        .map(|_| {
+            f.kaniko
+                .streamed_layer(
+                    &Digest::from_sha256_bytes(&hash),
+                    Arc::clone(&source) as Arc<dyn LayerOpen>,
+                )
+                .unwrap()
+        })
+        .collect();
+    (layers, source)
+}
+
+/// Red team (T26, ADR-0123): on `/` a streamed base layer, or a `COPY
+/// --from` image layer, whose tar header is refused fails before any of its
+/// entries reaches `/` or any directory is made for it, and keeps no spool:
+/// a later stage made on it reads and checks it anew.
+#[test]
+fn red_team_on_slash_a_streamed_layer_with_a_bad_header_is_refused_before_any_of_it_is_written() {
+    let (f, _store) = Fixture::tars();
+    let refused = |e: &Error| matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. }));
+    let below = streamed(&f, "l1", &[("a", b"a")], false);
+    let (bad, source) = streamed_climbing(&f, "l2", 2);
+    let e = f
+        .kaniko
+        .prepare(Base::Image(&[below, bad[0].clone()]))
+        .unwrap_err();
+    assert!(refused(&e), "{e}");
+    // The layer below went in, as a base layer that fails part-way leaves
+    // its entries until the next base.
+    assert!(f.host.join("a").exists());
+    assert!(!f.host.join("first").exists());
+    assert!(!f.host.with_file_name("escape").exists());
+    assert_eq!(f.state_names(), ["blob"]);
+    let e = f.kaniko.prepare(Base::Image(&bad[1..])).unwrap_err();
+    assert!(refused(&e), "{e}");
+    assert!(!f.host.join("first").exists());
+    assert_eq!(source.opens.load(Ordering::Relaxed), 2);
+    assert!(
+        f.kaniko.shared.spools().values().all(|u| u.spool.is_none()),
+        "a refused layer keeps no spool"
+    );
+
+    let holder = f.kaniko.prepare(Base::Scratch).unwrap();
+    let (bad, _) = streamed_climbing(&f, "img", 1);
+    let mut image = f.kaniko.prepare_source(&bad).unwrap();
+    let e = image.view().map(drop).unwrap_err();
+    assert!(refused(&e), "{e}");
+    // No directory was made for it: the check came first.
+    assert_eq!(f.state_names(), ["blob"]);
+    assert!(!f.host.with_file_name("escape").exists());
+    image.release().unwrap();
+    holder.release().unwrap();
+}
+
 #[test]
 fn on_slash_a_spool_announced_but_never_used_goes_with_the_snapshotter() {
     let (f, store) = Fixture::tars();

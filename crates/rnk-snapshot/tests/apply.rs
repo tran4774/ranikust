@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::{ErrorKind, Read as _, Write as _};
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
@@ -1118,6 +1118,449 @@ fn a_layer_that_fails_before_its_first_entry_leaves_the_root_usable() {
     r.release().unwrap();
 }
 
+/// Layers whose digest and diff ID are right but whose tar has, after a good
+/// first entry, a header every extraction refuses on its own, and whether it
+/// is the `tar-header` limit (`--limit`) that refuses it.
+fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
+    let first = || {
+        let mut t = Tar::new();
+        t.file("first", b"1");
+        t
+    };
+    let entry = |kind, data: &[u8]| {
+        first()
+            .entry("x", kind, "", data, 0o644, (0, 0))
+            .file("after", b"2")
+            .bytes()
+    };
+    let mut summed = first().file("summed", b"").bytes();
+    // A name byte of the second header: its checksum no longer matches.
+    summed[1024] ^= 1;
+    vec![
+        (
+            "a name out of the root",
+            first().file("../out", b"x").bytes(),
+            false,
+        ),
+        (
+            "a GNU sparse entry",
+            entry(EntryType::GNUSparse, b"x"),
+            false,
+        ),
+        (
+            "an unknown entry type",
+            entry(EntryType::new(b'Q'), b""),
+            false,
+        ),
+        (
+            "a hardlink to itself",
+            first().hardlink("self", "self").bytes(),
+            false,
+        ),
+        (
+            "a whiteout naming nothing",
+            first().file("d/.wh.", b"").bytes(),
+            false,
+        ),
+        (
+            "a file as the layer's root",
+            first().file("./", b"").bytes(),
+            false,
+        ),
+        (
+            "a malformed PAX time",
+            entry(EntryType::XHeader, b"12 mtime=1x\n"),
+            false,
+        ),
+        ("a broken checksum", summed, false),
+        (
+            "a GNU long name over the limit",
+            entry(EntryType::GNULongName, &vec![b'n'; (1 << 20) + 1]),
+            true,
+        ),
+    ]
+}
+
+/// On `/` a streamed layer's tar headers are checked in the pass that
+/// verifies its digest and diff ID (ADR-0123): one with a header every
+/// extraction refuses, or one over the `tar-header` limit, fails before its
+/// first entry reaches `/`, which is left as it was and usable. Control: the
+/// same layer from the store, which is never spooled, reaches `/` before
+/// its bad header and breaks it.
+#[test]
+fn on_slash_a_streamed_layer_with_a_bad_tar_header_changes_nothing() {
+    let good = Tar::new().file("good", b"g").bytes();
+    for (what, tar, limit) in bad_headers() {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let source = Source::new(gzip(&tar));
+        let e = r
+            .apply_layer(&streamed(&f.snap, &tar, &source))
+            .unwrap_err();
+        assert!(matches!(e, Error::Rootfs(_)), "{what}: {e:?}");
+        assert_eq!(
+            limit,
+            matches!(e, Error::Rootfs(rnk_rootfs::Error::ExtensionHeader { .. })),
+            "{what}: {e:?}"
+        );
+        assert_eq!(source.opens(), 1, "{what}");
+        assert!(!f.root.join("first").exists(), "{what}: / changed");
+        // A body its source finds wrong says so before its tar does.
+        let wrong = Source::failing_at_end(gzip(&tar));
+        let e = r.apply_layer(&streamed(&f.snap, &tar, &wrong)).unwrap_err();
+        assert!(
+            format!("{e:?}").contains("digest mismatch"),
+            "{what}: {e:?}"
+        );
+        assert!(!f.root.join("first").exists(), "{what}: / changed");
+        r.begin_layer().unwrap();
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        r.apply_layer(&streamed(&f.snap, &good, &Source::new(gzip(&good))))
+            .unwrap();
+        assert!(f.root.join("good").exists(), "{what}");
+        r.release().unwrap();
+
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        let stored = blob(&f.snap, &f.blobs(), "stored", &tar);
+        assert!(r.apply_layer(&stored).is_err(), "{what}: the control");
+        assert!(f.root.join("first").exists(), "{what}: the control");
+        assert!(
+            matches!(r.begin_layer(), Err(Error::State(_))),
+            "{what}: the control breaks /"
+        );
+        r.release().unwrap();
+    }
+}
+
+/// `bytes` as one zstd frame of raw blocks (RFC 8878 3.1.1.2), which
+/// libzstd reads as any other frame: a zstd layer without an encoder.
+fn zstd_stored(bytes: &[u8]) -> Vec<u8> {
+    // No checksum or content size; a 128 KiB window (exponent 7).
+    let mut out = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 7 << 3];
+    let mut blocks: Vec<&[u8]> = bytes.chunks(128 << 10).collect();
+    if blocks.is_empty() {
+        blocks.push(&[]);
+    }
+    let last = blocks.len() - 1;
+    for (i, block) in blocks.iter().enumerate() {
+        let header = u32::from(i == last) | (u32::try_from(block.len()).unwrap() << 3);
+        out.extend_from_slice(&header.to_le_bytes()[..3]);
+        out.extend_from_slice(block);
+    }
+    out
+}
+
+/// A layer's blob made from its tar and where a second gzip member or zstd
+/// frame starts.
+type BlobForm = fn(&[u8], usize) -> Vec<u8>;
+
+/// The forms of a layer's blob the spool pass decompresses.
+const BLOB_FORMS: [(&str, BlobForm); 5] = [
+    ("plain", |t, _| t.to_vec()),
+    ("gzip", |t, _| gzip(t)),
+    ("gzip, two members", |t, at| {
+        [gzip(&t[..at]), gzip(&t[at..])].concat()
+    }),
+    ("zstd", |t, _| zstd_stored(t)),
+    ("zstd, two frames", |t, at| {
+        [zstd_stored(&t[..at]), zstd_stored(&t[at..])].concat()
+    }),
+];
+
+/// Red team (T26, ADR-0123): on `/` a streamed hit whose name climbs out,
+/// in a second gzip member or zstd frame included, is refused by the spool
+/// pass before `/` changes, whatever its compression; the same layer with
+/// a good header there is applied from one download.
+#[test]
+fn red_team_on_slash_a_bad_header_is_refused_before_slash_changes_whatever_the_compression() {
+    let first = Tar::new().file("first", b"1").bytes();
+    let head = &first[..first.len() - 1024];
+    let bad = [
+        head,
+        &Tar::new()
+            .file("../escape", b"x")
+            .file("after", b"2")
+            .bytes(),
+    ]
+    .concat();
+    let good = [head, &Tar::new().file("second", b"2").bytes()].concat();
+    for (what, form) in BLOB_FORMS {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let source = Source::new(form(&bad, head.len()));
+        let e = r
+            .apply_layer(&streamed(&f.snap, &bad, &source))
+            .unwrap_err();
+        assert!(
+            matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+            "{what}: {e:?}"
+        );
+        assert_eq!(source.opens(), 1, "{what}");
+        for p in ["first", "after"] {
+            assert!(!f.root.join(p).exists(), "{what}: {p}");
+        }
+        assert!(!f.top.join("escape").exists(), "{what}");
+        r.begin_layer().unwrap();
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        let source = Source::new(form(&good, head.len()));
+        r.apply_layer(&streamed(&f.snap, &good, &source))
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert_eq!(source.opens(), 1, "{what}");
+        assert_eq!(fs::read(f.root.join("second")).unwrap(), b"2", "{what}");
+        r.release().unwrap();
+    }
+}
+
+/// Red team (T26, T1): on `/` entries a streamed hit holds past its
+/// end-of-archive block (one or two zero blocks), which its diff ID covers,
+/// are neither checked nor extracted, as the `tar` crate stops at the first
+/// zero block: the layer is applied without them.
+#[test]
+fn red_team_on_slash_entries_past_the_end_of_the_archive_never_reach_slash() {
+    let good = Tar::new().file("good", b"g").bytes();
+    let smuggled = Tar::new()
+        .file("../escape", b"x")
+        .file("after", b"EVIL")
+        .bytes();
+    for zero_blocks in [1, 2] {
+        let mut tar = good[..good.len() - 1024].to_vec();
+        tar.extend(std::iter::repeat_n(0, 512 * zero_blocks));
+        let at = tar.len();
+        tar.extend(&smuggled);
+        for (what, form) in BLOB_FORMS {
+            let f = Shared::new(true);
+            let mut r = f.snap.prepare(Base::Scratch).unwrap();
+            r.set_layers_needed(true);
+            r.apply_layer(&streamed(&f.snap, &tar, &Source::new(form(&tar, at))))
+                .unwrap_or_else(|e| panic!("{zero_blocks}, {what}: {e:?}"));
+            assert_eq!(fs::read(f.root.join("good")).unwrap(), b"g");
+            assert!(!f.root.join("after").exists(), "{zero_blocks}, {what}");
+            assert!(!f.top.join("escape").exists(), "{zero_blocks}, {what}");
+            r.begin_layer().unwrap();
+            r.end_layer().unwrap();
+            r.release().unwrap();
+        }
+    }
+}
+
+/// A body whose connection drops at byte `at`: the read fails, then each
+/// later read fails again (`sticky`) or reports an end, as some bodies do.
+#[derive(Debug)]
+struct Dropping {
+    bytes: Vec<u8>,
+    at: usize,
+    sticky: bool,
+}
+
+struct DroppingBody {
+    bytes: std::io::Cursor<Vec<u8>>,
+    sticky: bool,
+    dropped: bool,
+}
+
+impl std::io::Read for DroppingBody {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.dropped && !self.sticky {
+            return Ok(0);
+        }
+        let n = self.bytes.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.dropped = true;
+            return Err(std::io::ErrorKind::ConnectionReset.into());
+        }
+        Ok(n)
+    }
+}
+
+impl LayerOpen for Dropping {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(DroppingBody {
+            bytes: std::io::Cursor::new(self.bytes[..self.at].to_vec()),
+            sticky: self.sticky,
+            dropped: false,
+        }))
+    }
+}
+
+/// A case of a failing body: what it is, its tar, its source, and the kind
+/// of the first error when the case names one.
+type FailingBody<'a> = (&'a str, &'a [u8], Arc<dyn LayerOpen>, Option<ErrorKind>);
+
+/// Red team (T26, ADR-0123): on `/` a streamed hit whose body or its
+/// decompression fails while the spool pass reads its headers (a corrupt
+/// or cut deflate stream, a bad gzip checksum with or without the tar's
+/// end, a digest the source refuses, a connection dropped, which fails
+/// again or reads as an end) is refused before `/` changes, reported as the
+/// body's error (a dropped connection as itself), never as an error of its
+/// tar, and leaves `/` usable.
+#[test]
+fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
+    let big: Vec<u8> = (0..200_000_u32).flat_map(u32::to_le_bytes).collect();
+    let tar = Tar::new().file("first", &big).file("second", b"2").bytes();
+    let unended = &tar[..tar.len() - 1024];
+    let gz = gzip(&tar);
+    let corrupt = {
+        let mut c = gz.clone();
+        let mid = c.len() / 2;
+        c[mid..mid + 64].iter_mut().for_each(|b| *b ^= 0xa5);
+        c
+    };
+    let bad_crc = |t: &[u8]| {
+        let mut c = gzip(t);
+        let n = c.len();
+        c[n - 8] ^= 1;
+        c
+    };
+    let mut cases: Vec<FailingBody<'_>> = vec![
+        ("a corrupt deflate stream", &tar, Source::new(corrupt), None),
+        (
+            "a cut deflate stream",
+            &tar,
+            Source::new(gz[..gz.len() / 2].to_vec()),
+            None,
+        ),
+        (
+            "a cut deflate stream, the digest refused",
+            &tar,
+            Source::failing_at_end(gz[..gz.len() / 2].to_vec()),
+            Some(ErrorKind::Other),
+        ),
+        (
+            "a bad gzip checksum",
+            &tar,
+            Source::failing_at_end(bad_crc(&tar)),
+            None,
+        ),
+        (
+            "a bad gzip checksum, no tar end",
+            unended,
+            Source::new(bad_crc(unended)),
+            None,
+        ),
+        (
+            "a bad gzip checksum, no tar end, the digest refused",
+            unended,
+            Source::failing_at_end(bad_crc(unended)),
+            None,
+        ),
+        (
+            "no tar end, the digest refused",
+            unended,
+            Source::failing_at_end(gzip(unended)),
+            Some(ErrorKind::Other),
+        ),
+    ];
+    for sticky in [true, false] {
+        for (blob, at) in [(gz.clone(), gz.len() / 3), (tar.clone(), 700)] {
+            let what = match (sticky, blob.len() == tar.len()) {
+                (true, true) => "a plain body dropped, failing again",
+                (true, false) => "a gzip body dropped, failing again",
+                (false, true) => "a plain body dropped, then an end",
+                (false, false) => "a gzip body dropped, then an end",
+            };
+            cases.push((
+                what,
+                &tar,
+                Arc::new(Dropping {
+                    bytes: blob,
+                    at,
+                    sticky,
+                }),
+                Some(ErrorKind::ConnectionReset),
+            ));
+        }
+    }
+    for (what, tar, source, first) in cases {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let layer = f.snap.streamed_layer(&diff_id(tar), source).unwrap();
+        let e = r.apply_layer(&layer).unwrap_err();
+        // The body's failure, never an error of its tar.
+        assert!(matches!(e, Error::Layer(_)), "{what}: {e:?}");
+        if let Some(kind) = first {
+            assert!(
+                matches!(&e, Error::Layer(rnk_layer::Error::Io(io)) if io.kind() == kind),
+                "{what}: the first error, {e:?}"
+            );
+        }
+        assert!(!f.root.join("first").exists(), "{what}");
+        r.begin_layer()
+            .unwrap_or_else(|e| panic!("{what}: / broken: {e:?}"));
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        r.release().unwrap();
+    }
+}
+
+/// A body whose read at byte `at` is interrupted once (`EINTR`), as a
+/// signal may; the next read goes on.
+#[derive(Debug)]
+struct Interrupted {
+    bytes: Vec<u8>,
+    at: usize,
+    opens: AtomicUsize,
+}
+
+struct InterruptedBody {
+    bytes: std::io::Cursor<Vec<u8>>,
+    at: Option<usize>,
+}
+
+impl std::io::Read for InterruptedBody {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(at) = self.at else {
+            return self.bytes.read(buf);
+        };
+        let pos = usize::try_from(self.bytes.position()).unwrap();
+        if pos == at {
+            self.at = None;
+            return Err(ErrorKind::Interrupted.into());
+        }
+        let n = buf.len().min(at - pos);
+        self.bytes.read(&mut buf[..n])
+    }
+}
+
+impl LayerOpen for Interrupted {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        Ok(Box::new(InterruptedBody {
+            bytes: std::io::Cursor::new(self.bytes.clone()),
+            at: Some(self.at),
+        }))
+    }
+}
+
+/// On `/` a read of a streamed layer interrupted once while its headers
+/// are checked is made again, not a failure: the layer is applied.
+#[test]
+fn on_slash_a_body_interrupted_once_is_read_on() {
+    let big: Vec<u8> = (0..200_000_u32).flat_map(u32::to_le_bytes).collect();
+    let tar = Tar::new().file("first", &big).file("second", b"2").bytes();
+    for (what, blob) in [("plain", tar.clone()), ("gzip", gzip(&tar))] {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let at = blob.len() / 3;
+        let source = Arc::new(Interrupted {
+            bytes: blob,
+            at,
+            opens: AtomicUsize::new(0),
+        });
+        let open = Arc::clone(&source) as Arc<dyn LayerOpen>;
+        let layer = f.snap.streamed_layer(&diff_id(&tar), open).unwrap();
+        r.apply_layer(&layer)
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        // Read once, by the spool pass, where the header check met it.
+        assert_eq!(source.opens.load(Ordering::Relaxed), 1, "{what}");
+        assert_eq!(fs::read(f.root.join("first")).unwrap(), big, "{what}");
+        assert!(f.root.join("second").exists(), "{what}");
+        r.release().unwrap();
+    }
+}
+
 // Hostile cached layers.
 
 /// What a hostile cached layer aims at in a per-stage root: links into
@@ -1325,7 +1768,8 @@ fn hostile_on_slash() -> Vec<u8> {
 /// writes nothing into the state directory, `/proc`, an ignored path, a
 /// volume or the marker of `/`, links nothing of them into the root, and
 /// the walk after it reports nothing; a layer whose names climb out of the
-/// root is refused, breaks the root and reaches nothing.
+/// root reaches nothing: streamed, it is refused before `/` changes; from
+/// the store, while writing, which breaks `/`.
 fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
     fs::create_dir_all(host.join("ignored")).unwrap();
     fs::write(host.join("ignored/canary"), b"IGNORED").unwrap();
@@ -1365,15 +1809,45 @@ fn red_team_hostile_layer_on_slash(host: &Path, mounts: &[MountInfo]) {
         .file("../escape", b"EVIL")
         .file("after", b"EVIL")
         .bytes();
-    let r = root.apply_layer(&streamed(&kaniko, &climbs, &Source::new(climbs.clone())));
-    assert!(r.is_err(), "a name climbing out of the root is refused");
+    let e = root
+        .apply_layer(&streamed(&kaniko, &climbs, &Source::new(climbs.clone())))
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+        "a name climbing out of the root is refused: {e:?}"
+    );
     assert!(!host.join("escape").exists());
     assert!(!host.join("after").exists());
-    assert!(matches!(root.begin_layer(), Err(Error::State(_))));
+    // Refused by its header in the spool pass, before `/` changed (ADR-0123).
+    root.begin_layer().unwrap();
+    assert!(root.end_layer().unwrap().diff().is_empty());
     assert_eq!(
         protected(host),
         before,
         "the protected paths after the refusal"
+    );
+
+    // From the store it is never spooled: the extraction refuses the entry,
+    // and `/` is broken. Its blob is made in the root (a container's `/` may
+    // have no `/tmp`), after the walk above, which would see it.
+    let blobs = tempfile::tempdir_in(host).unwrap();
+    let stored = blob(&kaniko, blobs.path(), "climbs", &climbs);
+    let e = root.apply_layer(&stored).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+        "a name climbing out of the root is refused while writing: {e:?}"
+    );
+    for p in ["escape", "../escape", "after"] {
+        assert!(!host.join(p).exists(), "{p}");
+    }
+    assert!(
+        matches!(root.begin_layer(), Err(Error::State(_))),
+        "the refusal while writing breaks /"
+    );
+    assert_eq!(
+        protected(host),
+        before,
+        "the protected paths after the refusal while writing"
     );
     root.release().unwrap();
     assert!(!kaniko.finish().unwrap(), "/ is left as it is");
@@ -2063,10 +2537,11 @@ fn oversized_header(size: usize) -> Vec<u8> {
 
 /// Red team (T15, ADR-0079): a cached layer whose tar declares an extension
 /// header over the `tar-header` limit is refused at that header, as a base
-/// layer is, and breaks the root its first entry reached: per stage from
-/// the store, and on `/` streamed (verified first).
+/// layer is. Per stage from the store, it breaks the root its first entry
+/// reached; on `/` streamed, the spool pass refuses it before `/` changes
+/// (ADR-0123).
 #[test]
-fn red_team_an_oversized_tar_header_in_a_cached_layer_breaks_the_root() {
+fn red_team_an_oversized_tar_header_in_a_cached_layer_is_refused_at_that_header() {
     let tar = oversized_header(2 << 20);
     let gz = gzip(&tar);
     let is_limit =
@@ -2086,20 +2561,24 @@ fn red_team_an_oversized_tar_header_in_a_cached_layer_breaks_the_root() {
 
     let f = Shared::new(true);
     let mut r = f.snap.prepare(Base::Scratch).unwrap();
+    r.set_layers_needed(true);
     let e = r
         .apply_layer(&streamed(&f.snap, &tar, &Source::new(gz)))
         .unwrap_err();
     assert!(is_limit(&e), "{e:?}");
-    assert!(!f.root.join("after").exists());
-    assert!(matches!(r.begin_layer(), Err(Error::State(_))));
+    assert!(!f.root.join("first").exists());
+    r.begin_layer().unwrap();
+    assert!(r.end_layer().unwrap().diff().is_empty());
     r.release().unwrap();
 }
 
 /// Red team (T1, T15): on `/`, a hostile cached layer from the store whose
-/// diff ID is wrong (a blob's is checked at its end) and one streamed but
-/// cut off by an oversized header both fail once entries may have landed:
-/// neither touches an ignored path, each leaves `/` broken, and a new base
-/// empties `/` of the first, the ignore list kept.
+/// diff ID is wrong (a blob's is checked at its end) and one streamed whose
+/// last entry the root refuses (a hardlink to nothing) both fail once
+/// entries may have landed: neither touches an ignored path, each leaves `/`
+/// broken, and a new base empties `/` of the first, the ignore list kept.
+/// One streamed with an oversized header is refused before `/` changes
+/// (ADR-0123).
 #[test]
 fn red_team_a_bad_cached_layer_on_slash_touches_no_ignored_path() {
     let tmp = tempfile::tempdir().unwrap();
@@ -2149,6 +2628,19 @@ fn red_team_a_bad_cached_layer_on_slash_touches_no_ignored_path() {
         "{e:?}"
     );
     assert_eq!(protected(&host), before, "after the oversized header");
+    assert!(!host.join("first").exists(), "refused before / changed");
+    let mut dangling = tar.clone();
+    dangling.truncate(dangling.len() - 1024);
+    dangling.extend(Tar::new().hardlink("dangling", "missing").bytes());
+    let e = root
+        .apply_layer(&streamed(&kaniko, &dangling, &Source::new(gzip(&dangling))))
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+        "{e:?}"
+    );
+    assert_eq!(fs::read(host.join("fine")).unwrap(), b"applied");
+    assert_eq!(protected(&host), before, "after the hardlink to nothing");
     assert!(matches!(root.begin_layer(), Err(Error::State(_))));
     root.release().unwrap();
     assert!(!kaniko.finish().unwrap(), "/ is left as it is");

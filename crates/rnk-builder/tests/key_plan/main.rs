@@ -6,6 +6,7 @@ mod support;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use rnk_builder::StageKeys;
 use rnk_cache::{CacheKey, KEY_VERSION};
 use rnk_oci::Digest;
 use rnk_sandbox::{Isolation, Network};
@@ -54,6 +55,25 @@ fn every_step_of_every_stage_gets_a_key() {
     assert_eq!(out.steps()[0].unwrap().reads_stage, Some(0));
     assert_eq!(out.steps()[1].unwrap().reads_stage, None);
     assert_ne!(deps.final_key(), out.final_key());
+}
+
+/// An entry names the encoding its key's mtimes were keyed under, the
+/// plan's, so a lookup never pairs one encoding's key with another's tag.
+#[test]
+fn every_entry_names_the_plans_encoding() {
+    let ctx = context(&files());
+    for epoch in [None, Some(0)] {
+        let opts = Opts {
+            epoch,
+            ..Opts::default()
+        };
+        let keys = keys(BUILD, &ctx.path, &opts);
+        let steps: Vec<_> = keys.iter().flatten().flat_map(StageKeys::steps).collect();
+        assert!(!steps.is_empty());
+        for step in steps {
+            assert_eq!(step.unwrap().entry.encoding(), &encoding(epoch));
+        }
+    }
 }
 
 #[test]
@@ -222,12 +242,14 @@ fn a_secret_id_changes_the_key_and_the_tag() {
     let ctx = context(&[]);
     let df = |id: &str| format!("FROM base\nRUN --mount=type=secret,id={id},env=T true\n");
     let opts = Opts::default();
-    let (a, b) = (
-        last(&df("a"), &ctx.path, &opts),
-        last(&df("b"), &ctx.path, &opts),
-    );
-    assert_ne!(a, b);
-    assert_ne!(a.tag(&encoding(None)), b.tag(&encoding(None)));
+    let entry = |id| {
+        let stages = keys(&df(id), &ctx.path, &opts);
+        let steps = stages[0].as_ref().unwrap().steps();
+        steps.last().copied().flatten().unwrap().entry
+    };
+    let (a, b) = (entry("a"), entry("b"));
+    assert_ne!(a.key(), b.key());
+    assert_ne!(a.tag(), b.tag());
 }
 
 #[test]
@@ -461,7 +483,8 @@ fn a_stage_built_on_a_stage_chains_from_its_final_key() {
     for (old, new) in [(stage(1), two), (stage(2), three)] {
         assert_ne!(old.root(), new.root());
         for (a, b) in old.steps().iter().zip(new.steps()) {
-            assert_ne!(a.unwrap().key, b.unwrap().key, "every step built on it");
+            let (a, b) = (a.unwrap().entry, b.unwrap().entry);
+            assert_ne!(a.key(), b.key(), "every step built on it");
         }
     }
 

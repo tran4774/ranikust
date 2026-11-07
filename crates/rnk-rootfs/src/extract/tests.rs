@@ -1500,3 +1500,423 @@ fn live_extraction_reports_a_hardlink_whose_target_directory_is_missing() {
     );
     assert!(fs::symlink_metadata(f.host("l")).is_err());
 }
+
+/// Layers each with a header every extraction refuses on its own, after a
+/// good first entry.
+fn bad_headers(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
+    let first = || {
+        let mut t = Tar::new(f);
+        t.file("first", 0o644, b"1");
+        t
+    };
+    let with = |name: &[u8], kind: EntryType, data: &[u8]| {
+        let mut t = first();
+        let size = u64::try_from(data.len()).unwrap();
+        let h = t.header(name, kind, 0o644, size);
+        t.push(h, data).file("after", 0o644, b"2").bytes()
+    };
+    let mut sparse = first();
+    let mut h = sparse.header(b"sparse", EntryType::GNUSparse, 0o644, 1);
+    let gnu = h.as_gnu_mut().unwrap();
+    gnu.set_real_size(1 << 62);
+    gnu.sparse[0].set_offset((1 << 62) - 1);
+    gnu.sparse[0].set_length(1);
+    sparse.push(h, b"x");
+    let mut far_uid = first();
+    let mut h = far_uid.header(b"far", EntryType::Regular, 0o644, 0);
+    h.set_uid(1 << 40);
+    far_uid.push(h, b"");
+    let mut summed = first().file("summed", 0o644, b"").bytes();
+    // A name byte of the second header: its checksum no longer matches.
+    summed[1024] ^= 1;
+    let mut cut = first().file("cut", 0o644, b"hello").bytes();
+    cut.truncate(1024 + 600);
+    vec![
+        (
+            "a name out of the root",
+            first().file("../out", 0o644, b"x").bytes(),
+        ),
+        (
+            "a hardlink out of the root",
+            first().hardlink("h", "../../x").bytes(),
+        ),
+        (
+            "a hardlink to itself",
+            first().hardlink("self", "self").bytes(),
+        ),
+        (
+            "a hardlink whose target is the layer's root",
+            first().hardlink("h", "./").bytes(),
+        ),
+        (
+            "a symlink whose header names no target",
+            first().symlink("s", "").bytes(),
+        ),
+        (
+            "a file as the layer's root",
+            first().file("./", 0o644, b"").bytes(),
+        ),
+        (
+            "a symlink as the layer's root",
+            first().symlink("./", "d").bytes(),
+        ),
+        ("a GNU sparse entry", sparse.bytes()),
+        (
+            "an unknown entry type",
+            with(b"odd", EntryType::new(b'Q'), b""),
+        ),
+        (
+            "a whiteout of `.`",
+            first().file("d/.wh..", 0o644, b"").bytes(),
+        ),
+        (
+            "a whiteout naming nothing",
+            first().file("d/.wh.", 0o644, b"").bytes(),
+        ),
+        (
+            "a malformed PAX mtime",
+            first()
+                .pax(&[("mtime", b"12x")])
+                .file("m", 0o644, b"")
+                .bytes(),
+        ),
+        (
+            "a malformed PAX atime",
+            first().pax(&[("atime", b"")]).file("m", 0o644, b"").bytes(),
+        ),
+        ("a uid out of range", far_uid.bytes()),
+        ("a broken checksum", summed),
+        ("a stream cut short", cut),
+        (
+            "a GNU long name over the limit",
+            with(b"long", EntryType::GNULongName, &vec![b'n'; (1 << 20) + 1]),
+        ),
+    ]
+}
+
+/// [`check_headers`] refuses, with the very error, every header an
+/// extraction that applies whiteouts refuses on its own; that extraction
+/// wrote the first entry before it got there.
+#[test]
+fn check_headers_refuses_what_every_extraction_refuses_by_its_header() {
+    let f = Fixture::new();
+    for (what, tar) in bad_headers(&f) {
+        let checked = check_headers(tar.as_slice()).unwrap_err();
+        for wh in [Whiteouts::Apply, Whiteouts::Overlay] {
+            let f = Fixture::new();
+            let e = extract(&f.root, tar.as_slice(), wh).unwrap_err();
+            assert_eq!(e.to_string(), checked.to_string(), "{what}, {wh:?}");
+            assert!(f.host("first").exists(), "{what}, {wh:?}");
+        }
+        let f = Fixture::new();
+        let e = extract_live(&f.root, tar.as_slice(), &live_keep()).unwrap_err();
+        assert_eq!(e.to_string(), checked.to_string(), "{what}, live");
+        assert!(f.host("first").exists(), "{what}, live");
+    }
+}
+
+/// What only the root can refuse is left to the extraction: a hardlink to
+/// a name not in the root, a hardlink or device node as the layer's root
+/// (a live root skips the node), and paths the ignore list covers. A good
+/// layer passes and is read up to its end-of-archive block, the next one
+/// left to the caller.
+#[test]
+fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("h", "missing");
+    check_headers(t.bytes().as_slice()).unwrap();
+    assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
+    let mut node = Tar::new(&f);
+    node.node("./", EntryType::Fifo, 0, 0);
+    // A live root skips a link to an ignored path.
+    let mut link = Tar::new(&f);
+    link.hardlink("./", "proc/x");
+    for t in [node, link] {
+        check_headers(t.bytes().as_slice()).unwrap();
+        assert!(extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).is_err());
+        extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap();
+    }
+
+    let mut t = Tar::new(&f);
+    t.dir("d", 0o755)
+        .file("d/f", 0o644, b"data")
+        .symlink("s", "/etc/passwd")
+        .hardlink("l", "d/f")
+        .node("c", EntryType::Char, 1, 3)
+        .node("p", EntryType::Fifo, 0, 0)
+        .file("proc/x", 0o644, b"")
+        .file("d/.wh.f", 0o644, b"")
+        .file(".wh..wh..opq", 0o644, b"");
+    let bytes = t.bytes();
+    let mut read = std::io::Cursor::new(&bytes);
+    check_headers(&mut read).unwrap();
+    assert_eq!(read.position(), u64::try_from(bytes.len() - 512).unwrap());
+    extract_live(&f.root, bytes.as_slice(), &live_keep()).unwrap();
+}
+
+/// One entry of a generated layer: a kind, a name, a link target, and for
+/// some kinds a value (an mtime, size or uid record, an id). GNU long name
+/// and long link records, and PAX records, apply to the entry after them.
+type Gen = (u8, usize, usize, usize);
+
+const GEN_NAMES: &[&str] = &[
+    "a",
+    "d",
+    "d/b",
+    "../x",
+    "./",
+    "/abs",
+    "d/.wh.b",
+    "d/.wh.",
+    "d/.wh..",
+    ".wh..wh..opq",
+    "d/.wh..wh..opq",
+    ".wh..wh.plnk.1",
+    "proc/x",
+];
+const GEN_TARGETS: &[&str] = &["a", "d/b", "../x", "missing", "./", "d", "proc/x", ""];
+const GEN_TIMES: &[&[u8]] = &[b"1", b"1x", b"-1.5", b"", b"1.000000001"];
+const GEN_SIZES: &[&[u8]] = &[b"0", b"1", b"512", b"1024", b"x", b""];
+
+fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
+    let mut t = Tar::new(f);
+    for &(kind, name, target, value) in entries {
+        let name = GEN_NAMES[name % GEN_NAMES.len()];
+        let target = GEN_TARGETS[target % GEN_TARGETS.len()];
+        match kind % 17 {
+            0 => t.file(name, 0o644, b"x"),
+            1 => t.dir(name, 0o755),
+            2 => t.symlink(name, target),
+            3 => t.hardlink(name, target),
+            4 => t.node(name, EntryType::Fifo, 0, 0),
+            5 => t.node(name, EntryType::Char, 1, 3),
+            6 => {
+                let h = t.header(name.as_bytes(), EntryType::new(b'Q'), 0o644, 0);
+                t.push(h, b"")
+            }
+            7 => t.pax(&[("mtime", GEN_TIMES[value % GEN_TIMES.len()])]),
+            8 => {
+                let mut h = t.header(name.as_bytes(), EntryType::Regular, 0o644, 0);
+                h.set_uid(if value % 2 == 0 { 1 << 40 } else { t.uid });
+                t.push(h, b"")
+            }
+            9 => {
+                let h = t.header(b"g", EntryType::XGlobalHeader, 0o644, 0);
+                t.push(h, b"")
+            }
+            10 => {
+                let h = t.header(name.as_bytes(), EntryType::GNUSparse, 0o644, 0);
+                t.push(h, b"")
+            }
+            11 => {
+                let size = u64::try_from(name.len()).unwrap();
+                let h = t.header(b"././@LongLink", EntryType::GNULongName, 0o644, size);
+                t.push(h, name.as_bytes())
+            }
+            12 => {
+                let size = u64::try_from(target.len()).unwrap();
+                let h = t.header(b"././@LongLink", EntryType::GNULongLink, 0o644, size);
+                t.push(h, target.as_bytes())
+            }
+            13 => t.pax(&[("path", name.as_bytes())]),
+            14 => t.pax(&[("linkpath", target.as_bytes())]),
+            15 => t.pax(&[("size", GEN_SIZES[value % GEN_SIZES.len()])]),
+            16 => {
+                let uid = match value % 4 {
+                    0 => t.uid.to_string(),
+                    1 => "x".to_owned(),
+                    2 => (1u64 << 32).to_string(),
+                    _ => String::new(),
+                };
+                t.pax(&[("uid", uid.as_bytes())])
+            }
+            _ => unreachable!("a kind modulo 17"),
+        };
+    }
+    t.bytes()
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+    /// Red team (ADR-0123): on generated layers of hostile names, links,
+    /// whiteouts, entry types, GNU long names and links, PAX paths, link
+    /// paths, sizes, times and ids, [`check_headers`] refuses
+    /// only layers that every extraction applying whiteouts refuses too, so
+    /// the spool pass on `/` never fails a layer the extraction takes; and
+    /// on a layer it passes, no extraction fails on the framing or the
+    /// `tar-header` limit.
+    #[test]
+    fn red_team_check_headers_refuses_only_what_an_extraction_refuses(
+        entries in proptest::collection::vec(
+            (0u8..17, 0..GEN_NAMES.len(), 0..GEN_TARGETS.len(), 0usize..12),
+            0..8,
+        ),
+    ) {
+        let bytes = gen_layer(&Fixture::new(), &entries);
+        let checked = check_headers(bytes.as_slice());
+        let results = [Whiteouts::Apply, Whiteouts::Overlay].map(|wh| {
+            let f = Fixture::new();
+            extract(&f.root, bytes.as_slice(), wh)
+        });
+        let f = Fixture::new();
+        let live = extract_live(&f.root, bytes.as_slice(), &live_keep());
+        for r in results.iter().chain([&live]) {
+            match (&checked, r) {
+                (Err(c), Ok(())) => {
+                    proptest::prop_assert!(false, "checked {c}, but extracted");
+                }
+                (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
+                    proptest::prop_assert!(false, "checked, but the framing failed: {e}");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A layer with one of each header [`check_headers`] reads (PAX records,
+/// GNU long names and links, links, a FIFO, whiteouts, a PAX `size`, a
+/// global header), and the offset of every header block in it.
+fn mutation_base(f: &Fixture) -> (Vec<u8>, Vec<usize>) {
+    let mut t = Tar::new(f);
+    let mut at = Vec::new();
+    let long = |t: &mut Tar, at: &mut Vec<usize>, kind: EntryType, body: &[u8]| {
+        at.push(t.out.len());
+        let size = u64::try_from(body.len()).unwrap();
+        let h = t.header(b"././@LongLink", kind, 0o644, size);
+        t.push(h, body);
+    };
+    at.push(t.out.len());
+    t.pax(&[("SCHILY.xattr.user.a", b"v"), ("mtime", b"1700000000.5")]);
+    at.push(t.out.len());
+    t.dir("d", 0o755);
+    at.push(t.out.len());
+    t.file("d/f", 0o644, b"hello world");
+    at.push(t.out.len());
+    t.symlink("d/s", "f");
+    at.push(t.out.len());
+    t.hardlink("d/h", "d/f");
+    at.push(t.out.len());
+    t.node("p", EntryType::Fifo, 0, 0);
+    let mut name = b"d/".to_vec();
+    name.extend([b'l'; 150]);
+    long(&mut t, &mut at, EntryType::GNULongName, &name);
+    at.push(t.out.len());
+    t.file("x", 0o644, b"long");
+    long(&mut t, &mut at, EntryType::GNULongLink, b"d/f");
+    at.push(t.out.len());
+    t.hardlink("d/k", "x");
+    at.push(t.out.len());
+    t.file("d/.wh.gone", 0o644, b"");
+    at.push(t.out.len());
+    t.file("d/.wh..wh..opq", 0o644, b"");
+    at.push(t.out.len());
+    t.pax(&[("path", b"d/pp"), ("linkpath", b"f")]);
+    at.push(t.out.len());
+    t.symlink("n", "t");
+    at.push(t.out.len());
+    t.pax(&[("size", b"5")]);
+    at.push(t.out.len());
+    let h = t.header(b"sz", EntryType::Regular, 0o644, 0);
+    t.push(h, b"abcde");
+    at.push(t.out.len());
+    let h = t.header(b"g", EntryType::XGlobalHeader, 0o644, 17);
+    t.push(h, b"17 comment=hello\n");
+    at.push(t.out.len());
+    t.file("proc/x", 0o644, b"");
+    at.push(t.out.len());
+    t.file("last", 0o644, b"z");
+    (t.bytes(), at)
+}
+
+/// Header bytes worth changing: the first and last of each field.
+const FIELD_BYTES: &[usize] = &[
+    0, 1, 99, 100, 107, 108, 116, 124, 125, 134, 135, 136, 147, 156, 157, 158, 256, 257, 262, 263,
+    329, 337, 345, 400, 499,
+];
+/// Values worth writing there: NUL, octal digits, a base-256 marker, path
+/// and entry type characters.
+const VALUES: &[u8] = &[
+    0, b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'9', 0x80, 0xff, b'/', b'.', b' ', b'L',
+    b'K', b'x', b'g', b'S', b'V', b'Q',
+];
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
+
+    /// Red team (ADR-0123): a valid layer with one to four bytes changed,
+    /// in a header (its checksum recomputed, three times in four) or anywhere in the
+    /// stream: [`check_headers`] refuses only what every extraction that
+    /// applies whiteouts refuses too, and on what it passes no extraction
+    /// fails on the framing or the `tar-header` limit.
+    #[test]
+    fn red_team_check_headers_agrees_with_every_extraction_on_mutated_headers(
+        changes in proptest::collection::vec(
+            (proptest::bool::ANY, 0usize..64, 0usize..4096, 0usize..256, 0u8..4),
+            1..5,
+        ),
+    ) {
+        let (mut bytes, headers) = mutation_base(&Fixture::new());
+        for (in_header, which, offset, value, fix) in changes {
+            let pos = if in_header {
+                let field = if offset % 2 == 0 {
+                    FIELD_BYTES[offset / 2 % FIELD_BYTES.len()]
+                } else {
+                    offset % 512
+                };
+                headers[which % headers.len()] + field
+            } else {
+                offset * 7 % bytes.len()
+            };
+            bytes[pos] = if value < 128 {
+                VALUES[value % VALUES.len()]
+            } else {
+                u8::try_from(value).unwrap()
+            };
+            let block = pos - pos % 512;
+            if fix != 0 && headers.contains(&block) {
+                let mut h = Header::new_old();
+                h.as_mut_bytes().copy_from_slice(&bytes[block..block + 512]);
+                h.set_cksum();
+                bytes[block..block + 512].copy_from_slice(h.as_bytes());
+            }
+        }
+        let checked = check_headers(bytes.as_slice());
+        let results = [Whiteouts::Apply, Whiteouts::Overlay].map(|wh| {
+            let f = Fixture::new();
+            extract(&f.root, bytes.as_slice(), wh)
+        });
+        let f = Fixture::new();
+        let live = extract_live(&f.root, bytes.as_slice(), &live_keep());
+        for r in results.iter().chain([&live]) {
+            match (&checked, r) {
+                (Err(c), Ok(())) => {
+                    proptest::prop_assert!(false, "checked {c}, but extracted");
+                }
+                (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
+                    proptest::prop_assert!(false, "checked, but the framing failed: {e}");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The unmutated base of the proptest above passes the check and every
+/// extraction, so its mutations start from a layer that is taken.
+#[test]
+fn the_mutation_base_is_a_layer_every_extraction_takes() {
+    let (bytes, headers) = mutation_base(&Fixture::new());
+    assert_eq!(headers.len(), 19);
+    check_headers(bytes.as_slice()).unwrap();
+    for wh in [Whiteouts::Apply, Whiteouts::Overlay] {
+        let f = Fixture::new();
+        extract(&f.root, bytes.as_slice(), wh).unwrap_or_else(|e| panic!("{wh:?}: {e}"));
+    }
+    let f = Fixture::new();
+    extract_live(&f.root, bytes.as_slice(), &live_keep()).unwrap();
+    assert!(f.host("d/pp").is_symlink());
+    assert_eq!(fs::read(f.host("sz")).unwrap(), b"abcde");
+}
