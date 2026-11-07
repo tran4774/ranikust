@@ -447,8 +447,12 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   `RUN` in kaniko mode on `/`, which has no namespace of its own at all,
   connects to those of the namespace ranikust runs in (the host's, when it
   runs on a host), where a service sees the `RUN`'s uid through
-  `SO_PEERCRED` (`unix(7)`) **[external]**: 0, or the `USER`'s raw uid
-  **[inferred]**. This is part of the shared network that ADR-0010 accepts;
+  `SO_PEERCRED` (`unix(7)`) **[external]**: 0, or the `USER`'s raw uid,
+  where the `RUN` has no user namespace of its own; in rootless overlay
+  mode, the uid the build's user namespace maps it to, as the service's
+  user namespace sees it: the invoking user's for root in `RUN`, one of
+  its subordinate ids for another `USER` **[inferred]**. This is part of
+  the shared network that ADR-0010 accepts;
   builds running at once on one host share the namespace too.
 - A registry listed with `--insecure-registry`, or a destination under
   `--insecure`, gets its credentials over plain HTTP, which a `RUN` sharing
