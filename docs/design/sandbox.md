@@ -303,9 +303,9 @@ The steps, in order:
       `nosuid`, `nodev` and `noexec` with `mount_setattr(AT_RECURSIVE)`
       (without it the `RUN` fails); the sandbox's probe chooses it once and
       logs it once per build. Unasked, the probe fails at `Step::MountProc`
-      and warns how to get a new `proc`: build as a regular user on a host that allows user
-      namespaces, where a new `proc` mounts, or in a container where
-      ranikust may mount (overlay mode as root), both in
+      and warns how to get a new `proc`: build as a regular user on a host
+      that allows user namespaces, where a new `proc` mounts, or in a
+      container where ranikust may mount (overlay mode as root), both in
       [where environments land](modes-and-detection.md#where-environments-land);
       or ask for the rbind. So a `RUN` never sees the container's `/proc`
       unasked, and always gets a new `proc` where one mounts. Wherever the

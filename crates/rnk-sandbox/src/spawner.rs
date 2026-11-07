@@ -63,9 +63,10 @@ impl Sandbox {
     /// starts the spawner thread. `dir` is the sandbox's directory in the
     /// state directory, `<state-dir>/sandbox`; `caps` is what [`crate::probe`]
     /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
-    /// [`Isolation::Direct`] on `/` only, none where [`Caps::proc`] is
-    /// [`KernelFs::Rbind`] (ADR-0127): a bare `chroot` is never used where
-    /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
+    /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
+    /// the full sandbox can run (ADR-0014, ADR-0060). Where [`Caps::proc`]
+    /// is [`KernelFs::Rbind`] it runs no `Direct` `RUN` at all, whose turn
+    /// would end with no PID namespace (ADR-0127). Kaniko mode that
     /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
     /// under [`SeccompProfile::docker_default`] until
     /// [`Sandbox::set_seccomp`] says otherwise (ADR-0103).
@@ -1601,7 +1602,9 @@ fn hostname(spec: &RunSpec) -> &str {
     }
 }
 
-/// Whether the child binds the kernel filesystem instead of mounting one.
+/// Whether the child binds the kernel filesystem instead of mounting one;
+/// for `proc`, also whether `RUN`s take turns and `Direct` is refused
+/// (ADR-0127).
 fn is_rbind(how: KernelFs) -> bool {
     match how {
         KernelFs::Fresh => false,
@@ -5321,7 +5324,8 @@ mod tests {
 
     /// Under an rbind of `/proc` a `RUN` waits for its turn, whichever
     /// `Sandbox` runs it, until the one before has released its own; with a
-    /// new `proc` no `RUN` waits.
+    /// new `proc` no `RUN` waits. That the turn lasts until the `RUN` is
+    /// reaped is the T1 `runs_take_turns_under_an_rbind_of_proc`'s.
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
         let empty = tempfile::tempdir().unwrap();
@@ -5330,32 +5334,34 @@ mod tests {
         // Without `Sandbox::start`'s cgroups and profile: a `Direct` `RUN`
         // fails before executing anything, and under an rbind is refused
         // once its turn comes.
+        // Kept here, so that a waiting thread's only sleep is its turn, not
+        // the drop of its `Sandbox`.
         let sandbox = |dir: &tempfile::TempDir, proc| {
             let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot))
                 .unwrap()
                 .with_kernel_fs(proc, KernelFs::Fresh);
-            Sandbox::spawn_thread(runner).unwrap()
+            std::sync::Arc::new(Sandbox::spawn_thread(runner).unwrap())
+        };
+        let run = |sandbox: &std::sync::Arc<Sandbox>| {
+            let (sandbox, spec) = (sandbox.clone(), direct(&missing, &missing));
+            detached(move || sandbox.run(spec))
         };
         assert!(take_turn(KernelFs::Fresh).is_none());
         let first = take_turn(KernelFs::Rbind);
         assert!(first.is_some());
         let fresh = sandbox(&dirs[0], KernelFs::Fresh);
-        let r = fresh.run(direct(&missing, &missing));
-        assert!(
-            matches!(
-                r,
-                Err(Error::Setup {
-                    step: Step::Workdir,
-                    ..
-                })
-            ),
-            "{r:?}"
-        );
-        let waiting = [&dirs[1], &dirs[2]].map(|dir| {
-            let sandbox = sandbox(dir, KernelFs::Rbind);
-            let spec = direct(&missing, &missing);
-            detached(move || sandbox.run(spec))
-        });
+        match run(&fresh)
+            .1
+            .recv_timeout(std::time::Duration::from_secs(60))
+        {
+            Ok(Err(Error::Setup {
+                step: Step::Workdir,
+                ..
+            })) => {}
+            r => panic!("a RUN with a new proc while the turn is held: {r:?}"),
+        }
+        let rbind = [&dirs[1], &dirs[2]].map(|dir| sandbox(dir, KernelFs::Rbind));
+        let waiting = rbind.each_ref().map(run);
         for (tid, result) in &waiting {
             assert!(
                 asleep(*tid),
