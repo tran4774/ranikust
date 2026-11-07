@@ -27,10 +27,10 @@ use crate::root::{Mounts, RootPath, open_name};
 /// and mount id are compared with the `statx` taken before opening it; any
 /// difference stops the deletion with [`Error::Changed`]. Symlinks are
 /// unlinked, never followed. Depth is limited neither by `PATH_MAX` nor by
-/// `RLIMIT_NOFILE`: at most [`OPEN_DIRS`] directory descriptors are held,
-/// the nearest ancestors of the directory being emptied; a farther one is
-/// closed and reopened through `..` on the way back up, checked to be the
-/// directory it was (inode, device and mount id), else [`Error::Changed`].
+/// `RLIMIT_NOFILE`: at most 32 directory descriptors are held, the nearest
+/// ancestors of the directory being emptied; a farther one is closed and
+/// reopened through `..` on the way back up, checked to be the directory
+/// it was (inode, device and mount id), else [`Error::Changed`].
 /// Memory is linear in the entries on the walk's stack (each level keeps
 /// its name, its `statx` and the names of its directory not yet visited)
 /// plus one path buffer, never quadratic in depth.
@@ -84,11 +84,11 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
 /// Walks and deletes as [`delete_contents`] does: by `(parent fd, name)`,
 /// never following a symlink, each directory checked against the `statx`
 /// taken before opening it, and reopened through `..` checked against it
-/// when the walk climbs back past the descriptors it holds (twice
-/// [`OPEN_DIRS`] at most: its own walk and, inside it, the deletion of a
-/// directory it removes). A mount anywhere below the root (another mount
-/// id, or a mount root) is an error, as a copy refuses one: nothing would
-/// be deleted across it, so it would stay where the copy would not have it.
+/// when the walk climbs back past the descriptors it holds (64 at most:
+/// its own walk and, inside it, the deletion of a directory it removes). A
+/// mount anywhere below the root (another mount id, or a mount root) is an
+/// error, as a copy refuses one: nothing would be deleted across it, so it
+/// would stay where the copy would not have it.
 ///
 /// It also reports ([`Pruned::linked_outside`]) whether an entry it keeps
 /// has more hardlinks than the names it saw for it in the root: a root
