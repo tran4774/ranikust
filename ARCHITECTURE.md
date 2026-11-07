@@ -186,7 +186,8 @@ root as anything but a `RootPath`.
 
 Runs the stage DAG: a stage starts when its dependencies finish, and
 root-independent work (base pulls, cache lookups) starts up front. `--jobs`
-bounds concurrent `RUN`s, available memory bounds how many stages run at once,
+bounds concurrent `RUN`s (one at a time where they get an rbind of `/proc`,
+ADR-0127), available memory bounds how many stages run at once,
 stages on the shared `/` run one at a time, the first failure cancels the rest.
 A stage is built through the `StageRunner` trait, which the builder's side
 implements and tests fake. **Must not** know how a stage is built, or let output

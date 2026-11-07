@@ -290,8 +290,8 @@ The steps, in order:
       ([threat model, section 6](../security/threat-model.md#6-accepted-risks)):
       start ranikust as the container's PID 1, with its secrets in its
       environment rather than on its command line or in a shell left
-      running, and ask for the rbind only with trusted base images. Its masks
-      come along, every mount of it made `nosuid`, `nodev` and `noexec` with
+      running, and ask for the rbind only with trusted base images. The
+      rbind's masks come along, every mount of it made `nosuid`, `nodev` and `noexec` with
       `mount_setattr(AT_RECURSIVE)` (without it the `RUN` fails); the
       sandbox's probe chooses it once and logs it once per build. Unasked,
       the probe fails at `Step::MountProc` and warns how to get a new `proc`:

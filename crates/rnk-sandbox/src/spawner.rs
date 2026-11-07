@@ -5290,16 +5290,8 @@ mod tests {
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
         let side_by_side = Turns::for_proc(KernelFs::Fresh);
-        let both = std::sync::Barrier::new(2);
-        std::thread::scope(|s| {
-            for _ in 0..2 {
-                s.spawn(|| {
-                    let _turn = side_by_side.take();
-                    // Passed only while the other holds its turn too.
-                    both.wait();
-                });
-            }
-        });
+        let first = side_by_side.take();
+        assert!(first.is_none() && side_by_side.take().is_none());
 
         let turns = Turns::for_proc(KernelFs::Rbind);
         let (entered, second) = mpsc::channel();
