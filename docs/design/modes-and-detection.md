@@ -20,7 +20,7 @@ The probe ends in exactly one of these:
 | Outcome | Snapshot | Stage roots | `RUN` execution | Stages |
 |---|---|---|---|---|
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
-| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)) | parallel (with the `/proc` rbind, stages parallel, their `RUN`s one at a time: [ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) |
+| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)) | parallel (with the `/proc` rbind, stages parallel, their `RUN`s one at a time: [ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md); with #79's flag, a shared PID namespace refused and an anonymous store: [ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)) |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
 | **kaniko, cannot mount** | walk + hash | `/` in a container (a host is refused, ADR-0050) | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | none | none | none | exit with guidance |
@@ -168,7 +168,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    [#78](https://github.com/tran4774/ranikust/issues/78)). Every `RUN` of
    the build then gets what worked, and an rbind of `/proc` is logged once;
    with it the `RUN`s run one at a time
-   ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
+   ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)),
+   and, once #79 brings the flag, a PID namespace shared with a process of
+   another mount namespace is refused and the build gets an anonymous store
+   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)).
    Elsewhere a refused mount fails this probe.
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at

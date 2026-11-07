@@ -98,7 +98,10 @@ impl Fallbacks {
     /// ranikust as its PID 1 with no other process of its uid during the
     /// build, keep its secrets in its environment, not on its command line
     /// or in a shell left running, and ask for this only where the base
-    /// images are trusted.
+    /// images are trusted. No command-line flag asks for it before #79,
+    /// which brings `--allow proc.rbind`, refuses a PID namespace shared
+    /// with a process of another mount namespace and gives such a build an
+    /// anonymous store (ADR-0129).
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
