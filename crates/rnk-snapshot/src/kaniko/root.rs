@@ -1022,12 +1022,14 @@ impl Spooled {
     /// Spools `layer` when it is streamed. One read of the body writes the
     /// compressed bytes into an anonymous file of `store` and decompresses
     /// them once, which nothing else sees: to check the tar headers as the
-    /// extraction frames and refuses them, the `tar-header` limit included
-    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The body
-    /// is read to its end, even after a bad header, where its source checks
-    /// the size and the compressed digest: a body its source refuses, or
-    /// whose decompression fails, is reported as such, before a bad header
-    /// or a wrong diff ID. A blob already on disk is kept as it is.
+    /// extraction frames them and refuses them from a header alone, the
+    /// `tar-header` limit included ([`rnk_rootfs::check_headers`]; values
+    /// only the kernel refuses still fail at write time, #179), and to
+    /// compute the diff ID. The body is read to its end, even after a bad
+    /// header, where its source checks the size and the compressed digest.
+    /// The first failure of the body or of its decompression is reported as
+    /// such, before a bad header or a wrong diff ID. A blob already on disk
+    /// is kept as it is.
     fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
             return Ok(Self(SpooledBlob::Blob(layer.clone())));
@@ -1053,15 +1055,11 @@ impl Spooled {
             first: None,
         };
         let headers = rnk_rootfs::check_headers(&mut read);
-        let failed = read.first;
-        // The first failure of the body or of its decompression is reported
-        // before its tar's: a decoder may report one once, then fail
-        // otherwise or read as an end.
-        let finished = decoder.finish();
-        if let Some(e) = failed {
+        // Reported as is: a decoder may report a failure once, then another.
+        if let Some(e) = read.first {
             return Err(rnk_layer::Error::from(e).into());
         }
-        let actual = Digest::from_sha256_bytes(finished?.as_bytes());
+        let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
         headers?;
         // The source verifies the digest only at the end of its body.
         if !ended.load(Ordering::Relaxed) {
@@ -1105,7 +1103,8 @@ impl Spooled {
 }
 
 /// A reader that keeps the first error it returned, which the caller
-/// reports as is; the error passed on is a copy of it.
+/// reports as is; the error passed on is a copy of it. An interrupted read
+/// is made again.
 struct FirstError<R> {
     inner: R,
     first: Option<std::io::Error>,

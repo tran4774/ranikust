@@ -141,8 +141,9 @@ never called.
   ([#179](https://github.com/tran4774/ranikust/issues/179)).
   It refuses nothing such an extraction takes; what the root or the ignore
   list decides is the extraction's. Kaniko mode's spool pass on `/` calls it
-  on the bytes it already decompresses, so what it refuses is refused before
-  `/` changes ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123).
+  on the bytes it already decompresses, so a header it refuses fails the
+  layer before `/` changes ([cache hit](kaniko-mode.md#a-cache-hit),
+  ADR-0123).
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

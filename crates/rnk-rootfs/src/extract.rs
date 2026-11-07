@@ -201,9 +201,9 @@ pub struct Extracted {
 ///
 /// Public for `rnk-snapshot`'s spool pass on `/` (ADR-0123): the pass that
 /// decompresses a streamed layer to check its diff ID calls this on the
-/// same bytes, so what it refuses is refused before `/` changes, with no
-/// second decompression and no tar parser of that crate's own that could
-/// take or refuse what the extraction does not.
+/// same bytes, so a header it refuses fails the layer before `/` changes,
+/// with no second decompression and no tar parser of that crate's own that
+/// could take or refuse what the extraction does not.
 ///
 /// # Errors
 ///

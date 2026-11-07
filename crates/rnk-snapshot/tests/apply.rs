@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::{ErrorKind, Read as _, Write as _};
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
@@ -1384,13 +1384,17 @@ impl LayerOpen for Dropping {
     }
 }
 
+/// A case of a failing body: what it is, its tar, its source, and the kind
+/// of the first error when the case names one.
+type FailingBody<'a> = (&'a str, &'a [u8], Arc<dyn LayerOpen>, Option<ErrorKind>);
+
 /// Red team (T26, ADR-0123): on `/` a streamed hit whose body or its
 /// decompression fails while the spool pass reads its headers (a corrupt
 /// or cut deflate stream, a bad gzip checksum with or without the tar's
 /// end, a digest the source refuses, a connection dropped, which fails
 /// again or reads as an end) is refused before `/` changes, reported as the
-/// body's error (a dropped connection as itself), never as one of its tar,
-/// and leaves `/` usable.
+/// body's error (a dropped connection as itself), never as an error of its
+/// tar, and leaves `/` usable.
 #[test]
 fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
     let big: Vec<u8> = (0..200_000_u32).flat_map(u32::to_le_bytes).collect();
@@ -1409,37 +1413,43 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
         c[n - 8] ^= 1;
         c
     };
-    let mut cases: Vec<(&str, &[u8], Arc<dyn LayerOpen>)> = vec![
-        ("a corrupt deflate stream", &tar, Source::new(corrupt)),
+    let mut cases: Vec<FailingBody<'_>> = vec![
+        ("a corrupt deflate stream", &tar, Source::new(corrupt), None),
         (
             "a cut deflate stream",
             &tar,
             Source::new(gz[..gz.len() / 2].to_vec()),
+            None,
         ),
         (
             "a cut deflate stream, the digest refused",
             &tar,
             Source::failing_at_end(gz[..gz.len() / 2].to_vec()),
+            None,
         ),
         (
             "a bad gzip checksum",
             &tar,
             Source::failing_at_end(bad_crc(&tar)),
+            None,
         ),
         (
             "a bad gzip checksum, no tar end",
             unended,
             Source::new(bad_crc(unended)),
+            None,
         ),
         (
             "a bad gzip checksum, no tar end, the digest refused",
             unended,
             Source::failing_at_end(bad_crc(unended)),
+            None,
         ),
         (
             "no tar end, the digest refused",
             unended,
             Source::failing_at_end(gzip(unended)),
+            None,
         ),
     ];
     for sticky in [true, false] {
@@ -1458,24 +1468,21 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
                     at,
                     sticky,
                 }),
+                Some(ErrorKind::ConnectionReset),
             ));
         }
     }
-    for (what, tar, source) in cases {
+    for (what, tar, source, first) in cases {
         let f = Shared::new(true);
         let mut r = f.snap.prepare(Base::Scratch).unwrap();
         r.set_layers_needed(true);
         let layer = f.snap.streamed_layer(&diff_id(tar), source).unwrap();
         let e = r.apply_layer(&layer).unwrap_err();
-        // The body's failure, never one of its tar.
+        // The body's failure, never an error of its tar.
         assert!(matches!(e, Error::Layer(_)), "{what}: {e:?}");
-        if what.contains("dropped") {
+        if let Some(kind) = first {
             assert!(
-                matches!(
-                    &e,
-                    Error::Layer(rnk_layer::Error::Io(io))
-                        if io.kind() == std::io::ErrorKind::ConnectionReset
-                ),
+                matches!(&e, Error::Layer(rnk_layer::Error::Io(io)) if io.kind() == kind),
                 "{what}: the first error, {e:?}"
             );
         }
@@ -1483,6 +1490,64 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
         r.begin_layer()
             .unwrap_or_else(|e| panic!("{what}: / broken: {e:?}"));
         assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        r.release().unwrap();
+    }
+}
+
+/// A body whose read at byte `at` is interrupted once (`EINTR`), as a
+/// signal may; the next read goes on.
+#[derive(Debug)]
+struct Interrupted {
+    bytes: Vec<u8>,
+    at: usize,
+}
+
+struct InterruptedBody {
+    bytes: std::io::Cursor<Vec<u8>>,
+    at: Option<usize>,
+}
+
+impl std::io::Read for InterruptedBody {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(at) = self.at else {
+            return self.bytes.read(buf);
+        };
+        let pos = usize::try_from(self.bytes.position()).unwrap();
+        if pos == at {
+            self.at = None;
+            return Err(ErrorKind::Interrupted.into());
+        }
+        let n = buf.len().min(at - pos);
+        self.bytes.read(&mut buf[..n])
+    }
+}
+
+impl LayerOpen for Interrupted {
+    fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        Ok(Box::new(InterruptedBody {
+            bytes: std::io::Cursor::new(self.bytes.clone()),
+            at: Some(self.at),
+        }))
+    }
+}
+
+/// On `/` a read of a streamed layer interrupted once while its headers
+/// are checked is made again, not a failure: the layer is applied.
+#[test]
+fn on_slash_a_body_interrupted_once_is_read_on() {
+    let big: Vec<u8> = (0..200_000_u32).flat_map(u32::to_le_bytes).collect();
+    let tar = Tar::new().file("first", &big).file("second", b"2").bytes();
+    for (what, blob) in [("plain", tar.clone()), ("gzip", gzip(&tar))] {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let at = blob.len() / 3;
+        let source = Arc::new(Interrupted { bytes: blob, at });
+        let layer = f.snap.streamed_layer(&diff_id(&tar), source).unwrap();
+        r.apply_layer(&layer)
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert_eq!(fs::read(f.root.join("first")).unwrap(), big, "{what}");
+        assert!(f.root.join("second").exists(), "{what}");
         r.release().unwrap();
     }
 }
