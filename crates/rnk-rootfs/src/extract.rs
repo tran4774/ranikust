@@ -107,6 +107,10 @@ const DIR_PAST_PATH_MAX: &str =
 const USER_XATTR: &[u8] = b"user.";
 /// A file capability, whose value the kernel checks before it is set.
 const CAPABILITY_XATTR: &[u8] = b"security.capability";
+/// The POSIX ACLs, whose values the kernel's VFS checks before a
+/// filesystem sees them.
+const ACL_ACCESS: &[u8] = b"system.posix_acl_access";
+const ACL_DEFAULT: &[u8] = b"system.posix_acl_default";
 
 /// Extracts the plain tar stream `tar` into `dst`.
 ///
@@ -166,7 +170,8 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// whose path in the layer is longer is refused before anything of it is
 /// written (on `/`, past 4094 bytes, as [`check_headers`] refuses it), and
 /// so is one that names a directory a symlink puts past that (its own, a
-/// whiteout's or a hardlink target's), before a directory it lacks is made.
+/// whiteout's or a hardlink target's), before anything of it is made or
+/// removed.
 ///
 /// # Errors
 ///
@@ -268,8 +273,9 @@ pub struct Extracted {
 /// take a longer one, refused all the same), a symlink target over
 /// `PATH_MAX` less its NUL, and on a directory, file or symlink an xattr
 /// whose name is empty, over `XATTR_NAME_MAX` or holds a NUL byte, whose
-/// value is over `XATTR_SIZE_MAX` or a file capability the kernel never
-/// sets, or a `user.*` one on a symlink; also where the root
+/// value is over `XATTR_SIZE_MAX`, a file capability or POSIX ACL the
+/// kernel never sets (a default ACL on anything but a directory included),
+/// or a `user.*` one on a symlink; also where the root
 /// would have the entry skipped (an ignored path, a whiteout whose
 /// directory is missing), which a header does not show. It holds a
 /// directory path to 4094 bytes, as [`extract_live`] on `/` does, which
@@ -664,15 +670,16 @@ fn read_header<R: Read>(
     if path.as_os_str().is_empty() && matches!(kind, Kind::File | Kind::Symlink(_)) {
         return Err(refuse(ROOT_NOT_DIR));
     }
-    // Whether the entry takes `user.*` xattrs, when its xattrs are checked
-    // here: no extraction sets a hardlink's, and a node's are checked where
-    // it is made, as its name.
-    let takes_user = match &kind {
-        Kind::Dir | Kind::File => Some(true),
-        Kind::Symlink(_) => Some(false),
+    // What the entry's xattrs are set on, when they are checked here: no
+    // extraction sets a hardlink's, and a node's are checked where it is
+    // made, as its name.
+    let on = match &kind {
+        Kind::Dir => Some(XattrsOn::Dir),
+        Kind::File => Some(XattrsOn::File),
+        Kind::Symlink(_) => Some(XattrsOn::Other),
         Kind::Hardlink(_) | Kind::Node(..) => None,
     };
-    if let Some(why) = takes_user.and_then(|user| kernel_refuses_xattrs(&meta.xattrs, user)) {
+    if let Some(why) = on.and_then(|on| kernel_refuses_xattrs(&meta.xattrs, on)) {
         return Err(refuse(&why));
     }
     Ok(Header::Entry {
@@ -784,14 +791,23 @@ fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr, dir_max: usize) -> 
     None
 }
 
+/// What an entry's xattrs are set on, for [`kernel_refuses_xattrs`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum XattrsOn {
+    Dir,
+    File,
+    /// A symlink, device node or FIFO.
+    Other,
+}
+
 /// Why the kernel refuses one of `xattrs` (as they are set, escaped in the
-/// overlay form) on any filesystem: a name empty, over [`XATTR_NAME_MAX`]
-/// or holding a NUL byte, a value over [`meta::XATTR_MAX`]
-/// (`XATTR_SIZE_MAX`), a file capability it never sets, or a
-/// `user.*` name on an entry that is neither a regular file nor a
-/// directory, unless `user`. Which names a filesystem takes is its own: a
-/// FUSE or Ceph one may take any.
-fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<String> {
+/// overlay form) on any filesystem, set `on` an entry of that kind: a name
+/// empty, over [`XATTR_NAME_MAX`] or holding a NUL byte, a value over
+/// [`meta::XATTR_MAX`] (`XATTR_SIZE_MAX`), a file capability it never sets,
+/// a POSIX ACL its VFS refuses ([`posix_acl_refusal`]), or a `user.*` name
+/// on an entry that is neither a regular file nor a directory. Which names
+/// a filesystem takes is its own: a FUSE or Ceph one may take any.
+fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], on: XattrsOn) -> Option<String> {
     for (name, value) in xattrs {
         let n = name.as_bytes();
         if n.is_empty() {
@@ -818,7 +834,15 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
                 "the xattr {shown} is no file capability the kernel sets (revision 2 in 20 bytes, or 3 in 24 with a root id other than -1)"
             ));
         }
-        if !user && n.starts_with(USER_XATTR) {
+        let default = n == ACL_DEFAULT;
+        if (default || n == ACL_ACCESS)
+            && let Some(why) = posix_acl_refusal(value, default, on == XattrsOn::Dir)
+        {
+            return Some(format!(
+                "the xattr {shown} is no POSIX ACL the kernel sets: {why}"
+            ));
+        }
+        if on == XattrsOn::Other && n.starts_with(USER_XATTR) {
             return Some(format!(
                 "the xattr {shown}: only regular files and directories take user.* xattrs"
             ));
@@ -845,6 +869,89 @@ fn is_file_capability(value: &[u8]) -> bool {
         (24, REVISION_3) => value.last_chunk::<4>() != Some(&NO_ROOT),
         _ => false,
     }
+}
+
+/// Why the kernel's VFS refuses `value` as a POSIX ACL, the default one
+/// if `default`, on a directory if `dir`, wherever ACLs are taken: as
+/// `do_set_acl`, `posix_acl_from_xattr`, `set_posix_acl` and
+/// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order. Not an id
+/// the user namespace does not map, nor ACLs on a filesystem without them:
+/// those fail where it is set.
+fn posix_acl_refusal(value: &[u8], default: bool, dir: bool) -> Option<&'static str> {
+    // `posix_acl_xattr_header` (version) and `posix_acl_xattr_entry`
+    // (tag, permissions, id), little-endian.
+    const VERSION: u32 = 2;
+    const USER_OBJ: u16 = 0x01;
+    const USER: u16 = 0x02;
+    const GROUP_OBJ: u16 = 0x04;
+    const GROUP: u16 = 0x08;
+    const MASK: u16 = 0x10;
+    const OTHER: u16 = 0x20;
+    // `posix_acl_valid`'s state once `ACL_OTHER` ends the ACL.
+    const DONE: u16 = 0;
+    const RWX: u16 = 0o7;
+    // `ACL_UNDEFINED_ID`, which no user namespace maps.
+    const UNDEFINED: u32 = u32::MAX;
+    const ORDER: &str = "its entries are not the owner, named users, the group, named groups, a mask (needed with a named one) and others, each once and in that order";
+    let parse = |&[t0, t1, p0, p1, i0, i1, i2, i3]: &[u8; 8]| {
+        (
+            u16::from_le_bytes([t0, t1]),
+            u16::from_le_bytes([p0, p1]),
+            u32::from_le_bytes([i0, i1, i2, i3]),
+        )
+    };
+    // `do_set_acl`: an empty value removes the ACL.
+    if value.is_empty() {
+        return None;
+    }
+    let Some((version, entries)) = value.split_first_chunk::<4>() else {
+        return Some("it is shorter than its 4-byte header");
+    };
+    if u32::from_le_bytes(*version) != VERSION {
+        return Some("its version is not 2");
+    }
+    let (entries, rest) = entries.as_chunks::<8>();
+    if !rest.is_empty() {
+        return Some("its size is not its 4-byte header and 8 bytes per entry");
+    }
+    // No entry removes it as well.
+    if entries.is_empty() {
+        return None;
+    }
+    for (tag, _, id) in entries.iter().map(parse) {
+        match tag {
+            USER_OBJ | GROUP_OBJ | MASK | OTHER => {}
+            USER | GROUP if id == UNDEFINED => {
+                return Some("a named user or group has the id -1");
+            }
+            USER | GROUP => {}
+            _ => return Some("an entry has an unknown tag"),
+        }
+    }
+    // `set_posix_acl`
+    if default && !dir {
+        return Some("only a directory takes a default ACL");
+    }
+    // `posix_acl_valid`
+    let (mut state, mut needs_mask) = (USER_OBJ, false);
+    for (tag, perm, _) in entries.iter().map(parse) {
+        if perm & !RWX != 0 {
+            return Some("an entry has permissions other than read, write and execute");
+        }
+        state = match (tag, state) {
+            (USER_OBJ, USER_OBJ) => USER,
+            (USER, USER) | (GROUP, GROUP) => {
+                needs_mask = true;
+                state
+            }
+            (GROUP_OBJ, USER) => GROUP,
+            (MASK, GROUP) => OTHER,
+            (OTHER, OTHER) => DONE,
+            (OTHER, GROUP) if !needs_mask => DONE,
+            _ => return Some(ORDER),
+        };
+    }
+    (state != DONE).then_some(ORDER)
 }
 
 /// What a whiteout's name (`.wh.` and more) stands for.
@@ -966,7 +1073,7 @@ impl Extractor<'_> {
                     let dir = path.parent().unwrap_or(Path::new(""));
                     kernel_refuses_name("the name", dir, n, self.dir_max)
                 })
-                .or_else(|| kernel_refuses_xattrs(&meta.xattrs, false))
+                .or_else(|| kernel_refuses_xattrs(&meta.xattrs, XattrsOn::Other))
         {
             return Err(refuse(&why));
         }
@@ -1738,8 +1845,14 @@ impl Extractor<'_> {
                 continue;
             };
             let pfd = self.root.resolve_dir_in(parent, Mounts::Stay)?;
-            if live.physical(pfd.as_fd(), parent, path)? != parent {
-                return Err(Error::Changed { path: path.clone() });
+            // No layer puts a parent made here outside the root or past what
+            // `/proc/self/fd` shows: a swap did.
+            match live.physical(pfd.as_fd(), parent, path) {
+                Ok(p) if p == parent => {}
+                Ok(_) | Err(Error::Entry { .. }) => {
+                    return Err(Error::Changed { path: path.clone() });
+                }
+                Err(e) => return Err(e),
             }
             root::set_meta_at(pfd.as_fd(), name, m, Some(FileType::Directory), path)?;
         }
@@ -1818,8 +1931,8 @@ impl<'r> Live<'r> {
         };
         rel.and_then(|r| path::clean(Path::new(OsStr::from_bytes(r))))
             .ok_or_else(|| Error::Entry {
-                path: at.to_owned(),
-                reason: "cannot tell where this directory lies in the root".to_owned(),
+                path: raw.to_owned(),
+                reason: "cannot tell where its directory lies in the root".to_owned(),
             })
     }
 }

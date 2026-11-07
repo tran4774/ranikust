@@ -229,16 +229,22 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   NUL byte, a component over `NAME_MAX`, a directory path or symlink target
   past `PATH_MAX`, an empty PAX or GNU link target, an xattr name or value
   the kernel refuses, a file capability it never sets, `user.*` on a
-  symlink) refused by the check and every extraction with the same error
+  symlink, a POSIX ACL the VFS refuses or a default one on a file:
+  `red_team_a_posix_acl_the_kernel_never_sets_is_refused_by_the_check`)
+  refused by the check and every extraction with the same error
   before anything of it is written, values at the limits or that the kernel
   never gets taken, xattr names of any namespace or none left to the
   filesystem, and a node's name and xattrs refused only where it is made;
+  the check takes a POSIX ACL exactly where the kernel sets one on the
+  temporary filesystem, and every extraction takes those
+  (`the_check_takes_a_posix_acl_where_the_kernel_does`, skipped without
+  ACLs);
   a live root takes a directory path up to what `/proc/self/fd` shows of it
   and refuses one byte more before writing, the check taking 4094 bytes and
   refusing 4095, which `extract` and `extract_overlay` take, and refuses
   one a symlink puts past it before a directory it lacks is made, and an
   entry, whiteout or hardlink target in a directory already past it, by
-  name; each such value judged alike by the check and every extraction
+  name, before anything is removed or linked; each such value judged alike by the check and every extraction
   whatever its encoding (`red_team_each_encoding_of_a_value_at_the_kernels_limits_is_judged_alike`:
   ustar, PAX, GNU long names and links, a PAX record after a GNU long name
   and two of one key, a NUL at a value's end, UTF-8 cut at 255 bytes), and

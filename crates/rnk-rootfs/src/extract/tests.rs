@@ -2122,6 +2122,319 @@ fn capability(magic: u32, len: usize) -> Vec<u8> {
     v
 }
 
+/// A POSIX ACL xattr value: `posix_acl_xattr_header`'s version, then each
+/// entry's tag, permissions and id, little-endian.
+fn posix_acl(version: u32, entries: &[(u16, u16, u32)]) -> Vec<u8> {
+    let mut v = version.to_le_bytes().to_vec();
+    for &(tag, perm, id) in entries {
+        v.extend(tag.to_le_bytes());
+        v.extend(perm.to_le_bytes());
+        v.extend(id.to_le_bytes());
+    }
+    v
+}
+
+/// The POSIX ACL tags, and the id of an entry that names no one.
+const ACL_USER_OBJ: u16 = 0x01;
+const ACL_USER: u16 = 0x02;
+const ACL_GROUP_OBJ: u16 = 0x04;
+const ACL_GROUP: u16 = 0x08;
+const ACL_MASK: u16 = 0x10;
+const ACL_OTHER: u16 = 0x20;
+const ACL_UNDEFINED: u32 = u32::MAX;
+
+/// The owner, the group and others, which every ACL holds.
+const ACL_MINIMAL: [(u16, u16, u32); 3] = [
+    (ACL_USER_OBJ, 6, ACL_UNDEFINED),
+    (ACL_GROUP_OBJ, 4, ACL_UNDEFINED),
+    (ACL_OTHER, 4, ACL_UNDEFINED),
+];
+
+/// POSIX ACLs, each with its xattr, whether it is set on a directory, and
+/// whether the kernel's VFS takes it there: refused by its form
+/// (`posix_acl_from_xattr`), by its entries (`posix_acl_valid`) or as a
+/// default ACL on a file (`set_posix_acl`); taken, an empty value or one
+/// with no entry (which remove it, on a file a default one too), named
+/// entries with a mask, a named user twice and a mask with no named entry
+/// (`posix_acl_valid` checks neither). Named entries name the caller's own
+/// ids, which every user namespace it runs in maps.
+fn acl_cases() -> Vec<(&'static str, &'static str, Vec<u8>, bool, bool)> {
+    let (uid, gid) = (
+        rustix::process::getuid().as_raw(),
+        rustix::process::getgid().as_raw(),
+    );
+    let (u, g, m, o) = (ACL_USER_OBJ, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER);
+    let none = ACL_UNDEFINED;
+    let named = |user: u32, group: u32| {
+        posix_acl(
+            2,
+            &[
+                (u, 6, none),
+                (ACL_USER, 4, user),
+                (g, 4, none),
+                (ACL_GROUP, 4, group),
+                (m, 4, none),
+                (o, 4, none),
+            ],
+        )
+    };
+    let mut odd = posix_acl(2, &ACL_MINIMAL);
+    odd.push(0);
+    let access = "system.posix_acl_access";
+    let default = "system.posix_acl_default";
+    vec![
+        (
+            "version 3",
+            access,
+            posix_acl(3, &ACL_MINIMAL),
+            false,
+            false,
+        ),
+        (
+            "version 3 with no entry",
+            access,
+            posix_acl(3, &[]),
+            false,
+            false,
+        ),
+        ("a size other than 4 + 8n", access, odd, false, false),
+        ("shorter than its header", access, vec![2, 0], false, false),
+        (
+            "an unknown tag",
+            access,
+            posix_acl(2, &[(0x40, 4, none)]),
+            false,
+            false,
+        ),
+        (
+            "no ACL_OTHER entry",
+            access,
+            posix_acl(2, &[(u, 6, none)]),
+            false,
+            false,
+        ),
+        (
+            "an ACL_USER id of -1",
+            access,
+            named(none, gid),
+            false,
+            false,
+        ),
+        (
+            "an ACL_GROUP id of -1",
+            access,
+            named(uid, none),
+            false,
+            false,
+        ),
+        (
+            "a default ACL on a file",
+            default,
+            posix_acl(2, &ACL_MINIMAL),
+            false,
+            false,
+        ),
+        (
+            "permissions past rwx",
+            access,
+            posix_acl(2, &[(u, 0o17, none), (g, 4, none), (o, 4, none)]),
+            false,
+            false,
+        ),
+        (
+            "a named user and no mask",
+            access,
+            posix_acl(
+                2,
+                &[(u, 6, none), (ACL_USER, 4, uid), (g, 4, none), (o, 4, none)],
+            ),
+            false,
+            false,
+        ),
+        (
+            "the group before the owner",
+            access,
+            posix_acl(2, &[(g, 4, none), (u, 6, none), (o, 4, none)]),
+            false,
+            false,
+        ),
+        (
+            "two owners",
+            access,
+            posix_acl(2, &[(u, 6, none), (u, 6, none), (g, 4, none), (o, 4, none)]),
+            false,
+            false,
+        ),
+        (
+            "a mask before the group",
+            access,
+            posix_acl(2, &[(u, 6, none), (m, 4, none), (g, 4, none), (o, 4, none)]),
+            false,
+            false,
+        ),
+        (
+            "an entry after ACL_OTHER",
+            access,
+            posix_acl(2, &[(u, 6, none), (g, 4, none), (o, 4, none), (o, 4, none)]),
+            false,
+            false,
+        ),
+        (
+            "a default ACL with no ACL_OTHER entry on a directory",
+            default,
+            posix_acl(2, &[(u, 6, none), (g, 4, none)]),
+            true,
+            false,
+        ),
+        (
+            "the owner, the group and others",
+            access,
+            posix_acl(2, &ACL_MINIMAL),
+            false,
+            true,
+        ),
+        (
+            "named entries with a mask",
+            access,
+            named(uid, gid),
+            false,
+            true,
+        ),
+        (
+            "a named user twice",
+            access,
+            posix_acl(
+                2,
+                &[
+                    (u, 6, none),
+                    (ACL_USER, 4, uid),
+                    (ACL_USER, 4, uid),
+                    (g, 4, none),
+                    (m, 4, none),
+                    (o, 4, none),
+                ],
+            ),
+            false,
+            true,
+        ),
+        (
+            "a mask with no named entry",
+            access,
+            posix_acl(2, &[(u, 6, none), (g, 4, none), (m, 4, none), (o, 4, none)]),
+            false,
+            true,
+        ),
+        ("an empty value", access, Vec::new(), false, true),
+        ("no entry", access, posix_acl(2, &[]), false, true),
+        (
+            "a default ACL on a directory",
+            default,
+            posix_acl(2, &ACL_MINIMAL),
+            true,
+            true,
+        ),
+        (
+            "an empty default ACL on a file",
+            default,
+            Vec::new(),
+            false,
+            true,
+        ),
+        (
+            "a default ACL with no entry on a file",
+            default,
+            posix_acl(2, &[]),
+            false,
+            true,
+        ),
+    ]
+}
+
+/// A layer of a file `first`, then `x`, a directory if `dir`, with the
+/// xattr `name` set to `value`.
+fn acl_layer(f: &Fixture, name: &str, value: &[u8], dir: bool) -> Vec<u8> {
+    let mut t = Tar::new(f);
+    t.file("first", 0o644, b"1")
+        .pax(&[(format!("SCHILY.xattr.{name}").as_str(), value)]);
+    if dir {
+        t.dir("x", 0o755);
+    } else {
+        t.file("x", 0o644, b"");
+    }
+    t.bytes()
+}
+
+/// Red team (#179, T26): a POSIX ACL the kernel's VFS refuses before any
+/// filesystem sees it (`do_set_acl`, `posix_acl_from_xattr`,
+/// `posix_acl_valid`), or a default ACL on a file, is refused by the check
+/// as by every extraction, with the same error, before anything of the
+/// entry is written, so a layer the check passes on `/` never fails
+/// part-way for it.
+#[test]
+fn red_team_a_posix_acl_the_kernel_never_sets_is_refused_by_the_check() {
+    let f = Fixture::new();
+    for (what, name, value, dir, _) in acl_cases().into_iter().filter(|c| !c.4) {
+        let layer = acl_layer(&f, name, &value, dir);
+        let checked = check_headers(layer.as_slice()).unwrap_err();
+        assert!(
+            matches!(&checked, Error::Entry { reason, .. } if reason.contains("POSIX ACL")),
+            "{what}: {checked}"
+        );
+        for (how, r, tree) in every_extraction(&layer) {
+            let e = r.unwrap_err();
+            assert_eq!(e.to_string(), checked.to_string(), "{what}, {how}");
+            assert_eq!(
+                tree,
+                BTreeSet::from([OsString::from("first")]),
+                "{what}, {how}"
+            );
+        }
+    }
+}
+
+/// The check takes a POSIX ACL exactly where the kernel does, as measured
+/// on a file or directory of the temporary filesystem, and every
+/// extraction takes one the kernel takes. Skipped where that filesystem
+/// takes no ACLs.
+#[test]
+fn the_check_takes_a_posix_acl_where_the_kernel_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let probe = tmp.path().join("probe");
+    fs::write(&probe, b"").unwrap();
+    let minimal = posix_acl(2, &ACL_MINIMAL);
+    let flags = rustix::fs::XattrFlags::empty();
+    if let Err(Errno::NOTSUP) =
+        rustix::fs::setxattr(&probe, "system.posix_acl_access", &minimal, flags)
+    {
+        eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
+        return;
+    }
+    let f = Fixture::new();
+    for (i, (what, name, value, dir, takes)) in acl_cases().into_iter().enumerate() {
+        let p = tmp.path().join(i.to_string());
+        if dir {
+            fs::create_dir(&p).unwrap();
+        } else {
+            fs::write(&p, b"").unwrap();
+        }
+        let kernel = rustix::fs::setxattr(&p, name, &value, flags);
+        assert_eq!(kernel.is_ok(), takes, "{what}: the kernel gives {kernel:?}");
+        let layer = acl_layer(&f, name, &value, dir);
+        let checked = check_headers(layer.as_slice());
+        assert_eq!(
+            checked.is_ok(),
+            takes,
+            "{what}: the check gives {checked:?}"
+        );
+        if takes {
+            for (how, r, tree) in every_extraction(&layer) {
+                r.unwrap_or_else(|e| panic!("{what}, {how}: {e}"));
+                assert!(tree.contains(OsStr::new("x")), "{what}, {how}");
+            }
+        }
+    }
+}
+
 /// Every extraction of `tar` into a fresh root, by name: [`extract`] in
 /// each form (its overlay form is [`extract_overlay`] making device
 /// nodes), [`extract_overlay`] leaving them out, and [`extract_live`]; with
@@ -2278,7 +2591,7 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
 /// shows of it in a live root: the entry is refused before a directory it
 /// lacks is made, and one a byte shorter is taken; in a directory made
 /// there, it is refused as well, and so is a whiteout, an opaque one or a
-/// hardlink target there.
+/// hardlink target there, before anything is removed or linked.
 #[test]
 fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
     let f = Fixture::new();
@@ -2318,6 +2631,14 @@ fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
     );
     assert_eq!(at("aaaa/x").unwrap_err(), Errno::NOENT);
 
+    // What the whiteouts would remove, below the root's fd.
+    rustix::fs::openat(
+        &root,
+        Path::new(&deep).join("aaaa/y"),
+        rustix::fs::OFlags::CREATE | rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o644),
+    )
+    .unwrap();
     let mut wh = Tar::new(&f);
     wh.file("s/aaaa/.wh.y", 0o644, b"");
     let mut opaque = Tar::new(&f);
@@ -2336,7 +2657,11 @@ fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
             "{raw}: {e}"
         );
     }
-    assert!(fs::symlink_metadata(f.host.join("h")).is_err());
+    at("aaaa/y").unwrap();
+    assert_eq!(
+        fs::symlink_metadata(f.host.join("h")).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
 }
 
 /// A live root reads where a directory lies through `/proc/self/fd`, whose
@@ -2520,7 +2845,9 @@ fn gen_record_targets() -> Vec<Vec<u8>> {
 /// and 256 bytes or holding a NUL byte, a value over 64 KiB, a `trusted.*`
 /// one (never set), a `user.overlay.*` one that only its escaped form puts
 /// over 255 bytes, names of a namespace or none a filesystem may not take,
-/// and a file capability of no form. Not a name that is only a namespace
+/// a file capability of no form, and POSIX ACLs the kernel takes, refuses
+/// by their form or entries, or takes only on a directory (a default one).
+/// Not a name that is only a namespace
 /// (`user.`): the filesystem refuses it with an `EINVAL` that
 /// [`is_kernel_refusal`] cannot tell from the kernel's.
 fn gen_xattr(i: usize) -> (String, Vec<u8>) {
@@ -2537,6 +2864,19 @@ fn gen_xattr(i: usize) -> (String, Vec<u8>) {
         (format!("user.overlay.{}", "o".repeat(240)), v.clone()),
         ("gnu.x".to_owned(), v),
         ("security.capability".to_owned(), vec![b'x'; 20]),
+        (
+            "system.posix_acl_access".to_owned(),
+            posix_acl(2, &ACL_MINIMAL),
+        ),
+        ("system.posix_acl_access".to_owned(), vec![2, 0]),
+        (
+            "system.posix_acl_access".to_owned(),
+            posix_acl(2, &ACL_MINIMAL[..1]),
+        ),
+        (
+            "system.posix_acl_default".to_owned(),
+            posix_acl(2, &ACL_MINIMAL),
+        ),
     ];
     let n = xattrs.len();
     xattrs.into_iter().nth(i % n).unwrap()
