@@ -10,7 +10,7 @@
 //! state directory, outside, which neither make it nor change its mode
 //! ([`statedir::check`]): one that does not exist, or is empty, is left
 //! so; then the build's user namespace
-//! ([`setup::enter_build_userns`]); then, in it, `RLIMIT_NOFILE` raised and
+//! ([`setup::enter_build_userns`]); then, in it,
 //! [`rnk_store::Store::prune_all`], which removes nothing while a build
 //! holds the store, refuses a directory that is not the store's, and keeps
 //! builds out of one it did not finish emptying. The commands a refusal
@@ -650,12 +650,6 @@ pub(crate) fn empty(state_dir: &Path) -> Result<Pruned, Refusal> {
     // it.
     let pin = Pin::of(state_dir, &check);
     setup::enter_build_userns(no_user_namespace(state_dir, pin.clone()).into())?;
-    // The deletion holds a descriptor per directory level, and a `RUN` may
-    // have left a deep tree.
-    match statedir::raise_nofile_limit() {
-        Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
-        Err(e) => tracing::warn!("cannot raise RLIMIT_NOFILE to its hard limit: {e}"),
-    }
     match Store::prune_all(state_dir) {
         Ok(true) => Ok(Pruned::Emptied),
         Ok(false) => Ok(Pruned::Empty),

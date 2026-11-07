@@ -49,8 +49,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`prune::no_user_namespace`: commands that remove the user's own files,
   and root's `prune --all` for those of its subordinate ids,
   `prune::ask_root`, as in `prune::unfinished`; not the build's, whose
-  "run ranikust as root" `prune --all` refuses); in it, `RLIMIT_NOFILE`
-  raised and `rnk_store::Store::prune_all`. The commands a guidance gives
+  "run ranikust as root" `prune --all` refuses); in it,
+  `rnk_store::Store::prune_all`. The commands a guidance gives
   refuse a `PATH` with a relative or empty entry and unset the loader's
   variables that name libraries or modules by path (`prune::ENV_CHECK`),
   enter the state directory once, shell-quoted,

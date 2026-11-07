@@ -307,7 +307,8 @@ is `extract`.
   times are set through the fd it was written through when its entries
   are done, deepest first; nothing is re-resolved by path, and memory and
   fds stay bounded by the depth (two fds per level: the caller raises
-  `RLIMIT_NOFILE` for deep trees, as for deletion).
+  `RLIMIT_NOFILE` for deep trees; deletion, unlike the copy, holds a fixed
+  number, [below](#deletion)).
 - **Into itself.** The device and inode of every destination directory
   the copy writes into are recorded; a source directory among them (the
   destination inside the source, one root as both, as kaniko mode on a
@@ -349,14 +350,24 @@ host's.
 [safe deletion](kaniko-mode.md#safe-deletion); the same walker removes a
 directory an extracted entry replaces, and applies OCI whiteouts.
 
-- Iterative, one frame per directory level holding an `O_RDONLY` fd and its
-  own name: no recursion, no `PATH_MAX` limit, one fd per level (a 3,004-level
-  tree in T0). The path of the entry at hand is one buffer the walk extends and
-  shortens, never a copy per level, so memory is linear in the entries on the
-  stack (each level's name and the names of its directory not yet visited), not
-  quadratic in depth (a 400-level chain of 200-byte names: 0.4 MB, against 32 MB
-  before; `tests/memory.rs`; `prune` alike). Names are read before any is
-  removed.
+- Iterative, one frame per directory level holding its own name and its
+  `statx`: no recursion, no `PATH_MAX` limit (a 3,004-level tree in T0). The
+  path of the entry at hand is one buffer the walk extends and shortens, never
+  a copy per level, so memory is linear in the entries on the stack (each
+  level's name, its `statx` and the names of its directory not yet visited),
+  not quadratic in depth (a 400-level chain of 200-byte names: 0.4 MB, against
+  32 MB before; `tests/memory.rs`; `prune` alike). Names are read before any
+  is removed.
+- At most 32 directory fds (`OPEN_DIRS`), whatever the depth or
+  `RLIMIT_NOFILE`: the directory being emptied and its nearest ancestors keep
+  an `O_RDONLY` fd, a farther one's is closed. Climbing back to it, the walk
+  opens `..` of its child (still open; `RESOLVE_NO_XDEV`, no symlink) and
+  checks it is the same inode, device and mount id as when first opened,
+  else `Error::Changed` with nothing done in what `..` reached: a directory
+  moved or swapped out from under it meanwhile leads elsewhere. GNU `fts`
+  climbs the same way for `rm -rf`. `prune` nests a deletion walk in its
+  own, so it holds at most 64 (`tests/descriptors.rs`: 2,000 levels under a
+  soft limit of 256).
 - Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
   `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
   `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, and its `ino`, device and
