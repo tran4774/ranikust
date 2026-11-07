@@ -515,11 +515,13 @@ fn red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside() {
     );
     assert!(!removed.status.success(), "{removed:?}");
     assert_eq!(owned(&state), inside, "{err}");
+    // The unchanged directory keeps its hardlinks to both.
     assert_eq!(nlink("secret"), 2);
-    assert_eq!(nlink("owned"), 1);
+    assert_eq!(nlink("owned"), 2);
     assert_eq!(owned(&outside), before);
     // The owner's ids only: both commands remove it.
     let state = parent.join("second");
+    let links = nlink("owned");
     owners_state(&state, &ids, &outside);
     let (emptying, removal) = printed_for_root(&state);
     let emptied = bash(&emptying, tmp.path());
@@ -527,7 +529,7 @@ fn red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside() {
     assert!(emptied.status.success(), "{emptied:?}");
     assert!(removed.status.success(), "{removed:?}");
     assert!(!state.exists());
-    assert_eq!(nlink("owned"), 1);
+    assert_eq!(nlink("owned"), links);
     assert_eq!(owned(&outside), before);
 }
 
