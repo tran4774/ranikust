@@ -174,7 +174,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     );
     let script = r#"'find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'"#;
     let want = format!(
-        "which needs GNU findutils (Alpine: apk add findutils): ( CDPATH= cd -P -- {d} && stat -c %d:%i:%u . | grep -qxF {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && stat -c %d:%i:%u ./state | grep -qxF {dev}:{ino}:{uid} && rmdir -- ./state )"
+        "; the emptying needs GNU findutils (Alpine: apk add findutils): ( CDPATH= cd -P -- {d} && stat -c %d:%i:%u . | grep -qxF {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && stat -c %d:%i:%u ./state | grep -qxF {dev}:{ino}:{uid} && rmdir -- ./state )"
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
     assert!(refusal.guidance.contains("nothing is mounted below it"));
@@ -199,17 +199,19 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     );
     assert!(!refusal.guidance.contains("again"), "{refusal}");
     fs::remove_dir_all(&odd).unwrap();
-    // A path that ends in `..`, not in the directory's name.
-    let up = state.join("blobs/..");
-    let refusal = prune_all(0, &up).unwrap_err();
-    assert!(
-        refusal.guidance.starts_with(&format!(
-            "ranikust gives no commands for {}, which ends in ..: give the state directory's own \
-             path;",
-            shell_word(up.as_os_str())
-        )),
-        "{refusal}"
-    );
+    // A path that ends in `..`, not in the directory's name, whether it
+    // leads to a state directory, to another directory or nowhere.
+    for up in [state.join("blobs/.."), state.join(".."), missing.join("..")] {
+        let refusal = prune_all(0, &up).unwrap_err();
+        assert!(
+            refusal.guidance.starts_with(&format!(
+                "ranikust gives no commands for {}, which ends in ..: give the state directory's \
+                 own path;",
+                shell_word(up.as_os_str())
+            )),
+            "{refusal}"
+        );
+    }
     // No command for a path it cannot check, the path the user gave
     // quoted.
     let refusal = prune_all(0, &missing).unwrap_err();
@@ -655,8 +657,7 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
             "made by mv: {made_by_mv}"
         );
         assert!(state.join("blobs").is_dir(), "made by mv: {made_by_mv}");
-        // The machine's `mv` ran after the shim's `mkdir`, and failed; no
-        // file where it did not run.
+        // The machine's `mv` ran after the shim's `mkdir`, and failed.
         let status = fs::read_to_string(&mv_ran).ok();
         let want = made_by_mv.then(|| "1\n".to_owned());
         assert_eq!(status, want, "made by mv: {made_by_mv}: mv's status");

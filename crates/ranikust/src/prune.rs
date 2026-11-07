@@ -52,17 +52,25 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
      (ADR-0032); for now it takes --all, which empties the state directory of a user other than \
      root (ADR-0105)";
 
+/// What the scripts need, as a literal: `concat!` takes no constant.
+macro_rules! needs_gnu_find {
+    () => {
+        "needs GNU findutils (Alpine: apk add findutils)"
+    };
+}
+
 /// What the printed guidance says the scripts need.
-const NEEDS_GNU_FIND: &str = "needs GNU findutils (Alpine: apk add findutils)";
+const NEEDS_GNU_FIND: &str = needs_gnu_find!();
 
 /// `$rest` after the check both scripts start with: unless `find` is GNU
 /// findutils', whose behaviour they are written for, the script stops
 /// there with nothing changed, saying what it needs ([`NEEDS_GNU_FIND`]).
-/// A literal, as `concat!` takes no constant.
 macro_rules! gnu_find_first {
     ($rest:literal) => {
         concat!(
-            r#"find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; "#,
+            r#"find --version 2>/dev/null | grep -q "GNU findutils" || { echo ""#,
+            needs_gnu_find!(),
+            r#"" >&2; exit 1; }; "#,
             $rest
         )
     };
@@ -97,7 +105,7 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
         "root empties a state directory with ordinary tools while no build uses it and nothing \
          is mounted below it, its marker first so that no build takes what an interrupted \
          removal leaves, and nothing in a directory without one or other than the one ranikust \
-         checked, which {NEEDS_GNU_FIND}: {}, then {}",
+         checked; the emptying {NEEDS_GNU_FIND}: {}, then {}",
         in_dir(dir, pin, ROOT_SCRIPT),
         remove_dir(dir, pin)
     )
@@ -294,6 +302,10 @@ pub(crate) enum NoPin {
 /// This process's user namespace must be the one the commands run in, for
 /// the owner.
 pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
+    // Whatever `..` leads to, the commands could not name it.
+    if dir.components().next_back() == Some(std::path::Component::ParentDir) {
+        return Err(NoPin::NoName);
+    }
     let check = Store::check_prune(dir).map_err(|e| NoPin::Unchecked(e.to_string()))?;
     Ok((Pin::of(dir, &check)?, check.entries))
 }

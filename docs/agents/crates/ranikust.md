@@ -373,9 +373,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changed when the pin is wrong or a parent is swapped for a symlink
   after printing, root given none for a path through a symlink, a path
   ending in `..` or an empty directory, and each script changing nothing
-  with a `find` that answers `--version` as BusyBox's does or not at
-  all; the ways
-  out only in `prune`'s refusal of a prune that could not finish), `statedir`
+  with a `find` that answers `--version` as BusyBox's does or not at all;
+  the ways out only in `prune`'s refusal of a prune that could not
+  finish), `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
