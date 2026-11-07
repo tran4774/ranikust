@@ -221,7 +221,7 @@ opq/b f 0:0 644 \"b\"";
 /// Each entry below `root` as this process sees it, one sorted line each:
 /// path, type, owner, mode, then the links to a file and its contents, a
 /// symlink's target, the numbers of a device, an mtime other than the
-/// tars' [`MTIME`] and every xattr.
+/// tars' [`MTIME`] and every xattr but `security.selinux`.
 fn dump(root: &Path) -> String {
     let mut lines = Vec::new();
     let mut todo = vec![PathBuf::from(".")];
@@ -303,9 +303,9 @@ fn holds(dir: &Path, name: &str) -> bool {
 /// In a build with `store`: the bottom and top layers through `overlay`,
 /// then a diff ID the bottom layer's tar does not hash to, a layer of an
 /// owner no map holds and one with a `security.selinux` xattr, unless
-/// `selinux` runs. What it saw, for [`expected`], then where the two layers
+/// `skip_selinux`. What it saw, for [`expected`], then where the two layers
 /// are. Closes the store.
-fn extract_layers(store: Store, selinux: bool) -> String {
+fn extract_layers(store: Store, skip_selinux: bool) -> String {
     let capture = rnk_metrics::Capture::new();
     let store = Arc::new(store);
     let overlay = Overlay::new(Arc::clone(&store), CAPS).unwrap();
@@ -345,7 +345,7 @@ fn extract_layers(store: Store, selinux: bool) -> String {
             .finish(),
         "chown",
     );
-    let selinux = if selinux {
+    let sel = if skip_selinux {
         SELINUX_SKIPPED.to_owned()
     } else {
         outcome(
@@ -359,10 +359,10 @@ fn extract_layers(store: Store, selinux: bool) -> String {
     };
     // The refusing call counts, not its errno, which a security module may
     // change.
-    let selinux = if selinux.starts_with("refused: setxattr ./sel: ") {
+    let sel = if sel.starts_with("refused: setxattr ./sel: ") {
         "refused: setxattr ./sel".to_owned()
     } else {
-        selinux
+        sel
     };
     let published = fs::read_dir(lower.path().parent().unwrap())
         .unwrap()
@@ -371,7 +371,7 @@ fn extract_layers(store: Store, selinux: bool) -> String {
     let tmp_left = fs::read_dir(tmp).unwrap().count();
     let report = format!(
         "nodes_skipped {skipped}\nnamed by diff ID {}\nmismatch refused {}\nfar owner {far}\n\
-         security.selinux {selinux}\npublished {published}\ntmp {tmp_left}\n-- bottom\n{}\n\
+         security.selinux {sel}\npublished {published}\ntmp {tmp_left}\n-- bottom\n{}\n\
          -- top\n{}\n-- paths\n{}\n{}",
         lower.path().ends_with(b_id.encoded()),
         mismatch.contains("the uncompressed tar has diff ID"),
@@ -425,9 +425,9 @@ fn selinux_case_skipped() -> bool {
 /// does a `security.*` xattr other than `security.capability`, which only
 /// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets
 /// where no security module manages the name (SELinux decides
-/// `security.selinux` by policy, so the case is skipped where it runs,
-/// `selinux`).
-fn expected(userns: bool, selinux: bool) -> String {
+/// `security.selinux` by policy, so the case is skipped where it runs:
+/// `skip_selinux`).
+fn expected(userns: bool, skip_selinux: bool) -> String {
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
         bottom.extend(DEVICES.map(str::to_owned));
@@ -443,12 +443,12 @@ fn expected(userns: bool, selinux: bool) -> String {
         } else {
             "published"
         },
-        match (userns, selinux) {
+        match (userns, skip_selinux) {
             (_, true) => SELINUX_SKIPPED,
             (true, false) => "refused: setxattr ./sel",
             (false, false) => "published",
         },
-        match (userns, selinux) {
+        match (userns, skip_selinux) {
             (true, _) => 2,
             (false, true) => 3,
             (false, false) => 4,
@@ -459,11 +459,15 @@ fn expected(userns: bool, selinux: bool) -> String {
 
 /// The base layers of [`extract_layers`], in a build that enters the user
 /// namespace with the state directory `state`, as `user` when given, with
-/// `selinux` for [`extract_layers`]. The map, the report and the layers'
-/// paths, or `refused\t<refusal>`.
-fn extract_in_namespace(state: &Path, user: Option<(u32, u32)>, selinux: bool) -> String {
+/// `skip_selinux` for [`extract_layers`]. The map, the report and the
+/// layers' paths, or `refused\t<refusal>`.
+fn extract_in_namespace(state: &Path, user: Option<(u32, u32)>, skip_selinux: bool) -> String {
     in_child(user, || match enter_user_namespace(state) {
-        Ok(s) => format!("{}\n{}", s.userns.map, extract_layers(s.store, selinux)),
+        Ok(s) => format!(
+            "{}\n{}",
+            s.userns.map,
+            extract_layers(s.store, skip_selinux)
+        ),
         Err(r) => format!("refused\t{r}"),
     })
 }
@@ -617,12 +621,12 @@ fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() 
         rustix::process::geteuid().is_root(),
         "run as root of a rootless Podman container (just test-rootless)"
     );
-    let selinux = selinux_case_skipped();
+    let skip_selinux = selinux_case_skipped();
     let tmp = private_tempdir();
-    let out = extract_in_namespace(&tmp.path().join("state"), None, selinux);
+    let out = extract_in_namespace(&tmp.path().join("state"), None, skip_selinux);
     let (map, report, _) = split(&out);
     assert_eq!(map, "multi-range", "{out}");
-    assert_eq!(report, expected(true, selinux));
+    assert_eq!(report, expected(true, skip_selinux));
 }
 
 /// T1, as root of a rootless Podman container: an extraction in the build's
@@ -684,25 +688,25 @@ fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {
         return;
     }
     let ((uid, gid), restricted) = sudo_user();
-    let selinux = selinux_case_skipped();
+    let skip_selinux = selinux_case_skipped();
     let tmp = private_tempdir();
     let as_root = in_child(None, || {
         match Store::open(&BuildPaths::new(tmp.path(), tmp.path().join("root-state"))) {
-            Ok(store) => extract_layers(store, selinux),
+            Ok(store) => extract_layers(store, skip_selinux),
             Err(e) => format!("error: {e}"),
         }
     });
     let (report, _) = as_root
         .split_once("\n-- paths\n")
         .unwrap_or_else(|| panic!("{as_root}"));
-    assert_eq!(report, expected(false, selinux));
+    assert_eq!(report, expected(false, skip_selinux));
 
     chown(tmp.path(), Some(uid), Some(gid)).unwrap();
     let state = tmp.path().join("state");
     fs::create_dir(&state).unwrap();
     chown(&state, Some(uid), Some(UNMAPPED_GID)).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o2700)).unwrap();
-    let out = extract_in_namespace(&state, Some((uid, gid)), selinux);
+    let out = extract_in_namespace(&state, Some((uid, gid)), skip_selinux);
     if restricted {
         assert!(
             out.starts_with("refused\tno user namespace for the build: "),
@@ -713,7 +717,7 @@ fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {
     }
     let (map, report, [lower, upper]) = split(&out);
     assert_eq!(map, "newuidmap", "{out}");
-    assert_eq!(report, expected(true, selinux));
+    assert_eq!(report, expected(true, skip_selinux));
     // Outside, the owners are the subordinate ids, from the second one on.
     let sub = crate::subids::lookup(uid)
         .unwrap()

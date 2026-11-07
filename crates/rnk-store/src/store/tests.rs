@@ -391,8 +391,8 @@ fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
 
 /// A store directory whose group cannot be made the process's: a warning
 /// outside a user namespace, where no map needs the gid; an error in one,
-/// or where the namespace cannot be told. Any other failure is an error
-/// everywhere.
+/// or where the namespace cannot be told. Any other failure, another errno
+/// of the change or `EPERM` from a step before it, is an error everywhere.
 #[test]
 fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
     let refused = || rnk_rootfs::Error::Io {
@@ -418,6 +418,18 @@ fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
         source: io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
     };
     assert!(refused_group(chmod, "tmp", || Ok(false)).is_ok());
+    let chmod = rnk_rootfs::Error::Io {
+        op: "chmod",
+        path: PathBuf::from("tmp"),
+        source: io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
+    };
+    assert!(refused_group(chmod, "tmp", || Ok(true)).is_err());
+    let read_only = rnk_rootfs::Error::Io {
+        op: "chown",
+        path: PathBuf::from("tmp"),
+        source: io::Error::from_raw_os_error(Errno::ROFS.raw_os_error()),
+    };
+    assert!(refused_group(read_only, "tmp", || Ok(false)).is_err());
     // EPERM from a step before the change is not a refused change.
     let open = rnk_rootfs::Error::Io {
         op: "open",
@@ -428,8 +440,8 @@ fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
 }
 
 /// A symlink of another group planted at a store directory's name keeps
-/// its owner, group and ctime when the store opens, which then refuses it:
-/// only a directory takes the process's group.
+/// its owner, group and ctime when the store opens: only a directory takes
+/// the process's group. The open then fails on the symlink.
 #[test]
 fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     use std::os::unix::fs::MetadataExt as _;
@@ -458,7 +470,7 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     let before = seen();
     let opened = Store::open(&BuildPaths::new(dir.path(), &state));
     assert_eq!(seen(), before, "{:?}", opened.as_ref().err());
-    let e = opened.expect_err("a symlink as tmp/ is refused");
+    let e = opened.expect_err("a symlink as tmp/ fails the open");
     assert!(
         matches!(&e, Error::Rootfs(r) if r.raw_os_error() == Some(Errno::NOTDIR.raw_os_error())),
         "{e}"

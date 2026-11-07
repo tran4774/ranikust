@@ -187,10 +187,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   checks skipped for a user of one group), while one already the
   process's keeps its ctime; a refused change is a warning only outside a
   user namespace, and the refusal itself is the error in one or where the
-  namespace cannot be told
+  namespace cannot be told, while another errno of the change, or `EPERM`
+  from a step before it, is an error everywhere
   (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
   symlink of another group at a store directory's name keeps its group and
-  the store refuses it
+  the open fails on it
   (`a_symlink_at_a_store_directory_s_name_keeps_its_group`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead

@@ -60,8 +60,8 @@ fn alone_in(module: &str, name: &str) -> bool {
         out.status.success() && text.contains("test result: ok. 1 passed"),
         "{text}"
     );
-    // The child's notes, which its capture let through, reach the lanes'
-    // logs as this test's own.
+    // `output` keeps the child's streams: its notes reach the lanes' logs
+    // only when written again here.
     for line in text.lines().filter_map(|l| l.strip_prefix("measured: ")) {
         measured(line);
     }

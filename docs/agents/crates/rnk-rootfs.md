@@ -154,7 +154,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   deletion of a 3,004-level tree; raw modes 1777 and 4755. Unit tests per
   module, with the same racing swap under `extract`, `delete_contents` and
   `copy`, and one `set_meta_if`'s `decide` makes itself
-  (`set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then`);
+  (`set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then`),
+  and a refused group change as op `chown` with `EPERM`, which `rnk-store`
+  tells it by (`a_refused_group_change_is_a_chown_error_with_eperm`);
   `extract_overlay` against whiteouts, opaque directories and
   symlinks in the lowers, and with `DeviceNodes::Skip` (devices and links to
   them left out, never copied from a lower while their names are

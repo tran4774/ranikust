@@ -749,7 +749,8 @@ binaries it builds), then:
    uid outside, that a range of ids is mapped (the user needs entries in
    `/etc/subuid` and `/etc/subgid`) and that `chown` to another id works;
    then runs each listed test once and fails unless every one ran and
-   passed. Logs go to `<profile>.log` in the run's directory, which is
+   passed. The lane prints each test's result line and the `measured:`
+   lines a test writes to stderr past libtest's capture. Logs go to `<profile>.log` in the run's directory, which is
    removed when every profile passed or the lane stopped before any log,
    and kept, its path printed, when a profile failed.
 

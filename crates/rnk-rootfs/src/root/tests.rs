@@ -747,3 +747,33 @@ fn set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then() {
     assert_eq!((old_ino, old_mode), (before.0, 0o750));
     assert_eq!(state("d").1, 0o700);
 }
+
+/// A refused group change is an `Io` error of op `chown` with `EPERM`:
+/// `rnk-store` tells a filesystem that refuses its group by them.
+#[test]
+fn a_refused_group_change_is_a_chown_error_with_eperm() {
+    let groups = rustix::process::getgroups().unwrap();
+    if rustix::process::geteuid().is_root()
+        || rustix::process::getegid().is_root()
+        || groups.iter().any(|g| g.is_root())
+    {
+        eprintln!("skipped: the process may take group 0");
+        return;
+    }
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    let e = f
+        .root
+        .set_meta_if("d", |_| {
+            Some(Meta {
+                gid: Some(0),
+                ..Meta::default()
+            })
+        })
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Io { op: "chown", .. })
+            && e.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error()),
+        "{e}"
+    );
+}
