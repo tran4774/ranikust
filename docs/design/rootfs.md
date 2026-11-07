@@ -160,34 +160,35 @@ never called.
   `security.capability` that is not 20 bytes of revision 2 or 24 of revision
   3 with a root id other than -1 (`cap_convert_nscap` in
   `security/commoncap.c`), a non-empty POSIX ACL (`system.posix_acl_access`
-  or `_default`; an empty one removes it, as Linux 6.2 and later do, and
-  every extraction removes it on an older kernel, which refuses the value)
-  that the kernel's VFS refuses before a filesystem sees it (since 6.2;
-  before it, in the ACL handler most filesystems share, while 9p outside
-  `access=client`, CIFS, and FUSE mounted in the initial user namespace
-  without ACLs pass it on unparsed), as `posix_acl_from_xattr` and
-  `posix_acl_valid` in `fs/posix_acl.c` do (a version other than 2, a size
-  other than 4 + 8n bytes, an unknown tag, a named user or group of id -1,
-  permissions past `rwx`, entries missing, repeated or out of order), a
-  default ACL with entries on anything but a directory (`set_posix_acl`),
-  and `user.*` on a symlink. A device node or FIFO's name and xattrs are
-  refused by the extraction that makes it, before it or its parents are
-  made: a live root makes none, a user namespace no device. What the kernel
-  never gets is taken: the `.wh.` prefix of a whiteout (the name it hides is
-  checked), AUFS metadata, a hardlink's xattrs and `trusted.*` ones. An
-  entry at an ignored path, a whiteout whose directory is missing and a
-  hardlink to a device left out are refused all the same: whether they are
-  skipped depends on the root or on an earlier entry, which a header does
-  not show. What depends on the filesystem, the namespace or the root still
-  fails at write time: an xattr name the filesystem does not take (most take
-  only some of the kernel's namespaces, `user.`, `security.` and the like; a
-  FUSE or Ceph one may take any name), a POSIX ACL on a filesystem without
-  them, a value too big for its blocks, `security.*` in a user namespace,
-  and an id the user namespace does not map: a named user or group in an
-  ACL, or the root id of a revision 3 `security.capability` (`EINVAL`,
-  measured on Linux 6.8 and 7.0). In a live root, an entry that names a
-  directory a symlink puts past what `/proc/self/fd` shows (its own, a
-  whiteout's or a hardlink target's) is refused before anything of it is
+  or `_default`) that the kernel's VFS refuses before a filesystem sees it,
+  as `posix_acl_from_xattr` and `posix_acl_valid` in `fs/posix_acl.c` do (a
+  version other than 2, a size other than 4 + 8n bytes, an unknown tag, a
+  named user or group of id -1, permissions past `rwx`, entries missing,
+  repeated or out of order), a default ACL with entries on anything but a
+  directory (`set_posix_acl`), and `user.*` on a symlink. The VFS checks
+  ACLs for every filesystem since Linux 6.2. Before it, the ACL handler most
+  filesystems share does, while 9p outside `access=client`, CIFS, and FUSE
+  mounted in the initial user namespace without ACLs pass the value on
+  unparsed; the check refuses it there all the same. An empty ACL removes
+  it, as Linux 6.2 and later do; an older kernel refuses the empty value, so
+  every extraction removes the ACL instead. A device node or FIFO's name and
+  xattrs are refused by the extraction that makes it, before it or its
+  parents are made: a live root makes none, a user namespace no device. What
+  the kernel never gets is taken: the `.wh.` prefix of a whiteout (the name
+  it hides is checked), AUFS metadata, a hardlink's xattrs and `trusted.*`
+  ones. An entry at an ignored path, a whiteout whose directory is missing
+  and a hardlink to a device left out are refused all the same: whether they
+  are skipped depends on the root or on an earlier entry, which a header
+  does not show. What depends on the filesystem, the namespace or the root
+  still fails at write time: an xattr name the filesystem does not take
+  (most take only some of the kernel's namespaces, `user.`, `security.` and
+  the like; a FUSE or Ceph one may take any name), a POSIX ACL on a
+  filesystem without them, a value too big for its blocks, `security.*` in a
+  user namespace, and an id the user namespace does not map: a named user or
+  group in an ACL, or the root id of a revision 3 `security.capability`
+  (`EINVAL`, measured on Linux 6.8 and 7.0). In a live root, an entry that
+  names a directory a symlink puts past what `/proc/self/fd` shows (its own,
+  a whiteout's or a hardlink target's) is refused before anything of it is
   made or removed.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never

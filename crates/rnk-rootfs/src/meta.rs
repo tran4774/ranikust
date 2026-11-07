@@ -607,6 +607,21 @@ fn removed(r: rustix::io::Result<()>) -> rustix::io::Result<()> {
     }
 }
 
+/// Sets `name` to `value` with `set`, or removes it with `remove` when
+/// [`is_acl_removal`]: the name of the call made, and its result.
+fn set_or_remove(
+    name: &OsStr,
+    value: &[u8],
+    set: impl FnOnce() -> rustix::io::Result<()>,
+    remove: impl FnOnce() -> rustix::io::Result<()>,
+) -> (&'static str, rustix::io::Result<()>) {
+    if is_acl_removal(name, value) {
+        ("removexattr", removed(remove()))
+    } else {
+        ("setxattr", set())
+    }
+}
+
 /// What a refused xattr does: an error naming `op`, the call made, when
 /// strict (no `skipped`), else it is counted.
 fn xattr_result(
@@ -655,13 +670,12 @@ fn apply_with(
                 rustix::fs::fchown(fd, uid, gid).map_err(|e| io_err("chown", path, e))?;
             }
             for (name, value) in &m.xattrs {
-                let (op, r) = if is_acl_removal(name, value) {
-                    let r = rustix::fs::fremovexattr(fd, name.as_os_str());
-                    ("removexattr", removed(r))
-                } else {
-                    let r = rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty());
-                    ("setxattr", r)
-                };
+                let (op, r) = set_or_remove(
+                    name,
+                    value,
+                    || rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty()),
+                    || rustix::fs::fremovexattr(fd, name.as_os_str()),
+                );
                 xattr_result(r, op, name, skipped, path)?;
             }
             if let Some(mode) = mode {
@@ -706,11 +720,12 @@ fn apply_with(
                 // pass).
                 target.check_still_pinned(path)?;
                 for (name, value) in &m.xattrs {
-                    let (op, r) = if is_acl_removal(name, value) {
-                        ("removexattr", removed(target.remove(name)))
-                    } else {
-                        ("setxattr", target.set(name, value))
-                    };
+                    let (op, r) = set_or_remove(
+                        name,
+                        value,
+                        || target.set(name, value),
+                        || target.remove(name),
+                    );
                     xattr_result(r, op, name, skipped, path)?;
                 }
                 target.check_still_pinned(path)?;
@@ -858,36 +873,43 @@ mod tests {
     }
 
     /// A failed xattr names the call made: `removexattr` for an empty POSIX
-    /// ACL, which is removed, `setxattr` for one with entries. No Linux
-    /// filesystem keeps an ACL on a symlink, so both fail there.
+    /// ACL, which is removed, `setxattr` for one with entries. A symlink
+    /// takes no ACL (`set_posix_acl` finds no `set_acl` there), so both
+    /// calls fail on it.
     #[test]
     fn a_failed_posix_acl_names_the_call_made() {
         let dir = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink("a", dir.path().join("l")).unwrap();
-        let parent = pin(dir.path(), OFlags::DIRECTORY);
-        let fd = pin(&dir.path().join("l"), OFlags::empty());
-        let h = Handle::Path {
-            fd: fd.as_fd(),
-            file_type: FileType::Symlink,
-            parent: Some((parent.as_fd(), OsStr::new("l"))),
-        };
-        // The owner, the group and others, each `rwx`.
+        let l = dir.path().join("l");
+        std::os::unix::fs::symlink("a", &l).unwrap();
+        // A valid ACL, so the symlink is what refuses it, not its parsing.
         let mut minimal = 2u32.to_le_bytes().to_vec();
         for tag in [0x01u16, 0x04, 0x20] {
             minimal.extend(tag.to_le_bytes());
             minimal.extend(7u16.to_le_bytes());
             minimal.extend(u32::MAX.to_le_bytes());
         }
+        let name = "system.posix_acl_access";
+        if rustix::fs::lsetxattr(&l, name, &minimal, XattrFlags::empty()).is_ok() {
+            eprintln!("skipped: this filesystem takes an ACL on a symlink");
+            return;
+        }
+        let parent = pin(dir.path(), OFlags::DIRECTORY);
+        let fd = pin(&l, OFlags::empty());
+        let h = Handle::Path {
+            fd: fd.as_fd(),
+            file_type: FileType::Symlink,
+            parent: Some((parent.as_fd(), OsStr::new("l"))),
+        };
         for (value, call) in [(Vec::new(), "removexattr"), (minimal, "setxattr")] {
             let m = Meta {
-                xattrs: vec![(OsString::from("system.posix_acl_access"), value)],
+                xattrs: vec![(OsString::from(name), value)],
                 ..Meta::default()
             };
-            match apply(&h, &m, Path::new("l")) {
-                Err(Error::Io { op, .. }) => assert_eq!(op, call),
-                Ok(()) => eprintln!("skipped: this filesystem takes an ACL on a symlink"),
-                Err(e) => panic!("{call}: {e:?}"),
-            }
+            let e = apply(&h, &m, Path::new("l")).unwrap_err();
+            assert!(
+                matches!(e, Error::Io { op, .. } if op == call),
+                "{call}: {e:?}"
+            );
         }
     }
 }
