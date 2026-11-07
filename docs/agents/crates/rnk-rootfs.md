@@ -115,7 +115,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   with one warning, no further name is remembered, and a link to one of
   those is linked to what the layer has at that name, else copied from the
   nearest lower layer that shows it, else refused
-  (`past_the_names_budget_a_link_to_a_device_is_copied_or_refused`,
+  (`past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused`,
   [ADR-0128](../../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
   from `statx` with the opened fd to catch a swap, `unlinkat` symlinks
@@ -153,14 +153,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   thread swapping a directory for a symlink out during every operation);
   deletion of a 3,004-level tree; raw modes 1777 and 4755. Unit tests per
   module, with the same racing swap under `extract`, `delete_contents` and
-  `copy`; `extract_overlay` against whiteouts, opaque directories and
+  `copy`, and one `set_meta_if`'s `decide` makes itself
+  (`set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then`);
+  `extract_overlay` against whiteouts, opaque directories and
   symlinks in the lowers, and with `DeviceNodes::Skip` (devices and links to
   them left out, never copied from a lower while their names are
   remembered, an earlier entry at a device's name kept, FIFOs, whiteouts
   and opaque markers made, a device root refused; past the budget
-  `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`; a device
-  a lower layer left out
-  `a_link_to_a_device_a_lower_layer_left_out_is_refused`).
+  `past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused`;
+  a device a lower layer left out
+  `a_link_to_a_device_a_lower_layer_left_out_is_refused_or_copies_a_deeper_layer`).
   `tests/model.rs`: `open_at` against a model
   resolver on 150 random trees. `tests/spans.rs`: the metrics.
   `tests/limits.rs`: a 64 MiB GNU long name, long link or PAX set refused at

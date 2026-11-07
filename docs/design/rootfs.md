@@ -149,17 +149,18 @@ never called.
   set, in every mode, as BuildKit's containerd extraction: a filesystem may
   leave its checks to the privileged caller, as XFS does for the raw ACLs
   `trusted.SGI_ACL_*`; counted as `xattrs_skipped`, one warning per layer,
-  `ADR-0075`; in a user namespace, any other `security.*` than
-  `security.capability` needs `CAP_SYS_ADMIN` over the filesystem's
-  namespace (`cap_inode_setxattr`), so the kernel refuses it and the layer
-  fails, as in BuildKit rootless,
-  `buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:419-436`;
-  T1 `extract_layers`), PAX `mtime`/`atime` with
+  `ADR-0075`), PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
   the order of [Metadata](#metadata); a regular file gets them through its
   open fd. Directories are created `0700` and get their mode and times last,
   deepest first, so later entries neither move their mtime nor hit a
-  read-only directory.
+  read-only directory. In a user namespace, a `security.*` xattr other
+  than `security.capability` needs `CAP_SYS_ADMIN` over the filesystem's
+  namespace where no security module manages the name
+  (`cap_inode_setxattr`; SELinux decides `security.selinux` by policy), so
+  the kernel refuses it and the layer fails, as in BuildKit rootless
+  (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:419-436`;
+  T1 `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`).
 - **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
   so a symlink target is linked itself. In the overlay form the target may
   be in a lower layer, which `layers/<id>` does not hold:

@@ -75,7 +75,7 @@ is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
 uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
 one copy per map
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
-#77). The tag keeps the keys apart from every chain ID (`KEY_DOMAIN` in
+#77). The tag puts the keys in a space of their own (`KEY_DOMAIN` in
 [`userns.rs`](../../crates/rnk-snapshot/src/userns.rs)). The maps are relative to
 the parent namespace, so nested namespaces with the same maps under parents
 with different ones share a key, and a build in one sees the owners of a
@@ -160,7 +160,9 @@ Every directory the store creates has a mapped uid and gid, since an unmapped
 gid alone stops the rename of a `0555` directory and the `chown` of what is
 written below it: `Store::open` gives its own directories the process's gid
 and no setgid bit, whatever a setgid state directory or a `grpid` mount gave
-them.
+them. Outside a user namespace no map needs the gid, so a change the
+filesystem refuses (`EPERM`) is a warning and the directory keeps its group;
+in one, or where the namespace cannot be told, it is an error.
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular

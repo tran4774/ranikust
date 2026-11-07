@@ -47,7 +47,8 @@ Boundaries: `crates/rnk-store/src/lib.rs`. In short:
 
 ```rust
 pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
-pub fn in_user_namespace() -> Result<bool>;  // told by the inode of /proc/self/ns/user (procfs, nsfs checked), not by the map; rnk-snapshot asks it too
+pub fn in_user_namespace() -> Result<bool>;  // told by the inode of /proc/self/ns/user (procfs, nsfs checked), not by the map
+pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace, None in the initial one: rnk-snapshot reads the maps there
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
@@ -112,9 +113,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   no setgid bit, whatever a setgid state directory or a `grpid` mount gave
   them, so what the store makes has a gid a user namespace maps
   (ADR-0099). Each is pinned once and read and changed through that
-  descriptor (`RootPath::set_meta_if`), only when it needs it; a refusal is
-  a warning outside a user namespace, where the store opened before it did
-  this, and an error in one.
+  descriptor (`RootPath::set_meta_if`), only when it needs it. Outside a
+  user namespace no map needs the gid, so a filesystem that refuses the
+  change (`EPERM`) does not stop the store: a warning; in one, or where the
+  namespace cannot be told, an error, as is any other failure.
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up

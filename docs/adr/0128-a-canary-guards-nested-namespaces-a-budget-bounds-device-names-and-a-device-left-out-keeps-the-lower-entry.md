@@ -138,10 +138,6 @@ câu vào docs (khuyến nghị)", "Keep, put one sentence in the docs (recommen
   differs.
 - Bad, because in the build's root such a path differs from the image, which
   keeps the device: a `RUN` or a `COPY --from` sees the lower entry there.
-- Bad, because the names are remembered per layer: a hardlink to a device a
-  lower layer left out takes the normal hardlink path too, so it copies a deeper
-  layer's entry at that name, or the layer is refused. Only a crafted layer
-  links into a lower one.
 
 ## Evidence
 

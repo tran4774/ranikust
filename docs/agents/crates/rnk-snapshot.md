@@ -139,7 +139,7 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   entry with `user.ranikust.inherit-root`, so the stage root takes its
   metadata from the layers below, as a flattening extractor would. In a user
   namespace other than the initial one (`src/userns.rs`, told by
-  `rnk_store::in_user_namespace` from the inode of `/proc/self/ns/user`, not
+  `rnk_store::user_namespace_proc` from the inode of `/proc/self/ns/user`, not
   by its map: a namespace mapping every id to itself still lacks
   `CAP_MKNOD`), the key is the `sha256` of a tag, the chain ID and
   the namespace's maps (ADR-0104), in a space of its own by the tag
