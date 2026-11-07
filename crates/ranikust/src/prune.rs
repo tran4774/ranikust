@@ -86,8 +86,8 @@ macro_rules! gnu_find_first {
 /// Root's emptying's step before any deletion: its regular marker,
 /// `.ranikust-state` or else the `.ranikust-pruning` a prune that did not
 /// finish left, removed first, so that what an interrupted removal leaves
-/// is unmarked; the script stops, saying so, where there is neither, and,
-/// saying that instead, where the removal fails.
+/// is unmarked; the script stops with a message where there is neither
+/// marker, and with another where `rm` fails.
 macro_rules! root_marker_first {
     () => {
         r#"if test -f .ranikust-state && ! test -h .ranikust-state; then marker=.ranikust-state; elif test -f .ranikust-pruning && ! test -h .ranikust-pruning; then marker=.ranikust-pruning; else echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2; exit 1; fi; rm "$marker" || { echo "cannot remove $marker: nothing else changed" >&2; exit 1; }; "#
@@ -228,7 +228,8 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
         "root empties a state directory with ordinary tools while no build uses it and nothing \
          is mounted below it, its marker first so that no build takes what an interrupted \
          removal leaves, and nothing in a directory without one or other than the one ranikust \
-         checked; the commands refuse a PATH with a relative or empty entry; the emptying \
+         checked; the commands refuse a PATH with a relative or empty entry and unset \
+         LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH; the emptying \
          {NEEDS_GNU_FIND}{}: {}, then {}",
         owner_only(&owner),
         in_dir(dir, pin, &root_script(&owner)),
@@ -282,16 +283,20 @@ fn no_commands(dir: &Path, why: &NoPin, root: bool) -> String {
 }
 
 /// What a user does with the state directory `dir`, pinned as `pin`,
-/// where it gets no user namespace: the build's guidance ends in "run
-/// ranikust as root", which `prune --all` refuses.
+/// where it gets no user namespace: its own files' emptying, which leaves
+/// files of its subordinate ids, or root's `prune --all`, whose commands
+/// empty the directory of those too (ADR-0133). Not the build's guidance,
+/// whose "run ranikust as root" `prune --all` refuses.
 pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let what = match pin {
         Ok(pin) => format!(
             "while nothing is mounted below the state directory, {}, which {NEEDS_GNU_FIND}, \
              renames its marker, which keeps builds out, removes the user's own files, then the \
              marker once nothing else is left; files of subordinate ids stay, and the marker \
-             with them, for a ranikust prune --all where a user namespace is allowed to finish",
-            in_dir(dir, pin, USER_SCRIPT)
+             with them, for a ranikust prune --all where a user namespace is allowed to finish; \
+             or {}",
+            in_dir(dir, pin, USER_SCRIPT),
+            ask_root(dir)
         ),
         Err(why) => no_commands(dir, &why, false),
     };
@@ -302,17 +307,27 @@ pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     )
 }
 
+/// The way out through root of a user's state directory `dir` that the
+/// user's own `prune --all` cannot empty: root's `prune --all`, which
+/// takes the directory as root sees it and prints root's commands.
+fn ask_root(dir: &Path) -> String {
+    format!(
+        "have root run ranikust prune --all --state-dir {}, which gives root's commands to \
+         empty it in place",
+        shell_word(dir.as_os_str())
+    )
+}
+
 /// The ways out of the state directory `dir`, pinned as `pin`, that
 /// `prune --all` could not finish emptying ([`rnk_store::Error::NotPruned`]),
-/// which no build opens. Root's commands come from root's own `prune
-/// --all`, which takes the directory as root sees it.
+/// which no build opens; root's is [`ask_root`].
 pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let d = shell_word(dir.as_os_str());
     let commands = match pin {
         Ok(pin) => format!(
-            "; or move the directory aside and remove it, {}; or have root run ranikust prune \
-             --all --state-dir {d}, which gives root's commands to empty it in place",
-            move_aside(dir, pin)
+            "; or move the directory aside and remove it, {}; or {}",
+            move_aside(dir, pin),
+            ask_root(dir)
         ),
         Err(why) => format!("; {}", no_commands(dir, &why, false)),
     };
@@ -464,26 +479,28 @@ pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
     Ok((Pin::of(dir, &check)?, check.entries))
 }
 
-/// What each printed command runs first, before it enters a directory: a
-/// `PATH` with a relative or empty entry would run tools from the
-/// directory entered, so the command stops there, saying so. Single-quoted,
-/// for `eval`, so that no interactive shell's history expansion reads its
-/// `!`.
-pub(crate) const PATH_CHECK: &str = r#"eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac'"#;
+/// What each printed command runs first, before it enters a directory,
+/// so that the tools it runs there are the system's, loading the system's
+/// libraries: a `PATH` with a relative or empty entry, or a loader
+/// variable naming libraries or modules by path, could run code from the
+/// directory entered. It stops, saying so, at such a `PATH`, and unsets
+/// those variables, stopping where one cannot be unset. Single-quoted, for
+/// `eval`, so that no interactive shell's history expansion reads its `!`.
+pub(crate) const ENV_CHECK: &str = r#"eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac; unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GCONV_PATH || { echo "cannot unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT or GCONV_PATH: nothing changed" >&2; exit 1; }'"#;
 
 /// `script` run by `sh` in the state directory `dir`, pinned as `pin`,
-/// which it enters once ([`PATH_CHECK`] first, then `cd -P`, `CDPATH`
-/// unset), checks against the pin,
-/// then names only as `.`: the lock, the marker's check and the deletion
-/// all act on the directory checked, whatever is put at its path
-/// meanwhile. The lock is the exclusive `flock` [`Store::prune_all`]
-/// takes, so it fails while a build holds the directory; at a missing
-/// path, `cd` fails and nothing is made. `script` holds no single quote.
+/// which it enters once ([`ENV_CHECK`] first, then `cd -P`, `CDPATH`
+/// unset), checks against the pin, then names only as `.`: the lock, the
+/// marker's check and the deletion all act on the directory checked,
+/// whatever is put at its path meanwhile. The lock is the exclusive
+/// `flock` [`Store::prune_all`] takes, so it fails while a build holds the
+/// directory; at a missing path, `cd` fails and nothing is made. `script`
+/// holds no single quote.
 fn in_dir(dir: &Path, pin: Pin, script: &str) -> String {
     debug_assert!(!script.contains('\''), "{script}");
     let d = shell_word(dir.as_os_str());
     format!(
-        "( {PATH_CHECK} && CDPATH= cd -P -- {d} && {} && exec flock -xn . sh -c '{script}' )",
+        "( {ENV_CHECK} && CDPATH= cd -P -- {d} && {} && exec flock -xn . sh -c '{script}' )",
         pin.test(".")
     )
 }
@@ -499,25 +516,25 @@ fn parent_and_name(dir: &Path, suffix: &str) -> (String, String) {
 }
 
 /// Removes the empty state directory `dir`, pinned as `pin`, from its
-/// parent, entered once after [`PATH_CHECK`]: never a symlink or another
+/// parent, entered once after [`ENV_CHECK`]: never a symlink or another
 /// directory put at its name.
 fn remove_dir(dir: &Path, pin: Pin) -> String {
     let (parent, name) = parent_and_name(dir, "");
     format!(
-        "( {PATH_CHECK} && CDPATH= cd -P -- {parent} && {} && rmdir -- {name} )",
+        "( {ENV_CHECK} && CDPATH= cd -P -- {parent} && {} && rmdir -- {name} )",
         pin.test(&name)
     )
 }
 
 /// A user's way to move the state directory `dir`, pinned as `pin`, aside
 /// and remove it in the user's namespace of `podman`: from its parent,
-/// entered once after [`PATH_CHECK`], only the directory checked, never a
+/// entered once after [`ENV_CHECK`], only the directory checked, never a
 /// symlink.
 fn move_aside(dir: &Path, pin: Pin) -> String {
     let (parent, name) = parent_and_name(dir, "");
     let (_, aside) = parent_and_name(dir, ".old");
     format!(
-        "( {PATH_CHECK} && CDPATH= cd -P -- {parent} && test -d {name} && ! test -h {name} && \
+        "( {ENV_CHECK} && CDPATH= cd -P -- {parent} && test -d {name} && ! test -h {name} && \
          {} && mv -T -- {name} {aside} && podman unshare rm -rf --one-file-system -- {aside} )",
         pin.test(&name)
     )

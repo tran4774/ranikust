@@ -193,7 +193,12 @@ fn check_for_commands_beside(
         )));
     }
     // `walk` reads the state directory first.
-    Ok(chain[0].mode)
+    chain.first().map(|d| d.mode).ok_or_else(|| {
+        Refused(format!(
+            "{} could not be read as a directory",
+            state_dir.display()
+        ))
+    })
 }
 
 /// Creates what is missing of `state_dir` below `existing`, its nearest

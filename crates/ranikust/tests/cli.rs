@@ -1136,8 +1136,10 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
             if plain {
                 let lock = format!(
                     "( eval 'case \":$PATH:\" in *::*|*:[!/]*) echo \"PATH holds a relative or \
-                     empty entry: use absolute directories only\" >&2; exit 1;; esac' && CDPATH= \
-                     cd -P -- {}{check}",
+                     empty entry: use absolute directories only\" >&2; exit 1;; esac; unset \
+                     LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GCONV_PATH || {{ echo \"cannot unset \
+                     LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT or GCONV_PATH: nothing changed\" >&2; \
+                     exit 1; }}' && CDPATH= cd -P -- {}{check}",
                     state.display()
                 );
                 assert!(err.contains(&lock), "{err}");

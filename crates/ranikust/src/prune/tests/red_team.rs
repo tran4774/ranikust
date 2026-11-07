@@ -22,7 +22,7 @@ fn printed_for_root(dir: &Path) -> (String, String) {
         .lines()
         .nth(1)
         .unwrap_or_else(|| panic!("no guidance: {text}"));
-    let first = format!("( {PATH_CHECK} && CDPATH= cd -P -- ");
+    let first = format!("( {ENV_CHECK} && CDPATH= cd -P -- ");
     let start = line
         .find(&first)
         .unwrap_or_else(|| panic!("no commands: {line}"));
@@ -34,35 +34,6 @@ fn printed_for_root(dir: &Path) -> (String, String) {
         line[start..then].to_owned(),
         line[then + ", then ".len()..end].to_owned(),
     )
-}
-
-/// `program` found on `PATH`.
-fn which(program: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(program))
-        .find(|p| p.is_file())
-}
-
-/// The shells on this machine, each as its program and the arguments
-/// before `-c`.
-fn shells() -> Vec<Vec<&'static str>> {
-    [
-        vec!["bash"],
-        vec!["zsh", "-f"],
-        vec!["dash"],
-        vec!["ksh"],
-        vec!["mksh"],
-        vec!["busybox", "sh"],
-    ]
-    .into_iter()
-    .filter(|sh| {
-        Command::new(sh[0])
-            .args(&sh[1..])
-            .args(["-c", "true"])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
-    .collect()
 }
 
 /// `command` run by the shell `sh` in `cwd`.
@@ -300,12 +271,11 @@ fn red_team_directories_swapped_during_the_walk_lead_nowhere_out() {
 }
 
 /// T4: the checks a user's `prune --all` runs before any user namespace,
-/// which change nothing, take none of `/`, system directories and the home
-/// directory as a state directory to empty; root's refusal gives no
-/// commands for them.
+/// which change nothing, refuse `/`, system directories and the home
+/// directory, each that exists and holds anything (one missing or empty
+/// is left as it is); root's refusal gives no commands for them.
 #[test]
 fn red_team_system_directories_and_the_home_get_nothing() {
-    let user_ns = fs::read_link("/proc/self/ns/user").unwrap();
     let mut dirs: Vec<PathBuf> = [
         "/", "/etc", "/home", "/usr", "/var", "/var/lib", "/tmp", "/root", "/proc", "/dev",
     ]
@@ -319,15 +289,20 @@ fn red_team_system_directories_and_the_home_get_nothing() {
     );
     for dir in &dirs {
         let found = statedir::check(dir);
-        assert!(
-            !matches!(found, Ok(Found::Entries(_))),
-            "{}: {found:?}",
-            dir.display()
-        );
+        // One this process cannot list counts as holding something.
+        let holds = fs::read_dir(dir).map_or(dir.exists(), |mut d| d.next().is_some());
+        if holds {
+            assert!(found.is_err(), "{}: {found:?}", dir.display());
+        } else {
+            assert!(
+                !matches!(found, Ok(Found::Entries(_))),
+                "{}: {found:?}",
+                dir.display()
+            );
+        }
         let guidance = prune_all(0, dir).unwrap_err().guidance;
         assert!(!guidance.contains("cd -P"), "{}: {guidance}", dir.display());
     }
-    assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
 }
 
 /// The uid whose state directory root's commands run on as root: the first

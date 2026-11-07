@@ -92,8 +92,8 @@ fn prune_without_all_is_refused_naming_phase_5() {
     assert!(!state.exists());
 }
 
-/// How each printed command starts: [`PATH_CHECK`], as printed.
-const PATH_FIRST: &str = r#"( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac' && "#;
+/// How each printed command starts: [`ENV_CHECK`], as printed.
+const ENV_FIRST: &str = r#"( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac; unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GCONV_PATH || { echo "cannot unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT or GCONV_PATH: nothing changed" >&2; exit 1; }' && "#;
 
 /// Root's emptying's marker step, as printed.
 const MARKER_STEP: &str = r#"if test -f .ranikust-state && ! test -h .ranikust-state; then marker=.ranikust-state; elif test -f .ranikust-pruning && ! test -h .ranikust-pruning; then marker=.ranikust-pruning; else echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2; exit 1; fi; rm "$marker" || { echo "cannot remove $marker: nothing else changed" >&2; exit 1; }; "#;
@@ -226,7 +226,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     };
     let script = format!("{gnu_first}{emptying}'");
     let want = format!(
-        "; the commands refuse a PATH with a relative or empty entry; the emptying needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet){only}: {PATH_FIRST}CDPATH= cd -P -- {d} && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:{mode:o} && exec flock -xn . sh -c {script} ), then {PATH_FIRST}CDPATH= cd -P -- {p} && stat -c %d:%i:%u:%a ./state | grep -qxF {dev}:{ino}:{uid}:{mode:o} && rmdir -- ./state )"
+        "; the commands refuse a PATH with a relative or empty entry and unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH; the emptying needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet){only}: {ENV_FIRST}CDPATH= cd -P -- {d} && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:{mode:o} && exec flock -xn . sh -c {script} ), then {ENV_FIRST}CDPATH= cd -P -- {p} && stat -c %d:%i:%u:%a ./state | grep -qxF {dev}:{ino}:{uid}:{mode:o} && rmdir -- ./state )"
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
     assert!(refusal.guidance.contains("nothing is mounted below it"));
@@ -669,11 +669,65 @@ fn the_printed_commands_change_nothing_in_another_directory() {
     }
 }
 
+/// `program` found on `PATH`.
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|p| p.is_file())
+}
+
+/// The shells on this machine, each as its program and the arguments
+/// before `-c`.
+fn shells() -> Vec<Vec<&'static str>> {
+    [
+        vec!["bash"],
+        vec!["zsh", "-f"],
+        vec!["dash"],
+        vec!["ksh"],
+        vec!["mksh"],
+        vec!["busybox", "sh"],
+    ]
+    .into_iter()
+    .filter(|sh| {
+        std::process::Command::new(sh[0])
+            .args(&sh[1..])
+            .args(["-c", "true"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+    .collect()
+}
+
+/// `command` run by the shell `sh`, found on this process's `PATH`, from
+/// `cwd`, with `env` set.
+fn shell_with(
+    sh: &[&str],
+    command: &str,
+    cwd: &Path,
+    env: &[(&str, &OsStr)],
+) -> std::process::Output {
+    let program = which(sh[0]).unwrap_or_else(|| panic!("no {} on PATH", sh[0]));
+    std::process::Command::new(program)
+        .args(&sh[1..])
+        .args(["-c", command])
+        .current_dir(cwd)
+        .envs(env.iter().copied())
+        .output()
+        .unwrap()
+}
+
+/// Writes `measured: <line>` to stderr past libtest's capture.
+fn measured(line: &str) {
+    use std::io::Write as _;
+    // A lost line loses only what the assertions already checked.
+    let _ = writeln!(std::io::stderr().lock(), "measured: {line}");
+}
+
 /// Each printed command refuses, before it enters a directory, a `PATH`
-/// with a relative or empty entry: no tool put in the directory or its
-/// parent runs, and nothing changes. The control: entered without the
-/// check, such a `PATH` runs the tool put there; with the machine's
-/// `PATH`, the commands run.
+/// with a relative or empty entry, first, last or in the middle, in each
+/// shell present: no tool put in the directory or its parent runs, and
+/// nothing changes. The control: entered without the check, such a `PATH`
+/// runs the tool put there; with the machine's `PATH`, the commands run.
 #[test]
 fn the_printed_commands_refuse_a_path_with_a_relative_entry() {
     let tmp = private_tempdir();
@@ -696,14 +750,6 @@ fn the_printed_commands_refuse_a_path_with_a_relative_entry() {
     }
     let pin = pin_of(&state);
     let real = std::env::var_os("PATH").expect("PATH");
-    let run = |command: &str, path: &OsStr| {
-        std::process::Command::new("bash")
-            .args(["-c", command])
-            .current_dir(tmp.path())
-            .env("PATH", path)
-            .output()
-            .unwrap()
-    };
     let mut paths = Vec::new();
     for first in [":", ".:", "bin:"] {
         let mut path = std::ffi::OsString::from(first);
@@ -713,11 +759,12 @@ fn the_printed_commands_refuse_a_path_with_a_relative_entry() {
     let mut last = real.clone();
     last.push(":");
     paths.push(last);
+    paths.extend(["/usr/bin:bin:/bin", "/usr/bin::/bin"].map(std::ffi::OsString::from));
     let enter = format!(
         "( CDPATH= cd -P -- {} && stat . )",
         shell_word(state.as_os_str())
     );
-    let control = run(&enter, &paths[0]);
+    let control = shell_with(&["bash"], &enter, tmp.path(), &[("PATH", &paths[0])]);
     assert!(
         fs::read_to_string(&canary).is_ok_and(|ran| !ran.is_empty()),
         "{control:?}"
@@ -732,25 +779,143 @@ fn the_printed_commands_refuse_a_path_with_a_relative_entry() {
         remove_dir(&state, pin),
         move_aside(&state, pin),
     ];
-    for command in &commands {
-        for path in &paths {
-            let out = run(command, path);
-            assert!(!out.status.success(), "{path:?}: {command}");
-            let err = String::from_utf8_lossy(&out.stderr);
-            assert!(
-                err.contains("PATH holds a relative or empty entry: use absolute directories only"),
-                "{path:?}: {err}"
-            );
-            assert!(!canary.exists(), "{path:?}: {command}");
-            assert_eq!(listing(tmp.path()), before, "{path:?}: {command}");
+    for sh in shells() {
+        for command in &commands {
+            for path in &paths {
+                let out = shell_with(&sh, command, tmp.path(), &[("PATH", path)]);
+                assert!(!out.status.success(), "{sh:?} {path:?}: {command}");
+                let err = String::from_utf8_lossy(&out.stderr);
+                assert!(
+                    err.contains(
+                        "PATH holds a relative or empty entry: use absolute directories only"
+                    ),
+                    "{sh:?} {path:?}: {err}"
+                );
+                assert!(!canary.exists(), "{sh:?} {path:?}: {command}");
+                assert_eq!(listing(tmp.path()), before, "{sh:?} {path:?}: {command}");
+            }
         }
     }
     for command in [&commands[0], &commands[3]] {
-        let out = run(command, &real);
+        let out = shell_with(&["bash"], command, tmp.path(), &[("PATH", &real)]);
         assert!(out.status.success(), "{command}: {out:?}");
     }
     assert!(!canary.exists());
     assert!(!state.exists());
+}
+
+/// Each printed command unsets, before it enters a directory, the
+/// loader's variables that name libraries or modules by path, in each
+/// shell present: its tools load no library put in the directory or its
+/// parent, and it runs or stops with nothing changed; where one of them
+/// cannot be unset, it stops before entering any. The control: entered
+/// without that, a tool loads the library put there.
+#[test]
+fn the_printed_commands_run_their_tools_without_the_loaders_variables() {
+    let tmp = private_tempdir();
+    let parent = tmp.path().join("parent");
+    let state = parent.join("state");
+    // What the loader says of a file it read and could not map: a few
+    // bytes, not ELF.
+    let planted = b"not an ELF\n";
+    let loaded = |err: &str| err.contains("file too short") || err.contains("invalid ELF header");
+    let fresh = || {
+        if parent.exists() {
+            fs::remove_dir_all(&parent).unwrap();
+        }
+        marked_state(&state);
+        fs::write(state.join("libc.so.6"), planted).unwrap();
+        fs::write(parent.join("libc.so.6"), planted).unwrap();
+        pin_of(&state)
+    };
+    fresh();
+    let empty = OsStr::new(":");
+    let lib = OsStr::new("./libc.so.6");
+    let enter = format!(
+        "( CDPATH= cd -P -- {} && stat . )",
+        shell_word(state.as_os_str())
+    );
+    let control = shell_with(&["bash"], &enter, tmp.path(), &[("LD_LIBRARY_PATH", empty)]);
+    let err = String::from_utf8_lossy(&control.stderr);
+    if control.status.success() || !loaded(&err) {
+        // musl's loader, for one, takes no library from an empty entry.
+        measured(&format!(
+            "the loader here took no library from the directory entered: {control:?}"
+        ));
+        return;
+    }
+    let real = std::env::var_os("PATH").expect("PATH");
+    let mut path = podman_shim(tmp.path()).into_os_string();
+    path.push(":");
+    path.push(&real);
+    for sh in shells() {
+        // None of the four reaches a tool.
+        let out = shell_with(
+            &sh,
+            &format!("( {ENV_CHECK} && exec env )"),
+            tmp.path(),
+            &[
+                ("PATH", &real),
+                ("LD_LIBRARY_PATH", empty),
+                ("LD_PRELOAD", lib),
+                ("LD_AUDIT", lib),
+                ("GCONV_PATH", OsStr::new(".")),
+            ],
+        );
+        assert!(out.status.success(), "{sh:?}: {out:?}");
+        let seen = String::from_utf8_lossy(&out.stdout);
+        for var in [
+            "LD_LIBRARY_PATH=",
+            "LD_PRELOAD=",
+            "LD_AUDIT=",
+            "GCONV_PATH=",
+        ] {
+            assert!(!seen.lines().any(|l| l.starts_with(var)), "{sh:?}: {seen}");
+        }
+        for (var, value) in [
+            ("LD_LIBRARY_PATH", empty),
+            ("LD_PRELOAD", lib),
+            ("LD_AUDIT", lib),
+        ] {
+            for kind in 0..5 {
+                let pin = fresh();
+                let owner = Owner::new(pin.uid, None);
+                let command = match kind {
+                    0 => in_dir(&state, pin, ROOT_SCRIPT),
+                    1 => in_dir(&state, pin, &root_script(&owner)),
+                    2 => in_dir(&state, pin, USER_SCRIPT),
+                    3 => remove_dir(&state, pin),
+                    _ => move_aside(&state, pin),
+                };
+                let before = listing(tmp.path());
+                let out = shell_with(&sh, &command, tmp.path(), &[("PATH", &path), (var, value)]);
+                let err = String::from_utf8_lossy(&out.stderr);
+                assert!(!loaded(&err), "{sh:?} {var}: {command}: {err}");
+                assert!(
+                    out.status.success() || listing(tmp.path()) == before,
+                    "{sh:?} {var}: {command}: {out:?}"
+                );
+                // Not stopped by the loader: root's emptying runs.
+                if sh == ["bash"] && kind == 0 {
+                    assert!(out.status.success(), "{var}: {command}: {out:?}");
+                }
+            }
+        }
+        let pin = fresh();
+        let before = listing(tmp.path());
+        for command in [in_dir(&state, pin, ROOT_SCRIPT), remove_dir(&state, pin)] {
+            let out = shell_with(
+                &sh,
+                &format!("readonly LD_AUDIT; {command}"),
+                tmp.path(),
+                &[("PATH", &path), ("LD_LIBRARY_PATH", empty)],
+            );
+            assert!(!out.status.success(), "{sh:?}: {command}");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(!loaded(&err), "{sh:?}: {command}: {err}");
+            assert_eq!(listing(tmp.path()), before, "{sh:?}: {command}");
+        }
+    }
 }
 
 /// Each script stops, saying what it needs, before it changes anything
@@ -822,7 +987,7 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     assert!(
         guidance.contains(
             &format!(
-                r#"{PATH_FIRST}CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:3:2750 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || {{ echo "needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet)" >&2; exit 1; }}; {{ "#
+                r#"{ENV_FIRST}CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:3:2750 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || {{ echo "needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet)" >&2; exit 1; }}; {{ "#
             )
         ),
         "{guidance}"
@@ -848,6 +1013,15 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     );
     assert!(guidance.contains("nothing is mounted below the state directory"));
     assert!(guidance.contains("subordinate ids stay"));
+    // Root's prune takes the subordinate ids' files too (ADR-0133).
+    assert!(
+        guidance.ends_with(
+            "for a ranikust prune --all where a user namespace is allowed to finish; or have root \
+             run ranikust prune --all --state-dir '/home/u/my state', which gives root's commands \
+             to empty it in place"
+        ),
+        "{guidance}"
+    );
     // No command for a directory ranikust could not pin; the user is not
     // told to run `prune --all` as a user.
     let guidance = no_user_namespace(dir, Err(NoPin::Symlink("why".to_owned())));
@@ -1405,7 +1579,7 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
         "unmount anything below '/home/u/my state'",
         "with newuidmap installed and ranges for this user in /etc/subuid and /etc/subgid",
         &format!(
-            r#"; or move the directory aside and remove it, {PATH_FIRST}CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u:%a './my state' | grep -qxF 1:2:3:700 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or have root run ranikust prune --all --state-dir '/home/u/my state', which gives root's commands to empty it in place"#
+            r#"; or move the directory aside and remove it, {ENV_FIRST}CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u:%a './my state' | grep -qxF 1:2:3:700 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or have root run ranikust prune --all --state-dir '/home/u/my state', which gives root's commands to empty it in place"#
         ),
     ] {
         assert!(ways.contains(want), "{want}: {ways}");
