@@ -402,10 +402,13 @@ fn stat_err(dir: &Path, e: Errno) -> Refused {
 }
 
 /// The directory `fd` and its real parents up to `/`, walked with `..`
-/// from the descriptor (each opened `O_PATH`); `path` names them in
-/// messages only.
+/// from the descriptor (each opened `O_PATH`); `path`, absolute, names
+/// them in messages only.
 fn walk(fd: &OwnedFd, path: &Path) -> Result<Vec<ChainDir>, Refused> {
-    let mut names = path.ancestors();
+    // With no symlink followed on `path`, its `..` are the real parents',
+    // so its lexical ancestors name the directories walked.
+    let named = crate::config::clean(path);
+    let mut names = named.ancestors();
     let mut chain = Vec::new();
     let mut at: OwnedFd = rustix::fs::openat(
         fd,

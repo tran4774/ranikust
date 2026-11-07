@@ -170,6 +170,25 @@ fn prepare_refuses_without_creating_anything() {
     assert!(!real.join("state").exists());
 }
 
+/// A path through `..` names, in a refusal, the parent that breaks the
+/// rule, not the one its text has at that depth.
+#[test]
+fn a_refusal_through_dotdot_names_the_parent_that_breaks_the_rule() {
+    let tmp = private_tempdir();
+    let open = tmp.path().join("open");
+    let state = open.join("s/state");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(open.join("s"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    let given = state.join("../state");
+    let want = format!("unsafe state directory: {} is writable", open.display());
+    let why = check(&given).unwrap_err().0;
+    assert!(why.contains(&want), "{why}");
+    let why = prepare(&given).unwrap_err().0;
+    assert!(why.contains(&want), "{why}");
+}
+
 /// What another local user can do in a sticky `/tmp` after `prepare` found
 /// the nearest existing directory and before it creates the rest: plant a
 /// symlink, or a directory of their own, at the first missing name.

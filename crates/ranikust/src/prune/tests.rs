@@ -188,17 +188,34 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
     assert!(!refusal.guidance.contains("rmdir"), "{refusal}");
-    // A refusal of the store's checks sends root to no `prune --all`.
+    // A refusal of the store's checks other than for a symlink gives its
+    // own reason: no symlink advice, no `prune --all` to run.
     let odd = tmp.path().join("odd");
     marked_state(&odd);
     fs::create_dir(odd.join(".ranikust-pruning")).unwrap();
-    let refusal = prune_all(0, &odd).unwrap_err();
-    assert!(
-        refusal.guidance.contains("not a regular file") && refusal.guidance.contains(OTHERWISE),
-        "{refusal}"
-    );
-    assert!(!refusal.guidance.contains("again"), "{refusal}");
+    let unmarked = tmp.path().join("unmarked");
+    fs::create_dir(&unmarked).unwrap();
+    fs::write(unmarked.join("keep"), b"x").unwrap();
+    for (dir, why) in [
+        (&odd, "not a regular file"),
+        (&unmarked, "has no regular file .ranikust-state"),
+        (&missing, "No such file or directory"),
+    ] {
+        let refusal = prune_all(0, dir).unwrap_err();
+        let none = format!(
+            "ranikust gives no commands for {}: ",
+            shell_word(dir.as_os_str())
+        );
+        assert!(
+            refusal.guidance.starts_with(&none) && refusal.guidance.contains(why),
+            "{refusal}"
+        );
+        for not in ["symbolic link", "as that user", "again", "cd -P"] {
+            assert!(!refusal.guidance.contains(not), "{not}: {refusal}");
+        }
+    }
     fs::remove_dir_all(&odd).unwrap();
+    fs::remove_dir_all(&unmarked).unwrap();
     // A path that ends in `..`, not in the directory's name, whether it
     // leads to a state directory, to another directory or nowhere.
     for up in [state.join("blobs/.."), state.join(".."), missing.join("..")] {
@@ -212,21 +229,12 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
             "{refusal}"
         );
     }
-    // No command for a path it cannot check, the path the user gave
-    // quoted.
-    let refusal = prune_all(0, &missing).unwrap_err();
-    let none = format!(
-        "ranikust gives no commands for {}, which it cannot check (",
-        shell_word(missing.as_os_str())
-    );
-    assert!(refusal.guidance.contains(&none), "{refusal}");
-    assert!(refusal.guidance.contains(OTHERWISE), "{refusal}");
-    assert!(!refusal.guidance.contains("cd -P"), "{refusal}");
+    // The path the user gave, quoted.
     let refusal = prune_all(0, Path::new("/srv/the 'state'")).unwrap_err();
     assert!(
         refusal
             .guidance
-            .contains(r"ranikust gives no commands for '/srv/the '\''state'\''', which "),
+            .starts_with(r"ranikust gives no commands for '/srv/the '\''state'\''': "),
         "{refusal}"
     );
     assert_eq!(listing(&state), before);
@@ -252,7 +260,8 @@ fn root_gets_no_commands_for_a_path_through_a_symlink() {
         assert!(!guidance.contains("cd -P"), "{guidance}");
         assert!(
             guidance.contains(&format!(
-                "ranikust gives no commands for {}, which it cannot check (",
+                "ranikust gives no commands for {}, which it cannot open without following a \
+                 symbolic link (",
                 shell_word(typed.as_os_str())
             )),
             "{guidance}"
@@ -467,12 +476,18 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     assert!(guidance.contains("subordinate ids stay"));
     // No command for a directory ranikust could not pin; the user is not
     // told to run `prune --all` as a user.
-    let guidance = no_user_namespace(dir, Err(NoPin::Unchecked("why".to_owned())));
+    let guidance = no_user_namespace(dir, Err(NoPin::Symlink("why".to_owned())));
     assert!(
         guidance.ends_with(
             "without it, ranikust gives no commands for '/home/u/my state', which it cannot \
-             check (why): give the path with no symbolic link on it"
+             open without following a symbolic link (why): give the path with no symbolic link \
+             on it"
         ),
+        "{guidance}"
+    );
+    let guidance = no_user_namespace(dir, Err(NoPin::Refused("why".to_owned())));
+    assert!(
+        guidance.ends_with("ranikust gives no commands for '/home/u/my state': why"),
         "{guidance}"
     );
     let guidance = no_user_namespace(dir, Err(NoPin::NoName));
@@ -809,11 +824,12 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
         assert!(ways.contains(want), "{want}: {ways}");
     }
     // No command for a directory ranikust could not pin.
-    let none = unfinished(dir, Err(NoPin::Unchecked("why".to_owned())));
+    let none = unfinished(dir, Err(NoPin::Symlink("why".to_owned())));
     assert!(
         none.ends_with(
             "/etc/subgid; ranikust gives no commands for '/home/u/my state', which it cannot \
-             check (why): give the path with no symbolic link on it"
+             open without following a symbolic link (why): give the path with no symbolic link \
+             on it"
         ),
         "{none}"
     );
@@ -872,6 +888,34 @@ fn an_empty_state_directory_is_left_as_it_is() {
     let before = listing(tmp.path());
     assert!(matches!(statedir::check(&dir).unwrap(), Found::Entries(_)));
     assert_eq!(listing(tmp.path()), before, "modes included");
+}
+
+/// A user's `prune --all`, as root's commands, takes no path that ends in
+/// `..`, whatever it leads to: refused before anything is opened, so
+/// neither as nothing to prune nor with the check's reason.
+#[test]
+fn a_users_path_ending_in_dotdot_is_refused_before_anything_is_opened() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    marked_state(&state);
+    let missing = tmp.path().join("missing");
+    let before = listing(tmp.path());
+    let user_ns = fs::read_link("/proc/self/ns/user").unwrap();
+    // Not one that leads to the state directory: that one would reach the
+    // namespace, which this test process, which has threads, cannot enter.
+    for up in [missing.join(".."), state.join("..")] {
+        let refusal = prune_all(1000, &up).unwrap_err();
+        assert_eq!(
+            refusal.reason,
+            format!(
+                "the state directory {} ends in ..: give the state directory's own path",
+                up.display()
+            )
+        );
+        assert_eq!(refusal.kind, Kind::Other);
+    }
+    assert_eq!(listing(tmp.path()), before);
+    assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
 }
 
 #[test]

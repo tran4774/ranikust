@@ -649,7 +649,7 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     let root = store_refusal(&cut_short(), given, 0);
     assert!(
         root.guidance
-            .starts_with("ranikust gives no commands for '/home/u/my state', which it cannot "),
+            .starts_with("ranikust gives no commands for '/home/u/my state': "),
         "{root}"
     );
     assert!(!root.guidance.contains("cd -P"), "{root}");

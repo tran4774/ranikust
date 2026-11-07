@@ -52,6 +52,10 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
      (ADR-0032); for now it takes --all, which empties the state directory of a user other than \
      root (ADR-0105)";
 
+/// Why neither root's commands nor a user's `prune --all` take a path
+/// that ends in `..` ([`ends_in_dotdot`]).
+const DOTDOT: &str = "ends in ..: give the state directory's own path";
+
 /// What the scripts need, as a literal: `concat!` takes no constant.
 macro_rules! needs_gnu_find {
     () => {
@@ -139,21 +143,19 @@ fn root_guidance(dir: &Path) -> String {
 fn no_commands(dir: &Path, why: &NoPin, root: bool) -> String {
     let d = shell_word(dir.as_os_str());
     match why {
-        NoPin::NoName => format!(
-            "ranikust gives no commands for {d}, which ends in ..: give the state directory's own \
-             path"
-        ),
-        NoPin::Unchecked(why) => {
+        NoPin::NoName => format!("ranikust gives no commands for {d}, which {DOTDOT}"),
+        NoPin::Symlink(why) => {
             let user = if root {
                 "; for a user's directory, run ranikust prune --all as that user"
             } else {
                 ""
             };
             format!(
-                "ranikust gives no commands for {d}, which it cannot check ({why}): give the path \
-                 with no symbolic link on it{user}"
+                "ranikust gives no commands for {d}, which it cannot open without following a \
+                 symbolic link ({why}): give the path with no symbolic link on it{user}"
             )
         }
+        NoPin::Refused(why) => format!("ranikust gives no commands for {d}: {why}"),
     }
 }
 
@@ -266,9 +268,8 @@ pub(crate) struct Pin {
 impl Pin {
     /// The pin of the state directory `dir` that `check` describes, for
     /// commands that name it: `dir` must end in a name, which they enter
-    /// its parent to act on. Only [`empty`] meets one that does not, an
-    /// absolute path ending in `..` that passed the checks: [`pin`] turns
-    /// such a path away first.
+    /// its parent to act on. [`pin`] and [`empty`] turn away a path ending
+    /// in `..` first, so only `/`, which their checks refuse, has none.
     pub(crate) fn of(dir: &Path, check: &rnk_store::PruneCheck) -> Result<Self, NoPin> {
         match (dir.parent(), dir.file_name()) {
             (Some(_), Some(_)) => Ok(Self {
@@ -294,8 +295,28 @@ pub(crate) enum NoPin {
     /// Its path ends in `..`, not in its name, whose parent the commands
     /// enter to act on it.
     NoName,
-    /// [`Store::check_prune`]'s refusal of it at the path as given.
-    Unchecked(String),
+    /// [`Store::check_prune`] could not open the path as given without
+    /// following a symbolic link on it.
+    Symlink(String),
+    /// [`Store::check_prune`] refused it for any other reason, which says
+    /// what to do.
+    Refused(String),
+}
+
+/// Whether `dir` ends in `..`: whatever that leads to, the commands cannot
+/// name it by its parent and its name.
+fn ends_in_dotdot(dir: &Path) -> bool {
+    dir.components().next_back() == Some(Component::ParentDir)
+}
+
+/// Whether `e`, from [`Store::check_prune`] on `dir`, is the open of `dir`
+/// itself refused for a symbolic link on it (`RESOLVE_NO_SYMLINKS`).
+fn symlink_on_path(e: &rnk_store::Error, dir: &Path) -> bool {
+    matches!(
+        e,
+        rnk_store::Error::Rootfs(rnk_rootfs::Error::Io { path, source, .. })
+            if path == dir && source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+    )
 }
 
 /// The state directory `dir` checked as [`Store::check_prune`] does, at
@@ -304,11 +325,16 @@ pub(crate) enum NoPin {
 /// This process's user namespace must be the one the commands run in, for
 /// the owner.
 pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
-    // Whatever `..` leads to, the commands could not name it.
-    if dir.components().next_back() == Some(Component::ParentDir) {
+    if ends_in_dotdot(dir) {
         return Err(NoPin::NoName);
     }
-    let check = Store::check_prune(dir).map_err(|e| NoPin::Unchecked(e.to_string()))?;
+    let check = Store::check_prune(dir).map_err(|e| {
+        if symlink_on_path(&e, dir) {
+            NoPin::Symlink(e.to_string())
+        } else {
+            NoPin::Refused(e.to_string())
+        }
+    })?;
     Ok((Pin::of(dir, &check)?, check.entries))
 }
 
@@ -438,17 +464,26 @@ pub(crate) fn prune_all(euid: u32, state_dir: &Path) -> Result<Pruned, Refusal> 
 }
 
 /// Empties `state_dir` as root of the build's user namespace, which this
-/// process enters for good: the state directory's checks outside, which
-/// change nothing ([`statedir::check`]); nothing more when it does not
-/// exist or is empty; else the namespace, then [`Store::prune_all`] in it.
-/// Call while single-threaded.
+/// process enters for good: a path ending in `..` refused before anything
+/// is opened, as root's commands refuse it; the state directory's checks
+/// outside, which change nothing ([`statedir::check`]); nothing more when
+/// it does not exist or is empty; else the namespace, then
+/// [`Store::prune_all`] in it. Call while single-threaded.
 ///
 /// # Errors
 ///
-/// A [`Refusal`]: naming the state directory's check that failed; as
+/// A [`Refusal`]: naming a path ending in `..` or the state directory's
+/// check that failed; as
 /// [`setup::enter_build_userns`]; or naming what [`Store::prune_all`]
 /// refused or left, then of [`Kind::Broken`].
 pub(crate) fn empty(state_dir: &Path) -> Result<Pruned, Refusal> {
+    if ends_in_dotdot(state_dir) {
+        return Err(Refusal {
+            kind: Kind::Other,
+            reason: format!("the state directory {} {DOTDOT}", state_dir.display()),
+            guidance: "".into(),
+        });
+    }
     let found = statedir::check(state_dir).map_err(|refused| Refusal {
         kind: Kind::Other,
         reason: refused.0,

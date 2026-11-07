@@ -777,7 +777,7 @@ fn build_arg(arg: &str) -> Result<BuildArg, Invalid> {
 
 /// `path` cleaned lexically, as Go's `filepath.Clean`: no `.`, no repeated
 /// `/`, `..` resolved against the parent (never above `/`).
-fn clean(path: &Path) -> PathBuf {
+pub(crate) fn clean(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in path.components() {
