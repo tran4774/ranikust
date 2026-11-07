@@ -1586,15 +1586,23 @@ fn hostname(spec: &RunSpec) -> &str {
     }
 }
 
+/// Whether the child binds the kernel filesystem instead of mounting one.
+fn is_rbind(how: KernelFs) -> bool {
+    match how {
+        KernelFs::Fresh => false,
+        KernelFs::Rbind => true,
+    }
+}
+
 fn child_mount(op: MountOp) -> Result<ChildMount> {
     Ok(match op {
         MountOp::Proc { target, how } => ChildMount::Proc {
             target: cstring(&target)?,
-            rbind: how == KernelFs::Rbind,
+            rbind: is_rbind(how),
         },
         MountOp::Sysfs { target, how } => ChildMount::Sysfs {
             target: cstring(&target)?,
-            rbind: how == KernelFs::Rbind,
+            rbind: is_rbind(how),
         },
         MountOp::Dev { target } => ChildMount::Dev {
             target: cstring(&target)?,

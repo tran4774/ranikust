@@ -788,13 +788,13 @@ namespace, then the sandbox's probe, which must choose an rbind of `/proc`
 and of `/sys` there (#78); the `smoke_checks` run but for the first three,
 which need the `RUN`'s own `/proc` (`smoke_checks_own_proc`), and the host
 name, which Podman's seccomp profile refuses to set without `CAP_SYS_ADMIN`;
-podman then runs that image too. The recipe then builds `tests/smoke/e2e` with the
-`ranikust` binary in the same kind of container (two stages, `COPY --from`,
-wildcards, `.dockerignore`, cache and secret mounts, `RUN --network=none`,
-heredocs, `WORKDIR`, `USER`, `ENV`, `LABEL`, `EXPOSE`, `CMD`), loads its
-Docker tar into podman and runs it, checks that no stub or secret reached a
-blob, and that `--reproducible` gives one digest with `--jobs 1` and the
-default.
+podman then runs that image too. The recipe then builds `tests/smoke/e2e`
+with the `ranikust` binary in the same kind of container (two stages,
+`COPY --from`, wildcards, `.dockerignore`, cache and secret mounts,
+`RUN --network=none`, heredocs, `WORKDIR`, `USER`, `ENV`, `LABEL`,
+`EXPOSE`, `CMD`), loads its Docker tar into podman and runs it, checks
+that no stub or secret reached a blob, and that `--reproducible` gives one
+digest with `--jobs 1` and the default.
 
 It does not replace the VM: the sandbox runs in a user namespace there, so
 real-root behaviour (T17, T18 of the threat model, `MS_MOVE` under Docker's

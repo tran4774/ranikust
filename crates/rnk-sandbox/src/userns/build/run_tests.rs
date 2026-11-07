@@ -22,7 +22,8 @@ use crate::{
 /// options never start with `-`, the separator before the type.
 const KERNEL: &str = r#"
 mi=/proc/self/mountinfo
-echo "nspid=$(grep NSpid /proc/self/status | wc -w)"
+echo "pid=$$"
+echo "levels=$(($(grep NSpid /proc/self/status | wc -w) - 1))"
 echo "init=$(cat /proc/1/comm)"
 echo "proc=$(stat -f -c %T /proc) sys=$(stat -f -c %T /sys)"
 echo "procsys=$(grep -E '^([^ ]+ ){4}/proc/sys ' $mi | tail -n 1 | cut -d' ' -f6)"
@@ -176,16 +177,18 @@ fn check_kernel_mounts(out: &str) {
 }
 
 /// What a fresh `proc` and an rbind of `/proc` each show: the `RUN` is
-/// PID 2 under ranikust's init in its own, or one more PID namespace and
-/// the outer PID 1 show through the rbind.
+/// PID 2 under ranikust's init in a PID namespace of its own either way;
+/// its `proc` shows that namespace alone, or, through the rbind, the outer
+/// ones too and the outer PID 1.
 fn check_proc(out: &str, how: KernelFs) {
+    assert_eq!(value(out, "0:pid"), "2", "{out}");
     match how {
         KernelFs::Fresh => {
-            assert_eq!(value(out, "0:nspid"), "2", "{out}");
+            assert_eq!(value(out, "0:levels"), "1", "{out}");
             assert_eq!(value(out, "0:init"), "ranikust-init", "{out}");
         }
         KernelFs::Rbind => {
-            assert_ne!(value(out, "0:nspid"), "2", "{out}");
+            assert_ne!(value(out, "0:levels"), "1", "{out}");
             assert_ne!(value(out, "0:init"), "ranikust-init", "{out}");
         }
     }

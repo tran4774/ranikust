@@ -368,24 +368,15 @@ pub(crate) struct MountAttr {
 
 /// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {attr_set: NODEV})`: 0, or
 /// -1 with `errno` set. Allocates nothing, so the child may call it.
-///
-/// # Safety
-///
-/// `path` must stay valid for the call.
-pub(crate) unsafe fn set_nodev_recursive(path: &std::ffi::CStr) -> libc::c_long {
-    // SAFETY: as the caller guarantees for `path`.
-    unsafe { set_attr_recursive(libc::AT_FDCWD, path, 0, MOUNT_ATTR_NODEV) }
+pub(crate) fn set_nodev_recursive(path: &CStr) -> libc::c_long {
+    set_attr_recursive(CWD, path, 0, MOUNT_ATTR_NODEV)
 }
 
-/// `mount_setattr(dirfd, path, flags | AT_RECURSIVE, {attr_set})`: sets
+/// `mount_setattr(dir, path, flags | AT_RECURSIVE, {attr_set})`: sets
 /// `attr_set` on the mount at `path` and every mount below it, the atime
 /// flags left as they are. 0, or -1 with `errno` set; allocates nothing.
-///
-/// # Safety
-///
-/// `path` must stay valid for the call.
-unsafe fn set_attr_recursive(
-    dirfd: RawFd,
+fn set_attr_recursive(
+    dir: BorrowedFd<'_>,
     path: &CStr,
     flags: libc::c_int,
     attr_set: u64,
@@ -396,12 +387,12 @@ unsafe fn set_attr_recursive(
         propagation: 0,
         userns_fd: 0,
     };
-    // SAFETY: as the caller guarantees for `path`; `attr` lives on this
-    // stack frame for the call and its size is passed.
+    // SAFETY: `path` is NUL-terminated and borrowed, `dir` open, and `attr`
+    // lives on this stack frame for the call, its size passed.
     unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,
-            dirfd,
+            dir.as_raw_fd(),
             path.as_ptr(),
             (flags | libc::AT_RECURSIVE).cast_unsigned(),
             &raw const attr,
@@ -468,12 +459,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     );
     // The remount reaches the top mount only; a mount below the root keeps
     // its own flags unless made `nodev` too.
-    if args.root_nodev_rec {
-        // SAFETY: a NUL-terminated path and a `mount_attr` of the size
-        // passed, both alive for the call.
-        if unsafe { set_nodev_recursive(root_dir) } != 0 {
-            fail(err, Step::Remount, last_errno());
-        }
+    if args.root_nodev_rec && set_nodev_recursive(root_dir) != 0 {
+        fail(err, Step::Remount, last_errno());
     }
     check(err, Step::EnterRoot, rustix::process::chdir(root_dir));
     // Opened after the bind, so it is the bind's root: targets resolved from
@@ -1420,9 +1407,7 @@ fn rbind_kernel_fs(
     drop((s, t));
     let made = resolve_dir(err, step, root, target);
     fs_is(err, step, &made, magic);
-    // SAFETY: an empty NUL-terminated path, and a descriptor alive for the
-    // call.
-    if unsafe { set_attr_recursive(made.as_raw_fd(), c"", libc::AT_EMPTY_PATH, attrs) } != 0 {
+    if set_attr_recursive(made.as_fd(), c"", libc::AT_EMPTY_PATH, attrs) != 0 {
         fail(err, step, last_errno());
     }
     made

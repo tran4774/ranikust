@@ -68,7 +68,8 @@ does not call yet.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`. In the
   build's user namespace (#78): the `proc` and `sysfs` the probe chose,
-  `setgroups` only where `/proc/self/setgroups` allows it, `devpts`
+  `setgroups` only where `/proc/self/setgroups` allows it (else the
+  build process's supplementary groups stay, as rootless runc's), `devpts`
   without `gid=5` where gid 5 is unmapped (`OwnNamespace`, read once per
   `Sandbox`).
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
