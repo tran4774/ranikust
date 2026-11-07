@@ -54,7 +54,6 @@ use crate::userns::OwnNamespace;
 pub struct Sandbox {
     runner: Runner,
     running: Running,
-    turns: Turns,
     requests: Option<mpsc::Sender<Request>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -188,7 +187,6 @@ impl Sandbox {
             .spawn(move || spawner(&received, parent))
             .map_err(|e| sys_err("start the spawner thread", e))?;
         Ok(Self {
-            turns: Turns::for_proc(runner.kernel_fs.0),
             runner,
             running: Running::default(),
             requests: Some(requests),
@@ -200,10 +198,11 @@ impl Sandbox {
     ///
     /// Blocking: an async caller runs it on a blocking thread. The child is
     /// cloned on the spawner thread whatever thread calls this. Where
-    /// [`Caps::proc`] is [`KernelFs::Rbind`], `RUN`s take turns: a call
-    /// waits until no other `RUN` of this `Sandbox` runs, and holds its turn
-    /// until its `RUN` is reaped, the processes of its PID namespace gone
-    /// with it (ADR-0127).
+    /// [`Caps::proc`] is [`KernelFs::Rbind`], `RUN`s take turns with those
+    /// of every such `Sandbox` of the process: a call waits until none of
+    /// them runs, and holds its turn until its `RUN` is reaped, the
+    /// processes of its PID namespace gone with it; such a `Sandbox` refuses
+    /// [`Isolation::Direct`], which has no PID namespace (ADR-0127).
     ///
     /// # Errors
     ///
@@ -214,7 +213,7 @@ impl Sandbox {
     /// [`Error::Cancelled`] after [`Sandbox::cancel`], or a host-side error.
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus> {
         let requests = self.requests.as_ref().ok_or(Error::SpawnerGone)?;
-        let _turn = self.turns.take();
+        let _turn = take_turn(self.runner.kernel_fs.0);
         self.runner.run(spec, Some(&self.running), |job| {
             let (reply, answer) = mpsc::sync_channel(1);
             requests
@@ -853,6 +852,14 @@ impl Runner {
         spec.validate()?;
         let root_entry = match (spec.isolation, self.root_entry) {
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
+            // A turn under an rbind of `/proc` ends with the `RUN`'s PID
+            // namespace, which `Direct` has none of (ADR-0127).
+            (Isolation::Direct, Some(_)) if self.kernel_fs.0 == KernelFs::Rbind => {
+                return Err(Error::InvalidSpec(
+                    "Isolation::Direct where RUNs get an rbind of /proc: use Isolation::Full"
+                        .into(),
+                ));
+            }
             // A bare `chroot` is never used where mounting is possible: the
             // full sandbox runs that root (ADR-0014, ADR-0043).
             (Isolation::Direct, Some(_)) if spec.root_dir != Path::new("/") => {
@@ -1780,27 +1787,18 @@ fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
     })
 }
 
-/// Whether a [`Sandbox`]'s `RUN`s take turns: only where they get the
-/// outer `/proc`, through which `RUN`s sharing a kernel uid could reach
-/// each other's processes (ADR-0127).
-#[derive(Debug)]
-struct Turns(Option<Mutex<()>>);
+/// The turn of a `RUN` that gets the outer `/proc`, one for the process:
+/// through it `RUN`s sharing a kernel uid could reach each other's
+/// processes, whichever [`Sandbox`] runs them (ADR-0127).
+static TURN: Mutex<()> = Mutex::new(());
 
-impl Turns {
-    fn for_proc(proc: KernelFs) -> Self {
-        match proc {
-            KernelFs::Rbind => Self(Some(Mutex::new(()))),
-            KernelFs::Fresh => Self(None),
-        }
-    }
-
-    /// Waits for this caller's turn, held until the guard drops; `None`
-    /// where `RUN`s run side by side.
-    fn take(&self) -> Option<MutexGuard<'_, ()>> {
+/// Waits for a `RUN`'s turn where it gets the outer `/proc` (`proc`), held
+/// until the guard drops; `None` where `RUN`s run side by side.
+fn take_turn(proc: KernelFs) -> Option<MutexGuard<'static, ()>> {
+    match proc {
         // The lock guards no data: a `RUN` that panicked left none broken.
-        self.0
-            .as_ref()
-            .map(|m| m.lock().unwrap_or_else(PoisonError::into_inner))
+        KernelFs::Rbind => Some(TURN.lock().unwrap_or_else(PoisonError::into_inner)),
+        KernelFs::Fresh => None,
     }
 }
 
@@ -5285,41 +5283,56 @@ mod tests {
         assert_ne!(runner.next_id(), runner.next_id());
     }
 
-    /// Under an rbind of `/proc` a second caller gets its turn only once the
-    /// first has dropped its own; with a new `proc` both run at once.
+    /// Under an rbind of `/proc` a caller, whichever `Sandbox` it runs in,
+    /// waits for its turn until the one before has released its own; with a
+    /// new `proc` no caller waits.
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
-        // No lock at all: callers never wait for one another.
-        let side_by_side = Turns::for_proc(KernelFs::Fresh);
-        let first = side_by_side.take();
-        assert!(first.is_none() && side_by_side.0.is_none());
-
-        let turns = Turns::for_proc(KernelFs::Rbind);
-        let held = |turns: &Turns| turns.0.as_ref().map(|m| m.try_lock().is_err());
-        let released = std::sync::atomic::AtomicBool::new(false);
+        assert!(take_turn(KernelFs::Fresh).is_none());
+        let first = take_turn(KernelFs::Rbind);
+        assert!(first.is_some());
+        let (ready, at_take) = mpsc::channel();
         let (entered, second) = mpsc::channel();
-        std::thread::scope(|s| {
-            let first = turns.take();
-            assert!(first.is_some());
-            assert_eq!(
-                held(&turns),
-                Some(true),
-                "a second turn while the first is held"
-            );
-            s.spawn(|| {
-                let turn = turns.take();
-                let after = released.load(Ordering::SeqCst);
-                entered.send((turn.is_some(), after)).unwrap();
-            });
-            // A `take` that did not wait returns before this store.
-            released.store(true, Ordering::SeqCst);
-            drop(first);
-            assert_eq!(
-                second.recv_timeout(std::time::Duration::from_secs(60)),
-                Ok((true, true)),
-                "the second turn, only after the first's release"
-            );
+        // Detached: a turn never released fails the test instead of hanging it.
+        std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            entered.send(take_turn(KernelFs::Rbind).is_some()).unwrap();
         });
-        assert_eq!(held(&turns), Some(false));
+        at_take.recv().unwrap();
+        assert_eq!(
+            second.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "a second turn while the first is held"
+        );
+        drop(first);
+        assert_eq!(
+            second.recv_timeout(std::time::Duration::from_secs(60)),
+            Ok(true),
+            "the second turn once the first is released"
+        );
+    }
+
+    /// Where `RUN`s get an rbind of `/proc`, a `Direct` one is refused
+    /// before its clone; with a new `proc` it gets as far as the clone.
+    #[test]
+    fn direct_is_refused_where_runs_get_an_rbind_of_proc() {
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        for proc in [KernelFs::Rbind, KernelFs::Fresh] {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot))
+                .unwrap()
+                .with_kernel_fs(proc, KernelFs::Fresh);
+            let r = runner.run(direct(&missing, &missing), None, |_| {
+                Err(Error::SpawnerGone)
+            });
+            match (proc, r) {
+                (KernelFs::Rbind, Err(Error::InvalidSpec(why))) => {
+                    assert!(why.contains("rbind of /proc"), "{why}");
+                }
+                (KernelFs::Fresh, Err(Error::SpawnerGone)) => {}
+                (proc, r) => panic!("{proc:?}: {r:?}"),
+            }
+        }
     }
 }

@@ -143,7 +143,7 @@ impl Sandbox {
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
     pub fn set_seccomp(&mut self, profile: Option<SeccompProfile>); // --seccomp; None is unconfined; Full RUNs only; before the first RUN
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);  // every later RUN starts with it (ranikust's limit before its raise)
-    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;  // blocking; cloned on the spawner thread; where Caps::proc() is Rbind, one RUN at a time, the turn held until its init is reaped (ADR-0127)
+    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;  // blocking; cloned on the spawner thread; where Caps::proc() is Rbind, one RUN at a time across the process's Sandboxes, the turn held until its init is reaped, Isolation::Direct refused (ADR-0127)
     pub fn cancel(&self);                                     // cgroup.kill and SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub struct SeccompProfile;  // compiled for this architecture, kernel and Docker's 14 capabilities: docker_default(), from_json(&[u8]); Error::SeccompProfile (ADR-0109)
@@ -504,9 +504,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   or whiteout where a directory is needed or as the target; stubs a `RUN`
   swaps for symlinks out of the root or for nodes; planted stub records
   aimed outside, naming `/` or ending in `..`), `Direct` children that fail
-  before executing, mount sources and remount flags, `Direct` refusals,
-  the sealed heredoc memfd, the relay (a surviving write end, a full
-  stream, a `RUN` reading its own stream back), the init's status records,
+  before executing, mount sources and remount flags, `Direct` refusals
+  (one where `RUN`s get an rbind of `/proc`), the turns taken only under
+  an rbind of `/proc`, whichever `Sandbox` takes them
+  (`runs_take_turns_only_under_an_rbind_of_proc`), the sealed heredoc
+  memfd, the relay (a surviving write end, a full stream, a `RUN` reading
+  its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps
