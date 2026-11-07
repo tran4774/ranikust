@@ -72,8 +72,9 @@ Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves
 ([ADR-0105]), then removes it with `rmdir`. The emptying needs GNU
-findutils (Alpine: `apk add findutils`): without it, it stops before
-changing anything. The commands enter the directory once, check that it
+findutils (Alpine: `apk add findutils`), a build that lists
+`FTS(FTS_CWDFD)` in `find --version`, as recent ones do: without it, it
+stops before changing anything. The commands enter the directory once, check that it
 is the one ranikust checked, by its device, inode and owner, and work
 only inside it; `flock` takes the lock builds hold, so they fail while
 one runs. The error gives them with the directory, its parent, its name
@@ -81,7 +82,8 @@ and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
 
 ```sh
 ( CDPATH= cd -P -- 'DIR' && stat -c %d:%i:%u . | grep -qxF ID &&
-  exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" ||
+  exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" &&
+  find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" ||
   { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; };
   { test -f .ranikust-state &&
   ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning &&
@@ -91,8 +93,8 @@ and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
   rmdir -- './NAME' )
 ```
 
-The error gives no commands for an empty directory (ranikust removes
-only one that holds its marker), for a path that ends in `..` (give the
+The error gives no commands for an empty directory (ranikust gives
+commands only for one that holds its marker), for a path that ends in `..` (give the
 directory's own path), for a path with a symbolic link on it (give the
 path with none, or, for a user's directory, run `ranikust prune --all`
 as that user), or for a directory ranikust refuses, saying why.

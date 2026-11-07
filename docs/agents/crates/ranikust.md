@@ -39,7 +39,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   rootless overlay mode (#79) will; a user other than root is still
   refused before the state directory (`NEEDS_ROOT`).
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
-  in any user namespace), naming Phase 5's `prune`; then `statedir::check`
+  in any user namespace), naming Phase 5's `prune`; then a path ending in
+  `..`, before anything is opened; then `statedir::check`
   (a build's checks, outside, with nothing made and no mode changed, then
   `rnk_store::Store::check_prune`, so whatever `prune_all` refuses in the
   directory is refused here): a missing or empty state directory left so;
@@ -52,7 +53,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   from `Store::check_prune` on the path as given, outside any namespace),
   then name only `.`, under `flock -xn .`, so they act on that directory
   and fail while a build holds it; the emptying scripts first check that
-  `find` is GNU findutils' and otherwise stop, changing nothing. No
+  `find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, and
+  otherwise stop, changing nothing. No
   commands where the check fails (for a symbolic link on the path, give
   the path with none, and, to root only, for a user's directory,
   `prune --all` as that user; else the check's reason), for a path
@@ -377,21 +379,24 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   advice to give one without, which no other refusal gets), a path
   ending in `..` or an empty directory, a user's path ending in `..`
   refused before anything is opened, and each script changing nothing
-  with a `find` that answers `--version` as BusyBox's does or not at all;
-  the ways out only in `prune`'s refusal of a prune that could not
-  finish), `statedir` (each ADR-0050 refusal: `/`, system directories,
-  symlinks, writable parents, named rightly through `..`, nothing
-  created through a planted link; `0700`; a user's default below `$HOME`
-  passes, a group-writable home is refused with that user's advice, a
-  `$HOME` reached through a `/proc` link is refused with nothing made; a
-  regular `.ranikust-pruning` counts as the marker, for the store to
-  refuse), `subids` (ranges by name or uid, the first well-formed one,
+  with a `find` that answers `--version` as BusyBox's does, not at all,
+  or as GNU's without `FTS(FTS_CWDFD)`; the ways
+  out only in `prune`'s refusal of a prune that could not finish),
+  `statedir`
+  (each ADR-0050 refusal: `/`, system directories, symlinks, writable
+  parents, named rightly through `..`, nothing created through a planted
+  link; `0700`; a user's default
+  below `$HOME` passes, a group-writable home is refused with that user's
+  advice, a `$HOME` reached through a `/proc` link is refused with nothing
+  made; a regular `.ranikust-pruning` counts as the marker, for the store
+  to refuse), `subids` (ranges by name or uid, the first well-formed one,
   malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
   not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
-  no name, an end past 32 bits refused, both files needed, none for
-  root, an unreadable file an error; its red team: files of many lines
-  with binary, overlong and NUL lines and the user's malformed ranges
-  first give that user's first well-formed range only),
+  no name, an end past
+  32 bits refused, both files needed, none for root, an unreadable file an
+  error; its red team: files of many lines with binary, overlong and NUL
+  lines and the user's malformed ranges first give that user's first
+  well-formed range only),
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
@@ -436,8 +441,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `$HOME` is left empty in every `--mode`. `prune`: without `--all` exit 2
   naming Phase 5; `--all` as root exit 1 naming Phase 5, as a user a
   missing state directory, the default one included, left missing (exit
-  0); as a user, a directory without the marker refused unchanged, and a
-  state directory emptied or, without a user namespace, refused with
+  0); as a user, a directory without the marker and a path ending in
+  `..` refused unchanged, and a state directory emptied or, without a user namespace, refused with
   `prune`'s guidance, naming it under `flock`, and unchanged.
   `red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed`
   (`setup/tests/userns.rs`): the T1 red team's links out as the user who

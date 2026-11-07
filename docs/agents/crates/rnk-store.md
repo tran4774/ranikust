@@ -87,6 +87,7 @@ pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootP
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, ADR-0032) [open: #1]; digest() -> &Digest
 pub const SANDBOX_DIR: &str = "sandbox";  // the RUN sandbox's directory at the top, made by ranikust; a name prune_all takes
 pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
+impl Error { pub fn is_symlink_on(&self, state: &Path) -> bool }  // check_prune could not open state as given for a symlink on its path (ELOOP), not a refusal of its contents
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
@@ -159,10 +160,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   itself (`rnk_rootfs::refuse_own_root`), whatever its caller checked. It
   empties entries in place, under their published names, so it first
   renames the marker `.ranikust-pruning` (`PRUNING_MARKER`) and syncs
-  the directory, and `open` refuses a directory holding that name
-  (`Error::PruneCutShort`) until a prune finishes: a prune killed or failed
-  part-way never hands a build a layer with files missing
-  ([why a rename](../../design/cache-and-store.md#prune)).
+  the directory, and `open` refuses a
+  directory holding that name (`Error::PruneCutShort`) until a prune
+  finishes: a prune killed or failed part-way never hands a build a layer
+  with files missing ([why a rename](../../design/cache-and-store.md#prune)).
   It deletes through `rnk-rootfs::delete_contents` by descriptor (no
   symlink followed, no mount crossed or emptied), and only when nothing
   else is left syncs the filesystem (`syncfs`) and removes
@@ -223,7 +224,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   inotify events); a prune cut short inside a layer, or after the last
   entry, keeps every store out (`PruneCutShort`, nothing changed) until a
   prune finishes; a `.ranikust-pruning` that is not a regular file refused
-  by both until removed; in a cache mount, symlinks out
+  by both until removed; `check_prune`'s refusal of a path with a
+  symlink on it, last or not, told apart (`is_symlink_on`) from a
+  missing, unmarked or symlinked-marker one; in a cache mount, symlinks out
   (absolute, climbing), a hardlink and a FIFO, and a build directory that
   is a symlink out, removed, what they lead to unchanged.
 - To do: `prune` by size and age (Phase 5); two builds as real root sharing

@@ -155,7 +155,8 @@ under `volatile` is never trusted after a crash.
 empties the state directory of a user other than root, files of
 subordinate ids included, so the user can then remove it. In order: root
 is refused (euid 0 in any user namespace, a container's root included),
-naming Phase 5's `prune`; then, outside any namespace, a build's checks of
+naming Phase 5's `prune`; then a path ending in `..`, before anything is
+opened; then, outside any namespace, a build's checks of
 the state directory, which neither make it nor change its mode, and one
 that does not exist, or is empty, is left so; then `Store::check_prune`,
 the same read-only check `Store::prune_all` runs, so `prune --all` refuses
@@ -198,7 +199,8 @@ process that prints them opens the path as given, made absolute, with no
 symlink followed on it, runs `Store::check_prune` on it and takes its
 device, inode and owner. Each command checks, right after its one
 `cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u`
-piped to `grep -qxF`, so the check and the action name the same word):
+piped to `grep -qxF`, a hardening: no quoted command substitution for an
+interactive shell's history expansion or quoting to touch):
 `.` for the emptying, `./name` in the parent it entered for `rmdir` and
 the move aside. So a path changed after the message was printed, a
 parent swapped for a symlink included, makes it fail before it changes
@@ -213,9 +215,9 @@ refusal gives that reason instead (a user's own `prune --all` is
 refused before, with the check's reason).
 Root gets no `rmdir` for an empty directory: only one that holds the
 marker is a state directory. Both emptying scripts first check that
-`find` is GNU findutils' and otherwise stop before changing anything,
-saying so (Alpine: `apk add findutils`); the behaviour below is that
-`find`'s.
+`find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, the
+walk they rely on, and otherwise stop before changing anything, saying
+so (Alpine: `apk add findutils`); the behaviour below is that `find`'s.
 In the directory, the emptying names only `.`, so the lock, the marker's
 check and the deletion act on it whatever is put at its path meanwhile;
 it takes the same exclusive `flock` (`flock -xn .`), so it fails while a
