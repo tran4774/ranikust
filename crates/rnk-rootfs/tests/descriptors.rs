@@ -103,13 +103,7 @@ fn names(fd: &OwnedFd) -> Vec<OsString> {
 
 /// The modification time of the directory `fd`, as [`TIMES`] holds it.
 fn mtime(fd: &OwnedFd) -> Timespec {
-    let x = rustix::fs::statx(
-        fd,
-        "",
-        AtFlags::EMPTY_PATH,
-        rustix::fs::StatxFlags::MTIME,
-    )
-    .unwrap();
+    let x = rustix::fs::statx(fd, "", AtFlags::EMPTY_PATH, rustix::fs::StatxFlags::MTIME).unwrap();
     Timespec {
         tv_sec: x.stx_mtime.tv_sec,
         tv_nsec: x.stx_mtime.tv_nsec.into(),
