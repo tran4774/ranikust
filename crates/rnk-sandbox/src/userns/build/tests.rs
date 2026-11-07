@@ -534,6 +534,11 @@ fn the_build_user_namespace_below_one_id_is_told_one_uid() {
 /// ranikust counts it as the initial namespace's root (`root`), what the
 /// map one level up alone says (`by_map`), and the last map.
 fn kernel_root_below(levels: &[(u32, u32)]) -> String {
+    // A process that dropped root is not dumpable, so its own map files
+    // stay root's (ADR-0051).
+    if let Err(e) = rustix::process::set_dumpable_behavior(DumpableBehavior::Dumpable) {
+        return format!("error=PR_SET_DUMPABLE: {e}");
+    }
     for &(uid, gid) in levels {
         let euid = rustix::process::geteuid().as_raw();
         let egid = rustix::process::getegid().as_raw();
@@ -565,8 +570,8 @@ fn kernel_root_below(levels: &[(u32, u32)]) -> String {
 #[ignore = "T2: real root and the sudo user, through nested user namespaces"]
 fn the_kernel_root_is_told_through_nested_user_namespaces() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
-    // Where AppArmor restricts user namespaces (Ubuntu 24.04), one made
-    // below another root made gets no map, nor one a user makes.
+    // Where AppArmor restricts user namespaces (Ubuntu 24.04), a user's
+    // gets no map; root's, and one below it, do.
     let restricted = fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
         .is_ok_and(|v| v.trim() == "1");
     let below = |levels: &[(u32, u32)]| in_subreaper(|| kernel_root_below(levels));
@@ -579,11 +584,7 @@ fn the_kernel_root_is_told_through_nested_user_namespaces() {
     ));
     assert_eq!(host, "root=true by_map=true map=0 0 4294967295");
     assert_eq!(one, "root=true by_map=true map=0 0 1");
-    if restricted {
-        assert!(remapped.starts_with("error="), "{remapped}");
-    } else {
-        assert_eq!(remapped, "root=true by_map=false map=0 5 1");
-    }
+    assert_eq!(remapped, "root=true by_map=false map=0 5 1");
 
     let var = |name: &str| std::env::var(name).ok();
     let (Some(uid), Some(gid)) = (var("SUDO_UID"), var("SUDO_GID")) else {

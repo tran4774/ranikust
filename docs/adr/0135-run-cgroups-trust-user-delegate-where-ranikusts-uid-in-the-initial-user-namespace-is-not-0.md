@@ -126,8 +126,9 @@ nghị)" ("Fix it in #79 now (recommended)").
     user mapped to 65534).
   - A tmpfs over `/proc/sys` or `/proc/sys/kernel`, or a tmpfs or ext4 file
     bound over the sysctl, shows a type other than procfs.
-  - On 24.04 with `kernel.apparmor_restrict_unprivileged_userns` 1, a second
-    level below root's own namespace gets no map.
+  - ranikust's own reading gives the same for real root on the host, one
+    level down and two levels down through uid 5, in the 22.04 and 24.04
+    VMs (the T2 test below).
 - Unit tests in `rnk-sandbox` **[code]**:
   - `src/cgroup/tests.rs`: the marks trusted for each case, the map reading on
     fixture maps, and the sysctl decision.

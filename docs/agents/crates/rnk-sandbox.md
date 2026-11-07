@@ -724,9 +724,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `the_kernel_root_is_told_through_nested_user_namespaces`
   (`src/userns/build/tests.rs`): real root is root on the host, one level
   down mapped 0 to 0, and two levels down through uid 5, where the map one
-  level up misses it (where AppArmor restricts user namespaces, Ubuntu
-  24.04, the second level gets no map); the sudo user is not, on the host
-  or as root two levels down;
+  level up misses it; the sudo user is not, on the host or as root two
+  levels down (where AppArmor restricts user namespaces, Ubuntu 24.04,
+  the user's namespace gets no map);
   `the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts`
   (`src/userns/tests.rs`: as the user who ran sudo, one id, then
   `newuidmap` with that user's ranges; where AppArmor restricts user

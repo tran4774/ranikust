@@ -234,7 +234,7 @@ impl Supervised {
 
     /// Asks the parent to fall back, for `reason`, and exits: before the
     /// build, once what the set-up made is undone. The reason is cut to
-    /// [`MAX_REASON`] bytes.
+    /// 4000 bytes, so that it is written at once.
     pub fn fall_back(self, reason: &str) -> ! {
         let mut end = reason.len().min(MAX_REASON);
         while !reason.is_char_boundary(end) {
