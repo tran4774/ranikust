@@ -127,7 +127,7 @@ fn route_sends_only_an_unusable_overlay_outside_a_container_to_kaniko_stages() {
     let of = |kind| Refusal {
         kind,
         reason: "r".to_owned(),
-        guidance: "",
+        guidance: "".into(),
     };
     // The probe's mount refused, or a state directory on overlayfs.
     assert_eq!(
@@ -218,7 +218,7 @@ fn a_blocked_sandbox_wins_over_an_unusable_overlay() {
     let overlay = Refusal {
         kind: Kind::OverlayUnusable,
         reason: "overlay: EINVAL".to_owned(),
-        guidance: OVERLAY_UNUSABLE,
+        guidance: OVERLAY_UNUSABLE.into(),
     };
     let r = pick::<()>(
         Err(SandboxError::Setup {
@@ -273,7 +273,7 @@ fn a_failed_overlay_probe_refuses_even_with_a_sandbox() {
     let failed = Refusal {
         kind: Kind::OverlayUnusable,
         reason: "overlay: EINVAL".to_owned(),
-        guidance: OVERLAY_UNUSABLE,
+        guidance: OVERLAY_UNUSABLE.into(),
     };
     let r = pick(Ok(()), Err(failed), 0);
     assert_eq!(r.unwrap_err().reason, "overlay: EINVAL");
@@ -307,7 +307,7 @@ fn a_broken_user_namespace_never_falls_back() {
         })
     };
     for euid in [0, USER] {
-        let refusal = userns_refusal(broken(), euid);
+        let refusal = userns_refusal(broken(), euid, NO_USER_NAMESPACE.into());
         assert_eq!(refusal.kind, Kind::Broken);
         assert!(!refusal.needs_kaniko_mode());
         for in_container in [false, true] {
@@ -315,12 +315,28 @@ fn a_broken_user_namespace_never_falls_back() {
         }
     }
     // An error not known to leave the process unchanged counts as broken.
-    let refusal = userns_refusal(SandboxError::Privilege("a user namespace"), USER);
+    let refusal = userns_refusal(
+        SandboxError::Privilege("a user namespace"),
+        USER,
+        NO_USER_NAMESPACE.into(),
+    );
     assert_eq!(refusal.kind, Kind::Broken);
     // Not entered: the process is unchanged, the refusal of the usual kind.
-    let refusal = userns_refusal(SandboxError::NoUserNamespace { tried: Vec::new() }, USER);
+    let refusal = userns_refusal(
+        SandboxError::NoUserNamespace { tried: Vec::new() },
+        USER,
+        NO_USER_NAMESPACE.into(),
+    );
     assert_eq!(refusal.kind, Kind::Other);
     assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
+    // The caller's guidance (`prune`'s), and root's: none.
+    for (euid, want) in [(USER, "prune's"), (0, "")] {
+        let no_userns = SandboxError::NoUserNamespace { tried: Vec::new() };
+        assert_eq!(
+            userns_refusal(no_userns, euid, "prune's".into()).guidance,
+            want
+        );
+    }
     for unchanged in [
         SandboxError::NotSingleThreaded { threads: 2 },
         SandboxError::InPlainChroot,
@@ -329,7 +345,10 @@ fn a_broken_user_namespace_never_falls_back() {
             source: io::Error::from_raw_os_error(EACCES),
         },
     ] {
-        assert_eq!(userns_refusal(unchanged, USER).kind, Kind::Other);
+        assert_eq!(
+            userns_refusal(unchanged, USER, NO_USER_NAMESPACE.into()).kind,
+            Kind::Other
+        );
     }
     // The store refusing once inside: broken whatever its kind, its words
     // kept.
@@ -343,10 +362,13 @@ fn a_broken_user_namespace_never_falls_back() {
         let refusal = inside_userns(Refusal {
             kind,
             reason: "r".to_owned(),
-            guidance: "g",
+            guidance: "g".into(),
         });
         assert_eq!(refusal.kind, Kind::Broken, "{kind:?}");
-        assert_eq!((refusal.reason.as_str(), refusal.guidance), ("r", "g"));
+        assert_eq!(
+            (refusal.reason.as_str(), refusal.guidance.as_ref()),
+            ("r", "g")
+        );
         assert_eq!(route(&refusal, false), Route::Refuse);
     }
 }
@@ -559,6 +581,139 @@ fn a_second_build_on_slash_is_refused_by_the_lock() {
     let again =
         lock_slash().unwrap_or_else(|r| panic!("/ stays locked after the build: {}", r.reason));
     drop(again);
+}
+
+#[test]
+fn a_store_refusal_names_its_state_directory_once() {
+    use rnk_store::Error;
+    let dir = Path::new("/home/u/state");
+    let path = || dir.to_owned();
+    let source = || io::Error::from(rustix::io::Errno::OPNOTSUPP);
+    let (left, found, why) = (String::from("x"), String::from("x"), String::from("x"));
+    for e in [
+        Error::NotAStateDir {
+            path: path(),
+            why: why.clone(),
+        },
+        Error::NoFlock {
+            path: path(),
+            source: source(),
+        },
+        Error::Busy { path: path() },
+        Error::InUse { path: path() },
+        Error::NotPruned {
+            path: path(),
+            left: left.clone(),
+        },
+        Error::PruneCutShort { path: path() },
+        Error::StateNotEmpty {
+            path: path(),
+            found,
+        },
+        Error::NotEmptied { path: path(), left },
+        Error::Unmarked {
+            path: path(),
+            emptied: false,
+            held: false,
+            why: why.clone(),
+        },
+        Error::UsedOnSlash { path: path() },
+        Error::AnonymousFile {
+            path: path(),
+            source: source(),
+        },
+        Error::NameOutlivesUnlink { path: path(), why },
+        Error::Io {
+            op: "create",
+            path: path(),
+            source: source(),
+        },
+    ] {
+        let refusal = store_refusal(&e, dir, 1000);
+        assert_eq!(refusal.reason.matches("/home/u/state").count(), 1, "{e}");
+        assert_eq!(refusal.kind, Kind::Other, "{e}");
+    }
+    // What failed below it says where the store is too.
+    let e = Error::Cancelled;
+    let refusal = store_refusal(&e, dir, 1000);
+    assert_eq!(
+        refusal.reason,
+        format!("cannot open the store in /home/u/state: {e}")
+    );
+}
+
+/// A build refused by a `prune --all` that did not finish is shown the
+/// next step, for the directory the store names: a user runs `prune --all`
+/// again, root, which it refuses, empties the directory itself where
+/// ranikust can check it; other refusals get no guidance.
+#[test]
+fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
+    use rnk_store::Error;
+    // Paths that do not exist, below no host directory a symlink may be.
+    let tmp = private_tempdir();
+    let given = &tmp.path().join("link");
+    let real = &tmp.path().join("gone/my state");
+    let cut_short = || Error::PruneCutShort {
+        path: real.to_owned(),
+    };
+    let refusal = store_refusal(&cut_short(), given, 1000);
+    assert_eq!(
+        refusal.guidance,
+        format!(
+            "ranikust prune --all finishes emptying it or says what stops it: run ranikust prune \
+             --all --state-dir '{}'",
+            real.display()
+        )
+    );
+    assert!(
+        refusal
+            .to_string()
+            .ends_with(&format!("\n  {}", refusal.guidance)),
+        "{refusal}"
+    );
+    // Root gets commands for a directory ranikust checks, none where it
+    // cannot.
+    let root = store_refusal(&cut_short(), given, 0);
+    assert!(
+        root.guidance.starts_with(&format!(
+            "ranikust gives no commands for '{}': ",
+            real.display()
+        )),
+        "{root}"
+    );
+    assert!(!root.guidance.contains("cd -P"), "{root}");
+    let left = tmp.path().join("my state");
+    std::fs::create_dir_all(left.join("blobs")).unwrap();
+    // Private whatever the umask: root gets commands only for a directory
+    // a build accepts.
+    std::fs::set_permissions(&left, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(left.join(rnk_store::PRUNING_MARKER), b"").unwrap();
+    let e = Error::PruneCutShort { path: left.clone() };
+    let root = store_refusal(&e, &left, 0);
+    let (dev, ino, uid) = {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = std::fs::metadata(&left).unwrap();
+        (m.dev(), m.ino(), m.uid())
+    };
+    let commands = format!(
+        "( {} && CDPATH= cd -P -- '{}' && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:700 && exec flock -xn . sh -c '",
+        crate::prune::ENV_CHECK,
+        left.display()
+    );
+    assert!(root.guidance.contains(&commands), "{root}");
+    // Only the reason's account of the prune: nothing sends root to it.
+    assert_eq!(root.to_string().matches("prune --all").count(), 1, "{root}");
+    for e in [
+        Error::Busy {
+            path: real.to_owned(),
+        },
+        Error::NotPruned {
+            path: real.to_owned(),
+            left: "\"x\"".to_owned(),
+        },
+    ] {
+        assert_eq!(store_refusal(&e, given, 1000).guidance, "", "{e}");
+    }
 }
 
 #[test]

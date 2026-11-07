@@ -62,9 +62,11 @@ fn red_team_layers_extracted_under_one_map_are_never_used_under_another() {
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
     let plain = || {
-        in_child(None, || match open_store(&state, &state) {
-            Ok(store) => extract_with(store),
-            Err(r) => format!("error: {r}"),
+        in_child(None, || {
+            match open_store(&state, &state, rustix::process::geteuid().as_raw()) {
+                Ok(store) => extract_with(store),
+                Err(r) => format!("error: {r}"),
+            }
         })
     };
     let nested = || {
@@ -75,11 +77,13 @@ fn red_team_layers_extracted_under_one_map_are_never_used_under_another() {
     };
     // A layer at the key a store outside any user namespace gives it.
     let (_, id) = layer();
-    let opened = in_child(None, || match open_store(&state, &state) {
-        Ok(s) => s
-            .close()
-            .map_or_else(|e| format!("error: {e}"), |()| "ok".into()),
-        Err(r) => format!("error: {r}"),
+    let opened = in_child(None, || {
+        match open_store(&state, &state, rustix::process::geteuid().as_raw()) {
+            Ok(s) => s
+                .close()
+                .map_or_else(|e| format!("error: {e}"), |()| "ok".into()),
+            Err(r) => format!("error: {r}"),
+        }
     });
     assert_eq!(opened, "ok");
     let chain = state.join("layers/v3/sha256").join(id.encoded());

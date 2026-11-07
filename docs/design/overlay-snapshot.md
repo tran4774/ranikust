@@ -50,10 +50,11 @@ stack. A bottom layer's chain ID is its diff ID; the same diff on another stack
 is extracted again. Each layout is a new directory, so nothing extracted by an
 earlier rule is reused: `v2` layers may hold an image's `trusted.*` xattrs,
 which `v3` never sets, from the tar or copied up from a lower layer
-(ADR-0075). Earlier layouts stay on disk until `prune` (Phase 5) or the
-operator removes them. In a user namespace other than the initial one (a
-rootless or `--userns` build, or ranikust started in a rootless container) the
-key also holds the namespace's id map (ADR-0104,
+(ADR-0075). Earlier layouts stay on disk until `prune --all` empties a user's
+state directory, Phase 5's `prune` by age, or the operator removes them. In a
+user namespace other than the initial one (a rootless or `--userns` build, or
+ranikust started in a rootless container) the key also holds the namespace's
+id map (ADR-0104,
 [cache-and-store](cache-and-store.md#store-layout)): a layer extracted with one
 map, as `/proc/self` shows it relative to the parent namespace, is never a
 lower under another.

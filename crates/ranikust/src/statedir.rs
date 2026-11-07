@@ -44,7 +44,8 @@ fn private_state(euid: u32) -> &'static str {
 ///    below that descriptor, one name at a time ([`create_missing`]);
 /// 3. the state directory, opened without following a symlink, must be
 ///    empty (just created, or empty already) or hold the store's regular
-///    marker file [`rnk_store::STATE_MARKER`], and if unmarked must not be
+///    marker file [`rnk_store::STATE_MARKER`] (or [`rnk_store::PRUNING_MARKER`],
+///    which a `prune --all` cut short leaves), and if unmarked must not be
 ///    one of [`SYSTEM_DIRS`]: any other directory is not taken, so a
 ///    mistyped `--state-dir=/usr` or `/mnt` is left as it is;
 /// 4. the whole chain again from its descriptor: owned by the effective
@@ -89,6 +90,115 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
             state_dir.join("builds").display()
         ))),
     }
+}
+
+/// What [`check`] found at the state directory's path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// Nothing.
+    Missing,
+    /// An empty directory.
+    Empty,
+    /// A directory [`rnk_store::Store::prune_all`] empties, as
+    /// [`rnk_store::Store::check_prune`] found it.
+    Entries(rnk_store::PruneCheck),
+}
+
+/// [`prepare`]'s checks on a state directory that is not created and
+/// whose mode is not changed, for `prune --all`, which makes nothing: when
+/// something is at `state_dir`, it must be a directory, opened without
+/// following a symlink anywhere on its path, not `/`, whose chain passes
+/// [`check_chain`]'s rule as the state directory; then its contents are
+/// [`rnk_store::Store::check_prune`]'s, so that what `prune_all` would
+/// refuse is refused here, in its words. [`SYSTEM_DIRS`] guard the mode
+/// [`prepare`] sets, so they are not refused here. `state_dir` must be
+/// absolute.
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
+    let euid = rustix::process::geteuid().as_raw();
+    match std::fs::symlink_metadata(state_dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Found::Missing),
+        Err(e) => {
+            return Err(Refused(format!(
+                "cannot look up the state directory {}: {e}",
+                state_dir.display()
+            )));
+        }
+    }
+    let fd = open_dir(state_dir, OFlags::RDONLY)?;
+    refuse_slash(&fd, state_dir, euid)?;
+    check_chain(&walk(&fd, state_dir)?, euid, true)?;
+    match rnk_store::Store::check_prune(state_dir) {
+        Ok(found) if found.entries => Ok(Found::Entries(found)),
+        Ok(_) => Ok(Found::Empty),
+        Err(e) => Err(Refused(e.to_string())),
+    }
+}
+
+/// The build's rule for the state directory at `state_dir`, which `check`
+/// describes, before a refusal prints commands that act on it: opened
+/// again without following a symlink, it is that directory; it and its
+/// parents pass [`check_chain`] with its owner as the user; and it is none
+/// of [`SYSTEM_DIRS`], marked or not. Returns the permission bits the rule
+/// judged, which the commands check too.
+///
+/// # Errors
+///
+/// [`Refused`] naming the rule it breaks and, for the build's rule, what
+/// to do instead: a build's advice, a `--state-dir` elsewhere, does not
+/// empty this one.
+pub(crate) fn check_for_commands(
+    state_dir: &Path,
+    check: &rnk_store::PruneCheck,
+) -> Result<u32, Refused> {
+    let system: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+    check_for_commands_beside(state_dir, check, &system)
+}
+
+/// [`check_for_commands`] with `system` as the system directories.
+fn check_for_commands_beside(
+    state_dir: &Path,
+    check: &rnk_store::PruneCheck,
+    system: &[&Path],
+) -> Result<u32, Refused> {
+    let fd = open_dir(state_dir, OFlags::PATH)?;
+    let st = rustix::fs::fstat(&fd).map_err(|e| stat_err(state_dir, e))?;
+    if (st.st_dev, st.st_ino, st.st_uid) != (check.dev, check.ino, check.uid) {
+        return Err(Refused(format!(
+            "{} changed while ranikust checked it",
+            state_dir.display()
+        )));
+    }
+    let chain = walk(&fd, state_dir)?;
+    if let Some((d, why)) = breach(&chain, check.uid, true) {
+        return Err(Refused(format!(
+            "{} {why}, which a build refuses: no other user may write a state directory or a \
+             directory above it; fix the owner or mode, or remove the directory by hand",
+            d.path.display()
+        )));
+    }
+    let me = (st.st_dev, st.st_ino);
+    let found = system
+        .iter()
+        .find(|sys| rustix::fs::stat(**sys).is_ok_and(|s| (s.st_dev, s.st_ino) == me));
+    if let Some(sys) = found {
+        return Err(Refused(format!(
+            "{} is the system directory {}",
+            state_dir.display(),
+            sys.display()
+        )));
+    }
+    // `walk` reads the state directory first.
+    chain.first().map(|d| d.mode).ok_or_else(|| {
+        Refused(format!(
+            "{} could not be read as a directory",
+            state_dir.display()
+        ))
+    })
 }
 
 /// Creates what is missing of `state_dir` below `existing`, its nearest
@@ -252,6 +362,8 @@ fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refu
 
 /// Accepts an empty directory or one holding the store's regular marker
 /// file, telling which (`true`: marked); refuses anything else unchanged.
+/// The marker of a `prune --all` that did not finish counts: the store
+/// refuses a build there itself, saying so, and `prune --all` finishes.
 fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
     let err = |e: Errno| Refused(format!("cannot list {}: {e}", state_dir.display()));
     let mut names = Vec::new();
@@ -272,11 +384,13 @@ fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
         return Ok(false);
     }
     let marker = rnk_store::STATE_MARKER;
-    if names.iter().any(|n| n == marker.as_bytes()) {
-        let st = rustix::fs::statat(fd, marker, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|e| stat_err(state_dir, e))?;
-        if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
-            return Ok(true);
+    for m in [marker, rnk_store::PRUNING_MARKER] {
+        if names.iter().any(|n| n == m.as_bytes()) {
+            let st = rustix::fs::statat(fd, m, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|e| Refused(format!("cannot read {m} in {}: {e}", state_dir.display())))?;
+            if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
+                return Ok(true);
+            }
         }
     }
     let earlier = if names.iter().any(|n| n == b".ranikust-root") {
@@ -350,10 +464,13 @@ fn stat_err(dir: &Path, e: Errno) -> Refused {
 }
 
 /// The directory `fd` and its real parents up to `/`, walked with `..`
-/// from the descriptor (each opened `O_PATH`); `path` names them in
-/// messages only.
+/// from the descriptor (each opened `O_PATH`); `path`, absolute, names
+/// them in messages only.
 fn walk(fd: &OwnedFd, path: &Path) -> Result<Vec<ChainDir>, Refused> {
-    let mut names = path.ancestors();
+    // With no symlink followed on `path`, its `..` are the real parents',
+    // so its lexical ancestors name the directories walked.
+    let named = crate::config::clean(path);
+    let mut names = named.ancestors();
     let mut chain = Vec::new();
     let mut at: OwnedFd = rustix::fs::openat(
         fd,
@@ -407,33 +524,39 @@ pub(crate) struct ChainDir {
 ///
 /// [`Refused`] naming the first directory that breaks the rule.
 pub(crate) fn check_chain(chain: &[ChainDir], euid: u32, has_state: bool) -> Result<(), Refused> {
-    let refuse = |d: &ChainDir, why: &str| {
-        Refused(format!(
+    match breach(chain, euid, has_state) {
+        None => Ok(()),
+        Some((d, why)) => Err(Refused(format!(
             "unsafe state directory: {} {why}; the build roots and the store live there, so no \
              other user may write it or a directory above it; {}",
             d.path.display(),
             private_state(euid)
-        ))
-    };
+        ))),
+    }
+}
+
+/// The first directory of `chain` that breaks [`check_chain`]'s rule, with
+/// how, as "is …".
+fn breach(chain: &[ChainDir], euid: u32, has_state: bool) -> Option<(&ChainDir, String)> {
     for (i, d) in chain.iter().enumerate() {
         if i == 0 && has_state {
             if d.uid != euid {
-                return Err(refuse(d, &format!("is owned by uid {}, not {euid}", d.uid)));
+                return Some((d, format!("is owned by uid {}, not {euid}", d.uid)));
             }
             if d.mode & 0o022 != 0 {
-                return Err(refuse(d, "is writable by group or others"));
+                return Some((d, "is writable by group or others".to_owned()));
             }
             continue;
         }
         if d.uid != 0 && d.uid != euid {
-            return Err(refuse(d, &format!("is owned by uid {}", d.uid)));
+            return Some((d, format!("is owned by uid {}", d.uid)));
         }
         let sticky_root = d.uid == 0 && d.mode & 0o1000 != 0;
         if d.mode & 0o022 != 0 && !sticky_root {
-            return Err(refuse(d, "is writable by group or others"));
+            return Some((d, "is writable by group or others".to_owned()));
         }
     }
-    Ok(())
+    None
 }
 
 /// Whether `dir` is on overlayfs, which cannot hold an overlay upper
@@ -447,8 +570,9 @@ pub(crate) fn on_overlayfs(dir: &Path) -> bool {
 }
 
 /// Raises `RLIMIT_NOFILE`'s soft limit to its hard limit: the kaniko-mode
-/// walk holds a directory fd per worker and depth (`ADR-0038`). Returns the
-/// new soft limit, `None` when unlimited.
+/// walk holds a directory fd per worker and depth (`ADR-0038`), and
+/// `prune --all`'s deletion one per depth. Returns the new soft limit,
+/// `None` when unlimited.
 ///
 /// # Errors
 ///

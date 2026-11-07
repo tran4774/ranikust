@@ -24,9 +24,9 @@ The work is planned in phases, without dates. The
 
 | Missing | Phase |
 |---|---|
-| `--userns`, the AppArmor advice for a regular user on Ubuntu 24.04, a refusal of an image with an owner the user namespace does not map, a minimal `prune --all` for rootless state directories | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
+| `--userns`, the AppArmor advice for a regular user on Ubuntu 24.04, a refusal of an image with an owner the user namespace does not map | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
 | The layer cache (`--cache`) | 4 |
-| `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs` and `type=cache,from=` (on a container's `/`, a bind is copied in and `from=` is refused, [ADR-0121](https://github.com/tran4774/ranikust/blob/main/docs/adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md), decided and not built yet); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; external credential helpers; the `prune` subcommand | 5 |
+| `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs` and `type=cache,from=` (on a container's `/`, a bind is copied in and `from=` is refused, [ADR-0121](https://github.com/tran4774/ranikust/blob/main/docs/adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md), decided and not built yet); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; external credential helpers; `prune` by size and age (only `prune --all` works now) | 5 |
 | kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | 6 |
 | `RUN --mount=type=ssh` | Backlog, [#139](https://github.com/tran4774/ranikust/issues/139) |
 | Built-in cloud credential helpers (`--credential-helpers`) | Backlog, [#138](https://github.com/tran4774/ranikust/issues/138) |

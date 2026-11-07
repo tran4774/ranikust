@@ -1,7 +1,7 @@
 //! Errors of the store.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A store result.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -10,18 +10,16 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The state directory is not empty and carries no `.ranikust-state`
-    /// marker file (or the marker is not a regular file): it may be a
+    /// marker file (or the marker is not a regular file), or, for
+    /// [`crate::Store::prune_all`], holds a name the store does not make or
+    /// a [`crate::PRUNING_MARKER`] that is not a regular file: it may be a
     /// directory the user cares about, which clean-up would delete from.
-    #[error(
-        "{} is not empty and has no regular file .ranikust-state; \
-         refusing to use it as the state directory (pass an empty or new --state-dir; \
-         a state directory of an earlier ranikust, marked .ranikust-root, is not reused: \
-         delete it first)",
-        path.display()
-    )]
+    #[error("{} {why}", path.display())]
     NotAStateDir {
         /// The state directory.
         path: PathBuf,
+        /// What it holds or lacks, with any name quoted, and what to do.
+        why: String,
     },
 
     /// The filesystem of the state directory does not support `flock`,
@@ -44,13 +42,58 @@ pub enum Error {
     /// volume would see and remove each other's names (ADR-0056), and a
     /// `Direct` `RUN` would reach a persistent store's entries and build
     /// directories (ADR-0077). Persistent stores share a state directory.
+    /// Also a build's store opened while [`crate::Store::prune_all`] empties
+    /// the directory.
     #[error(
         "another build is using the state directory {}: a kaniko-mode build on / shares its \
-         state directory with no other build; give each container its own volume or \
-         --state-dir",
+         state directory with no other build, and ranikust prune --all empties it alone; wait \
+         for it to end, or give each container its own volume or --state-dir",
         path.display()
     )]
     Busy {
+        /// The state directory.
+        path: PathBuf,
+    },
+
+    /// [`crate::Store::prune_all`] found a build holding the state
+    /// directory: it removes nothing a running build uses (ADR-0105).
+    #[error(
+        "a build is using the state directory {}: ranikust prune --all empties it only while no \
+         build runs there; run it again once they end",
+        path.display()
+    )]
+    InUse {
+        /// The state directory.
+        path: PathBuf,
+    },
+
+    /// [`crate::Store::prune_all`] left more than [`crate::PRUNING_MARKER`]
+    /// in the state directory: an entry on another mount, or one this
+    /// process may not remove; that marker stays, so no build opens the
+    /// directory and the next `prune --all` accepts it.
+    #[error(
+        "ranikust prune --all could not empty the state directory {}: it still holds {left}; \
+         no build uses it until ranikust prune --all empties it",
+        path.display()
+    )]
+    NotPruned {
+        /// The state directory.
+        path: PathBuf,
+        /// What is left, with the names quoted.
+        left: String,
+    },
+
+    /// The state directory holds [`crate::PRUNING_MARKER`]: a `ranikust
+    /// prune --all` was cut short or failed there, and may have emptied
+    /// entries part-way under their published names, which a build would
+    /// reuse as they are. It names no way to finish, which depends on who
+    /// runs the build: the caller's to give.
+    #[error(
+        "ranikust prune --all did not finish emptying the state directory {}: what it holds may \
+         be partly removed, so no build uses it",
+        path.display()
+    )]
+    PruneCutShort {
         /// The state directory.
         path: PathBuf,
     },
@@ -216,6 +259,21 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+impl Error {
+    /// Whether this is [`crate::Store::check_prune`]'s refusal to open the
+    /// state directory `state` itself, as given, for a symbolic link on
+    /// its path, as against a refusal of what it found there.
+    #[must_use]
+    pub fn is_symlink_on(&self, state: &Path) -> bool {
+        matches!(
+            self,
+            Self::Rootfs(rnk_rootfs::Error::Io { path, source, .. })
+                if path == state
+                    && source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+        )
+    }
 }
 
 /// What [`Error::Unmarked`] says of the state directory.

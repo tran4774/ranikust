@@ -327,11 +327,12 @@ fi
 # --- Build: static binaries and the guest tree -------------------------------
 
 # tests/vm/stage.sh stages the tree for the VM and for a GitHub-hosted runner
-# alike (ADR-0090). Without the lock's descriptor: a build server or podman's
-# pause process left running must not hold the one-VM lock after this script.
+# alike (ADR-0090); `net` for guest/net.sh, which runs before any suite here.
+# Without the lock's descriptor: a build server or podman's pause process
+# left running must not hold the one-VM lock after this script.
 STAGE="$TARGET/vm/stage"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-RANIKUST_LOG_T0=$SECONDS bash "$HERE/stage.sh" "$STAGE" "${SUITES[@]}" 9>&-
+RANIKUST_LOG_T0=$SECONDS bash "$HERE/stage.sh" "$STAGE" net "${SUITES[@]}" 9>&-
 
 if wants e2e || wants ultra; then
   # The reference images, saved once from the host's podman (where

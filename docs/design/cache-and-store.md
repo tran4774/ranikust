@@ -47,7 +47,8 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 
 ```
 <state-dir>/
-├── .ranikust-state
+├── .ranikust-state             marker: a non-empty directory without it is refused
+├── .ranikust-pruning           the marker renamed while prune --all empties it
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v3/sha256/<hex>/     extracted layers by chain ID (and id map), immutable [open: #1]
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
@@ -182,17 +183,122 @@ under `volatile` is never trusted after a crash.
 
 ## Prune
 
-Not built. Phase 3 plans a minimal `ranikust prune --all` that empties a
-rootless state directory inside the user namespace and refuses when root runs
-it ([ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md));
-the rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
-entries by total size and by age. Both forms open the store as a build does
-(state-directory checks, the `.ranikust-state` marker), so they refuse a
-directory ranikust did not make; they take the same locks as a build and never
-remove an entry a running build uses (the mechanism is
-[#76](https://github.com/tran4774/ranikust/issues/76)'s, in Phase 3; decided by
+`ranikust prune --all` (Phase 3,
+[ADR-0105](../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md))
+empties the state directory of a user other than root, files of
+subordinate ids included, so the user can then remove it. In order: root
+is refused (euid 0 in any user namespace, a container's root included),
+naming Phase 5's `prune`; then a path ending in `..`, before anything is
+opened; then, outside any namespace, a build's checks of
+the state directory, which neither make it nor change its mode, and one
+that does not exist, or is empty, is left so; then `Store::check_prune`,
+the same read-only check `Store::prune_all` runs, so `prune --all` refuses
+there whatever `prune_all` would refuse in the directory, in this order:
+this process's own `/`, `.ranikust-building` in any form, a
+`.ranikust-pruning` that is not a regular file, a non-empty directory
+without a regular marker (`.ranikust-state`, or the `.ranikust-pruning` a
+prune that did not finish leaves), and a top-level name neither the store
+nor a build makes there (the markers, its directories, `sandbox/`, an
+anonymous store's names); then the build's user namespace (where the
+user gets none, the refusal gives commands that remove the user's own
+files, and root's `prune --all` for those of its subordinate ids); in
+it, `Store::prune_all`. That takes the state directory's `flock` exclusive
+without waiting, as an anonymous store does, and holds it to the end:
+every build holds it shared for its life, so `prune --all` removes
+nothing while any build runs there (it says so and exits 1), and a build
+that starts meanwhile is refused. Under the lock it runs the check again,
+since a build may have changed the directory meanwhile; it creates
+nothing in an empty one. Before deleting it syncs the directory with
+`.ranikust-pruning` in it, whether it renamed `.ranikust-state` itself or
+found one an earlier prune left: entries are emptied in place, under
+their published names, so a prune killed or failed part-way leaves a
+layer a build would reuse with files missing, and `Store::open` refuses
+any directory holding that name until a `prune --all` finishes (a
+ranikust that predates it finds the directory unmarked, and refuses it
+too); such a build's refusal gives the next step: `ranikust prune --all`
+for a user, root's commands for root. The rename makes no inode, which a
+full disk or quota, the usual reason to prune, would refuse. A failed
+sync renames back only a marker this prune renamed: one an earlier prune
+left stays, since that prune may have removed entries. It deletes by
+descriptor (no symlink followed, no mount crossed), names what it could
+not remove, then syncs the filesystem and removes `.ranikust-pruning`
+last, so the marker's removal never reaches the disk without the
+deletions; a failed sync keeps it. Where it cannot finish (a mount below,
+files of ids no user namespace maps), its refusal names the ways out:
+unmount, set up the user's subordinate ids, move the directory aside and
+remove it in `podman unshare`, or have root run `ranikust prune --all`,
+whose refusal gives root's commands to empty it in place: root's
+commands are printed only by root's own process.
+
+The commands a refusal prints (those ways out, root's, and a user's
+without a user namespace) act only on the directory ranikust checked:
+the process that prints them opens the path as given, made absolute,
+with no symlink followed on it, runs `Store::check_prune` on it, then
+the build's own rule with the directory's owner as the user, and
+refuses one of the system directories (`statedir::check_for_commands`):
+commands only for a directory a build would accept
+([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)),
+none for one another user may write, or below one, the refusal then
+saying to fix the owner or mode or to remove the directory by hand. It
+takes the directory's device, inode and owner, and the mode the rule
+judged. Each command first refuses a `PATH` with a relative or empty
+entry and unsets the loader's variables that name libraries or modules
+by path (`LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT`, `GCONV_PATH`),
+stopping where one cannot be unset, since it runs its tools from inside
+a directory another user may own (in `eval '…'`, so that no interactive
+shell's history expansion reads the pattern's `!`). It then checks, right after its one `cd -P`, that
+the directory it acts on has that identity (`stat -c %d:%i:%u:%a`
+piped to `grep -qxF`, a hardening: no quoted command substitution for
+an interactive shell's history expansion or quoting to touch): `.` for
+the emptying, `./name` in the parent it entered for `rmdir` and the
+move aside. So a path changed after the message was printed, a parent
+swapped for a symlink included, makes it fail before it changes
+anything. A path that ends in `..` is refused before anything is
+opened, whatever it leads to, by root's refusal (no commands) and a
+user's `prune --all` alike, saying to give the directory's own path.
+Where root's open of the path refuses it for a symbolic link on it, no
+commands are printed either, and the refusal says to give the path
+with none and, for a user's directory, to run `ranikust prune --all`
+as that user; where the check refuses the directory for any other
+reason, the refusal gives that reason instead (a user's own
+`prune --all` is refused before, with the check's reason).
+
+Root gets no `rmdir` for an empty directory: only one that holds the
+marker is a state directory. Both emptying scripts first check that
+`find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, the
+walk they rely on, and otherwise stop before changing anything, saying
+so (Alpine: `apk add findutils`); the behaviour below is that `find`'s.
+Root's emptying tests for a regular marker, then removes it, and stops
+before changing anything, with a message for each, where there is none
+or it cannot be removed; each script counts a listing that fails as
+entries left.
+Root's emptying of a directory another user owns deletes only that
+user's entries and those of its subordinate ids
+([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)):
+its uid and its first `/etc/subuid` range (`subids::lookup`), the only
+uids its builds' user namespace maps, or its uid alone where it has no
+range in `/etc/subuid` and `/etc/subgid` or they cannot be read (the
+guidance names the error). Before the marker goes, it looks for an entry of any other uid
+(a range changed since the build included) and stops there, with
+nothing changed, saying so, also where that search fails; after the
+deletion, it checks that nothing is left, and stops before the
+`rmdir`, naming the uids it left. A directory root owns has every
+entry deleted: root's store holds image ids that may match host
+accounts.
+In the directory, the emptying names only `.`, so the lock, the
+marker's check and the deletion act on it whatever is put at its path
+meanwhile; it takes the same exclusive `flock` (`flock -xn .`), so it
+fails while a build runs there, takes a marker only as a regular file,
+and enters no other filesystem (`find -xdev`); a bind mount of the same
+filesystem is not told apart, its contents deleted with the rest, so
+the commands say to run only while nothing is mounted below
+(ranikust's own deletion compares mount IDs instead).
+
+The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
+entries by total size and by age, as a build opens the store, taking the
+same locks, and never removing an entry a running build uses: decided by
 [ADR-0122](../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
-not built yet: a shared `flock` on each entry a build uses, and the entry's
+not built yet (a shared `flock` on each entry a build uses, and the entry's
 marker mtime as its last use). The defaults are BuildKit's tiers, aging by last
 use ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)): cache
 mounts and contexts after 48 h unused beyond 512 MB, anything after 60 days

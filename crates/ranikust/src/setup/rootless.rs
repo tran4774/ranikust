@@ -69,7 +69,7 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32) -> NotHere {
         refusal: Refusal {
             kind: Kind::Other,
             reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
-            guidance: guidance("hook", false, euid),
+            guidance: guidance("hook", false, euid).into(),
         },
         probed: false,
     }
@@ -94,12 +94,12 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         refusal,
         probed: false,
     };
-    state_dir_for_probe(state_dir).map_err(unprobed)?;
+    state_dir_for_probe(state_dir, euid).map_err(unprobed)?;
     let subordinate = crate::subids::lookup(euid).map_err(|e| {
         unprobed(Refusal {
             kind: Kind::Other,
             reason: format!("cannot read this user's subordinate ids: {e}"),
-            guidance: "",
+            guidance: "".into(),
         })
     })?;
     let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
@@ -114,7 +114,7 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
                     "rootless overlay mode cannot run here: the user namespace probe could not \
                      run: {e}"
                 ),
-                guidance: "",
+                guidance: "".into(),
             },
             probed: true,
         }
@@ -136,13 +136,13 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         let rbind = matches!(report.proc, MountResult::Rbind { .. });
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
-            guidance(step, rbind, euid),
+            guidance(step, rbind, euid).into(),
         ));
     }
     if let Some(e) = probed.overlay_error() {
         return Err(not_here(
             format!("an overlay mount in the user namespace: {e}"),
-            guidance("overlay", false, euid),
+            guidance("overlay", false, euid).into(),
         ));
     }
     let bind_proc = proc_rbind && matches!(report.proc, MountResult::Rbind { .. });
@@ -161,7 +161,7 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
 /// The state directory the probe may write in, made if missing: private
 /// (ADR-0050), not on overlayfs, as for overlay mode as root, and one the
 /// store would take, checked without writing (Q-111, (a)).
-fn state_dir_for_probe(state_dir: &Path) -> Result<(), Refusal> {
+fn state_dir_for_probe(state_dir: &Path, euid: u32) -> Result<(), Refusal> {
     super::prepare_state_dir(state_dir)?;
     if crate::statedir::on_overlayfs(state_dir) {
         return Err(Refusal {
@@ -171,10 +171,11 @@ fn state_dir_for_probe(state_dir: &Path) -> Result<(), Refusal> {
                  a container's own root, where it cannot keep its upper directories",
                 state_dir.display()
             ),
-            guidance: ON_OVERLAYFS,
+            guidance: ON_OVERLAYFS.into(),
         });
     }
-    rnk_store::Store::check_state_dir(state_dir).map_err(|e| super::store_refusal(&e, state_dir))
+    rnk_store::Store::check_state_dir(state_dir)
+        .map_err(|e| super::store_refusal(&e, state_dir, euid))
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`
@@ -228,10 +229,10 @@ pub(crate) fn set_up(
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     let userns = rnk_sandbox::enter_build_user_namespace(plan.subordinate)
-        .map_err(|e| super::userns_refusal(e, euid))?;
+        .map_err(|e| super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into()))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
-    let store = super::open_store(state_dir, state_dir).map_err(super::inside_userns)?;
-    let sandbox_dir = state_dir.join("sandbox");
+    let store = super::open_store(state_dir, state_dir, euid).map_err(super::inside_userns)?;
+    let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
@@ -270,7 +271,7 @@ fn broken(reason: String) -> Refusal {
     Refusal {
         kind: Kind::Broken,
         reason: format!("rootless overlay mode: {reason}"),
-        guidance: "",
+        guidance: "".into(),
     }
 }
 
@@ -338,7 +339,7 @@ mod tests {
         std::fs::create_dir(&foreign).unwrap();
         private(&foreign);
         std::fs::write(foreign.join("precious"), "x").unwrap();
-        let refusal = state_dir_for_probe(&foreign).unwrap_err();
+        let refusal = state_dir_for_probe(&foreign, 1000).unwrap_err();
         assert!(
             refusal
                 .reason
@@ -348,7 +349,7 @@ mod tests {
         );
         assert_eq!(names(&foreign), ["precious"]);
         let new = tmp.path().join("new");
-        state_dir_for_probe(&new).unwrap();
+        state_dir_for_probe(&new, 1000).unwrap();
         assert!(names(&new).is_empty());
     }
 }

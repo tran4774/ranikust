@@ -7,7 +7,7 @@ fn args(args: &[&str]) -> BuildArgs {
     let argv = std::iter::once("ranikust").chain(args.iter().copied());
     match crate::cli::parse(argv).expect("parses").cli.into_command() {
         crate::cli::Command::Build(args) => *args,
-        crate::cli::Command::Version => panic!("expected build"),
+        crate::cli::Command::Prune(_) | crate::cli::Command::Version => panic!("expected build"),
     }
 }
 
