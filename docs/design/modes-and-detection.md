@@ -270,9 +270,9 @@ cannot leave the namespace once it is in:
    gets (the child ignores those two itself), and ends as the child ends.
    Where the child's `set_up` fails, the child empties the state directory
    its store's open made a store (`Store::abandon`, or
-   `Store::open_or_abandon` for an open that failed after it; not one it
-   found, or one another build holds; a forwarded stop is ignored until it
-   is done) and sends the reason, and the parent, with no stop received,
+   `Store::open_or_abandon` for an open that failed after it wrote the
+   marker; not one it found, or one another build holds; a forwarded stop
+   is ignored until it is done) and sends the reason, and the parent, with no stop received,
    warns `<reason>; kaniko mode instead, before anything was built
    (ADR-0136)` and builds in kaniko mode as below. A user other than root and
    `--mode=overlay` get the error.

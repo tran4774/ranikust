@@ -316,8 +316,8 @@ The steps, in order:
       as T21
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
       and, from files with no ptrace check, one where `/proc/2/stat` shows a
-      kernel thread (the host's) or PID 1 (ranikust included) lists no
-      mount of the namespace ranikust started in
+      kernel thread (the host's) or PID 1, ranikust itself where it is PID 1,
+      lists no mount of the namespace ranikust started in
       ([ADR-0134](../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md)),
       and warns for a `--build-arg` whose name looks like a secret's: its
       value is on the command line a `RUN` reads; the build keeps the

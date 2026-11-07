@@ -204,7 +204,7 @@ No span per HTTP request or body chunk.
 | `rnk_store.lock` | `contended` | A per-digest lock that may block; total time is lock wait; concurrent builds and stages sharing the store (`ADR-0007`). |
 | `rnk_store.fill` | `reused`, `bytes_written`, `bytes_reused` | One entry: published by this build or found ready (`bytes_reused` from its recorded size, else 0); what the store saves (`ADR-0006`). |
 | `rnk_store.cleanup` | `entries_removed` | Start-up clean-up. |
-| `rnk_store.prune` | | `ranikust prune --all` emptying the state directory (ADR-0105), `rnk_rootfs.delete` inside, whose fields count what went; Phase 5's `prune` by size and age adds `entries_removed` and `bytes_freed`. |
+| `rnk_store.prune` | | `ranikust prune --all` emptying the state directory (ADR-0105), or a set-up that fails emptying the store it made before kaniko mode (`Store::abandon`, `Store::open_or_abandon`, ADR-0136), `rnk_rootfs.delete` inside, whose fields count what went; Phase 5's `prune` by size and age adds `entries_removed` and `bytes_freed`. |
 
 ### `rnk-sandbox`
 

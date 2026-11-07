@@ -629,7 +629,8 @@ const PF_KTHREAD: u64 = 0x0020_0000;
 /// kernel thread (`kthreadd`, in the initial PID namespace only), or PID 1
 /// lists no mount of the namespace ranikust started in (`started_in`, read
 /// [`MountNamespace::with_mounts`]). Unlike [`scan_peers`], it does not
-/// depend on what ranikust may open.
+/// depend on what ranikust may open. Called while ranikust is still in
+/// `started_in`: elsewhere, as PID 1 itself, it is refused.
 pub(crate) fn check_pid_namespace(started_in: rustix::io::Result<&MountNamespace>) -> PidNamespace {
     let started = match started_in {
         Ok(ns) => ns.mounts.as_ref().map_or(Err(Errno::INVAL), |m| m.clone()),
