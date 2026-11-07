@@ -213,8 +213,9 @@ never called.
   `DeviceNodes::Skip`, as a build in a user namespace extracts, makes no
   block or character device and counts each in `nodes_skipped`, as
   `extract_live` does (ADR-0106), and leaves a hardlink to one out with it
-  rather than link what a lower layer has at its name; a device as the
-  layer's root is refused either way. Foreign owners need root or a user namespace (T1).
+  rather than link what a lower layer has at its name, for names remembered
+  within 1 MiB a layer (past it, a link is extracted as if the device were
+  not in the tar); a device as the layer's root is refused either way. Foreign owners need root or a user namespace (T1).
 
 ## Copy
 

@@ -13,7 +13,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use rnk_rootfs::{IgnoreList, RootPath, Whiteouts, delete_contents, extract, extract_live, prune};
+use rnk_rootfs::{
+    DeviceNodes, IgnoreList, RootPath, Whiteouts, delete_contents, extract, extract_live,
+    extract_overlay, prune,
+};
 
 /// The system allocator, counting the bytes allocated now and their peak.
 struct Counting;
@@ -119,6 +122,34 @@ fn extraction_forgets_what_the_same_layer_deleted() {
     }
     let tar = b.into_inner().unwrap();
     let peak = peak_of(|| extract(&root, tar.as_slice(), Whiteouts::Apply).unwrap());
+    eprintln!("peak: {peak} bytes");
+    assert!(peak < 2 * MIB, "extraction took {peak} bytes");
+    assert_eq!(
+        root.read_names("").unwrap(),
+        Vec::<std::ffi::OsString>::new()
+    );
+}
+
+/// Device nodes a user namespace leaves out take no room on disk, so what
+/// extraction keeps of their names is bounded on its own: long names,
+/// thousands of them, cost a bounded heap.
+#[test]
+fn devices_left_out_cost_a_bounded_heap_whatever_their_names() {
+    let _one = one_at_a_time();
+    let (_tmp, _host, root) = root();
+    let mut b = tar::Builder::new(Vec::new());
+    let long = "n".repeat(4000);
+    for i in 0..4000 {
+        let name = format!("{long}{i}");
+        let mut h = header(tar::EntryType::Char);
+        h.set_device_major(1).unwrap();
+        h.set_device_minor(3).unwrap();
+        b.append_data(&mut h, &name, &b""[..]).unwrap();
+    }
+    let tar = b.into_inner().unwrap();
+    let peak = peak_of(|| {
+        extract_overlay(&root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap();
+    });
     eprintln!("peak: {peak} bytes");
     assert!(peak < 2 * MIB, "extraction took {peak} bytes");
     assert_eq!(

@@ -79,6 +79,12 @@ const PAX_XATTR: &[u8] = b"SCHILY.xattr.";
 const SKIPPED_XATTR: &[u8] = meta::LAYER_SKIPPED_XATTR;
 /// Mode of a directory until its own mode is set at the end.
 const DIR_PENDING_MODE: u32 = 0o700;
+/// The bytes [`Extractor::remember_skipped`] spends at most per layer on
+/// the names of devices left out, which take no room on disk.
+const SKIPPED_NAMES_MAX: usize = 1 << 20;
+/// What one remembered name costs besides its own bytes: its `PathBuf` and
+/// its share of the set's nodes.
+const SKIPPED_NAME_COST: usize = 64;
 /// Mode of missing parent directories the layer does not list.
 const PARENT_MODE: u32 = 0o755;
 
@@ -302,6 +308,7 @@ fn extract_with(
         copied: HashMap::new(),
         copy_names: BTreeMap::new(),
         devices_skipped: BTreeSet::new(),
+        skipped_bytes: 0,
         stats: Stats::default(),
         first_skipped: None,
     };
@@ -391,6 +398,8 @@ struct Extractor<'r> {
     /// [`DeviceNodes::Skip`]: the names of the devices left out, and of the
     /// hardlinks to them, until the layer puts something else there.
     devices_skipped: BTreeSet<PathBuf>,
+    /// The bytes spent on `devices_skipped` so far, freed or not.
+    skipped_bytes: usize,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
@@ -709,7 +718,7 @@ impl Extractor<'_> {
         if skipped {
             self.stats.nodes_skipped += 1;
             if self.live.is_none() {
-                self.devices_skipped.insert(path);
+                self.remember_skipped(path);
             }
             return Ok(());
         }
@@ -750,7 +759,7 @@ impl Extractor<'_> {
             && self.devices_skipped.contains(t)
         {
             self.stats.nodes_skipped += 1;
-            self.devices_skipped.insert(path);
+            self.remember_skipped(path);
             return Ok(());
         }
         // By the cleaned name, as recorded: the entry takes the place of any
@@ -836,9 +845,26 @@ impl Extractor<'_> {
         Ok(())
     }
 
+    /// Remembers `path` as a device left out, within [`SKIPPED_NAMES_MAX`]
+    /// bytes a layer: past them, a link to one is extracted as if the
+    /// device were not in the tar, so that memory never grows with names
+    /// the layer puts nowhere.
+    fn remember_skipped(&mut self, mut path: PathBuf) {
+        path.shrink_to_fit();
+        let cost = path.capacity().saturating_add(SKIPPED_NAME_COST);
+        let total = self.skipped_bytes.saturating_add(cost);
+        if total <= SKIPPED_NAMES_MAX {
+            self.skipped_bytes = total;
+            self.devices_skipped.insert(path);
+        }
+    }
+
     /// Forgets the devices left out at `path`, and below it when `below`:
     /// the layer puts something else there.
     fn forget_skipped(&mut self, path: &Path, below: bool) {
+        if self.devices_skipped.is_empty() {
+            return;
+        }
         if !below {
             self.devices_skipped.remove(path);
             return;
