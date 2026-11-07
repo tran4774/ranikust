@@ -51,10 +51,14 @@ echo stderr=written >>/dev/stderr
 const IDS: &str = r#"echo "ids=$(id -u):$(id -g):$(id -G)""#;
 
 /// What a `--network=none` `RUN` prints: whether `lo` is up (its
-/// `127.0.0.1` local route exists only then) and its network namespace.
+/// `127.0.0.1` local route exists only then), its network namespace, and
+/// the devices its `/sys/class/net` shows, comma-separated.
 const NETWORK: &str = r#"
 if grep -q 127.0.0.1 /proc/net/fib_trie; then echo lo=up; else echo lo=down; fi
 echo "net=$(readlink /proc/self/ns/net)"
+n=
+for d in /sys/class/net/*; do n="$n${n:+,}${d##*/}"; done
+echo "netdevs=$n"
 "#;
 
 /// One `RUN`: its `USER`, network and script.
@@ -117,13 +121,15 @@ fn outer(sleeper: &Sleeper) -> &'static str {
 }
 
 /// Whether the `RUN` that ran [`OUTER`] as `RUN` `n` opened nothing of the
-/// [`Sleeper`]: each of [`OUTER_FILES`] gave an error.
-fn opened_nothing(out: &str, n: usize) {
+/// [`Sleeper`]: each of [`OUTER_FILES`] failed with `why`, as the shell
+/// words the error: `Permission denied` (`EACCES`) for a process it sees,
+/// `No such file` for one it does not.
+fn opened_nothing(out: &str, n: usize, why: &str) {
     for f in OUTER_FILES {
         let got = value(out, &format!("{n}:outer-{f}"));
         assert!(
-            !got.is_empty() && !got.contains("opened"),
-            "the RUN opened {f} of a process outside the build:\n{out}"
+            got.ends_with(why) && !got.contains("opened"),
+            "{f} of a process outside the build did not fail with {why:?}:\n{out}"
         );
     }
 }
@@ -134,14 +140,37 @@ struct Sleeper(std::process::Child);
 
 impl Sleeper {
     fn start() -> Self {
-        let child = std::process::Command::new("sleep")
+        Self::spawn(&mut Self::command())
+    }
+
+    /// Started in a user namespace of its own, with no map: a sibling of
+    /// the build's, not one the build's descends from.
+    fn start_in_own_user_namespace() -> Self {
+        use std::os::unix::process::CommandExt as _;
+        let mut command = Self::command();
+        // SAFETY: in the forked child before `execve`, `unshare` allocates
+        // nothing and touches no state the parent shares.
+        unsafe {
+            command.pre_exec(|| {
+                rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWUSER)
+                    .map_err(io::Error::from)
+            });
+        }
+        Self::spawn(&mut command)
+    }
+
+    fn command() -> std::process::Command {
+        let mut command = std::process::Command::new("sleep");
+        command
             .arg("300")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("start sleep");
-        Self(child)
+            .stderr(std::process::Stdio::null());
+        command
+    }
+
+    fn spawn(command: &mut std::process::Command) -> Self {
+        Self(command.spawn().expect("start sleep"))
     }
 }
 
@@ -446,6 +475,10 @@ fn check_network(out: &str) {
     assert_eq!(value(out, "run2"), "exit 0", "{out}");
     assert_eq!(value(out, "2:lo"), "up", "{out}");
     assert_ne!(value(out, "2:net"), value(out, "0:net"), "{out}");
+    assert!(
+        value(out, "2:netdevs").split(',').any(|d| d == "lo"),
+        "{out}"
+    );
 }
 
 /// The [`Caps`] line's kernel filesystems.
@@ -522,12 +555,11 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     );
 }
 
-/// A `RUN` in the build's user namespace, given `proc_rbind`, against a
-/// dumpable [`Sleeper`] of its kernel uid outside that namespace: the
+/// A `RUN` in the build's user namespace, given `proc_rbind`, against
+/// `sleeper`, dumpable and of its kernel uid outside that namespace: the
 /// sandbox's `caps=` line and [`OUTER`]'s, as `RUN` 0.
-fn against_a_process_outside(proc_rbind: bool) -> String {
+fn against_a_process_outside(sleeper: Sleeper, proc_rbind: bool) -> String {
     let dir = leg_dir();
-    let sleeper = Sleeper::start();
     let runs = [("", Network::Host, outer(&sleeper))];
     let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, proc_rbind, &runs));
     drop(sleeper);
@@ -542,7 +574,7 @@ fn against_a_process_outside(proc_rbind: bool) -> String {
 #[ignore = "T1: default: a RUN under an rbind of /proc opens nothing of a process outside the build in a rootless Podman container"]
 fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
-    let out = against_a_process_outside(true);
+    let out = against_a_process_outside(Sleeper::start(), true);
     measured(&format!(
         "a RUN under an rbind of /proc, against a process outside the build: {}",
         out.replace('\n', "; ")
@@ -555,7 +587,31 @@ fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build() {
         "none",
         "the process is not seen:\n{out}"
     );
-    opened_nothing(&out, 0);
+    opened_nothing(&out, 0, "Permission denied");
+}
+
+/// T1: root of rootless Podman, under an rbind of `/proc` (asked for): a
+/// `RUN` sees a process in a user namespace beside the build's, dumpable
+/// and of its kernel uid, yet opens none of its environment, memory, root,
+/// current directory or descriptors.
+#[test]
+#[ignore = "T1: default: a RUN under an rbind of /proc opens nothing of a process in another user namespace in a rootless Podman container"]
+fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_in_another_user_namespace() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = against_a_process_outside(Sleeper::start_in_own_user_namespace(), true);
+    measured(&format!(
+        "a RUN under an rbind of /proc, against a process in another user namespace: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Rbind, "{out}");
+    assert_eq!(value(&out, "run0"), "exit 0", "{out}");
+    assert_ne!(
+        value(&out, "0:outer"),
+        "none",
+        "the process is not seen:\n{out}"
+    );
+    opened_nothing(&out, 0, "Permission denied");
 }
 
 /// T1: root of rootless `podman run --privileged`, where a new `proc`
@@ -565,7 +621,7 @@ fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build() {
 #[ignore = "T1: privileged: a RUN with a new proc opens nothing of a process outside the build"]
 fn a_run_with_a_new_proc_opens_nothing_of_a_process_outside_the_build() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
-    let out = against_a_process_outside(false);
+    let out = against_a_process_outside(Sleeper::start(), false);
     measured(&format!(
         "a RUN with a new proc, against a process outside the build: {}",
         out.replace('\n', "; ")
@@ -574,7 +630,7 @@ fn a_run_with_a_new_proc_opens_nothing_of_a_process_outside_the_build() {
     assert_eq!(chosen(&out).0, KernelFs::Fresh, "{out}");
     assert_eq!(value(&out, "run0"), "exit 0", "{out}");
     assert_eq!(value(&out, "0:outer"), "none", "{out}");
-    opened_nothing(&out, 0);
+    opened_nothing(&out, 0, "No such file");
 }
 
 /// T1: below a one-id user namespace (`unshare -r`), `setgroups` denied
@@ -619,7 +675,9 @@ fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
 /// is 1 (Ubuntu 24.04) it is refused before anything runs; elsewhere
 /// (22.04) a fresh `proc` mounts, so a `RUN` gets one, PID 2 under
 /// ranikust's init, and `sysfs`, whose network namespace the user does not
-/// own, an rbind of `/sys`, which needs no request.
+/// own, an rbind of `/sys`, which needs no request; a `--network=none`
+/// `RUN`, whose network namespace the build owns, a new `sysfs` showing
+/// `lo` alone.
 #[test]
 #[ignore = "T2: drops from root to the sudo user to run RUNs in the build's user namespace"]
 fn runs_in_the_build_user_namespace_of_a_regular_user() {
@@ -668,6 +726,7 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
+    assert_eq!(value(&out, "2:netdevs"), "lo", "{out}");
 }
 
 /// T1: root of rootless Podman, where the user-namespace probe found that
