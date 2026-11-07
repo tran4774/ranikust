@@ -90,10 +90,9 @@ impl Fallbacks {
     /// shell that started ranikust; ranikust itself, not dumpable
     /// (ADR-0051), stays closed to it. [`crate::Sandbox`] then runs its
     /// `RUN`s one at a time, so that none reaches another's processes
-    /// (ADR-0127). The
-    /// rest is an accepted residual: start ranikust as the container's PID 1
-    /// with its secrets in its environment, and ask for this only where the
-    /// base images are trusted.
+    /// (ADR-0127). The rest is an accepted residual: start ranikust as the
+    /// container's PID 1 with its secrets in its environment, and ask for
+    /// this only where the base images are trusted.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -159,7 +158,8 @@ fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
          trusted base images, allow an rbind of /proc (--allow proc.rbind), through which \
          each RUN sees this container's processes, reads their command lines and mount \
          tables, ranikust's included, and reaches the environment and files of those of its \
-         uid: then start ranikust as the container's PID 1, with secrets in its environment",
+         uid: then start ranikust as the container's PID 1, with secrets in its environment, \
+         not on its command line or in a shell left running",
     )
 }
 
@@ -499,7 +499,9 @@ mod tests {
         assert!(guidance.contains("allows user namespaces"), "{guidance}");
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
         assert!(guidance.contains("processes"), "{guidance}");
-        assert!(guidance.contains("trusted base images"), "{guidance}");
+        for advice in ["trusted base images", "PID 1", "command line"] {
+            assert!(guidance.contains(advice), "{guidance}");
+        }
         assert_eq!(proc_guidance(&proc_eperm, asked), None);
         assert_eq!(
             proc_guidance(&setup(Step::MountSys, libc::EPERM), report),

@@ -155,7 +155,9 @@ In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). It also moves the process into the build's user
 namespace, each id map tried in a forked child first (no build uses it yet,
 [#75](https://github.com/tran4774/ranikust/issues/75)); the subordinate ids
-come from `ranikust`. A bare `chroot` is never used when mounting is possible;
+come from `ranikust`. Where its `RUN`s get an rbind of `/proc`, they take
+turns, whatever `--jobs` allows
+([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)). A bare `chroot` is never used when mounting is possible;
 the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
 refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
@@ -186,8 +188,7 @@ root as anything but a `RootPath`.
 
 Runs the stage DAG: a stage starts when its dependencies finish, and
 root-independent work (base pulls, cache lookups) starts up front. `--jobs`
-bounds concurrent `RUN`s (one at a time where they get an rbind of `/proc`,
-ADR-0127), available memory bounds how many stages run at once,
+bounds concurrent `RUN`s, available memory bounds how many stages run at once,
 stages on the shared `/` run one at a time, the first failure cancels the rest.
 A stage is built through the `StageRunner` trait, which the builder's side
 implements and tests fake. **Must not** know how a stage is built, or let output

@@ -5289,26 +5289,31 @@ mod tests {
     /// first has dropped its own; with a new `proc` both run at once.
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
+        // `None` takes no lock, so a second `take` cannot block here.
         let side_by_side = Turns::for_proc(KernelFs::Fresh);
         let first = side_by_side.take();
-        assert!(first.is_none() && side_by_side.take().is_none());
+        assert!(first.is_none() && side_by_side.0.is_none());
 
         let turns = Turns::for_proc(KernelFs::Rbind);
+        let held = |turns: &Turns| turns.0.as_ref().map(|m| m.try_lock().is_err());
+        let first = turns.take();
+        assert!(first.is_some());
+        assert_eq!(
+            held(&turns),
+            Some(true),
+            "a second turn while the first is held"
+        );
+        drop(first);
+        assert_eq!(held(&turns), Some(false));
         let (entered, second) = mpsc::channel();
         std::thread::scope(|s| {
-            let first = turns.take();
-            assert!(first.is_some());
             s.spawn(|| {
                 let _turn = turns.take();
                 entered.send(()).unwrap();
             });
-            assert_eq!(
-                second.recv_timeout(std::time::Duration::from_millis(200)),
-                Err(mpsc::RecvTimeoutError::Timeout),
-                "a second turn while the first is held"
-            );
-            drop(first);
-            second.recv().unwrap();
+            second
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the turn once released");
         });
     }
 }

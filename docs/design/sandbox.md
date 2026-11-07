@@ -281,8 +281,8 @@ The steps, in order:
       environment and files of those of its uid, such as a shell that
       started ranikust; ranikust itself, not dumpable
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
-      stays closed. So that no `RUN` reaches another, the `RUN`s of such a
-      build run one at a time: `Sandbox::run` holds a lock from before the
+      stays closed. So that no `RUN` reaches another's processes, the
+      `RUN`s of such a build run one at a time: `Sandbox::run` holds a lock from before the
       clone until the `RUN`'s init is reaped, the processes of its PID
       namespace gone with it; stages still schedule in parallel
       ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
@@ -291,8 +291,9 @@ The steps, in order:
       start ranikust as the container's PID 1, with its secrets in its
       environment rather than on its command line or in a shell left
       running, and ask for the rbind only with trusted base images. The
-      rbind's masks come along, every mount of it made `nosuid`, `nodev` and `noexec` with
-      `mount_setattr(AT_RECURSIVE)` (without it the `RUN` fails); the
+      rbind's masks come along, every mount of it made `nosuid`, `nodev`
+      and `noexec` with `mount_setattr(AT_RECURSIVE)` (without it the `RUN`
+      fails); the
       sandbox's probe chooses it once and logs it once per build. Unasked,
       the probe fails at `Step::MountProc` and warns how to get a new `proc`:
       build as a regular user on a host that allows user namespaces, where
