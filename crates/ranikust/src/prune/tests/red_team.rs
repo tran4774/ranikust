@@ -22,10 +22,11 @@ fn printed_for_root(dir: &Path) -> (String, String) {
         .lines()
         .nth(1)
         .unwrap_or_else(|| panic!("no guidance: {text}"));
+    let first = format!("( {PATH_CHECK} && CDPATH= cd -P -- ");
     let start = line
-        .find("( CDPATH= cd -P -- ")
+        .find(&first)
         .unwrap_or_else(|| panic!("no commands: {line}"));
-    let then = line.rfind(", then ( CDPATH= cd -P -- ").expect(line);
+    let then = line.rfind(&format!(", then {first}")).expect(line);
     let end = line
         .rfind("; Phase 5's ranikust prune will serve root too")
         .expect(line);
@@ -112,7 +113,13 @@ fn red_team_printed_paths_act_only_on_the_checked_directory_in_any_shell() {
             assert!(read.status.success(), "{sh:?}: {read:?}");
             // Where this shell reads another path: a state directory there.
             let decoy = (read.stdout != state.as_os_str().as_bytes()).then(|| {
-                let at = cwd.join(OsStr::from_bytes(&read.stdout));
+                let read = Path::new(OsStr::from_bytes(&read.stdout));
+                // `starts_with` is lexical: a `..` would lead out of `cwd`.
+                assert!(
+                    !read.components().any(|c| c == Component::ParentDir),
+                    "{sh:?} reads {word} as {read:?}"
+                );
+                let at = cwd.join(read);
                 assert!(at.starts_with(&cwd), "{sh:?} reads {word} as {at:?}");
                 marked_state(&at);
                 at
@@ -169,7 +176,7 @@ fn red_team_busybox_tools_change_nothing_without_gnu_find() {
         }
         for script in [
             ROOT_SCRIPT.to_owned(),
-            root_script(Owner::of(owner)),
+            root_script(&Owner::of(owner)),
             USER_SCRIPT.to_owned(),
         ] {
             marked_state(&state);
@@ -211,7 +218,7 @@ fn red_team_directories_swapped_during_the_walk_lead_nowhere_out() {
     let me = pin_of(tmp.path()).uid;
     let scripts = [
         ROOT_SCRIPT.to_owned(),
-        root_script(Owner::of(me)),
+        root_script(&Owner::of(me)),
         USER_SCRIPT.to_owned(),
     ];
     let names: Vec<String> = (0..DIRS).map(|d| format!("w{d:02}")).collect();
@@ -292,8 +299,9 @@ fn red_team_directories_swapped_during_the_walk_lead_nowhere_out() {
     }
 }
 
-/// T4: a user's `prune --all` refuses `/`, system directories and the
-/// home directory before any user namespace; root's refusal gives no
+/// T4: the checks a user's `prune --all` runs before any user namespace,
+/// which change nothing, take none of `/`, system directories and the home
+/// directory as a state directory to empty; root's refusal gives no
 /// commands for them.
 #[test]
 fn red_team_system_directories_and_the_home_get_nothing() {
@@ -310,10 +318,12 @@ fn red_team_system_directories_and_the_home_get_nothing() {
             .filter(|h| h.is_absolute()),
     );
     for dir in &dirs {
-        match empty(dir) {
-            Ok(pruned) => panic!("{}: {pruned:?}", dir.display()),
-            Err(refusal) => assert_eq!(refusal.kind, Kind::Other, "{refusal:?}"),
-        }
+        let found = statedir::check(dir);
+        assert!(
+            !matches!(found, Ok(Found::Entries(_))),
+            "{}: {found:?}",
+            dir.display()
+        );
         let guidance = prune_all(0, dir).unwrap_err().guidance;
         assert!(!guidance.contains("cd -P"), "{}: {guidance}", dir.display());
     }
@@ -373,10 +383,10 @@ fn bash(command: &str, cwd: &Path) -> Output {
         .unwrap()
 }
 
-/// In `state`, owned by [`OWNER`], what its builds could leave: entries of
-/// each of `ids`, a setuid file, a device node, a FIFO, a socket, names a
-/// shell would read otherwise, a symlink to `outside/dir` and a hardlink
-/// to `outside/owned`, both [`OWNER`]'s.
+/// In `state`, owned by [`OWNER`], what its builds could leave: a file
+/// `f-<id>` of each of `ids`, a setuid file, a device node, a FIFO, a
+/// socket, names a shell would read otherwise, a symlink to `outside/dir`
+/// and a hardlink to `outside/owned`, both [`OWNER`]'s.
 fn owners_state(state: &Path, ids: &[u32], outside: &Path) {
     let layer = state.join("layers/v3/sha256/x");
     fs::create_dir_all(&layer).unwrap();
@@ -417,6 +427,9 @@ fn owners_state(state: &Path, ids: &[u32], outside: &Path) {
             }
         }
     }
+    for id in ids {
+        own(&layer.join(format!("f-{id}")), *id);
+    }
     // The device, the setuid file and the socket of subordinate ids.
     for (name, id) in ["null", "suid", "sock"]
         .iter()
@@ -428,11 +441,11 @@ fn owners_state(state: &Path, ids: &[u32], outside: &Path) {
 }
 
 /// T2c, T4: root's printed commands for a user's state directory, run by
-/// root as printed, delete the entries of its owner and of its subordinate
-/// ids, special files and links out among them; entries of other ids stay,
-/// and the hardlinked and linked-to files outside are unchanged; the
-/// emptying then stops, saying so, and the `rmdir` fails. With no other
-/// id's entry, both remove the directory.
+/// root as printed, change nothing where entries of other ids are, saying
+/// so, and the `rmdir` fails; with no other id's entry, they delete the
+/// entries of its owner and of its subordinate ids, special files and
+/// links out among them, and remove the directory. The hardlinked and
+/// linked-to files outside are unchanged.
 #[test]
 #[ignore = "T2c: default: chown to other users and mknod need root"]
 fn red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside() {
@@ -489,35 +502,19 @@ fn red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside() {
     own(&state.join("builds/x/mine"), OWNER);
     let (emptying, removal) = printed_for_root(&state);
     assert!(emptying.contains(&format!(r"-uid {OWNER}")), "{emptying}");
+    let inside = owned(&state);
     let emptied = bash(&emptying, tmp.path());
     let removed = bash(&removal, tmp.path());
     assert!(!emptied.status.success(), "{emptied:?}");
     let err = String::from_utf8_lossy(&emptied.stderr);
     assert!(
-        err.contains(&format!("not emptied: entries of uids other than {OWNER}")),
+        err.contains(&format!(
+            "nothing changed: entries of uids other than {OWNER}"
+        )),
         "{err}"
     );
     assert!(!removed.status.success(), "{removed:?}");
-    let mut left: Vec<String> = owned(&state)
-        .into_iter()
-        .map(|(p, ..)| p.display().to_string())
-        .collect();
-    left.sort();
-    let mut want: Vec<String> = [
-        "builds",
-        "builds/x",
-        "caches",
-        "caches/c",
-        "caches/c/hard-root",
-        "tmp",
-        "tmp/b",
-    ]
-    .iter()
-    .map(|p| (*p).to_owned())
-    .chain(others.iter().map(|id| format!("tmp/b/o-{id}")))
-    .collect();
-    want.sort();
-    assert_eq!(left, want, "{err}");
+    assert_eq!(owned(&state), inside, "{err}");
     assert_eq!(nlink("secret"), 2);
     assert_eq!(nlink("owned"), 1);
     assert_eq!(owned(&outside), before);

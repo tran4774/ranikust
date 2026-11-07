@@ -1134,7 +1134,12 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
                     .all(|b| b.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&b))
             });
             if plain {
-                let lock = format!("( CDPATH= cd -P -- {}{check}", state.display());
+                let lock = format!(
+                    "( eval 'case \":$PATH:\" in *::*|*:[!/]*) echo \"PATH holds a relative or \
+                     empty entry: use absolute directories only\" >&2; exit 1;; esac' && CDPATH= \
+                     cd -P -- {}{check}",
+                    state.display()
+                );
                 assert!(err.contains(&lock), "{err}");
             }
             assert!(err.contains("find . -xdev"), "{err}");

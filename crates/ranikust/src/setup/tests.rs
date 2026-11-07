@@ -674,7 +674,8 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
         (m.dev(), m.ino(), m.uid())
     };
     let commands = format!(
-        "( CDPATH= cd -P -- '{}' && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:700 && exec flock -xn . sh -c '",
+        "( {} && CDPATH= cd -P -- '{}' && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:700 && exec flock -xn . sh -c '",
+        crate::prune::PATH_CHECK,
         left.display()
     );
     assert!(root.guidance.contains(&commands), "{root}");

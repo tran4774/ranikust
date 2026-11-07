@@ -21,7 +21,7 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
 
-use rnk_sandbox::IdRange;
+use rnk_sandbox::{IdRange, SubordinateIds};
 use rnk_store::Store;
 
 use crate::cli::PruneArgs;
@@ -83,13 +83,14 @@ macro_rules! gnu_find_first {
     };
 }
 
-/// The start of root's emptying, after [`gnu_find_first`]: its regular
-/// marker first, `.ranikust-state` or else the `.ranikust-pruning` a prune
-/// that did not finish left, so that what an interrupted removal leaves is
-/// unmarked, and nothing where there is neither, saying so.
+/// Root's emptying's step before any deletion: its regular marker,
+/// `.ranikust-state` or else the `.ranikust-pruning` a prune that did not
+/// finish left, removed first, so that what an interrupted removal leaves
+/// is unmarked; the script stops, saying so, where there is neither, and,
+/// saying that instead, where the removal fails.
 macro_rules! root_marker_first {
     () => {
-        r#"{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; } || { echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2; exit 1; }; } && "#
+        r#"if test -f .ranikust-state && ! test -h .ranikust-state; then marker=.ranikust-state; elif test -f .ranikust-pruning && ! test -h .ranikust-pruning; then marker=.ranikust-pruning; else echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2; exit 1; fi; rm "$marker" || { echo "cannot remove $marker: nothing else changed" >&2; exit 1; }; "#
     };
 }
 
@@ -109,24 +110,31 @@ const ROOT_SCRIPT: &str = gnu_find_first!(concat!(
 /// The owner of a state directory, whose entries root's emptying deletes
 /// ([`root_script`]): `uid`, and, for a user other than root, `range`, the
 /// first `/etc/subuid` range of it, the only other uids its builds' user
-/// namespace maps.
-#[derive(Clone, Copy, Debug)]
+/// namespace maps; `unread`, why that range could not be read.
+#[derive(Clone, Debug)]
 struct Owner {
     uid: u32,
     range: Option<IdRange>,
+    unread: Option<String>,
 }
 
 impl Owner {
-    /// `uid` with the range [`crate::subids::lookup`] reads for it: none
-    /// where there is none or it cannot be read.
+    /// `uid` with the range [`crate::subids::lookup`] reads for it.
     fn of(uid: u32) -> Self {
-        Self::new(
-            uid,
-            crate::subids::lookup(uid)
-                .ok()
-                .flatten()
-                .map(|ids| ids.uids),
-        )
+        Self::from_lookup(uid, crate::subids::lookup(uid))
+    }
+
+    /// `uid` with the range `lookup` found: none where there is none or it
+    /// failed, whose error is kept for the guidance.
+    fn from_lookup(uid: u32, lookup: Result<Option<SubordinateIds>, String>) -> Self {
+        match lookup {
+            Ok(ids) => Self::new(uid, ids.map(|ids| ids.uids)),
+            // No range keeps more: only the owner's own uid's entries go.
+            Err(e) => Self {
+                unread: Some(e),
+                ..Self::new(uid, None)
+            },
+        }
     }
 
     /// `uid` with `range`, but for one that holds root's uid or ends past
@@ -134,7 +142,11 @@ impl Owner {
     fn new(uid: u32, range: Option<IdRange>) -> Self {
         let range =
             range.filter(|r| r.start > 0 && r.count > 0 && r.start.checked_add(r.count).is_some());
-        Self { uid, range }
+        Self {
+            uid,
+            range,
+            unread: None,
+        }
     }
 
     /// The range's first and last uids, as `first-last`.
@@ -145,10 +157,12 @@ impl Owner {
 
 /// Root's emptying of the state directory it runs in, which `owner` owns,
 /// for [`in_dir`]: [`ROOT_SCRIPT`] where root owns it; else the same steps
-/// deleting only the entries of the owner's uid and of its range (`find`'s
-/// `+n` and `-n` are strict), so that those of other uids are left in
-/// place; the script then stops, saying so, the directory not empty.
-fn root_script(owner: Owner) -> String {
+/// for only the entries of the owner's uid and of its range (`find`'s `+n`
+/// and `-n` are strict), so that those of other uids are left in place:
+/// where any is found, or a listing fails, the script stops, saying so,
+/// before the marker goes; where any is left after the deletion, it stops
+/// there, the directory not empty.
+fn root_script(owner: &Owner) -> String {
     let uid = owner.uid;
     if uid == 0 {
         return ROOT_SCRIPT.to_owned();
@@ -164,16 +178,21 @@ fn root_script(owner: Owner) -> String {
         ),
         None => (String::new(), String::new()),
     };
-    let mut script = String::from(gnu_find_first!(root_marker_first!()));
+    let ours = format!(r"\( -uid {uid}{or_range} \)");
+    let mut script = String::from(gnu_find_first!(""));
     script.push_str(&format!(
-        r#"{{ find . -xdev -mindepth 1 \( -uid {uid}{or_range} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1 || echo failed)" || {{ echo "not emptied: entries of uids other than {uid}{and_range} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
+        r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)" || {{ echo "nothing changed: entries of uids other than {uid}{and_range} are here, which this emptying would leave in place, or find failed" >&2; exit 1; }}; "#
+    ));
+    script.push_str(root_marker_first!());
+    script.push_str(&format!(
+        r#"{{ find . -xdev -mindepth 1 {ours} -delete && test -z "$(find . -mindepth 1 -maxdepth 1 || echo failed)" || {{ echo "not emptied: entries of uids other than {uid}{and_range} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
     ));
     script
 }
 
 /// What [`root_script`] deletes in a directory `owner` owns, to follow "the
 /// emptying needs GNU findutils": nothing to add for root.
-fn owner_only(owner: Owner) -> String {
+fn owner_only(owner: &Owner) -> String {
     let uid = owner.uid;
     if uid == 0 {
         return String::new();
@@ -181,9 +200,12 @@ fn owner_only(owner: Owner) -> String {
     let range = owner.range.map_or(String::new(), |range| {
         format!(" and of its subordinate ids {},", Owner::range_text(range))
     });
+    let unread = owner.unread.as_ref().map_or(String::new(), |e| {
+        format!(" not of its subordinate ids, which ranikust could not read ({e}),")
+    });
     format!(
-        " and deletes only the entries of uid {uid}, the directory's owner,{range} stopping \
-         where another uid owns any"
+        " and deletes only the entries of uid {uid}, the directory's owner,{range}{unread} \
+         changing nothing where another uid owns any"
     )
 }
 
@@ -206,9 +228,10 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
         "root empties a state directory with ordinary tools while no build uses it and nothing \
          is mounted below it, its marker first so that no build takes what an interrupted \
          removal leaves, and nothing in a directory without one or other than the one ranikust \
-         checked; the emptying {NEEDS_GNU_FIND}{}: {}, then {}",
-        owner_only(owner),
-        in_dir(dir, pin, &root_script(owner)),
+         checked; the commands refuse a PATH with a relative or empty entry; the emptying \
+         {NEEDS_GNU_FIND}{}: {}, then {}",
+        owner_only(&owner),
+        in_dir(dir, pin, &root_script(&owner)),
         remove_dir(dir, pin)
     )
 }
@@ -281,21 +304,16 @@ pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, NoPin>) -> String {
 
 /// The ways out of the state directory `dir`, pinned as `pin`, that
 /// `prune --all` could not finish emptying ([`rnk_store::Error::NotPruned`]),
-/// which no build opens.
+/// which no build opens. Root's commands come from root's own `prune
+/// --all`, which takes the directory as root sees it.
 pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let d = shell_word(dir.as_os_str());
     let commands = match pin {
-        Ok(pin) => {
-            let owner = Owner::of(pin.uid);
-            format!(
-                "; or move the directory aside and remove it, {}; or, as root, empty it in \
-                 place, which {NEEDS_GNU_FIND}{}, {}, then {}",
-                move_aside(dir, pin),
-                owner_only(owner),
-                in_dir(dir, pin, &root_script(owner)),
-                remove_dir(dir, pin)
-            )
-        }
+        Ok(pin) => format!(
+            "; or move the directory aside and remove it, {}; or have root run ranikust prune \
+             --all --state-dir {d}, which gives root's commands to empty it in place",
+            move_aside(dir, pin)
+        ),
         Err(why) => format!("; {}", no_commands(dir, &why, false)),
     };
     format!(
@@ -446,8 +464,16 @@ pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
     Ok((Pin::of(dir, &check)?, check.entries))
 }
 
+/// What each printed command runs first, before it enters a directory: a
+/// `PATH` with a relative or empty entry would run tools from the
+/// directory entered, so the command stops there, saying so. Single-quoted,
+/// for `eval`, so that no interactive shell's history expansion reads its
+/// `!`.
+pub(crate) const PATH_CHECK: &str = r#"eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac'"#;
+
 /// `script` run by `sh` in the state directory `dir`, pinned as `pin`,
-/// which it enters once (`cd -P`, `CDPATH` unset), checks against the pin,
+/// which it enters once ([`PATH_CHECK`] first, then `cd -P`, `CDPATH`
+/// unset), checks against the pin,
 /// then names only as `.`: the lock, the marker's check and the deletion
 /// all act on the directory checked, whatever is put at its path
 /// meanwhile. The lock is the exclusive `flock` [`Store::prune_all`]
@@ -457,7 +483,7 @@ fn in_dir(dir: &Path, pin: Pin, script: &str) -> String {
     debug_assert!(!script.contains('\''), "{script}");
     let d = shell_word(dir.as_os_str());
     format!(
-        "( CDPATH= cd -P -- {d} && {} && exec flock -xn . sh -c '{script}' )",
+        "( {PATH_CHECK} && CDPATH= cd -P -- {d} && {} && exec flock -xn . sh -c '{script}' )",
         pin.test(".")
     )
 }
@@ -473,25 +499,26 @@ fn parent_and_name(dir: &Path, suffix: &str) -> (String, String) {
 }
 
 /// Removes the empty state directory `dir`, pinned as `pin`, from its
-/// parent, entered once: never a symlink or another directory put at its
-/// name.
+/// parent, entered once after [`PATH_CHECK`]: never a symlink or another
+/// directory put at its name.
 fn remove_dir(dir: &Path, pin: Pin) -> String {
     let (parent, name) = parent_and_name(dir, "");
     format!(
-        "( CDPATH= cd -P -- {parent} && {} && rmdir -- {name} )",
+        "( {PATH_CHECK} && CDPATH= cd -P -- {parent} && {} && rmdir -- {name} )",
         pin.test(&name)
     )
 }
 
 /// A user's way to move the state directory `dir`, pinned as `pin`, aside
 /// and remove it in the user's namespace of `podman`: from its parent,
-/// entered once, only the directory checked, never a symlink.
+/// entered once after [`PATH_CHECK`], only the directory checked, never a
+/// symlink.
 fn move_aside(dir: &Path, pin: Pin) -> String {
     let (parent, name) = parent_and_name(dir, "");
     let (_, aside) = parent_and_name(dir, ".old");
     format!(
-        "( CDPATH= cd -P -- {parent} && test -d {name} && ! test -h {name} && {} && mv -T -- \
-         {name} {aside} && podman unshare rm -rf --one-file-system -- {aside} )",
+        "( {PATH_CHECK} && CDPATH= cd -P -- {parent} && test -d {name} && ! test -h {name} && \
+         {} && mv -T -- {name} {aside} && podman unshare rm -rf --one-file-system -- {aside} )",
         pin.test(&name)
     )
 }

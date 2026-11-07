@@ -143,12 +143,14 @@ pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
 /// describes, before a refusal prints commands that act on it: opened
 /// again without following a symlink, it is that directory; it and its
 /// parents pass [`check_chain`] with its owner as the user; and it is none
-/// of [`SYSTEM_DIRS`], marked or not. Returns its permission bits, which
-/// the commands check too.
+/// of [`SYSTEM_DIRS`], marked or not. Returns the permission bits the rule
+/// judged, which the commands check too.
 ///
 /// # Errors
 ///
-/// [`Refused`] naming the rule it breaks.
+/// [`Refused`] naming the rule it breaks and, for the build's rule, what
+/// to do instead: a build's advice, a `--state-dir` elsewhere, does not
+/// empty this one.
 pub(crate) fn check_for_commands(
     state_dir: &Path,
     check: &rnk_store::PruneCheck,
@@ -171,7 +173,14 @@ fn check_for_commands_beside(
             state_dir.display()
         )));
     }
-    check_chain(&walk(&fd, state_dir)?, check.uid, true)?;
+    let chain = walk(&fd, state_dir)?;
+    if let Some((d, why)) = breach(&chain, check.uid, true) {
+        return Err(Refused(format!(
+            "{} {why}, which a build refuses: no other user may write a state directory or a \
+             directory above it; fix the owner or mode, or remove the directory by hand",
+            d.path.display()
+        )));
+    }
     let me = (st.st_dev, st.st_ino);
     let found = system
         .iter()
@@ -183,7 +192,8 @@ fn check_for_commands_beside(
             sys.display()
         )));
     }
-    Ok(st.st_mode & 0o7777)
+    // `walk` reads the state directory first.
+    Ok(chain[0].mode)
 }
 
 /// Creates what is missing of `state_dir` below `existing`, its nearest
@@ -509,33 +519,39 @@ pub(crate) struct ChainDir {
 ///
 /// [`Refused`] naming the first directory that breaks the rule.
 pub(crate) fn check_chain(chain: &[ChainDir], euid: u32, has_state: bool) -> Result<(), Refused> {
-    let refuse = |d: &ChainDir, why: &str| {
-        Refused(format!(
+    match breach(chain, euid, has_state) {
+        None => Ok(()),
+        Some((d, why)) => Err(Refused(format!(
             "unsafe state directory: {} {why}; the build roots and the store live there, so no \
              other user may write it or a directory above it; {}",
             d.path.display(),
             private_state(euid)
-        ))
-    };
+        ))),
+    }
+}
+
+/// The first directory of `chain` that breaks [`check_chain`]'s rule, with
+/// how, as "is …".
+fn breach(chain: &[ChainDir], euid: u32, has_state: bool) -> Option<(&ChainDir, String)> {
     for (i, d) in chain.iter().enumerate() {
         if i == 0 && has_state {
             if d.uid != euid {
-                return Err(refuse(d, &format!("is owned by uid {}, not {euid}", d.uid)));
+                return Some((d, format!("is owned by uid {}, not {euid}", d.uid)));
             }
             if d.mode & 0o022 != 0 {
-                return Err(refuse(d, "is writable by group or others"));
+                return Some((d, "is writable by group or others".to_owned()));
             }
             continue;
         }
         if d.uid != 0 && d.uid != euid {
-            return Err(refuse(d, &format!("is owned by uid {}", d.uid)));
+            return Some((d, format!("is owned by uid {}", d.uid)));
         }
         let sticky_root = d.uid == 0 && d.mode & 0o1000 != 0;
         if d.mode & 0o022 != 0 && !sticky_root {
-            return Err(refuse(d, "is writable by group or others"));
+            return Some((d, "is writable by group or others".to_owned()));
         }
     }
-    Ok(())
+    None
 }
 
 /// Whether `dir` is on overlayfs, which cannot hold an overlay upper
