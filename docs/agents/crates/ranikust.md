@@ -52,7 +52,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   from `Store::check_prune` on the path as given, outside any namespace),
   then name only `.`, under `flock -xn .`, so they act on that directory
   and fail while a build holds it; where the check fails, no commands
-  (run `prune --all` as the directory's owner, or fix the path). A prune
+  (give the path with no symbolic link on it; for a user's directory,
+  `prune --all` as that user). A prune
   that could not finish (`NotPruned`) gets the ways out
   (`prune::unfinished`); a build refused by one cut short
   (`PruneCutShort`) is told the next step (`prune::cut_short`:

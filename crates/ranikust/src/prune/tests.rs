@@ -92,6 +92,10 @@ fn prune_without_all_is_refused_naming_phase_5() {
     assert!(!state.exists());
 }
 
+/// What a refusal that gives no commands says to do instead.
+const OTHERWISE: &str = "give the path with no symbolic link on it; for a user's directory, run \
+                         ranikust prune --all as that user";
+
 /// The [`Pin`] of the directory at `dir`, from the standard library's
 /// stat(2), whatever is there.
 fn pin_of(dir: &Path) -> Pin {
@@ -184,12 +188,7 @@ fn root_is_refused_naming_phase_5_before_anything() {
         shell_word(missing.as_os_str())
     );
     assert!(refusal.guidance.contains(&none), "{refusal}");
-    assert!(
-        refusal
-            .guidance
-            .contains("run ranikust prune --all as the directory's owner, or fix the path"),
-        "{refusal}"
-    );
+    assert!(refusal.guidance.contains(OTHERWISE), "{refusal}");
     assert!(!refusal.guidance.contains("cd -P"), "{refusal}");
     let refusal = prune_all(0, Path::new("/srv/the 'state'")).unwrap_err();
     assert!(
@@ -226,7 +225,8 @@ fn root_gets_no_commands_for_a_path_through_a_symlink() {
             )),
             "{guidance}"
         );
-        assert!(guidance.contains("as the directory's owner"), "{guidance}");
+        assert!(guidance.contains(OTHERWISE), "{guidance}");
+        assert!(!guidance.contains("owner"), "{guidance}");
     }
     assert_eq!(listing(tmp.path()), before);
 }
@@ -390,7 +390,8 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     assert!(
         guidance.contains(
             "without it, ranikust gives no commands for '/home/u/my state', which it cannot \
-             check (why): run ranikust prune --all as the directory's owner"
+             check (why): give the path with no symbolic link on it; for a user's directory, \
+             run ranikust prune --all as that user"
         ),
         "{guidance}"
     );
@@ -725,7 +726,8 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
     assert!(
         none.ends_with(
             "/etc/subgid; ranikust gives no commands for '/home/u/my state', which it cannot \
-             check (why): run ranikust prune --all as the directory's owner, or fix the path"
+             check (why): give the path with no symbolic link on it; for a user's directory, \
+             run ranikust prune --all as that user"
         ),
         "{none}"
     );

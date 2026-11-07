@@ -88,8 +88,8 @@ directory, its parent, its name and its identity in place of `'DIR'`,
 ```
 
 Where ranikust cannot check the path as given (a symlink on it, say), the
-error gives no commands: run `ranikust prune --all` as the directory's
-owner, or fix the path.
+error gives no commands: give the path with no symbolic link on it, or,
+for a user's directory, run `ranikust prune --all` as that user.
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in
 Phase 5.

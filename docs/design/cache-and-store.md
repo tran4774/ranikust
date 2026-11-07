@@ -199,8 +199,9 @@ device, inode and owner, and each command checks, right after its one
 `cd -P`, that the directory it entered has them (`stat -c %d:%i:%u`), so
 a path changed after the message was printed, a parent swapped for a
 symlink included, makes it fail before it changes anything. Where that
-open or check fails, a refusal gives no commands: it says to run
-`ranikust prune --all` as the directory's owner, or to fix the path. In
+open or check fails, a refusal gives no commands: it says to give the
+path with no symbolic link on it and, for a user's directory, to run
+`ranikust prune --all` as that user. In
 the directory, they name only `.`, so the lock, the marker's check and
 the deletion act on it whatever is put at its path meanwhile; `rmdir`
 and the move aside enter the parent once and check `./name` the same

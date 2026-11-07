@@ -101,8 +101,8 @@ fn root_guidance(dir: &Path) -> String {
 /// Why no command is given for `dir`, and what to do instead.
 fn no_commands(dir: &Path, why: &str) -> String {
     format!(
-        "ranikust gives no commands for {}, which it cannot check ({why}): run ranikust prune \
-         --all as the directory's owner, or fix the path",
+        "ranikust gives no commands for {}, which it cannot check ({why}): give the path with \
+         no symbolic link on it; for a user's directory, run ranikust prune --all as that user",
         shell_word(dir.as_os_str())
     )
 }
