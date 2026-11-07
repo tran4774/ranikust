@@ -282,7 +282,8 @@ The steps, in order:
       `--oci-worker-no-process-sandbox` documents: the container's, or one
       it shares with the host or other containers (`hostPID`,
       `shareProcessNamespace`, `--pid=host`, `--pid container:<name>`). It
-      reads the command line, status, mount table and network tables of
+      reads the files of `/proc/<pid>` not under ptrace's check, such as
+      `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, of
       each, ranikust's included (build-argument values, secret paths), but
       not their environment, files or memory: those need `CAP_SYS_PTRACE`
       in the process's user namespace (`cap_ptrace_access_check`), which a
@@ -314,6 +315,10 @@ The steps, in order:
       mount namespace, that ranikust can open through `/proc` as it starts,
       as T21
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
+      and, from files with no ptrace check, one where `/proc/2/stat` shows a
+      kernel thread (the host's) or PID 1, unless it is ranikust, lists no
+      mount of the namespace ranikust started in
+      ([ADR-0134](../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md)),
       and warns for a `--build-arg` whose name looks like a secret's: its
       value is on the command line a `RUN` reads; the build keeps the
       persistent store

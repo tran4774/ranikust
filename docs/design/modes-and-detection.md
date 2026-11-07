@@ -187,7 +187,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    and a PID namespace shared with a process of another mount namespace that
    ranikust can open as it starts is refused before the process enters the
    namespace
-   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
+   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
+   as is the host's, or one whose PID 1 is of another mount namespace, told
+   from files with no ptrace check
+   ([ADR-0134](../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md));
    the store stays the persistent one
    ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
    Elsewhere a refused mount fails this probe.

@@ -97,13 +97,13 @@ overlay mount options.
 - **`/proc`.** A `RUN` gets a new `proc`. Where the kernel refuses it (Podman's
   and Docker's masked `/proc`), ranikust stops and names `--allow proc.rbind`,
   which binds the container's `/proc` read-only instead. Through it every `RUN`
-  sees each process of the PID namespace and reads its command line, status,
-  mount table and network tables, ranikust's included, so keep no secrets in
-  them, and `RUN`s run one at a time ([ADR-0126], [ADR-0127], [ADR-0130],
-  [ADR-0132]). ranikust refuses a PID namespace it shares with a process of the
-  host or another container that it can open as it starts, as in kaniko mode on
-  `/`, and warns about a `--build-arg` whose name looks like a secret
-  ([ADR-0129]).
+  sees each process of the PID namespace and reads the files of `/proc/<pid>`
+  not under ptrace's check, such as `cmdline`, `status`, `stat`, `mountinfo`,
+  `cgroup` and `net/*`, ranikust's included, so keep no secrets in them, and
+  `RUN`s run one at a time ([ADR-0126], [ADR-0127], [ADR-0130], [ADR-0132]).
+  ranikust refuses a PID namespace it shares with the host or another
+  container, and warns about a `--build-arg` whose name looks like a secret
+  ([ADR-0129], [ADR-0134]).
 - **`--mode=auto` and root.** Root in a container that may not mount tries
   rootless overlay mode and, where it cannot run, builds in kaniko mode as
   before. It does not try where `/proc/sys` is writable or cannot be told: a
@@ -373,3 +373,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0130]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md
 [ADR-0131]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md
 [ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md
+[ADR-0134]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md
