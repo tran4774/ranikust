@@ -338,9 +338,6 @@ pub struct Store {
     anon: Option<Anon>,
     /// [`Store::anonymous_file`] in a persistent store, made on first use.
     build_files: OnceLock<AnonFiles>,
-    /// Whether [`Store::open`] made the state directory a store: it wrote
-    /// [`STATE_MARKER`] ([`Store::abandon`]).
-    made: bool,
     /// Keeps names and `RUN`s apart in an anonymous store; open otherwise.
     fence: Fence,
     /// The per-digest locks held by this store's threads.
@@ -395,11 +392,11 @@ impl Store {
 
     /// As [`Store::open`], for a set-up that falls back to kaniko mode on
     /// `/` when it fails (ADR-0136), which takes only an empty state
-    /// directory: where this open made the directory a store (it wrote
-    /// [`STATE_MARKER`]) and then fails, it calls `undoing`, for what must
+    /// directory: where this open fails once it took the directory as a
+    /// store (marked, by it or before), it calls `undoing`, for what must
     /// let go of the directory or not be cut short first, then empties the
-    /// directory as [`Store::abandon`] does, logging what it cannot, and
-    /// returns the error.
+    /// directory where [`Store::abandon`] would, logging what it cannot,
+    /// and returns the error.
     ///
     /// # Errors
     ///
@@ -441,7 +438,7 @@ impl Store {
         }
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
-        let made = check_marker(&state, &state_path)?;
+        check_marker(&state, &state_path)?;
         let filled = (|| {
             for d in DIRS {
                 state.create_dir_all(d, DIR_MODE)?;
@@ -454,9 +451,9 @@ impl Store {
         let (id, build_lock) = match filled {
             Ok(registered) => registered,
             Err(e) => {
-                if made && let Some(undoing) = undoing {
+                if let Some(undoing) = undoing {
                     undoing();
-                    let abandoned = abandon_made(&state, state_path.clone(), &state_lock);
+                    let abandoned = abandon_unused(&state, state_path.clone(), &state_lock);
                     log_abandoned(&state_path, abandoned);
                 }
                 return Err(e);
@@ -471,14 +468,13 @@ impl Store {
             _state_lock: Some(state_lock),
             anon: None,
             build_files: OnceLock::new(),
-            made,
             fence: Fence::default(),
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
         };
         if let Err(e) = store.cleanup() {
-            if made && let Some(undoing) = undoing {
+            if let Some(undoing) = undoing {
                 undoing();
                 let state_path = store.state_path.clone();
                 log_abandoned(&state_path, store.abandon());
@@ -679,7 +675,6 @@ impl Store {
             _build_lock: None,
             _state_lock: None,
             build_files: OnceLock::new(),
-            made: false,
             fence,
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
@@ -1394,25 +1389,35 @@ impl Store {
         emptied
     }
 
-    /// Closes a store no build used, as [`Store::close`] does, then, where
-    /// its [`Store::open`] made the state directory a store (it wrote
-    /// [`STATE_MARKER`]), empties the directory as [`Store::prune_all`]
-    /// does: for a set-up that fails before its build and falls back to
-    /// kaniko mode on `/` (ADR-0136), which takes only an empty state
-    /// directory. The store's shared `flock` is turned exclusive without
-    /// waiting, on the same descriptor (`flock(2)` drops the shared lock
-    /// first, and a refused attempt leaves none): while another build
-    /// holds the directory, nothing is emptied. A build that opened the
-    /// store and ended meanwhile loses what it left, a cache. `false` when
-    /// nothing was emptied: a store this one did not make, an anonymous
-    /// one, or one another build holds.
+    /// Closes a store no build used, as [`Store::close`] does, then empties
+    /// the state directory where it holds no data, whoever made it a store:
+    /// for a set-up that fails before its build and falls back to kaniko
+    /// mode on `/` (ADR-0136), which takes only an empty state directory.
+    /// A set-up killed before it got here leaves such a store, which the
+    /// next one that fails empties. The store's shared `flock` is turned
+    /// exclusive without waiting, on the same descriptor (`flock(2)` drops
+    /// the shared lock first, and a refused attempt leaves none), and the
+    /// directory is checked under it: while another build holds it, nothing
+    /// is emptied, and none adds data meanwhile. It holds no data where
+    /// `blobs/`, `layers/` and `caches/` hold nothing, its other names are
+    /// those [`Store::prune_all`] takes (the store's, the sandbox's, probe
+    /// leftovers; what dead builds left in `builds/`, `tmp/` and `locks/`),
+    /// and it holds neither [`PRUNING_MARKER`] nor [`BUILDING_MARKER`].
+    /// Then it is emptied as `prune_all` does, but with [`STATE_MARKER`]
+    /// kept to the end in place of a [`PRUNING_MARKER`]: no entry a later
+    /// build reuses can be left half-deleted, so an emptying cut short
+    /// leaves a store with no data, which the next open takes. `false` when
+    /// nothing was emptied: an anonymous store, one another build holds, or
+    /// one that holds data.
     ///
     /// # Errors
     ///
-    /// As [`Store::close`]; as [`Store::prune_all`] once the lock is taken,
-    /// [`Error::NoFlock`] when it cannot be.
+    /// As [`Store::close`]; once the lock is taken, as [`Store::prune_all`]
+    /// for its checks and what deleting returns, and [`Error::Io`] or
+    /// [`Error::Rootfs`] when `blobs/`, `layers/` or `caches/` cannot be
+    /// read as directories; [`Error::NoFlock`] when it cannot be taken.
     pub fn abandon(self) -> Result<bool> {
-        if self.anon.is_some() || !self.made {
+        if self.anon.is_some() {
             self.close()?;
             return Ok(false);
         }
@@ -1429,7 +1434,7 @@ impl Store {
         let Some(lock) = state_lock else {
             return Ok(false);
         };
-        abandon_made(&state, state_path, &lock)
+        abandon_unused(&state, state_path, &lock)
     }
 
     /// Empties the state directory `state`, for `ranikust prune --all`
@@ -1985,10 +1990,10 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
-/// Empties the state directory `state` an open made a store, whose shared
-/// `flock` `lock` holds, as [`Store::abandon`] does: `false` where another
-/// build holds it too.
-fn abandon_made(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<bool> {
+/// Empties the state directory `state`, whose shared `flock` `lock`
+/// holds, where [`Store::abandon`] would: `false` where another build
+/// holds it too, or it holds data.
+fn abandon_unused(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<bool> {
     let span = tracing::info_span!("rnk_store.prune");
     let _entered = span.enter();
     rnk_rootfs::refuse_own_root(state, &state_path)?;
@@ -2004,26 +2009,51 @@ fn abandon_made(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result
             });
         }
     }
-    empty_locked(state, state_path, lock)
+    // Under the lock: no build adds data or names meanwhile.
+    if prune_check(state, &state_path)? != Prunable::Marked || holds_data(state)? {
+        return Ok(false);
+    }
+    empty_all_but(state, state_path, lock, MARKER)?;
+    Ok(true)
 }
 
-/// Logs what a failed [`Store::open_or_abandon`] did with the store it
-/// made in `state_path`.
+/// The store's directories whose entries builds reuse: blobs, extracted
+/// layers, cache mounts.
+const DATA_DIRS: [&str; 3] = ["blobs", "layers", "caches"];
+
+/// Whether the state directory `root` holds an entry in one of
+/// [`DATA_DIRS`]; a missing one holds none, and one that is not a
+/// directory is an error.
+fn holds_data(root: &RootPath) -> Result<bool> {
+    for dir in DATA_DIRS {
+        match root.statx(dir) {
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => continue,
+            st => drop(st?),
+        }
+        if !list(root, Path::new(dir))?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Logs what a failed [`Store::open_or_abandon`] did with the store in
+/// `state_path`.
 fn log_abandoned(state_path: &Path, abandoned: Result<bool>) {
     match abandoned {
         Ok(true) => tracing::debug!(
             target: "rnk_store",
-            "state directory {}: the store this open made is removed",
+            "state directory {}: the store, which holds no data, is removed",
             state_path.display()
         ),
-        Ok(false) => tracing::warn!(
+        Ok(false) => tracing::debug!(
             target: "rnk_store",
-            "state directory {}: the store this open made is kept, another build holds it",
+            "state directory {}: the store is kept: it holds data, or another build holds it",
             state_path.display()
         ),
         Err(e) => tracing::warn!(
             target: "rnk_store",
-            "state directory {}: the store this open made is not removed: {e}",
+            "state directory {}: the store is not removed: {e}",
             state_path.display()
         ),
     }
@@ -2061,12 +2091,19 @@ fn empty_locked(root: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<
             source: e.into(),
         });
     }
+    empty_all_but(root, state_path, lock, PRUNING)?;
+    Ok(true)
+}
+
+/// Deletes everything in the state directory `root` but `last`, whose
+/// exclusive `lock` is held, then, once the filesystem is synced, `last`.
+fn empty_all_but(root: &RootPath, state_path: PathBuf, lock: &OwnedFd, last: &str) -> Result<()> {
     let mut keep = IgnoreList::new();
-    keep.insert(PRUNING)?;
+    keep.insert(last)?;
     let deleted = delete_contents(root, &keep);
     let left: Vec<OsString> = list(root, Path::new("."))?
         .into_iter()
-        .filter(|n| n != PRUNING)
+        .filter(|n| n != last)
         .collect();
     let left = match (left.is_empty(), deleted) {
         (true, Ok(())) => None,
@@ -2090,8 +2127,8 @@ fn empty_locked(root: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<
         path: state_path,
         source: e.into(),
     })?;
-    root.remove_file(PRUNING)?;
-    Ok(true)
+    root.remove_file(last)?;
+    Ok(())
 }
 
 /// The state directory `state` resolved and opened for
@@ -2225,17 +2262,17 @@ fn shown_names(names: &[OsString]) -> String {
 }
 
 /// Refuses a non-empty state directory without a regular-file marker, and
-/// marks an empty one: `true` when this call wrote the marker. A directory
-/// of the user namespace probe ([`is_probe_dir`]: of a build cut short
-/// before its store) does not count.
-fn check_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
+/// marks an empty one. A directory of the user namespace probe
+/// ([`is_probe_dir`]: of a build cut short before its store) does not
+/// count.
+fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
     if !needs_marker(state, state_path)? {
-        return Ok(false);
+        return Ok(());
     }
     match state.open_at(MARKER, &OpenHow::write().create_new(0o644)) {
-        Ok(_) => Ok(true),
+        Ok(_) => Ok(()),
         Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => match marker(state)? {
-            Some(true) => Ok(false),
+            Some(true) => Ok(()),
             _ => Err(not_a_state_dir(state_path)),
         },
         Err(e) => Err(e.into()),

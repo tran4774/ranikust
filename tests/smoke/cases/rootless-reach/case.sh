@@ -9,9 +9,10 @@
 # container's process is refused, podman's --init is not (ADR-0129,
 # ADR-0134). ranikust killed during set-up leaves nothing that stops the
 # next build. In the kaniko leg, the fallback's RUN runs in the
-# container's user namespace, not the build's, and a probe directory a
-# killed kaniko-mode RUN planted in the state directory is removed without
-# following its links (T4, T21).
+# container's user namespace, not the build's; ranikust killed while a
+# set-up made to fail falls back leaves nothing that stops the next
+# fallback; and a probe directory a killed kaniko-mode RUN planted in the
+# state directory is removed without following its links (T4, T21).
 
 # state NAME: a state directory of this case's, kept for the next run.
 state() {
@@ -43,6 +44,7 @@ case_run() {
   shared_pid_namespaces
   killed_in_set_up
   in_fallback
+  killed_in_fallback
   planted
 }
 
@@ -238,6 +240,47 @@ in_fallback() {
   build userns --target userns --allow proc.rbind >/dev/null
   [ "$(run userns cat /userns)" != "$own" ] ||
     fail "the rootless build's RUN ran in the container's user namespace"
+}
+
+# Kaniko leg only: ranikust sent SIGKILL, SIGTERM or SIGINT at points of
+# a set-up made to fail (RANIKUST_DEBUG_FAULT=rootless-broken), before,
+# during and after its store's open and abandon, leaves no store that
+# stops the next fallback: it builds in kaniko mode and leaves the state
+# directory with no store marker (ADR-0136).
+killed_in_fallback() {
+  [ "${RANIKUST_CASE_MODE:-}" = kaniko ] || return 0
+  state fallback-sweep
+  rm -rf "$WORK" && mkdir -p "$WORK" && chmod 700 "$WORK"
+  local o got
+  o="$(out fallback-sweep)"
+  rm -rf "$o" && mkdir -p "$o"
+  PODMAN_ARGS=(-e RANIKUST_DEBUG_FAULT=rootless-broken)
+  got="$(rnk_run_sh "$(foreign_script)"'
+for sig in KILL TERM INT; do
+  for d in 0.005 0.01 0.02 0.03 0.04 0.05 0.07 0.1 0.15; do
+    "$0" "$@" >/dev/null 2>&1 &
+    pid=$!
+    sleep "$d"
+    kill -"$sig" "$pid" 2>/dev/null
+    wait "$pid"
+  done
+done
+i=0
+while foreign >/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+rc=0
+"$0" "$@" >/tmp/last.log 2>&1 || rc=$?
+echo "status=$rc"
+grep -q "ranikust: kaniko mode on /, RUN directly" /tmp/last.log && echo "fell back"
+echo "left: $(ls -A /var/lib/ranikust | tr "\n" " ")"
+[ "$rc" = 0 ] || cat /tmp/last.log' \
+    "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target userns \
+    --allow proc.rbind 2>&1)"
+  PODMAN_ARGS=()
+  printf '%s\n' "$got" >"$o/sweep.log"
+  grep -qx 'status=0' <<<"$got" && grep -qx 'fell back' <<<"$got" ||
+    fail "the fallback after those killed in one: $got"
+  ! grep -Eq '^left: .*\.ranikust-(state|pruning)' <<<"$got" ||
+    fail "a store left by fallbacks killed: $got"
 }
 
 # Kaniko leg only: a kaniko-mode build killed during a RUN that planted a

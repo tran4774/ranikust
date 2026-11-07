@@ -54,10 +54,11 @@ its properties, stood for this.
   with the error, as before.
 - **The child** enters the namespace and sets up. On any failure of the
   set-up (entering the namespace, the store, the sandbox probe, the overlay
-  probe, the spawner) it closes its store and, where that store's open made
-  the state directory a store and no other build holds it, empties the
-  directory (`Store::abandon`; an open that fails once it wrote the marker
-  empties it too, `Store::open_or_abandon`), then sends the reason through
+  probe, the spawner) it closes its store and, where that store holds no
+  data (no blob, extracted layer or cache), whoever made it, and no other
+  build holds it, empties the directory, the store's marker last
+  (`Store::abandon`; an open that fails once it took the directory empties
+  it too, `Store::open_or_abandon`), then sends the reason through
   a pipe and exits with a status of the fallback's own (75), none of
   ranikust's. Once set up, it closes the pipe before the build: from then
   on the run ends as the child does.
@@ -85,9 +86,10 @@ its properties, stood for this.
   which removes the cgroup it makes
   ([ADR-0110](0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
   Probe directories are removed by the probe, by the store's open,
-  and by `Store::abandon`. A directory that already held a persistent store
-  (an earlier rootless overlay build) is kept, and kaniko mode on `/`
-  refuses it, as it did before this decision.
+  and by `Store::abandon`. A set-up killed during a fallback leaves at most
+  a store with no data, which the next fallback empties. A directory whose
+  store holds data (an earlier rootless overlay build's) is kept, and
+  kaniko mode on `/` refuses it, as it did before this decision.
 
 ### Consequences
 
@@ -99,9 +101,9 @@ its properties, stood for this.
   processes; the parent, a copy-on-write image of ranikust at the fork, waits
   for the build's whole life, and `SIGUSR1` sent to the child stops its build
   too.
-- Bad, because a fallback needs the state directory empty again: where it
-  held a persistent store, or another build holds it, kaniko mode on `/`
-  refuses it after the fallback, with its usual error.
+- Bad, because a fallback needs the state directory empty again: where its
+  store holds data, or another build holds it, kaniko mode on `/` refuses
+  it after the fallback, with its usual error.
 - Bad, because the parent stays in ranikust's cgroup, so ranikust is not
   alone there: in a delegated tree a `RUN`'s cgroups take the single
   layout, never nested with `+cpu`
@@ -120,15 +122,18 @@ its properties, stood for this.
 - Tests **[code]**: `rnk-sandbox` `supervise::tests` (what the parent does
   for each end of the child), `ranikust`
   `only_roots_auto_mode_falls_back_to_kaniko_mode`, `rnk-store`
-  `abandon_empties_only_a_store_its_open_made_and_no_build_holds` and
-  `an_open_that_fails_once_it_made_the_store_empties_it_where_asked`; T1 smoke
+  `abandon_empties_a_store_with_no_data_that_no_build_holds` and
+  `an_open_that_fails_empties_a_store_with_no_data_where_asked`; T1 smoke
   case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken`, the
   set-up's last step once its sandbox started, builds in kaniko mode with
   the note and kaniko mode's line alone and leaves the state directory empty;
   `--mode=overlay` gets the error; `SIGKILL`, `SIGINT`, `SIGTERM` and
   `SIGINT` to the group through the waiting parent leave no process, and
   ranikust exits 137 for `SIGKILL`, else 1, as a build that never forks);
-  VM smoke's user leg (a user other than root gets the error).
+  T1 smoke case `rootless-reach` (kaniko leg: `SIGKILL`, `SIGTERM` or
+  `SIGINT` at points of a set-up made to fail, then a fallback that
+  builds, with no store left); VM smoke's user leg (a user other than
+  root gets the error).
 
 ## More Information
 

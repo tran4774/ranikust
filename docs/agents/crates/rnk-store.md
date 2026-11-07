@@ -81,8 +81,8 @@ impl Store {
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
-    pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it wrote the marker and then fails, undoing() then the directory emptied as abandon does (logged where it cannot be), the error returned
-    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then, only where this open wrote the marker, the shared state lock turned exclusive without waiting on the same descriptor and the directory emptied as prune_all does; true: emptied; false: another build holds it, or the store was there before
+    pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it fails once it took the directory as a store, undoing() then the directory emptied where abandon would (logged where it cannot be), the error returned
+    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER; true: emptied; false: another build holds it, or it holds data
     pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), check_prune's checks, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     pub fn check_prune(state: &Path) -> Result<PruneCheck>; // prune_all's checks, read-only and without its lock, on state as given with no symlink followed: else prune_all's error; ranikust's prune runs it before the namespace and pins the commands it prints with it
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
@@ -282,15 +282,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   inotify events); a prune cut short inside a layer, or after the last
   entry, keeps every store out (`PruneCutShort`, nothing changed) until a
   prune finishes; a `.ranikust-pruning` that is not a regular file refused
-  by both until removed; `abandon` empties a store only where its own
-  open made it and no other build holds it, and otherwise leaves it as
-  `close` does
-  (`abandon_empties_only_a_store_its_open_made_and_no_build_holds`), as
-  `open_or_abandon` does for an open that fails once it wrote the marker
-  and registered its build, after its `undoing` lets go of the directory,
-  and never one it found
+  by both until removed; `abandon` empties a store with no data, whoever
+  made it, what dead builds and the sandbox left included, and leaves as
+  `close` does one with an entry in `blobs/`, `layers/` or `caches/`, one
+  another build holds, and one with a name the store does not make
+  (`abandon_empties_a_store_with_no_data_that_no_build_holds`), as
+  `open_or_abandon` does for an open that fails once it registered its
+  build, after its `undoing` lets go of the directory, a store found with
+  no data (as a killed open leaves it) emptied too, one with a cache kept
   (`src/store/tests.rs`:
-  `an_open_that_fails_once_it_made_the_store_empties_it_where_asked`);
+  `an_open_that_fails_empties_a_store_with_no_data_where_asked`);
   `check_prune`'s refusal of a path with a
   symlink on it, last or not, told apart (`is_symlink_on`) from a
   missing, unmarked or symlinked-marker one; in a cache mount, symlinks out

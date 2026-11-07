@@ -219,7 +219,7 @@ pub(crate) struct Then<'a> {
     /// (`--allow network.none-userns`), as for [`super::set_up`].
     pub(crate) userns_network: bool,
     /// The child that falls back (ADR-0136): a failure once the store's
-    /// open made the directory a store abandons the store
+    /// open took the directory abandons the store
     /// ([`rnk_store::Store::open_or_abandon`], [`rnk_store::Store::abandon`]),
     /// a forwarded stop ignored meanwhile
     /// ([`rnk_sandbox::Supervised::undoing`]).
@@ -264,8 +264,8 @@ pub(crate) fn set_up(
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let mut held = Some(held);
     let opened = match then.child {
-        // An open that made the store and then fails empties it again, its
-        // own lock the only one left: kaniko mode follows.
+        // An open that fails once it took the directory empties a store with
+        // no data, its own lock the only one left: kaniko mode follows.
         Some(child) => Store::open_or_abandon(&BuildPaths::new(state_dir, state_dir), || {
             drop(held.take());
             undoing(child);
@@ -345,20 +345,18 @@ fn undoing(child: &rnk_sandbox::Supervised) {
 }
 
 /// Closes the store of a set-up that failed, and empties the state
-/// directory where its open made it a store, so that kaniko mode on `/`
-/// takes it (ADR-0136); else kaniko mode refuses it, as it would have.
+/// directory where the store holds no data, whoever made it, so that
+/// kaniko mode on `/` takes it (ADR-0136); else kaniko mode refuses it,
+/// as it would have.
 fn abandon(store: rnk_store::Store) {
     let state = store.state_dir().to_path_buf();
     match store.abandon() {
         Ok(true) => tracing::debug!(
-            "the store this set-up made in {} is removed",
+            "the store in {}, which holds no data, is removed",
             state.display()
         ),
         Ok(false) => {}
-        Err(e) => tracing::warn!(
-            "the store this set-up made in {} is not removed: {e}",
-            state.display()
-        ),
+        Err(e) => tracing::warn!("the store in {} is not removed: {e}", state.display()),
     }
 }
 

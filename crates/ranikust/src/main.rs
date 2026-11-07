@@ -741,9 +741,10 @@ enum Rootless {
     /// Rootless overlay mode cannot run here; the process is unchanged.
     NotHere(setup::rootless::NotHere),
     /// [`Via::AutoRoot`]: the set-up failed in the build's user namespace,
-    /// in the child that entered it, for this reason; what it made in the
-    /// state directory is undone, and this process is as it was before
-    /// rootless overlay mode, its probe line logged (ADR-0136).
+    /// in the child that entered it, for this reason; the store it opened
+    /// in the state directory is emptied where it holds no data, and this
+    /// process is as it was before rootless overlay mode, its probe line
+    /// logged (ADR-0136).
     FellBack(String),
 }
 

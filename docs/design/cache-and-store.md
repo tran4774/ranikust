@@ -189,12 +189,17 @@ A rootless set-up that fails before its build, where root's `--mode=auto`
 falls back to kaniko mode on `/`, which takes only an empty state
 directory, ends with `Store::abandon`
 ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)):
-the store closes, and where its open wrote the marker, the directory is
-emptied as `prune --all` empties it, under the lock turned exclusive
-without waiting, so never while another build holds it. An open that
-fails once it wrote the marker empties the directory the same way
-(`Store::open_or_abandon`). A directory that held a store before is kept,
-and kaniko mode refuses it.
+the store closes, and the directory is emptied where the store holds no
+data, whoever made it: nothing in `blobs/`, `layers/` or `caches/`, only
+names `prune --all` takes, checked under the lock turned exclusive
+without waiting, so never while another build holds it. It is emptied as
+`prune --all` empties it, but with `.ranikust-state` removed last in place
+of a `.ranikust-pruning`: with no data, nothing a later build reuses can
+be left half-deleted, and a set-up killed before or during it leaves a
+store with no data, which the next fallback empties. An open that fails
+once it took the directory empties it the same way
+(`Store::open_or_abandon`). A store with data is kept, and kaniko mode
+refuses it.
 
 ## Prune
 

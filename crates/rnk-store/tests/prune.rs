@@ -467,12 +467,13 @@ fn links_out_of_the_state_directory_are_removed_not_followed() {
     assert_eq!(fs::read(outside.join("sub/f")).unwrap(), b"keep");
 }
 
-/// A store whose open made the state directory one leaves it empty when
-/// abandoned, the sandbox's directory and probe leftovers included, so
-/// that kaniko mode on `/` takes it (ADR-0136); one it found, or one
-/// another build holds, is kept whole.
+/// A store with no data leaves the state directory empty when abandoned,
+/// whoever made it, the sandbox's directory and what dead builds left
+/// included, so that kaniko mode on `/` takes it (ADR-0136); one with an
+/// entry in `blobs/`, `layers/` or `caches/`, one another build holds, or
+/// one with a name the store does not make, is kept whole.
 #[test]
-fn abandon_empties_only_a_store_its_open_made_and_no_build_holds() {
+fn abandon_empties_a_store_with_no_data_that_no_build_holds() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let made = open(&state);
@@ -483,13 +484,41 @@ fn abandon_empties_only_a_store_its_open_made_and_no_build_holds() {
     let anon = Store::open_anonymous(&state).unwrap();
     anon.close().unwrap();
 
-    // Found marked: closed, the rest kept.
+    // Found with no data, as a build killed before it used it leaves it.
+    let state = dir.path().join("unused");
+    open(&state).close().unwrap();
+    let dead = open(&state);
+    fs::write(dead.build_dir().join("left"), b"x").unwrap();
+    drop(dead);
+    fs::create_dir_all(state.join(rnk_store::SANDBOX_DIR).join("runs")).unwrap();
+    fs::write(state.join("locks").join("l"), b"").unwrap();
+    assert!(open(&state).abandon().unwrap(), "emptied");
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+
+    // Found marked, with data: closed, the rest kept.
     let state = dir.path().join("found");
     used_store(&state);
     // The dead build's directories go at the next open.
     open(&state).close().unwrap();
     let before = tree(&state);
     assert!(!open(&state).abandon().unwrap(), "kept");
+    assert_eq!(tree(&state), before);
+    for data in ["blobs", "layers", "caches"] {
+        let state = dir.path().join(data);
+        open(&state).close().unwrap();
+        fs::write(state.join(data).join("e"), b"").unwrap();
+        let before = tree(&state);
+        assert!(!open(&state).abandon().unwrap(), "{data}: kept");
+        assert_eq!(tree(&state), before, "{data}");
+    }
+
+    // A name the store does not make: kept, refused.
+    let state = dir.path().join("foreign");
+    open(&state).close().unwrap();
+    fs::write(state.join("mine"), b"keep").unwrap();
+    let before = tree(&state);
+    let kept = open(&state).abandon();
+    assert!(matches!(kept, Err(Error::NotAStateDir { .. })), "{kept:?}");
     assert_eq!(tree(&state), before);
 
     // Made, but another build holds it: closed, the rest kept.
