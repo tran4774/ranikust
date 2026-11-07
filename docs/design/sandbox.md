@@ -246,8 +246,8 @@ The steps, in order:
    [ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)),
    step 7 skips it, so the `RUN` keeps the build process's supplementary
    groups, as rootless runc does. `devpts` gets no `gid=5` where gid 5 is
-   unmapped (3.4), and a `USER` with unmapped ids fails at `setgid`
-   (`Step::Gid`).
+   unmapped (3.4). A `USER` whose ids the map lacks fails at the first
+   step 7 call that names one (`Step::Groups`, `Step::Gid` or `Step::Uid`).
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
    out ([below](#hardening-planned-for-phase-3)).
 3. **Mounts**, in this order:
