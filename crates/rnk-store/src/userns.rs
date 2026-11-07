@@ -18,21 +18,21 @@ const INIT_USER_NS_INO: u64 = 0xEFFF_FFFD;
 const NSFS_MAGIC: FsWord = 0x6e73_6673;
 
 /// Whether this process runs in a user namespace other than the initial
-/// one. Told by the namespace's inode rather than by its map: a namespace
-/// that maps every id to itself still lacks the initial one's
-/// capabilities, `CAP_MKNOD` among them.
+/// one.
 ///
 /// # Errors
 ///
 /// As [`user_namespace_proc`].
-pub fn in_user_namespace() -> Result<bool> {
+pub(crate) fn in_user_namespace() -> Result<bool> {
     Ok(user_namespace_proc()?.is_some())
 }
 
 /// `/proc/self`, checked to be procfs, as an `O_PATH` descriptor when this
-/// process runs in a user namespace other than the initial one (as
-/// [`in_user_namespace`] tells), for reading that namespace's maps; `None`
-/// in the initial one.
+/// process runs in a user namespace other than the initial one, for
+/// reading that namespace's maps; `None` in the initial one. Told by the
+/// namespace's inode rather than by its map: a namespace that maps every
+/// id to itself still lacks the initial one's capabilities, `CAP_MKNOD`
+/// among them.
 ///
 /// # Errors
 ///

@@ -36,7 +36,7 @@ pub(crate) struct UserNamespace {
 
 impl UserNamespace {
     /// The user namespace this process runs in, or `None` in the initial
-    /// one, as [`rnk_store::in_user_namespace`] tells.
+    /// one, as [`rnk_store::user_namespace_proc`] tells.
     ///
     /// # Errors
     ///
@@ -170,13 +170,11 @@ mod tests {
         assert_ne!(identity.layer_key(&chain), chain);
     }
 
-    /// Whatever namespace the tests run in: one exactly where
-    /// `rnk_store::in_user_namespace` says so, with this process's maps.
+    /// Whatever namespace the tests run in: in a user namespace, this
+    /// process's maps.
     #[test]
     fn the_current_namespace_has_this_process_s_maps() {
-        let current = UserNamespace::current().unwrap();
-        assert_eq!(current.is_some(), rnk_store::in_user_namespace().unwrap());
-        if let Some(ns) = current {
+        if let Some(ns) = UserNamespace::current().unwrap() {
             let own = |name: &str| canonical(&std::fs::read_to_string(name).unwrap()).unwrap();
             assert_eq!(ns.uid_map, own("/proc/self/uid_map"));
             assert_eq!(ns.gid_map, own("/proc/self/gid_map"));
