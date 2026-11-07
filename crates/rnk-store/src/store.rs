@@ -66,6 +66,9 @@ const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
 /// content stays away from other users of the host.
 const DIR_MODE: u32 = 0o700;
+/// `S_ISGID`: a directory with it gives its gid, and the bit, to the
+/// directories made in it.
+const SETGID: u32 = 0o2000;
 
 /// The paths handed down to every crate of a build.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,6 +321,9 @@ impl Store {
     /// canonicalized; a new or empty directory gets the [`STATE_MARKER`]
     /// marker, and a non-empty one without it is refused. A state directory
     /// owned by another user or writable by others is used with a warning.
+    /// The store's own directories take the process's gid and no setgid
+    /// bit, whatever a setgid state directory gave them, so that what the
+    /// store makes carries ids a user namespace maps (ADR-0099).
     ///
     /// The store holds a shared `flock` on the state directory for its
     /// life: persistent builds share it, and an anonymous store (kaniko
@@ -364,6 +370,7 @@ impl Store {
         check_marker(&state, &state_path)?;
         for d in DIRS {
             state.create_dir_all(d, DIR_MODE)?;
+            own_group(&state, d)?;
         }
         warn_if_shared(&state, &state_path);
         let (id, build_lock) = register(&state, &state_path)?;
@@ -1740,6 +1747,27 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
         },
         Err(e) => Err(e.into()),
     }
+}
+
+/// Gives `d`, one of [`DIRS`] and this user's, the effective gid and no
+/// setgid bit when it has the bit, as a setgid state directory gives its
+/// new directories: entries below then get the gid of the process that
+/// makes them, which a user namespace maps (ADR-0099), and never a gid
+/// and setgid bit from the host in an extracted layer.
+fn own_group(state: &RootPath, d: &str) -> Result<()> {
+    let st = state.statx(d)?;
+    if st.mode & SETGID == 0 || st.uid != rustix::process::geteuid().as_raw() {
+        return Ok(());
+    }
+    state.set_meta(
+        d,
+        &rnk_rootfs::Meta {
+            gid: Some(rustix::process::getegid().as_raw()),
+            mode: Some(st.permissions() & !SETGID),
+            ..rnk_rootfs::Meta::default()
+        },
+    )?;
+    Ok(())
 }
 
 /// Warns when the state directory or one of the store's directories is

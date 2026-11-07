@@ -50,6 +50,60 @@ fn open_creates_the_layout_and_the_marker() {
     assert_eq!(store.build_dir().parent().unwrap(), state.join("builds"));
 }
 
+/// ADR-0099: a setgid state directory, as a shared directory makes it,
+/// gives its gid and the bit to no directory of the store, so what the
+/// store makes has the gid of the process that makes it. The gid is a
+/// group of this user's other than the effective one when there is one.
+#[test]
+fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let egid = rustix::process::getegid().as_raw();
+    let group = rustix::process::getgroups()
+        .unwrap()
+        .into_iter()
+        .map(rustix::process::Gid::as_raw)
+        .find(|&g| g != egid)
+        .unwrap_or(egid);
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join(".ranikust");
+    fs::create_dir(&state).unwrap();
+    std::os::unix::fs::chown(&state, None, Some(group)).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o2700)).unwrap();
+    // The control: the kernel gives a new directory there the gid and bit.
+    fs::create_dir(state.join("probe")).unwrap();
+    let probe = fs::metadata(state.join("probe")).unwrap();
+    assert_eq!((probe.gid(), probe.mode() & 0o2000), (group, 0o2000));
+    fs::remove_dir(state.join("probe")).unwrap();
+
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let layer = store
+        .fill(
+            &EntryKey::Layer(digest(1)),
+            |e| -> rnk_rootfs::Result<u64> {
+                e.root().unwrap().create_dir_all("etc", 0o755)?;
+                Ok(0)
+            },
+        )
+        .unwrap();
+    let mut made: Vec<PathBuf> = ["blobs", "layers", "caches", "locks", "tmp", "builds"]
+        .iter()
+        .map(|d| state.join(d))
+        .collect();
+    made.extend([
+        store.build_dir().to_owned(),
+        layer.parent().unwrap().to_owned(),
+        layer.clone(),
+        layer.join("etc"),
+    ]);
+    for d in made {
+        let m = fs::metadata(&d).unwrap();
+        assert_eq!((m.gid(), m.mode() & 0o2000), (egid, 0), "{}", d.display());
+    }
+    // The state directory itself is left as it is.
+    let m = fs::metadata(&state).unwrap();
+    assert_eq!((m.gid(), m.mode() & 0o7777), (group, 0o2700));
+}
+
 #[test]
 fn open_refuses_a_non_empty_directory_without_the_marker() {
     let dir = tempfile::tempdir().unwrap();
