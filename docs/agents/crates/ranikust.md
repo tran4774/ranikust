@@ -62,12 +62,12 @@ writer) before `unshare`, the probes and the state directory's checks.
   entered the namespace, returns `Rootless::FellBack` and builds in kaniko
   mode; once set up, `Supervised::proceed` closes that way back and the
   build stops on the forwarded `SIGUSR1` (`build::Stops::Forwarded`); a
-  forwarded stop that comes while a failed set-up is undone is ignored
-  (`Supervised::undoing`) until the child exits, and the parent then ends
-  by it. Only the mode that builds is logged as the outcome. The probe's
-  directory takes the process's gid and no setgid bit, as the store's own
-  directories do (ADR-0099), so a setgid state directory does not stop its
-  `chown`.
+  forwarded stop that comes while a failed set-up abandons its store is
+  ignored (`Supervised::undoing`) until the child exits, and the parent
+  then ends by it. Only the mode that builds is logged as the outcome. The
+  probe's directory takes the process's gid and no setgid bit, as the
+  store's own directories do (ADR-0099), so a setgid state directory does
+  not stop its `chown`.
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; then a path ending in
   `..`, before anything is opened; then `statedir::check`
@@ -269,7 +269,7 @@ Each step before the next; design in
    `--mode=overlay` checked them first) → `setup::rootless::set_up`:
    `rnk_sandbox::enter_build_user_namespace` → `Store::open` →
    `rnk_sandbox::probe_with_fallbacks` → `rnk_snapshot::probe` in
-   `builds/<id>/overlay-probe` → outcome → `Sandbox::start`.
+   `builds/<id>/overlay-probe` → `Sandbox::start` → the mode line.
    `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
    process unchanged: the T0 tests of the binary set it, so none makes a
    user namespace. Root's `--mode=auto` forks before `set_up` (ADR-0136);

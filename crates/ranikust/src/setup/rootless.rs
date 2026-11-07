@@ -218,8 +218,8 @@ pub(crate) struct Then<'a> {
     /// (`--allow network.none-userns`), as for [`super::set_up`].
     pub(crate) userns_network: bool,
     /// The child that falls back (ADR-0136): a failure once the store is
-    /// open abandons it ([`rnk_store::Store::abandon`]), a forwarded stop
-    /// ignored meanwhile ([`rnk_sandbox::Supervised::undoing`]).
+    /// open abandons the store ([`rnk_store::Store::abandon`]), a forwarded
+    /// stop ignored meanwhile ([`rnk_sandbox::Supervised::undoing`]).
     pub(crate) child: Option<&'a rnk_sandbox::Supervised>,
     /// The test hook's variable where its `rootless-broken` fails the
     /// set-up at its last step, once the sandbox started.
@@ -234,8 +234,8 @@ pub(crate) struct Then<'a> {
 /// ([`rnk_sandbox::probe_with_fallbacks`]); the overlay probe in the
 /// build's directory; the spawner thread; then the outcome's line.
 /// `scanned` says the peer scan passed (ADR-0129): a sandbox that binds
-/// `/proc` without it is refused. `seccomp` as for [`super::set_up`], `then` as it says. Call
-/// while single-threaded.
+/// `/proc` without it is refused. `seccomp` as for [`super::set_up`],
+/// `then` as it says. Call while single-threaded.
 ///
 /// # Errors
 ///

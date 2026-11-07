@@ -15,10 +15,10 @@
 //! process group or a supervisor to ranikust alone, and sends the child
 //! [`FORWARDED_STOP`] for each; the child ignores the two itself. Until the
 //! child handles that signal, its default action ends the child, and the
-//! parent then ends by the stop signal it got; while a failed set-up is
-//! undone ([`Supervised::undoing`]), the child ignores it until it exits,
-//! and the parent then ends by the stop all the same. The child gets `SIGKILL`
-//! when the parent dies (`PR_SET_PDEATHSIG`); any other signal acts on the
+//! parent then ends by the stop signal it got; from
+//! [`Supervised::undoing`] on, as a failed set-up is undone, the child
+//! ignores it until it exits, and the parent then ends by the stop all the
+//! same. The child gets `SIGKILL` when the parent dies (`PR_SET_PDEATHSIG`); any other signal acts on the
 //! parent as it would have without the fork.
 
 use std::io::{self, Write as _};
@@ -239,8 +239,9 @@ impl Supervised {
     }
 
     /// The set-up failed, and this process falls back next: a forwarded
-    /// stop is ignored from here, so that what the set-up made is undone
-    /// whole. The parent, which counted the stop, then ends by it.
+    /// stop is ignored from here, so that what is undone after this call
+    /// is undone whole. The parent, which counted the stop, then ends by
+    /// it.
     ///
     /// # Errors
     ///
