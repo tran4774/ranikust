@@ -312,6 +312,59 @@ fn root_is_uid_0_in_the_parent_user_namespace() {
     assert!(maps_to_root(1000, "0 0 1 2\n"));
 }
 
+/// Root is the uid its namespace shows a root-owned sysctl's owner as,
+/// through any number of levels; the map decides only where that file is
+/// not the sysctl.
+#[test]
+fn root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner() {
+    let proc = rustix::fs::PROC_SUPER_MAGIC;
+    let file = 0o100_444;
+    let ostype = |uid| sysctl_owner(proc, file, b"Linux\n", uid);
+    let never = || -> String { panic!("the map is read only without the sysctl") };
+    // A host root, and root of a namespace that maps it, at any depth.
+    assert!(is_kernel_root(0, ostype(0), never));
+    // Uid 5 of a namespace that maps it to the initial root.
+    assert!(is_kernel_root(5, ostype(5), never));
+    // A user on a host; root of a namespace whose root is not the
+    // initial one (root of rootless Podman, a map one level down from it
+    // that the parent's map would call root).
+    assert!(!is_kernel_root(1000, ostype(0), never));
+    assert!(!is_kernel_root(0, ostype(65534), never));
+    // Overflow uid on both sides: cannot tell, so root.
+    assert!(is_kernel_root(65534, ostype(65534), never));
+    // Not on a procfs, not a regular file, or another procfs file bound
+    // over it: the map decides.
+    let tmpfs = 0x0102_1994;
+    assert_eq!(sysctl_owner(tmpfs, file, b"Linux\n", 0), None);
+    assert_eq!(sysctl_owner(proc, 0o040_555, b"Linux\n", 0), None);
+    assert_eq!(sysctl_owner(proc, file, b"1000 (sh) S 1\n", 1000), None);
+    assert_eq!(sysctl_owner(proc, file, b"Linux", 0), None);
+    let podman = "         0       1000          1\n";
+    assert!(!is_kernel_root(0, None, || podman.to_owned()));
+    assert!(is_kernel_root(0, None, String::new));
+}
+
+/// On this machine, which only reads: where the uid map is the initial
+/// namespace's, the sysctl shows root as 0 and the two readings agree.
+#[test]
+fn the_sysctl_and_an_initial_map_agree_on_this_host() {
+    let map = std::fs::read_to_string("/proc/self/uid_map").unwrap();
+    let initial = map.split_whitespace().eq(["0", "0", "4294967295"]);
+    let shown = root_shown_as();
+    eprintln!("uid map {map:?}, root shown as {shown:?}");
+    if !initial {
+        eprintln!("skipped: not in the initial user namespace");
+        return;
+    }
+    let Ok(Some(root)) = shown else {
+        eprintln!("skipped: no procfs at /proc/sys");
+        return;
+    };
+    assert_eq!(root, 0);
+    let euid = rustix::process::geteuid().as_raw();
+    assert_eq!(kernel_root_as_it_stands(), maps_to_root(euid, &map));
+}
+
 /// A root ranikust reads no `user.delegate`, which anyone who may write the
 /// directory can set; one that is not root reads it on a directory it owns.
 #[test]

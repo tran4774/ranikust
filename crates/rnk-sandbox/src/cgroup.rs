@@ -123,23 +123,81 @@ fn kernel_root() -> bool {
         .unwrap_or_else(kernel_root_as_it_stands)
 }
 
-/// [`maps_to_root`] for this process's effective uid and the map of the
-/// user namespace it runs in, whose parent is the initial one on a host
-/// and in a container's user namespace; one it cannot read counts as root.
-fn kernel_root_as_it_stands() -> bool {
+/// A sysctl that uid 0 of the initial user namespace owns, whatever user
+/// namespace reads it: `stat` shows that owner as the reader's namespace
+/// maps it, through every level, and as the overflow uid where it maps it
+/// to nothing.
+const ROOT_OWNED_SYSCTL: &CStr = c"/proc/sys/kernel/ostype";
+
+/// [`is_kernel_root`] for this process's effective uid, as the owner of
+/// [`ROOT_OWNED_SYSCTL`] shows the initial user namespace's root, else by
+/// the map of the user namespace it runs in.
+pub(crate) fn kernel_root_as_it_stands() -> bool {
     let euid = rustix::process::geteuid().as_raw();
-    let map = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_else(|e| {
-        tracing::debug!("cannot read /proc/self/uid_map ({e}): user.delegate is not trusted");
-        String::new()
+    let shown = root_shown_as().unwrap_or_else(|e| {
+        tracing::debug!(
+            "cannot stat {}: {e}; the uid map tells whether ranikust is root",
+            ROOT_OWNED_SYSCTL.to_string_lossy()
+        );
+        None
     });
-    maps_to_root(euid, &map)
+    is_kernel_root(euid, shown, || {
+        std::fs::read_to_string("/proc/self/uid_map").unwrap_or_else(|e| {
+            tracing::debug!("cannot read /proc/self/uid_map ({e}): user.delegate is not trusted");
+            String::new()
+        })
+    })
+}
+
+/// The uid this process's user namespace shows the initial one's root as:
+/// the owner of [`ROOT_OWNED_SYSCTL`] ([`sysctl_owner`]); `None` where that
+/// is not the sysctl, such as under a `/proc/sys` something else covers.
+fn root_shown_as() -> rustix::io::Result<Option<u32>> {
+    let fd = rustix::fs::open(
+        ROOT_OWNED_SYSCTL,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?;
+    let fs = rustix::fs::fstatfs(&fd)?;
+    let st = rustix::fs::fstat(&fd)?;
+    let mut buf = [0u8; 16];
+    let n = rustix::io::read(&fd, &mut buf)?;
+    Ok(sysctl_owner(
+        fs.f_type,
+        st.st_mode,
+        buf.get(..n).unwrap_or_default(),
+        st.st_uid,
+    ))
+}
+
+/// `uid`, the owner of a file of filesystem type `f_type` and mode `mode`
+/// that reads `content`, where it is the kernel's `ostype` sysctl: a
+/// regular file of a procfs that reads `Linux`, not another file of a
+/// procfs bound over it.
+fn sysctl_owner(f_type: FsWord, mode: u32, content: &[u8], uid: u32) -> Option<u32> {
+    (f_type == rustix::fs::PROC_SUPER_MAGIC
+        && FileType::from_raw_mode(mode) == FileType::RegularFile
+        && content == b"Linux\n")
+        .then_some(uid)
+}
+
+/// Whether `euid` is uid 0 of the initial user namespace: the uid its
+/// namespace shows that root as (`shown`, [`root_shown_as`]), else, where
+/// that cannot be read, as [`maps_to_root`] reads `uid_map` (one level
+/// only). An `euid` that is the overflow uid where root shows as it too
+/// counts as root, the rule that trusts fewer marks.
+fn is_kernel_root(euid: u32, shown: Option<u32>, uid_map: impl FnOnce() -> String) -> bool {
+    match shown {
+        Some(root) => root == euid,
+        None => maps_to_root(euid, &uid_map()),
+    }
 }
 
 /// Whether `uid_map` (a `/proc/<pid>/uid_map` read from inside its
 /// namespace) maps `euid` to 0 in the parent namespace, or cannot tell: an
 /// id it maps nowhere, or a line it cannot parse, counts as root, the rule
 /// that trusts fewer marks.
-fn maps_to_root(euid: u32, uid_map: &str) -> bool {
+pub(crate) fn maps_to_root(euid: u32, uid_map: &str) -> bool {
     for line in uid_map.lines() {
         let mut fields = line.split_whitespace().map(str::parse::<u64>);
         let (Some(Ok(inside)), Some(Ok(outside)), Some(Ok(count)), None) =
