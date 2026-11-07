@@ -94,13 +94,13 @@ impl Fallbacks {
     /// uid (ADR-0130; measured on Linux 5.15 and 6.8, not yet through
     /// ranikust end to end). Inside it are ranikust, not dumpable
     /// (ADR-0051), and the other `RUN`s, which [`crate::Sandbox`] then runs
-    /// one at a time (ADR-0127). The rest is an accepted residual: no
-    /// secrets in other processes' command lines, ranikust's included; give
-    /// the build container a PID namespace of its own. The `ranikust`
-    /// binary has no flag for it before #79. This crate does not scan for a
-    /// PID namespace shared with a process of another mount namespace: its
-    /// caller runs ADR-0101's peer scan (ADR-0129), as the binary does from
-    /// #79.
+    /// one at a time (ADR-0127). The rest is an accepted residual; against
+    /// it, keep no secrets in other processes' command lines, ranikust's
+    /// included, and give the build container a PID namespace of its own.
+    /// The `ranikust` binary has no flag for it before #79. This crate does
+    /// not scan for a PID namespace shared with a process of another mount
+    /// namespace: its caller runs ADR-0101's peer scan (ADR-0129), as the
+    /// binary will with #79.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -159,18 +159,19 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
 /// the warning alike (ADR-0127, ADR-0130).
 macro_rules! proc_rbind_exposure {
     () => {
-        "RUNs run one at a time, and each sees every process of this PID namespace (the \
-         host's or other containers' too where the container shares one) and reads their \
-         command lines, status, mount tables and network tables, ranikust's included, \
-         though not their environment, files or memory"
+        "each RUN sees every process of this PID namespace (the host's or other \
+         containers' too where the container shares one) and reads their command lines, \
+         status, mount tables and network tables, ranikust's included, though not their \
+         environment, files or memory; RUNs then run one at a time"
     };
 }
 
-/// How to run ranikust where its `RUN`s get an rbind of `/proc`.
+/// When that matters, and how to run ranikust against it.
 macro_rules! proc_rbind_mitigation {
     () => {
-        "keep no secrets in other processes' command lines, ranikust's included, and give \
-         the container a PID namespace of its own"
+        "This matters where RUNs run code you do not trust (an untrusted base image or \
+         Dockerfile). Keep no secrets in other processes' command lines, ranikust's \
+         included, and give the container a PID namespace of its own."
     };
 }
 
@@ -184,7 +185,7 @@ fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
          that allows user namespaces, or in a container where ranikust may mount, or \
          allow an rbind of /proc (--allow proc.rbind), through which ",
         proc_rbind_exposure!(),
-        ": then ",
+        ". ",
         proc_rbind_mitigation!(),
     ))
 }
@@ -275,7 +276,7 @@ fn log_rbinds(caps: Caps) {
         KernelFs::Rbind => tracing::warn!(concat!(
             "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so ",
             proc_rbind_exposure!(),
-            "; against that, ",
+            ". ",
             proc_rbind_mitigation!(),
         )),
     }
@@ -529,6 +530,7 @@ mod tests {
             "not their environment, files or memory",
             "one at a time",
             "PID namespace of its own",
+            "code you do not trust",
             "no secrets in other processes' command lines, ranikust's included",
         ] {
             assert!(guidance.contains(advice), "{guidance}");

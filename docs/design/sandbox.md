@@ -294,9 +294,10 @@ The steps, in order:
       `Sandbox::run` holds a lock, one for the whole process, alone, from
       before the clone until the `RUN`'s init is reaped, the processes of
       its PID namespace gone with it (every other `RUN` of the process
-      shares it, so none runs meanwhile; after a panic during a turn no
-      `RUN` runs), and refuses `Isolation::Direct`, which has no PID
-      namespace, before any wait; stages still schedule in parallel
+      shares it, so none runs meanwhile; after a panic or a lost spawner
+      thread during a turn, no later `RUN` starts), and refuses
+      `Isolation::Direct`, which has no PID namespace, before any wait;
+      stages still schedule in parallel
       ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
       The rest is an accepted residual
       ([threat model, section 6](../security/threat-model.md#6-accepted-risks)):
