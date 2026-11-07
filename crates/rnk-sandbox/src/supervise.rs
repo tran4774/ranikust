@@ -15,7 +15,9 @@
 //! process group or a supervisor to ranikust alone, and sends the child
 //! [`FORWARDED_STOP`] for each; the child ignores the two itself. Until the
 //! child handles that signal, its default action ends the child, and the
-//! parent then ends by the stop signal it got. The child gets `SIGKILL`
+//! parent then ends by the stop signal it got; while a failed set-up is
+//! undone ([`Supervised::undoing`]), the child ignores it until it exits,
+//! and the parent then ends by the stop all the same. The child gets `SIGKILL`
 //! when the parent dies (`PR_SET_PDEATHSIG`); any other signal acts on the
 //! parent as it would have without the fork.
 
@@ -28,9 +30,12 @@ use rustix::process::Signal;
 /// it gets: `SIGUSR1`. The child's build handles it as it would those two.
 pub const FORWARDED_STOP: i32 = libc::SIGUSR1;
 
+/// ranikust's exit status for an error.
+const ERROR_STATUS: i32 = 1;
+
 /// The child's exit status when it asks for the fallback: an error's, so
 /// that a parent that cannot read the reason ends as for one.
-const FALLBACK_STATUS: i32 = 1;
+const FALLBACK_STATUS: i32 = ERROR_STATUS;
 
 /// The longest reason the child sends: less than `PIPE_BUF`, so that it is
 /// written at once.
@@ -208,11 +213,9 @@ fn check_parent(parent: i32) -> io::Result<()> {
     }
 }
 
-/// The parent's mask and `SIGCHLD`'s disposition as before the fork, as
-/// far as the calls allow: a mask left blocking the stop signals keeps them
-/// pending for kaniko mode, which blocks them itself, and `SIGCHLD` left
-/// at its default action is the usual one.
+/// The parent's mask and `SIGCHLD`'s disposition as before the fork.
 fn restore(mask: &libc::sigset_t, sigchld: &libc::sigaction) {
+    // Neither call fails with a valid set and a valid signal.
     let _ = set_mask(libc::SIG_SETMASK, mask);
     // SAFETY: `sigaction` reads `sigchld`, alive across the call.
     let _ = unsafe { libc::sigaction(libc::SIGCHLD, sigchld, std::ptr::null_mut()) };
@@ -282,6 +285,8 @@ enum Then {
     FallBack(String),
     /// Exit with this code.
     Exit(i32),
+    /// Exit as for an error, the child's reason logged.
+    Fail(String),
     /// End by this signal.
     Raise(i32),
 }
@@ -297,7 +302,8 @@ fn then(end: End, stop: Option<i32>, reason: Option<String>) -> Then {
         (End::Exited(FALLBACK_STATUS), None, Some(reason)) => Then::FallBack(reason),
         (End::Exited(code), _, _) => Then::Exit(code),
         (End::Killed(sig), _, _) | (End::Lost, Some(sig), _) => Then::Raise(sig),
-        (End::Lost, None, _) => Then::Exit(FALLBACK_STATUS),
+        (End::Lost, None, Some(reason)) => Then::Fail(reason),
+        (End::Lost, None, None) => Then::Exit(ERROR_STATUS),
     }
 }
 
@@ -358,6 +364,12 @@ impl Waiting {
                 reason
             }
             Then::Exit(code) => std::process::exit(code),
+            Then::Fail(reason) => {
+                tracing::error!(
+                    "ranikust: {reason} (how the build's process ended is unknown, so no fallback)"
+                );
+                std::process::exit(ERROR_STATUS)
+            }
             Then::Raise(sig) => end_by(sig),
         }
     }
@@ -479,7 +491,8 @@ mod tests {
             Then::Raise(libc::SIGKILL)
         );
         // A status lost is an error's, never a fallback.
-        assert_eq!(then(End::Lost, None, why()), Then::Exit(1));
+        assert_eq!(then(End::Lost, None, why()), Then::Fail("why".into()));
+        assert_eq!(then(End::Lost, None, None), Then::Exit(ERROR_STATUS));
         assert_eq!(then(End::Lost, Some(int), why()), Then::Raise(int));
     }
 }

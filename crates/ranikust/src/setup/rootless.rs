@@ -220,9 +220,9 @@ pub(crate) struct Then<'a> {
     /// The child that falls back (ADR-0136): a failure once the store is
     /// open abandons it ([`rnk_store::Store::abandon`]), a forwarded stop
     /// ignored meanwhile ([`rnk_sandbox::Supervised::undoing`]).
-    pub(crate) abandon: Option<&'a rnk_sandbox::Supervised>,
+    pub(crate) child: Option<&'a rnk_sandbox::Supervised>,
     /// The test hook's variable where its `rootless-broken` fails the
-    /// set-up once the store is open.
+    /// set-up at its last step, once the sandbox started.
     pub(crate) broken_by: Option<&'static str>,
 }
 
@@ -232,9 +232,9 @@ pub(crate) struct Then<'a> {
 /// store, opened as root of the namespace ([`super::open_store`]); the
 /// sandbox's probe with the fallbacks `plan` allows
 /// ([`rnk_sandbox::probe_with_fallbacks`]); the overlay probe in the
-/// build's directory; the outcome; then the spawner thread. `scanned` says
-/// the peer scan passed (ADR-0129): a sandbox that binds `/proc` without it
-/// is refused. `seccomp` as for [`super::set_up`], `then` as it says. Call
+/// build's directory; the spawner thread; then the outcome's line.
+/// `scanned` says the peer scan passed (ADR-0129): a sandbox that binds
+/// `/proc` without it is refused. `seccomp` as for [`super::set_up`], `then` as it says. Call
 /// while single-threaded.
 ///
 /// # Errors
@@ -270,7 +270,7 @@ pub(crate) fn set_up(
             sandbox,
         }),
         Err(refusal) => {
-            if let Some(child) = then.abandon {
+            if let Some(child) = then.child {
                 if let Err(e) = child.undoing() {
                     tracing::debug!("a stop may cut the store's removal short: {e}");
                 }
@@ -291,9 +291,6 @@ fn in_store(
     seccomp: &Seccomp,
     then: &Then<'_>,
 ) -> Result<(Outcome, Sandbox), Refusal> {
-    if let Some(env) = then.broken_by {
-        return Err(broken(format!("refused by {env}=rootless-broken")));
-    }
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
@@ -319,6 +316,9 @@ fn in_store(
         sandbox.allow_userns_network();
     }
     seccomp.apply(&mut sandbox);
+    if let Some(env) = then.broken_by {
+        return Err(broken(format!("refused by {env}=rootless-broken")));
+    }
     // Once nothing is left to fail, so that a fallback logs one mode.
     tracing::info!("ranikust: {outcome}");
     Ok((outcome, sandbox))

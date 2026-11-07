@@ -81,11 +81,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// ([`setup::set_up`]); `no-userns` refuses rootless overlay mode before
 /// its probe, so that a test of the binary as a user other than root makes
 /// no user namespace ([`rootless`]); `rootless-broken` fails rootless
-/// overlay mode's set-up in the build's user namespace once its store is
-/// open, where `--mode=auto` falls back to kaniko mode for root
-/// (ADR-0136). It lets the tests run the real binary
-/// through these paths, including a release build, where
-/// `panic = "abort"`.
+/// overlay mode's set-up in the build's user namespace at its last step,
+/// once its sandbox started, where `--mode=auto` falls back to kaniko mode
+/// for root (ADR-0136). It lets the tests run the real binary through
+/// these paths, including a release build, where `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
@@ -902,7 +901,7 @@ fn rootless(
     };
     let then = setup::rootless::Then {
         userns_network: config.allow_network_none_userns,
-        abandon: child.as_ref(),
+        child: child.as_ref(),
         broken_by: (fault == Some("rootless-broken")).then_some(DEBUG_FAULT_ENV),
     };
     let setup =

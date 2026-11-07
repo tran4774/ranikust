@@ -77,9 +77,10 @@ case_run() {
 
 # falls_back: T1 kaniko leg only, where kaniko mode on / finds the binary
 # and the context under /ranikust. A set-up failing in the build's user
-# namespace (RANIKUST_DEBUG_FAULT=rootless-broken, once the store is open)
-# falls back to kaniko mode for root's --mode=auto, the state directory it
-# made a store left empty; --mode=overlay gets the error (ADR-0136).
+# namespace (RANIKUST_DEBUG_FAULT=rootless-broken, its last step, once the
+# sandbox started) falls back to kaniko mode for root's --mode=auto, which
+# alone logs a mode line, the state directory it made a store left empty;
+# --mode=overlay gets the error (ADR-0136).
 falls_back() {
   [ "${RANIKUST_CASE_MODE:-}" = kaniko ] || return 0
   state fallback
@@ -89,8 +90,9 @@ falls_back() {
   local log
   log="$(cat "$(out fallback)/build.log")"
   grep -q 'refused by RANIKUST_DEBUG_FAULT=rootless-broken; kaniko mode instead, before anything was built (ADR-0136)' <<<"$log" &&
-    grep -q 'ranikust: kaniko mode on /, RUN directly' <<<"$log" ||
-    fail "the hook: no fallback to kaniko mode on /: $log"
+    grep -q 'ranikust: kaniko mode on /, RUN directly' <<<"$log" &&
+    ! grep -q 'overlay mode, rootless' <<<"$log" ||
+    fail "the hook: no fallback to kaniko mode on / alone: $log"
   expect "$(run fallback sh -c 'stat -c "%u:%g %a" /home/u/f /d && readlink /home/u/l')" \
     "$(printf '1234:1234 644\n0:0 2750\nf')" "the image kaniko mode built after the fallback"
   [ -z "$(ls -A "$WORK")" ] || fail "left in the state directory: $(ls -A "$WORK")"
