@@ -66,9 +66,10 @@ directory's own path), leaves a missing or empty one as it is, and prints
 what it did. If it is interrupted or cannot remove everything, builds refuse
 the directory until it is emptied, saying how: `prune --all` again for a
 user, root's commands below for root. Where `prune --all` cannot finish (a
-mount below the directory, no subordinate ids for the user), its error says
-how to get out, naming the directory; root's way is to run
-`ranikust prune --all --state-dir DIR`, which prints root's commands.
+mount below the directory, no subordinate ids for the user), or the user gets
+no user namespace (where AppArmor restricts them, as Ubuntu 23.10 and later
+do), its error says how to get out, naming the directory; root's way is to
+run `ranikust prune --all --state-dir DIR`, which prints root's commands.
 
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
@@ -79,15 +80,17 @@ would be emptied with it: hence nothing mounted below it. The emptying needs
 GNU findutils (Alpine: `apk add findutils`), a build that lists
 `FTS(FTS_CWDFD)` in `find --version`, as recent ones do: without it, it
 stops before changing anything. The commands refuse a `PATH` with a relative
-or empty entry, since they run their tools from inside the directory. They
-enter the directory once, check that it is the one ranikust checked, by its
-device, inode, owner and mode, and work only inside it; `flock` takes the
+or empty entry and unset `LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT` and
+`GCONV_PATH`, so that the tools they run from inside the directory are the
+system's, with the system's libraries. They enter the directory once, check
+that it is the one ranikust checked, by its device, inode, owner and mode,
+and work only inside it; `flock` takes the
 lock builds hold, so they fail while one runs. The error gives them with the
 directory, its parent, its name and its identity in place of `'DIR'`,
 `'PARENT'`, `'./NAME'` and `ID`:
 
 ```sh
-( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac' &&
+( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac; unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GCONV_PATH || { echo "cannot unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT or GCONV_PATH: nothing changed" >&2; exit 1; }' &&
   CDPATH= cd -P -- 'DIR' && stat -c %d:%i:%u:%a . | grep -qxF ID &&
   exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" &&
   find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" ||
@@ -99,7 +102,7 @@ directory, its parent, its name and its identity in place of `'DIR'`,
   exit 1; fi;
   rm "$marker" || { echo "cannot remove $marker: nothing else changed" >&2; exit 1; };
   find . -xdev -mindepth 1 -delete' )
-( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac' &&
+( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac; unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GCONV_PATH || { echo "cannot unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT or GCONV_PATH: nothing changed" >&2; exit 1; }' &&
   CDPATH= cd -P -- 'PARENT' && stat -c %d:%i:%u:%a './NAME' | grep -qxF ID &&
   rmdir -- './NAME' )
 ```
@@ -126,15 +129,17 @@ and its last line is instead:
 
 It deletes only the entries owned by that user's uids, its own and its
 subordinate ids, wherever they sit: the only ids its builds' user namespace
-maps ([ADR-0133]). Where another uid owns an entry, it stops before the marker goes,
-saying so, and changes nothing; one that appears meanwhile is left in place,
-and the emptying stops after the deletion, so the directory is not removed.
+maps ([ADR-0133]). Where another uid owns an entry, it stops before the
+marker goes, saying so, and changes nothing; one that appears meanwhile is
+left in place, and the emptying stops after the deletion, so the directory
+is not removed.
 Where the user has no range in `/etc/subuid` and `/etc/subgid`, or they
 cannot be read (the error says why), the lines name `UID` alone.
 
 The error gives commands only for a directory that holds the marker and
-that a build would accept ([ADR-0133]). An empty directory gets none, and no `rmdir`:
-only one with the marker is a state directory. Nor are commands given for a
+that a build would accept ([ADR-0133]). An empty directory gets none, and no
+`rmdir`: only one with the marker is a state directory. Nor are commands
+given for a
 path that ends in `..` (give the directory's own path), for a path with a
 symbolic link on it (give the path with none, or, for a user's directory,
 run `ranikust prune --all` as that user), or for a directory ranikust or a

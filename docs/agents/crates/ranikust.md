@@ -46,10 +46,14 @@ writer) before `unshare`, the probes and the state directory's checks.
   directory is refused here): a missing or empty state directory left so;
   then `setup::enter_build_userns` (the namespace, no store opened), with
   its own guidance where the user gets no namespace
-  (`prune::no_user_namespace`; the build's sends the user to root); in it,
-  `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
-  guidance gives refuse a `PATH` with a relative or empty entry
-  (`prune::PATH_CHECK`), enter the state directory once, shell-quoted,
+  (`prune::no_user_namespace`: commands that remove the user's own files,
+  and root's `prune --all` for those of its subordinate ids,
+  `prune::ask_root`, as in `prune::unfinished`; not the build's, whose
+  "run ranikust as root" `prune --all` refuses); in it, `RLIMIT_NOFILE`
+  raised and `rnk_store::Store::prune_all`. The commands a guidance gives
+  refuse a `PATH` with a relative or empty entry and unset the loader's
+  variables that name libraries or modules by path (`prune::ENV_CHECK`),
+  enter the state directory once, shell-quoted,
   check that it is the one ranikust checked (`prune::Pin`: device, inode
   and owner from `Store::check_prune` on the path as given, outside any
   namespace, and the mode `statedir::check_for_commands` judged: the
@@ -104,7 +108,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 |---|---|
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
-| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace`, `unfinished`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
+| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
 | `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
@@ -406,10 +410,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   prune's advice instead, for a marked directory a build would refuse
   (`0o1777`, `0o777`, `0o770`, or below a parent at `0o770`), the pin
   carrying the mode, `0o2700`'s as `stat` prints it, the commands
-  failing with nothing changed once it differs; each command refusing a
-  `PATH` with an empty, `.` or relative entry before it enters a
-  directory, no tool put there run (the control: without the check,
-  one is); root's scripts stopping without a marker, where it cannot be
+  failing with nothing changed once it differs; each command, in each
+  shell present, refusing a `PATH` with an empty, `.` or relative entry,
+  first, last or in the middle, before it enters a directory, no tool put
+  there run (the control: without the check, one is), and running its
+  tools without the loader's variables, no library put in the directory
+  or its parent loaded, stopping with nothing changed where one cannot be
+  unset (the control: without that, `stat` loads the one put there, or a
+  `measured:` line where the loader does not); root's scripts stopping without a marker, where it cannot be
   removed, or where the search for other uids fails, saying so, and each
   script counting a listing that fails as entries left; the ways out
   only in `prune`'s refusal of a prune that could not finish, root's
@@ -423,9 +431,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changing nothing, and GNU `find` beside them emptying; directories the
   walk listed swapped for symlinks to look-alikes outside, and the tree
   being walked moved out, while GNU `find` deletes under each script,
-  nothing outside removed; `/`, system directories and `$HOME` taken by
-  none of the read-only checks a user's `prune --all` runs before its
-  namespace, nor given root's commands),
+  nothing outside removed; `/`, system directories and `$HOME` refused,
+  where they hold anything, by the read-only checks a user's `prune --all`
+  runs before its namespace, and given no commands by root's refusal),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, named rightly through `..`, nothing created through a planted

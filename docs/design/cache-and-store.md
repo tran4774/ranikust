@@ -191,8 +191,10 @@ this process's own `/`, `.ranikust-building` in any form, a
 without a regular marker (`.ranikust-state`, or the `.ranikust-pruning` a
 prune that did not finish leaves), and a top-level name neither the store
 nor a build makes there (the markers, its directories, `sandbox/`, an
-anonymous store's names); then the build's user namespace; in it,
-`Store::prune_all`. That takes the state directory's `flock` exclusive
+anonymous store's names); then the build's user namespace (where the
+user gets none, the refusal gives commands that remove the user's own
+files, and root's `prune --all` for those of its subordinate ids); in
+it, `Store::prune_all`. That takes the state directory's `flock` exclusive
 without waiting, as an anonymous store does, and holds it to the end:
 every build holds it shared for its life, so `prune --all` removes
 nothing while any build runs there (it says so and exits 1), and a build
@@ -227,13 +229,16 @@ with no symlink followed on it, runs `Store::check_prune` on it, then
 the build's own rule with the directory's owner as the user, and
 refuses one of the system directories (`statedir::check_for_commands`):
 commands only for a directory a build would accept
-([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)), none for one another user may write, or below one, the refusal then saying to fix
-the owner or mode or to remove the directory by hand. It takes the
-directory's device, inode and owner, and the mode the rule judged.
-Each command first refuses a `PATH` with a relative or empty entry,
-since it runs its tools from inside a directory another user may own
-(in `eval '…'`, so that no interactive shell's history expansion reads
-the pattern's `!`). It then checks, right after its one `cd -P`, that
+([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)),
+none for one another user may write, or below one, the refusal then
+saying to fix the owner or mode or to remove the directory by hand. It
+takes the directory's device, inode and owner, and the mode the rule
+judged. Each command first refuses a `PATH` with a relative or empty
+entry and unsets the loader's variables that name libraries or modules
+by path (`LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT`, `GCONV_PATH`),
+stopping where one cannot be unset, since it runs its tools from inside
+a directory another user may own (in `eval '…'`, so that no interactive
+shell's history expansion reads the pattern's `!`). It then checks, right after its one `cd -P`, that
 the directory it acts on has that identity (`stat -c %d:%i:%u:%a`
 piped to `grep -qxF`, a hardening: no quoted command substitution for
 an interactive shell's history expansion or quoting to touch): `.` for
@@ -261,11 +266,11 @@ or it cannot be removed; each script counts a listing that fails as
 entries left.
 Root's emptying of a directory another user owns deletes only that
 user's entries and those of its subordinate ids
-([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)): its uid and its first
-`/etc/subuid` range (`subids::lookup`), the only uids its builds' user
-namespace maps, or its uid alone where it has no range in `/etc/subuid`
-and `/etc/subgid` or they cannot be read (the guidance names the
-error). Before the marker goes, it looks for an entry of any other uid
+([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)):
+its uid and its first `/etc/subuid` range (`subids::lookup`), the only
+uids its builds' user namespace maps, or its uid alone where it has no
+range in `/etc/subuid` and `/etc/subgid` or they cannot be read (the
+guidance names the error). Before the marker goes, it looks for an entry of any other uid
 (a range changed since the build included) and stops there, with
 nothing changed, saying so, also where that search fails; after the
 deletion, it checks that nothing is left, and stops before the
