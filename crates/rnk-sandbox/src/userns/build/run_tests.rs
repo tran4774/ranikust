@@ -19,6 +19,8 @@ use crate::{
     SubordinateIds, UsernsReport,
 };
 
+mod red_team;
+
 /// What a root `RUN` prints about its kernel filesystems, one `key=value`
 /// per line, then the `/proc` and `/sys` mounts it sees as `mount: <mount
 /// point> <options> <type>`. Only `grep`, `sed` and `cut`: Ubuntu's base

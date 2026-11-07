@@ -644,7 +644,30 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   together never overlap, and the second finds no process of the first
   (a search that finds the `RUN`'s own, the control); profile
   `privileged`, `runs_with_a_new_proc_run_side_by_side`: with a new
-  `proc` they overlap. `just smoke` also runs `smoke-build --userns` in a default
+  `proc` they overlap. Their red team (`src/userns/build/run_tests/red_team.rs`,
+  profile `default`, Perl attacks that open for writing and never write):
+  `red_team_a_run_writes_nothing_under_an_rbind_of_proc` (under
+  `--seccomp=unconfined`, a root `RUN` opens for writing no file of its own
+  or of a process outside the build below `/proc` (`EROFS`), no sysctl,
+  `sysrq-trigger` or `/sys` file, and makes no mount below `/proc` or
+  `/sys` writable by a remount of the mount or its superblock,
+  `mount_setattr` or `open_tree` and `move_mount`, in its
+  namespaces or in a user and mount namespace of its own (`EPERM`: the
+  copies are locked), nor mounts a new `proc` in a PID namespace of its
+  own; a tmpfs of its own takes each call, the control);
+  `red_team_a_run_reads_no_gated_proc_file_of_a_process_outside_the_build`
+  (as root and as `_apt`, the ptrace-gated files, magic links and
+  `map_files` of a `sleep` outside the build of the same kernel uid, the
+  test, PID 1 and the process holding the `Sandbox` are refused, a
+  credential they hold or sit in is not reached, and `pidfd_send_signal`
+  through their `/proc` directories fails with `EINVAL`; their command
+  lines are seen, ADR-0130's residual);
+  `red_team_runs_of_two_builds_reach_no_gated_proc_file_of_each_other` (the
+  same between the `RUN`s of two builds at once, a secret mount included);
+  `red_team_a_cancelled_run_leaves_no_process_for_the_next_turn` (a `RUN`
+  that leaves processes behind four ways is cancelled mid-turn: two jobs of
+  another `Sandbox` wait for its turn, run one at a time, find none of
+  them, and nothing outlives any `RUN`). `just smoke` also runs `smoke-build --userns` in a default
   `podman run`: refused at the new `proc` without `--allow proc.rbind`,
   and with it the checks of `smoke_checks` that an rbind of `/proc` and
   Podman's seccomp (no `sethostname`) leave.
@@ -779,7 +802,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   out of inodes part-way, a read-only one and a ramfs, each leaving
   nothing; prints `measured:` lines); in `src/journal.rs`, a block device where a directory
   is needed or as the target
-  (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`).
+  (`red_team_a_block_device_in_a_mount_target_is_enotdir_or_the_target_itself`);
+  `red_team_a_uid_0_run_writes_nothing_under_rbinds_of_proc_and_sys`
+  (`src/userns/build/run_tests/red_team.rs`, profile `sysadmin`: in real
+  root's build user namespace a root `RUN` is kernel uid 0; under
+  `--seccomp=unconfined`, with an rbind of `/sys`, and of `/proc` where a
+  new one is refused, every mount below them is read-only, and the `RUN`
+  opens no sysctl, `sysrq-trigger` or `/sys` file for writing and makes
+  none of them writable, in its namespaces or new ones; where Ubuntu
+  24.04's AppArmor leaves a new user namespace no capability, as on the
+  test machine and the noble VM, the attacks in new ones stop there, and
+  the jammy VM shows their locks).
 
 ## Metrics
 
