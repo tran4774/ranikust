@@ -298,9 +298,9 @@ fn holds(dir: &Path, name: &str) -> bool {
 }
 
 /// In a build with `store`: the bottom and top layers through `overlay`,
-/// then a diff ID the bottom layer's tar does not hash to, and a layer of
-/// an owner no map holds. What it saw, for [`expected`], then where the
-/// two layers are. Closes the store.
+/// then a diff ID the bottom layer's tar does not hash to, a layer of an
+/// owner no map holds and one with a `security.selinux` xattr. What it
+/// saw, for [`expected`], then where the two layers are. Closes the store.
 fn extract_layers(store: Store) -> String {
     let capture = rnk_metrics::Capture::new();
     let store = Arc::new(store);
@@ -318,23 +318,37 @@ fn extract_layers(store: Store) -> String {
     let mismatch = overlay
         .base_layer_from(&wrong, b.as_slice(), &[])
         .map_or_else(|e| e.to_string(), |l| format!("published {l:?}"));
-    let (f, f_id) = Tar::default()
-        .dir("./", ROOT, 0o755)
-        .file("far", FAR, 0o644, b"far")
-        .finish();
-    // The error, after the layer's key, which depends on the map.
-    let far = overlay
-        .base_layer_from(&f_id, f.as_slice(), &[])
-        .map_or_else(
-            |e| {
-                let e = e.to_string();
-                e.split_once(": chown ")
-                    .map_or(format!("refused: {e}"), |(_, why)| {
-                        format!("refused: chown {why}")
-                    })
-            },
-            |_| "published".to_owned(),
-        );
+    // The error from `op` on, after the layer's key, which depends on the
+    // map.
+    let outcome = |(tar, id): (Vec<u8>, Digest), op: &str| {
+        overlay
+            .base_layer_from(&id, tar.as_slice(), &[])
+            .map_or_else(
+                |e| {
+                    let e = e.to_string();
+                    e.split_once(&format!(": {op} "))
+                        .map_or(format!("refused: {e}"), |(_, why)| {
+                            format!("refused: {op} {why}")
+                        })
+                },
+                |_| "published".to_owned(),
+            )
+    };
+    let far = outcome(
+        Tar::default()
+            .dir("./", ROOT, 0o755)
+            .file("far", FAR, 0o644, b"far")
+            .finish(),
+        "chown",
+    );
+    let selinux = outcome(
+        Tar::default()
+            .dir("./", ROOT, 0o755)
+            .xattrs(&[("security.selinux", b"system_u:object_r:bin_t:s0")])
+            .file("sel", ROOT, 0o644, b"sel")
+            .finish(),
+        "setxattr",
+    );
     let published = fs::read_dir(lower.path().parent().unwrap())
         .unwrap()
         .count();
@@ -342,7 +356,8 @@ fn extract_layers(store: Store) -> String {
     let tmp_left = fs::read_dir(tmp).unwrap().count();
     let report = format!(
         "nodes_skipped {skipped}\nnamed by diff ID {}\nmismatch refused {}\nfar owner {far}\n\
-         published {published}\ntmp {tmp_left}\n-- bottom\n{}\n-- top\n{}\n-- paths\n{}\n{}",
+         security.selinux {selinux}\npublished {published}\ntmp {tmp_left}\n-- bottom\n{}\n\
+         -- top\n{}\n-- paths\n{}\n{}",
         lower.path().ends_with(b_id.encoded()),
         mismatch.contains("the uncompressed tar has diff ID"),
         dump(lower.path()),
@@ -360,7 +375,9 @@ fn extract_layers(store: Store) -> String {
 
 /// [`extract_layers`]'s report, its paths left out, for a build in a user
 /// namespace (`userns`) or as root. In the namespace, the owner no map
-/// holds fails the extraction, which publishes nothing (ADR-0098).
+/// holds fails the extraction, which publishes nothing (ADR-0098), and so
+/// does a `security.*` xattr other than `security.capability`, which only
+/// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets.
 fn expected(userns: bool) -> String {
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
@@ -369,7 +386,7 @@ fn expected(userns: bool) -> String {
     }
     format!(
         "nodes_skipped {}\nnamed by diff ID {}\nmismatch refused true\nfar owner {}\n\
-         published {}\ntmp 0\n-- bottom\n{}\n-- top\n{TOP_DUMP}",
+         security.selinux {}\npublished {}\ntmp 0\n-- bottom\n{}\n-- top\n{TOP_DUMP}",
         if userns { 2 } else { 0 },
         !userns,
         if userns {
@@ -377,7 +394,12 @@ fn expected(userns: bool) -> String {
         } else {
             "published"
         },
-        if userns { 2 } else { 3 },
+        if userns {
+            "refused: setxattr ./sel: Operation not permitted (os error 1)"
+        } else {
+            "published"
+        },
+        if userns { 2 } else { 4 },
         bottom.join("\n"),
     )
 }
@@ -520,11 +542,12 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 
 /// T1, as root of a rootless Podman container: base layers extracted as
 /// root of the build's user namespace keep the owners, modes (setuid,
-/// setgid and sticky included), xattrs, symlinks, hardlinks, mtimes,
-/// whiteouts and opaque directories their tars give, as overlay as root
-/// extracts them; a `0555` root, root's or a user's, is published by the
-/// rename; device nodes are left out and counted; a diff ID the tar does not
-/// hash to, or an owner the namespace does not map, publishes nothing.
+/// setgid and sticky included), `user.*` and `security.capability` xattrs,
+/// symlinks, hardlinks, mtimes, whiteouts and opaque directories their tars
+/// give, as overlay as root extracts them; a `0555` root, root's or a
+/// user's, is published by the rename; device nodes are left out and
+/// counted; a diff ID the tar does not hash to, an owner the namespace does
+/// not map, or a `security.selinux` xattr publishes nothing.
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container extracts layers in the build's user namespace"]
 fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() {
@@ -584,14 +607,15 @@ fn sudo_user() -> ((u32, u32), bool) {
 const UNMAPPED_GID: u32 = 4242;
 
 /// T2: the same layers as real root, with no user namespace, give the
-/// device nodes too and the chain IDs as names, and publish the layer of
-/// an owner no map holds. As the user who ran sudo, with the user's
-/// subordinate ids and a setgid state directory of a gid no map holds:
-/// where AppArmor restricts unprivileged user namespaces (Ubuntu 24.04) the
-/// set-up is refused; elsewhere (22.04) the layers come out as root's,
-/// devices aside and that layer refused, owned outside by the user (the
-/// namespace's root) and by subordinate ids (the others), and the user
-/// outside the namespace cannot move a `0555` root of a subordinate id.
+/// device nodes too and the chain IDs as names, and publish the layers of
+/// an owner no map holds and of a `security.selinux` xattr. As the user who
+/// ran sudo, with the user's subordinate ids and a setgid state directory
+/// of a gid no map holds: where AppArmor restricts unprivileged user
+/// namespaces (Ubuntu 24.04) the set-up is refused; elsewhere (22.04) the
+/// layers come out as root's, devices aside and those two layers refused,
+/// owned outside by the user (the namespace's root) and by subordinate ids
+/// (the others), and the user outside the namespace cannot move a `0555`
+/// root of a subordinate id.
 #[test]
 #[ignore = "T2: extracts layers as real root and as the sudo user in the build's user namespace"]
 fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {
