@@ -128,7 +128,10 @@ fn kernel_root() -> bool {
 /// and in a container's user namespace; one it cannot read counts as root.
 fn kernel_root_as_it_stands() -> bool {
     let euid = rustix::process::geteuid().as_raw();
-    let map = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+    let map = std::fs::read_to_string("/proc/self/uid_map").unwrap_or_else(|e| {
+        tracing::debug!("cannot read /proc/self/uid_map ({e}): user.delegate is not trusted");
+        String::new()
+    });
     maps_to_root(euid, &map)
 }
 

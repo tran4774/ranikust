@@ -56,8 +56,9 @@ const PROC_RBIND: &str = "a RUN needs a new proc, which this user namespace may 
      through which every RUN sees each process of this PID namespace and reads the files of \
      /proc/<pid> not under ptrace's check, such as cmdline, status, stat, mountinfo, cgroup \
      and net/*, ranikust's included, and RUNs run one at a time; keep no secrets in other \
-     processes' command lines and give the build container a PID namespace of its own: one \
-     shared with the host or with a process of another mount namespace is refused (ADR-0126, \
+     processes' command lines and give the build container a PID namespace of its own: the \
+     host's, one whose PID 1 is in another mount namespace, and one shared with a process of \
+     another mount namespace that ranikust can open as it starts are refused (ADR-0126, \
      ADR-0129, ADR-0130, ADR-0134)";
 
 /// Guidance where another step of the user namespace fails.

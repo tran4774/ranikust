@@ -109,13 +109,16 @@ These are documented properties, not vulnerabilities:
 - **`--allow proc.rbind` shows a `RUN` the command lines of its PID
   namespace.** In rootless overlay mode where a new `/proc` is refused (a
   container's masked `/proc`), the flag gives each `RUN` a read-only rbind of
-  `/proc`: it sees every process of ranikust's PID namespace and reads its
-  command line, status, mount table and network tables, ranikust's
+  `/proc`: it sees every process of ranikust's PID namespace and reads the
+  files of `/proc/<pid>` not under ptrace's check, such as `cmdline`,
+  `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, ranikust's
   included, but not its environment, files or memory; the `RUN`s go one at
   a time. Keep no secrets in command lines and give the build container a
-  PID namespace of its own; one shared with a process of another mount
-  namespace is refused where ranikust can open that process as it starts
+  PID namespace of its own; the host's, one whose PID 1 is in another mount
+  namespace, and one shared with a process of another mount namespace that
+  ranikust can open as it starts are refused
   ([ADR-0126](docs/adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md),
+  [ADR-0134](docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks)).
 - **Refusing to run** where no mode works. Today that includes a regular user
   where no user namespace with an id map can be made (Ubuntu 24.04 or later
@@ -136,7 +139,12 @@ These are documented properties, not vulnerabilities:
   ones it counts (give the build container a PID namespace of its own: no
   Kubernetes `shareProcessNamespace` or `hostPID`, no `--pid`)
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
-  [threat model section 6](docs/security/threat-model.md#6-accepted-risks));
+  [threat model section 6](docs/security/threat-model.md#6-accepted-risks)),
+  and rootless overlay mode with `--allow proc.rbind` in the same cases, or
+  in the host's PID namespace or one whose PID 1 is in another mount
+  namespace
+  ([ADR-0129](docs/adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md),
+  [ADR-0134](docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md));
   the AppArmor advice for Ubuntu 24.04 or later is Phase 3
   ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
 - Vulnerabilities in base images, in the tools a Dockerfile runs, or in the

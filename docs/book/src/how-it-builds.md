@@ -101,9 +101,10 @@ overlay mount options.
   not under ptrace's check, such as `cmdline`, `status`, `stat`, `mountinfo`,
   `cgroup` and `net/*`, ranikust's included, so keep no secrets in them, and
   `RUN`s run one at a time ([ADR-0126], [ADR-0127], [ADR-0130], [ADR-0132]).
-  ranikust refuses a PID namespace it shares with the host or another
-  container, and warns about a `--build-arg` whose name looks like a secret
-  ([ADR-0129], [ADR-0134]).
+  ranikust refuses the host's PID namespace, one whose PID 1 is another
+  container's, and one it shares with another container's process that it can
+  open as it starts, and warns about a `--build-arg` whose name looks like a
+  secret ([ADR-0129], [ADR-0134]).
 - **`--mode=auto` and root.** Root in a container that may not mount tries
   rootless overlay mode and, where it cannot run, builds in kaniko mode as
   before. It does not try where `/proc/sys` is writable or cannot be told: a

@@ -420,9 +420,10 @@ pub(crate) struct BuildArgs {
     /// `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`,
     /// ranikust's included, and the `RUN`s go one at a time. Keep no secrets
     /// in other processes' command lines, ranikust's included, and give the
-    /// build container a PID namespace of its own: ranikust refuses one
-    /// shared with the host or with a process of another mount namespace
-    /// (ADR-0126, ADR-0129, ADR-0130, ADR-0134).
+    /// build container a PID namespace of its own: ranikust refuses the
+    /// host's, one whose PID 1 is in another mount namespace, and one shared
+    /// with a process of another mount namespace that it can open as it
+    /// starts (ADR-0126, ADR-0129, ADR-0130, ADR-0134).
     /// Repeat for several.
     #[arg(
         long = "allow",

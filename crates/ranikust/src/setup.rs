@@ -74,6 +74,10 @@ impl fmt::Display for Outcome {
         })?;
         if let Outcome::OverlayRootless { .. } = self {
             write!(f, ", proc: {}, sysfs: {}", sandbox.proc(), sandbox.sysfs())?;
+            if sandbox.sysfs() == rnk_sandbox::KernelFs::Rbind {
+                // What the spawner does for such a RUN (`rnk_sandbox`).
+                f.write_str(" (a new instance for a RUN with --network=none where it mounts)")?;
+            }
         }
         write!(f, ", overlay mounts with {}", mount_api_name(overlay.api))
     }
@@ -777,10 +781,10 @@ fn probe_user_namespace(store: &Store) -> Result<Probed, String> {
 
 /// The probes, for the subordinate ids `subordinate`, in `parent/name`,
 /// made for them and removed after, unless a child of the probe was left
-/// there. The directory is held by its exclusive `flock` while the probes
-/// use it, and for this process's life when a child was left: a store
-/// removes a probe's directory only where it takes that lock
-/// ([`rnk_store::USERNS_PROBE_PREFIX`]).
+/// there. A directory with the name a store removes
+/// ([`rnk_store::USERNS_PROBE_PREFIX`]) is held by its exclusive `flock`
+/// while the probes use it, and for this process's life when a child was
+/// left: the store removes one only where it takes that lock.
 pub(crate) fn probe_in_dir(
     parent: &Path,
     name: &str,
@@ -790,12 +794,18 @@ pub(crate) fn probe_in_dir(
     let scratch = root
         .create_sub_root(name, 0o700)
         .map_err(|e| e.to_string())?;
-    let held = match hold_dir(&scratch) {
-        Ok(held) => held,
-        Err(e) => {
-            let _ = root.remove_dir(name);
-            return Err(format!("cannot lock {}: {e}", parent.join(name).display()));
+    let held = if name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
+        match hold_dir(&scratch) {
+            Ok(held) => Some(held),
+            Err(e) => {
+                // The lock's error is the one to report; an empty directory
+                // left is one the store removes.
+                let _ = root.remove_dir(name);
+                return Err(format!("cannot lock {}: {e}", parent.join(name).display()));
+            }
         }
+    } else {
+        None
     };
     let (r, left) = match own_group(&root, name) {
         Ok(_) => probe_in_scratch(&scratch, &parent.join(name), subordinate),

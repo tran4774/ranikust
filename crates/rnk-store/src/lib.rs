@@ -20,6 +20,7 @@
 //! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
 //! ├── builds/<build-id>/, <build-id>.lock      one per running build
+//! ├── .ranikust-anon-userns-probe-*/ rootless overlay mode's probe, locked while in use: removed here
 //! └── sandbox/                       the RUN sandbox's own files (made by the caller)
 //! ```
 //!

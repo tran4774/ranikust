@@ -100,6 +100,7 @@ const SETGID: u32 = 0o2000;
 /// The shared `flock` on a state directory that [`Store::check_state_dir`]
 /// took, held until this is dropped.
 #[derive(Debug)]
+#[must_use = "the state directory's lock is released when this is dropped"]
 pub struct StateDirHold {
     _lock: OwnedFd,
 }
@@ -2130,8 +2131,8 @@ fn needs_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
 
 /// Whether `name`, at the top of `state`, is a directory of the user
 /// namespace probe: named so ([`USERNS_PROBE_PREFIX`]), and
-/// [`is_probe_stat`]. One gone since it was listed counts as absent, so
-/// as one.
+/// [`is_probe_stat`]. One with that name gone since it was listed counts
+/// as one: an absent entry cannot make the directory foreign.
 fn is_probe_dir(state: &RootPath, name: &OsStr) -> Result<bool> {
     if !is_probe_name(name) {
         return Ok(false);
@@ -2197,7 +2198,12 @@ fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
         Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
         Err(e) => return Err(e.into()),
     };
-    let held = state.open_at(rel, &OpenHow::read().directory().no_follow())?;
+    let held = match state.open_at(rel, &OpenHow::read().directory().no_follow()) {
+        Ok(held) => held,
+        // Another store removed it since.
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
     let io = |source| Error::Io {
         op: "lock",
         path: rel.to_owned(),

@@ -125,7 +125,8 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
   told by `statx` without following) do not count: `check_marker` marks the
   directory, and `open` then removes each whose `flock` it takes (a probe
-  holds its own while it uses it), through descriptors. A new state directory is `0700`; one owned by another user or
+  holds its own while it uses it), through descriptors. A new state
+  directory is `0700`; one owned by another user or
   writable by others is used with a warning. The store's directories the
   user owns take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in

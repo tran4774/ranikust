@@ -122,10 +122,13 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    a directory made for them and removed after:
    - for rootless overlay mode (`setup::rootless::plan`), in the state
      directory, once the store's check, which writes nothing, takes it as one
-     (Q-111, (a)), named as the leftovers an anonymous store removes
-     (`.ranikust-anon-userns-probe-<pid>-<nanos>`), so that a build cut short
-     there leaves nothing the next start counts as foreign; a persistent
-     store keeps such a name, an anonymous one removes it; it takes the
+     (Q-111, (a)), and holds the state directory's lock until the store
+     opens; named `.ranikust-anon-userns-probe-<pid>-<nanos>`
+     (`rnk_store::USERNS_PROBE_PREFIX`) and held by its exclusive `flock`
+     while the probe uses it, so that a build cut short there leaves nothing
+     the next start counts as foreign: the store, once it opens, removes each
+     such directory whose lock it takes
+     ([cache and store](cache-and-store.md)); it takes the
      process's gid and no setgid bit, as the store's own directories do
      ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
    - where it only reports (`report_user_namespace`, root only: it checks the
@@ -263,7 +266,8 @@ cannot leave the namespace once it is in:
 
 The mode line says what the build got: `overlay mode, rootless, in the
 build's user namespace, RUN enters its root with pivot_root, proc: a new
-instance, sysfs: a read-only rbind, overlay mounts with fsconfig(lowerdir+)`;
+instance, sysfs: a read-only rbind (a new instance for a RUN with
+--network=none where it mounts), overlay mounts with fsconfig(lowerdir+)`;
 `proc: a read-only rbind` is the one that needs the flag.
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode

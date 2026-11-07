@@ -55,6 +55,7 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
+├── .ranikust-anon-userns-probe-*/  rootless overlay mode's probe, held (flock) while in use
 ├── builds/<build-id>.lock      held (flock) while the build runs
 └── builds/<build-id>/          one per running build, deleted afterwards;
                                 stage roots are stages/<n>/rootfs (ADR-0059)
@@ -181,8 +182,8 @@ without following a link: such a directory is a new store and gets the
 marker, and the store removes each whose lock it takes, through
 descriptors (a probe holds its own while it uses it). `check_state_dir`,
 which rootless overlay mode runs before its probe, keeps the state
-directory's shared lock until the store opens. In overlay mode an upper directory written
-under `volatile` is never trusted after a crash.
+directory's shared lock until the store opens. In overlay mode an upper
+directory written under `volatile` is never trusted after a crash.
 
 ## Prune
 
