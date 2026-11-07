@@ -31,7 +31,7 @@ use rustix::thread::{CapabilitySet, CapabilitySets, UnshareFlags};
 use crate::caps::BoundingDrops;
 use crate::error::Step;
 use crate::plan::{
-    DEV_NODES, DEV_NULL, DEV_SYMLINKS, DEV_TMPFS, DEVPTS, MASKED_PATHS, READONLY_PATHS, SHM,
+    DEV_NODES, DEV_NULL, DEV_SYMLINKS, DEV_TMPFS, MASKED_PATHS, READONLY_PATHS, SHM,
 };
 use crate::seccomp::Program;
 
@@ -53,9 +53,13 @@ pub enum RootEntry {
 pub(crate) enum ChildMount {
     Proc {
         target: CString,
+        /// An rbind of `/proc` instead of a new one ([`rbind_kernel_fs`]).
+        rbind: bool,
     },
     Sysfs {
         target: CString,
+        /// An rbind of `/sys` instead of a new one.
+        rbind: bool,
     },
     Dev {
         target: CString,
@@ -149,6 +153,9 @@ pub(crate) struct ChildArgs {
     /// Make `/dev/pipes` in the `/dev` tmpfs: a mount targets it
     /// ([`crate::plan::dev_pipes`]).
     pub(crate) dev_pipes: bool,
+    /// The options of `/dev/pts`: [`crate::plan::DEVPTS`], without its `gid=5` where
+    /// that gid is not mapped.
+    pub(crate) devpts: &'static CStr,
     pub(crate) root_entry: RootEntry,
     pub(crate) hostname: Vec<u8>,
     /// Bring up `lo` in the network namespace the clone created
@@ -172,6 +179,9 @@ pub(crate) struct ChildArgs {
     pub(crate) uid: Uid,
     pub(crate) gid: Gid,
     pub(crate) groups: Vec<Gid>,
+    /// Set `groups`: not in a one-id user namespace that denies
+    /// `setgroups`, where the call would fail, as runc skips it there.
+    pub(crate) set_groups: bool,
     pub(crate) workdir: CString,
     /// `Isolation::Direct` on a root other than `/`: `chroot` into
     /// `root_dir` first, and check that the new `/` is this directory,
@@ -338,8 +348,14 @@ impl FdPath {
     }
 }
 
+/// `MOUNT_ATTR_RDONLY` of `<linux/mount.h>`.
+const MOUNT_ATTR_RDONLY: u64 = 0x0000_0001;
+/// `MOUNT_ATTR_NOSUID` of `<linux/mount.h>`.
+const MOUNT_ATTR_NOSUID: u64 = 0x0000_0002;
 /// `MOUNT_ATTR_NODEV` of `<linux/mount.h>`.
 pub(crate) const MOUNT_ATTR_NODEV: u64 = 0x0000_0004;
+/// `MOUNT_ATTR_NOEXEC` of `<linux/mount.h>`.
+const MOUNT_ATTR_NOEXEC: u64 = 0x0000_0008;
 
 /// `struct mount_attr` of `<linux/mount.h>` (`MOUNT_ATTR_SIZE_VER0`).
 #[repr(C)]
@@ -352,25 +368,35 @@ pub(crate) struct MountAttr {
 
 /// `mount_setattr(AT_FDCWD, path, AT_RECURSIVE, {attr_set: NODEV})`: 0, or
 /// -1 with `errno` set. Allocates nothing, so the child may call it.
-///
-/// # Safety
-///
-/// `path` must stay valid for the call.
-pub(crate) unsafe fn set_nodev_recursive(path: &std::ffi::CStr) -> libc::c_long {
+pub(crate) fn set_nodev_recursive(path: &CStr) -> libc::c_long {
+    set_attr_recursive(CWD, path, 0, MOUNT_ATTR_NODEV)
+}
+
+/// `mount_setattr(dir, path, flags | AT_RECURSIVE, {attr_set})`: sets
+/// `attr_set` on the mount at `path` and every mount below it, the atime
+/// flags left as they are. 0, or -1 with `errno` set; allocates nothing.
+fn set_attr_recursive(
+    dir: BorrowedFd<'_>,
+    path: &CStr,
+    flags: libc::c_int,
+    attr_set: u64,
+) -> libc::c_long {
     let attr = MountAttr {
-        attr_set: MOUNT_ATTR_NODEV,
+        attr_set,
         attr_clr: 0,
         propagation: 0,
         userns_fd: 0,
     };
-    // SAFETY: as the caller guarantees for `path`; `attr` lives on this
-    // stack frame for the call and its size is passed.
+    // SAFETY: `path` is NUL-terminated and borrowed, `dir` borrowed (or
+    // `AT_FDCWD`), `attr` lives on this stack frame for the call, its size
+    // passed; `userns_fd` is unread: neither `attr_set` (the callers'
+    // constants) nor `attr_clr` (0) holds `MOUNT_ATTR_IDMAP`.
     unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,
-            libc::AT_FDCWD,
+            dir.as_raw_fd(),
             path.as_ptr(),
-            libc::AT_RECURSIVE as libc::c_uint,
+            (flags | libc::AT_RECURSIVE).cast_unsigned(),
             &raw const attr,
             std::mem::size_of::<MountAttr>(),
         )
@@ -435,12 +461,8 @@ pub(crate) unsafe fn run(args: &ChildArgs, ptrs: &ExecPtrs<'_>, fds: ChildFds) -
     );
     // The remount reaches the top mount only; a mount below the root keeps
     // its own flags unless made `nodev` too.
-    if args.root_nodev_rec {
-        // SAFETY: a NUL-terminated path and a `mount_attr` of the size
-        // passed, both alive for the call.
-        if unsafe { set_nodev_recursive(root_dir) } != 0 {
-            fail(err, Step::Remount, last_errno());
-        }
+    if args.root_nodev_rec && set_nodev_recursive(root_dir) != 0 {
+        fail(err, Step::Remount, last_errno());
     }
     check(err, Step::EnterRoot, rustix::process::chdir(root_dir));
     // Opened after the bind, so it is the bind's root: targets resolved from
@@ -1087,11 +1109,13 @@ pub(crate) fn switch_user_and_exec(
         Err(Errno::ACCESS) => true,
         Err(e) => fail(err, Step::Workdir, e),
     };
-    check(
-        err,
-        Step::Groups,
-        rustix::thread::set_thread_groups(&args.groups),
-    );
+    if args.set_groups {
+        check(
+            err,
+            Step::Groups,
+            rustix::thread::set_thread_groups(&args.groups),
+        );
+    }
     check(
         err,
         Step::Gid,
@@ -1202,7 +1226,23 @@ fn mount_one(
     m: &ChildMount,
 ) -> Option<OwnedFd> {
     match m {
-        ChildMount::Proc { target } => Some(mount_kernel_fs(
+        ChildMount::Proc {
+            target,
+            rbind: true,
+        } => Some(rbind_kernel_fs(
+            err,
+            Step::MountProc,
+            root,
+            target,
+            c"/proc",
+            // Its `/proc/<pid>` files include processes outside the build (ADR-0132).
+            MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
+            PROC_SUPER_MAGIC,
+        )),
+        ChildMount::Proc {
+            target,
+            rbind: false,
+        } => Some(mount_kernel_fs(
             err,
             Step::MountProc,
             root,
@@ -1211,7 +1251,22 @@ fn mount_one(
             MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC,
             PROC_SUPER_MAGIC,
         )),
-        ChildMount::Sysfs { target } => Some(mount_kernel_fs(
+        ChildMount::Sysfs {
+            target,
+            rbind: true,
+        } => Some(rbind_kernel_fs(
+            err,
+            Step::MountSys,
+            root,
+            target,
+            c"/sys",
+            MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
+            SYSFS_MAGIC,
+        )),
+        ChildMount::Sysfs {
+            target,
+            rbind: false,
+        } => Some(mount_kernel_fs(
             err,
             Step::MountSys,
             root,
@@ -1242,7 +1297,7 @@ fn mount_one(
             // while the child sets it up.
             let dev = resolve_dir(err, Step::MountDev, root, target);
             fs_is(err, Step::MountDev, &dev, TMPFS_MAGIC);
-            populate_dev(err, dev.as_fd(), &args.dev_remount, args.dev_pipes);
+            populate_dev(err, dev.as_fd(), args);
             // Opened now, before any `RUN --mount` can cover `/dev`.
             args.stdio
                 .contains(&ChildStdio::Null)
@@ -1315,6 +1370,49 @@ fn mount_kernel_fs(
     drop(t);
     let made = resolve_dir(err, step, root, target);
     fs_is(err, step, &made, magic);
+    made
+}
+
+/// [`mount_kernel_fs`] where a new instance is refused: binds `source`,
+/// the mount of type `magic` this process sees there, with every mount
+/// below it (a plain bind of a mount with locked mounts below fails), then
+/// sets `attrs` on each mount of the copy with `mount_setattr`
+/// (Linux 5.12): the top's flags alone would leave the mounts below, such
+/// as an outer runtime's masks, as they were. Without the call the step
+/// fails, and the probe with it.
+fn rbind_kernel_fs(
+    err: RawFd,
+    step: Step,
+    root: BorrowedFd<'_>,
+    target: &CStr,
+    source: &CStr,
+    attrs: u64,
+    magic: FsWord,
+) -> OwnedFd {
+    // Still this process's own `/`, not the root's.
+    let s = check(
+        err,
+        step,
+        rustix::fs::openat(
+            CWD,
+            source,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ),
+    );
+    fs_is(err, step, &s, magic);
+    let t = resolve_dir(err, step, root, target);
+    check(
+        err,
+        step,
+        rustix::mount::mount_bind_recursive(fd_path(err, &s).path(), fd_path(err, &t).path()),
+    );
+    drop((s, t));
+    let made = resolve_dir(err, step, root, target);
+    fs_is(err, step, &made, magic);
+    if set_attr_recursive(made.as_fd(), c"", libc::AT_EMPTY_PATH, attrs) != 0 {
+        fail(err, step, last_errno());
+    }
     made
 }
 
@@ -1672,13 +1770,8 @@ pub(crate) fn kernel_path(path: &'static CStr) -> Option<(bool, &'static CStr)> 
 /// `shm` and the symlinks. Each node bind is remounted read-only: the bind
 /// is the host's own inode, whose mode and owner uid 0 in a `RUN` could
 /// otherwise change; reads and writes of a device are not affected.
-fn populate_dev(
-    err: RawFd,
-    dev: BorrowedFd<'_>,
-    remount: &[MountFlags; DEV_NODES.len()],
-    pipes: bool,
-) {
-    for ((name, source), flags) in DEV_NODES.into_iter().zip(remount) {
+fn populate_dev(err: RawFd, dev: BorrowedFd<'_>, args: &ChildArgs) {
+    for ((name, source), flags) in DEV_NODES.into_iter().zip(&args.dev_remount) {
         let node = check(
             err,
             Step::DevNode,
@@ -1727,7 +1820,7 @@ fn populate_dev(
             c"pts",
             c"devpts",
             MountFlags::NOSUID | MountFlags::NOEXEC,
-            DEVPTS,
+            args.devpts,
         ),
         (
             c"shm",
@@ -1765,7 +1858,7 @@ fn populate_dev(
         );
     }
     // The mount point of a `#!` heredoc's script directory, as BuildKit's.
-    if pipes {
+    if args.dev_pipes {
         check(
             err,
             Step::DevMounts,
@@ -3613,6 +3706,7 @@ mod tests {
             secrets: None,
             dev_remount: [MountFlags::BIND; DEV_NODES.len()],
             dev_pipes: false,
+            devpts: crate::plan::DEVPTS,
             root_entry: RootEntry::PivotRoot,
             hostname: Vec::new(),
             loopback: false,
@@ -3625,6 +3719,7 @@ mod tests {
             uid: Uid::ROOT,
             gid: Gid::ROOT,
             groups: Vec::new(),
+            set_groups: true,
             workdir: c"/".into(),
             chroot: None,
             root_check: None,

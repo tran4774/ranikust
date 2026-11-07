@@ -23,8 +23,8 @@ use rustix::thread::UnshareFlags;
 use super::{
     ATTEMPT_DEADLINE, CLOSURE_OK, CLOSURE_REFUSED, DONE, IdMap, NO_MAP, Plan, REAP_GRACE, SLAVE,
     SLAVE_OP, STOPPED, StepFailure, StepResult, SubordinateIds, Supervised, UNSHARE_MOUNT,
-    assemble, enter, enter_mount_namespace, map_lines, plans, read_records, reap, result_frame,
-    send, supervise, write_all, write_map, write_own,
+    assemble, enter, enter_mount_namespace, ids, plans, read_records, reap, result_frame, send,
+    supervise, write_all, write_map, write_own,
 };
 use crate::child;
 use crate::error::{Error, Result, sys_err};
@@ -265,15 +265,6 @@ fn as_entered(plan: IdMap, uid_map: &str, gid_map: &str, setgroups: &str) -> Opt
     Some((map, allowed))
 }
 
-/// How many ids a map's text gives: `None` when a line is not three
-/// numbers, or it gives none.
-fn ids(map: &str) -> Option<u64> {
-    let total = map_lines(map)?
-        .iter()
-        .try_fold(0_u64, |t, [_, _, count]| t.checked_add(u64::from(*count)))?;
-    (total > 0).then_some(total)
-}
-
 /// Writes this process's one-id map itself, `setgroups` denied first, as
 /// the kernel asks of a writer without `CAP_SETGID` above the namespace.
 fn write_own_map(uid_map: &[u8], gid_map: &[u8]) -> std::result::Result<(), StepFailure> {
@@ -430,5 +421,7 @@ fn helper_main(plan: &Plan, parent: Pid, go: BorrowedFd<'_>, result: BorrowedFd<
     let _ = write_all(result, &frame);
 }
 
+#[cfg(test)]
+mod run_tests;
 #[cfg(test)]
 mod tests;

@@ -3,10 +3,12 @@
 
 # Checked inside the sandbox, one `RUN` each so that a failure names it.
 # Mount flags come from mountinfo: busybox `test -w` is always true for root.
+# The init is the shell's parent, its pid as the `/proc` mounted gives it:
+# `read`, a builtin, reads the shell's own `/proc/self/stat`.
 smoke_checks=(
   'test "$$" = 2 && test "$(cat /proc/1/comm)" = ranikust-init'      # PID 2 under its init (ADR-0080)
-  '! grep -Eq "^Cap(Eff|Prm):[[:space:]]*0*[1-9a-f]" /proc/1/status'  # the init holds no capability
-  'grep -q "^Seccomp:[[:space:]]*2$" /proc/1/status && test "$(grep -E "^Seccomp(_filters)?:" /proc/1/status)" = "$(grep -E "^Seccomp(_filters)?:" /proc/self/status)"' # the init under the command's filters
+  'read -r pid comm state init rest </proc/self/stat && test "$(cat "/proc/$init/comm")" = ranikust-init && grep -Eq "^CapEff:[[:space:]]*0+$" "/proc/$init/status" && grep -Eq "^CapPrm:[[:space:]]*0+$" "/proc/$init/status"' # the init holds no capability
+  'read -r pid comm state init rest </proc/self/stat && grep -q "^Seccomp:[[:space:]]*2$" "/proc/$init/status" && test "$(grep -E "^Seccomp(_filters)?:" "/proc/$init/status")" = "$(grep -E "^Seccomp(_filters)?:" /proc/self/status)"' # the init under the command's filters
   'test "$(hostname)" = ranikust'
   'grep -q "^CapBnd:[[:space:]]*00000000a80425fb$" /proc/self/status' # Docker's 14 capabilities
   'grep -q "^CapInh:[[:space:]]*0*$" /proc/self/status'
@@ -17,6 +19,10 @@ smoke_checks=(
   '! test -t 0'                                                      # T19
   'test "$(ls /proc/self/fd | wc -l)" -le 4'                          # stdio and ls's own, T7
 )
+# The first check reads the RUN's init through /proc/1: an rbind of the
+# container's /proc (a fallback of the build's user namespace, #78) shows
+# the container's PID 1 there instead.
+smoke_checks_own_proc=1
 
 # The sandbox's stubs must not reach a layer of the OCI layout in $1:
 # /etc/resolv.conf, which alpine lacks, not at all; /etc/hosts and

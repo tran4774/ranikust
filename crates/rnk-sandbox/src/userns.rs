@@ -292,6 +292,18 @@ impl UsernsReport {
         }
     }
 
+    /// What [`crate::probe_with_fallbacks`] may bind: `/sys`, where a new
+    /// `sysfs` was refused and the rbind worked. Never `/proc`, whatever
+    /// this probe found: only [`crate::Fallbacks::allow_proc_rbind`] allows
+    /// it (ADR-0126).
+    #[must_use]
+    pub fn fallbacks(&self) -> crate::Fallbacks {
+        crate::Fallbacks {
+            proc: false,
+            sysfs: matches!(self.sysfs, MountResult::Rbind { .. }),
+        }
+    }
+
     /// Runs `f(path)` as root of a new user and mount namespace with the map
     /// this probe got, in a forked child. `None` when no map worked; `Err` with
     /// why `f` did not run or finish ([`Error::NotSingleThreaded`], a
@@ -641,6 +653,56 @@ fn map_lines(map: &str) -> Option<Vec<[u32; 3]>> {
             }
         })
         .collect()
+}
+
+/// How many ids a map's text gives: `None` when a line is not three
+/// numbers, or it gives none.
+fn ids(map: &str) -> Option<u64> {
+    let total = map_lines(map)?
+        .iter()
+        .try_fold(0_u64, |t, [_, _, count]| t.checked_add(u64::from(*count)))?;
+    (total > 0).then_some(total)
+}
+
+/// What a `RUN` may ask of the user namespace this process is in, from its
+/// `/proc/self` files. A file that cannot be read or parsed counts as the
+/// initial namespace's: the step that needs it runs, and fails the `RUN`
+/// if the kernel refuses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OwnNamespace {
+    /// Call `setgroups(2)`: false only where `/proc/self/setgroups` is
+    /// `deny` and the gid map gives one id, a one-id map (ADR-0098);
+    /// denied with several ids it is called and fails the `RUN`.
+    pub(crate) setgroups: bool,
+    /// gid 5 (`tty`), which `devpts` is mounted with, is mapped.
+    pub(crate) tty_gid: bool,
+}
+
+impl OwnNamespace {
+    /// Reads this process's files.
+    pub(crate) fn read() -> Self {
+        // Unreadable: the initial namespace's, so the step is not skipped.
+        let read = |name| std::fs::read_to_string(name).ok();
+        Self::parse(
+            read("/proc/self/setgroups").as_deref(),
+            read("/proc/self/gid_map").as_deref(),
+        )
+    }
+
+    fn parse(setgroups: Option<&str>, gid_map: Option<&str>) -> Self {
+        const TTY: u32 = 5;
+        let tty_gid = gid_map.and_then(map_lines).is_none_or(|lines| {
+            lines
+                .iter()
+                .any(|&[inside, _, count]| TTY.checked_sub(inside).is_some_and(|d| d < count))
+        });
+        let denied = setgroups.is_some_and(|s| s.trim_end() == "deny");
+        let one_gid = gid_map.and_then(ids) == Some(1);
+        Self {
+            setgroups: !(denied && one_gid),
+            tty_gid,
+        }
+    }
 }
 
 /// The smallest id other than 0 a map's text gives the namespace.

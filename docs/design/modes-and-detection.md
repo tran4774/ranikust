@@ -20,7 +20,7 @@ The probe ends in exactly one of these:
 | Outcome | Snapshot | Stage roots | `RUN` execution | Stages |
 |---|---|---|---|---|
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
-| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind if a new `proc` is refused | parallel |
+| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)) | parallel (with the `/proc` rbind, stages parallel, their `RUN`s one at a time: [ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
 | **kaniko, cannot mount** | walk + hash | `/` in a container (a host is refused, ADR-0050) | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | none | none | none | exit with guidance |
@@ -54,7 +54,7 @@ table per CI system in §6) and
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
-| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
+| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3, there with `--allow proc.rbind`, the container's `/proc` being masked: [ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
 | Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
@@ -139,10 +139,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      namespace is owned by the new user namespace and a refusal names its
      step.
    - A new `proc` in a new PID namespace; if that fails, an rbind of the
-     existing `/proc` (`RUN` then sees the container's processes, like
-     BuildKit's `--oci-worker-no-process-sandbox`). Read-only `sysfs`, else
-     an rbind of `/sys`. `mknod`, reported only: no user namespace allows
-     it, and the sandbox binds `/dev`'s nodes.
+     existing `/proc`, which the build may use only on request
+     ([sandbox.md, step 3.2](sandbox.md#per-run-sequence)). Read-only
+     `sysfs`, else an rbind of `/sys`. `mknod`, reported only: no user
+     namespace allows it, and the sandbox binds `/dev`'s nodes.
    - The overlay mount (`rnk_snapshot::probe`; `userxattr` is implied) as
      root of a namespace with the map that worked, in a child of its own,
      under the state directory ([open: #4]).
@@ -158,9 +158,23 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
 3. **Sandbox capabilities.** Try `pivot_root` (Docker's seccomp profile
    blocks it even with `CAP_SYS_ADMIN`; fallback `MS_MOVE` + `chroot`) and a
    read-only `sysfs`, so the sandbox knows which variant to use
-   ([sandbox](sandbox.md)). The rbind `/sys` fallback is planned (Phase 3): a
-   refused `sysfs` mount fails this probe today; the user-namespace probe
-   (step 2) already tries it.
+   ([sandbox](sandbox.md)). In the build's user namespace, a `sysfs` mount
+   refused with `EPERM` is tried again as an rbind, only where the
+   user-namespace probe (step 2) found the same; a refused `proc` mount
+   only at the operator's request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md);
+   `--allow proc.rbind`, planned
+   with [#79](https://github.com/tran4774/ranikust/issues/79))
+   (`rnk_sandbox::probe_with_fallbacks`,
+   [#78](https://github.com/tran4774/ranikust/issues/78)). Every `RUN` of
+   the build then gets what worked, and an rbind of `/proc` is logged once;
+   with it the `RUN`s run one at a time
+   ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)),
+   and, once #79 brings the flag, a PID namespace shared with a process of
+   another mount namespace is refused
+   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
+   the store stays the persistent one
+   ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
+   Elsewhere a refused mount fails this probe.
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at
    `FSCONFIG_CMD_CREATE` (`EINVAL`), so only a real create counts. On failure

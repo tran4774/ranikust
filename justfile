@@ -273,6 +273,34 @@ smoke image="docker.io/library/alpine:3.20":
     tar -C "$OUT" -cf "$OUT.tar" .
     podman load --quiet -i "$OUT.tar"
     podman run --rm "$NAME" sh -c 'cat /hello && jq --version'
+    # Root of a default `podman run`: the build's user namespace, with an
+    # rbind of the container's /proc and /sys (#78), so without the check
+    # of the RUN's own PID 1; nor the host name's: Podman's seccomp profile
+    # refuses `sethostname` without CAP_SYS_ADMIN.
+    OUT_U="$TARGET/smoke/oci-userns" NAME_U=localhost/ranikust-smoke-userns:latest
+    rm -rf "$OUT_U" "$OUT_U.tar" && mkdir -p "$OUT_U"
+    # Unasked, the rbind of /proc is refused (ADR-0126): the probe stops at
+    # the new proc, before anything is pulled.
+    if podman run --rm -v "$BIN:/smoke-build:ro" "$smoke_image" \
+      /smoke-build --userns --image "$smoke_image" --out /out >"$OUT_U.refused.log" 2>&1; then
+      echo "error: --userns without --allow proc.rbind: expected a refusal" >&2; exit 1
+    fi
+    grep -q '^smoke-build: RUN sandbox: mount proc: Operation not permitted' "$OUT_U.refused.log" ||
+      { echo "error: --userns without --allow proc.rbind: not refused at the new proc:" >&2;
+        cat "$OUT_U.refused.log" >&2; exit 1; }
+    runs=(--run 'echo "hello from ranikust" > /hello' --run 'apk add --no-cache jq')
+    for c in "${smoke_checks[@]:smoke_checks_own_proc}"; do
+      [[ $c == *'$(hostname)'* ]] || runs+=(--run "$c")
+    done
+    podman run --rm -v "$BIN:/smoke-build:ro" -v "$OUT_U:/out" \
+      "$smoke_image" /smoke-build --userns --allow proc.rbind --image "$smoke_image" --out /out \
+      --tag "$NAME_U" "${runs[@]}" | tee "$OUT_U.log"
+    grep -qx 'probe: Caps { root_entry: PivotRoot, proc: Rbind, sysfs: Rbind }' "$OUT_U.log" ||
+      { echo "error: --userns: expected an rbind of /proc and of /sys" >&2; exit 1; }
+    smoke_check_no_stub_leak "$OUT_U"
+    tar -C "$OUT_U" -cf "$OUT_U.tar" .
+    podman load --quiet -i "$OUT_U.tar"
+    podman run --rm "$NAME_U" sh -c 'cat /hello && jq --version'
     # The ranikust binary builds tests/smoke/e2e. The workdir is a volume:
     # overlay refuses an upper directory on the container's own overlay
     # root (that environment needs kaniko mode).
