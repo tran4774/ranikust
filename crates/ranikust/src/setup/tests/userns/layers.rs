@@ -349,6 +349,13 @@ fn extract_layers(store: Store) -> String {
             .finish(),
         "setxattr",
     );
+    // The refusing call counts, not its errno, which a security module may
+    // change.
+    let selinux = if selinux.starts_with("refused: setxattr ./sel: ") {
+        "refused: setxattr ./sel".to_owned()
+    } else {
+        selinux
+    };
     let published = fs::read_dir(lower.path().parent().unwrap())
         .unwrap()
         .count();
@@ -377,7 +384,9 @@ fn extract_layers(store: Store) -> String {
 /// namespace (`userns`) or as root. In the namespace, the owner no map
 /// holds fails the extraction, which publishes nothing (ADR-0098), and so
 /// does a `security.*` xattr other than `security.capability`, which only
-/// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets.
+/// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets
+/// where no security module manages the name (SELinux decides
+/// `security.selinux` by policy).
 fn expected(userns: bool) -> String {
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
@@ -395,7 +404,7 @@ fn expected(userns: bool) -> String {
             "published"
         },
         if userns {
-            "refused: setxattr ./sel: Operation not permitted (os error 1)"
+            "refused: setxattr ./sel"
         } else {
             "published"
         },
@@ -547,7 +556,9 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 /// give, as overlay as root extracts them; a `0555` root, root's or a
 /// user's, is published by the rename; device nodes are left out and
 /// counted; a diff ID the tar does not hash to, an owner the namespace does
-/// not map, or a `security.selinux` xattr publishes nothing.
+/// not map, or a `security.selinux` xattr publishes nothing, the last
+/// refused by its `setxattr` on a host without SELinux, which would decide
+/// it by policy.
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container extracts layers in the build's user namespace"]
 fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() {
