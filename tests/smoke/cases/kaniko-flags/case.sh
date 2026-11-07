@@ -2,9 +2,10 @@
 # --snapshot-mode, --ignore-path and, in the T1 kaniko leg (a default
 # container where root may not mount), --mode=auto picking kaniko mode. In
 # overlay mode --ignore-path is refused (ADR-0049) and --snapshot-mode
-# changes nothing. A --mode=auto build also logs the user namespace probe,
-# reported only (#74): printed here; in the T1 kaniko leg (rootless
-# Podman's defaults) it must pass with an rbind of /proc.
+# changes nothing. A --mode=auto build also logs the user namespace probe
+# (#74): printed here; in the T1 kaniko leg (rootless Podman's defaults),
+# where it routes (#79), it stops at proc, whose rbind would work but needs
+# --allow proc.rbind, and kaniko mode builds.
 
 kaniko_leg() { [[ " ${MODE_ARGS[*]} " == *" --mode=kaniko "* ]]; }
 
@@ -12,7 +13,7 @@ kaniko_leg() { [[ " ${MODE_ARGS[*]} " == *" --mode=kaniko "* ]]; }
 # NAME, which must have exactly one, on stdout and stderr.
 userns_line() {
   local line n
-  line="$(grep -o 'user namespace probe (reported only).*' "$(out "$1")/build.log")" ||
+  line="$(grep -Eo 'user namespace probe( \(reported only\))?: .*' "$(out "$1")/build.log")" ||
     fail "build $1 logged no user namespace probe" || return 1
   n="$(wc -l <<<"$line")"
   [ "$n" = 1 ] || fail "build $1 logged $n user namespace probe lines" || return 1
@@ -54,7 +55,9 @@ case_run() {
     expect "$(run auto)" BBBB "the --mode=auto build"
     local line
     line="$(userns_line auto)"
-    [[ "$line" == *"): passes; "* && "$line" == *"proc: rbind of /proc"* ]] ||
-      fail "the user namespace probe should pass with an rbind of /proc: $line"
+    [[ "$line" == *"probe: stops at proc; "* && "$line" == *"proc: rbind of /proc"* ]] ||
+      fail "the user namespace probe should stop at proc, with an rbind of /proc: $line"
+    grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at proc' \
+      "$(out auto)/build.log" || fail "--mode=auto did not say why rootless overlay mode did not run"
   fi
 }

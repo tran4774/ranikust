@@ -685,8 +685,9 @@ container a private one on cgroup v2. So a `RUN` reads
 `RUN`'s number: a layer that records them does not depend on `--jobs` or the
 run. The `RUN` has no cgroupfs mounted and no capability in ranikust's
 user namespace to mount one. Docker's default profile refuses it a user
-namespace (ADR-0109) **[measured]**. Under `--seccomp=unconfined`, a `RUN`
-that may create one can still mount a cgroupfs of its own, rooted at the
+namespace (ADR-0109) **[measured]**. Under `--seccomp=unconfined`, or a
+profile file that allows a user namespace, a `RUN` that may create one can
+still mount a cgroupfs of its own, rooted at the
 cgroup it is in, and make cgroups below it, as on Ubuntu 22.04; Ubuntu
 24.04's AppArmor leaves it no capability in that namespace **[measured]**.
 Once the init is reaped, ranikust

@@ -741,7 +741,10 @@ pub(crate) fn probe_in_dir(
     let scratch = root
         .create_sub_root(name, 0o700)
         .map_err(|e| e.to_string())?;
-    let (r, left) = probe_in_scratch(&scratch, &parent.join(name), subordinate);
+    let (r, left) = match own_group(&root, name) {
+        Ok(_) => probe_in_scratch(&scratch, &parent.join(name), subordinate),
+        Err(e) => (Err(e.to_string()), false),
+    };
     if left {
         // The child may still write there; the error in the line says so.
         return r;
@@ -755,6 +758,22 @@ pub(crate) fn probe_in_dir(
         );
     }
     r
+}
+
+/// Gives the directory `name` in `root` the process's gid and no setgid
+/// bit, as the store's own directories get (ADR-0099): a setgid parent's
+/// gid, which no map holds, would stop the probe's `chown` in the user
+/// namespace.
+fn own_group(root: &RootPath, name: &str) -> rnk_rootfs::Result<bool> {
+    const SETGID: u32 = 0o2000;
+    let egid = rustix::process::getegid().as_raw();
+    root.set_meta_if(name, |st| {
+        (st.mode & SETGID != 0 || st.gid != egid).then(|| rnk_rootfs::Meta {
+            gid: Some(egid),
+            mode: Some(st.permissions() & !SETGID),
+            ..rnk_rootfs::Meta::default()
+        })
+    })
 }
 
 /// The probes in `scratch`, at `path`; and whether their directory stays
