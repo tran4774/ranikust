@@ -12,9 +12,11 @@ use sha2::{Digest as _, Sha256};
 
 use crate::error::{Error, Result};
 use crate::lowers;
+use crate::userns::UserNamespace;
 
 /// An extracted layer in the store, `layers/v3/<algorithm>/<hex>/` named
-/// by its chain ID (`rnk-store`'s layout): immutable, only ever a lower
+/// by its chain ID, or in a user namespace by its chain ID and the
+/// namespace's id map (`rnk-store`'s layout): immutable, only ever a lower
 /// directory.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LayerDir {
@@ -99,9 +101,11 @@ pub(crate) fn chain_id(diff_id: &Digest, below: &[LayerDir]) -> Digest {
 /// The store keys the extraction by chain ID, as BuildKit and containerd
 /// key unpacked snapshots (ADR-0032, Q-150): a hardlink into a layer below
 /// is copied from `below` (Q-055), so what is extracted depends on the
-/// stack. The store's per-digest lock keeps two builds from extracting one
-/// layer twice. The uncompressed tar must hash to `diff_id`, or nothing is
-/// published.
+/// stack. In a user namespace (`userns`), the key also holds the
+/// namespace's id map (ADR-0104), and device nodes are left out (ADR-0106):
+/// such a layer is never a lower outside that map. The store's per-digest
+/// lock keeps two builds from extracting one layer twice. The uncompressed
+/// tar must hash to `diff_id`, or nothing is published.
 ///
 /// # Errors
 ///
@@ -109,11 +113,17 @@ pub(crate) fn chain_id(diff_id: &Digest, below: &[LayerDir]) -> Digest {
 /// extraction error.
 pub(crate) fn extract_layer(
     store: &Store,
+    userns: Option<&UserNamespace>,
     diff_id: &Digest,
     blob: impl Read,
     below: &[LayerDir],
 ) -> Result<LayerDir> {
-    let key = EntryKey::Layer(chain_id(diff_id, below));
+    let chain = chain_id(diff_id, below);
+    let (key, devices) = match userns {
+        None => (chain, DeviceNodes::Create),
+        Some(ns) => (ns.layer_key(&chain), DeviceNodes::Skip),
+    };
+    let key = EntryKey::Layer(key);
     let path = store.fill(&key, |tmp| -> Result<u64> {
         let root = tmp
             .root()
@@ -125,7 +135,7 @@ pub(crate) fn extract_layer(
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let refs: Vec<&RootPath> = lower_roots.iter().collect();
         let mut decoder = rnk_layer::Decoder::new(blob)?;
-        let extracted = extract_overlay(root, &mut decoder, &refs, DeviceNodes::Create)?;
+        let extracted = extract_overlay(root, &mut decoder, &refs, devices)?;
         let size = decoder.tar_size();
         let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
         if &actual != diff_id {
