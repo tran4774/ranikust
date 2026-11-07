@@ -106,8 +106,8 @@ These are documented properties, not vulnerabilities:
   ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).
-- **`--allow proc.rbind` shows a `RUN` the command lines of its PID
-  namespace.** In rootless overlay mode where a new `/proc` is refused (a
+- **`--allow proc.rbind` shows a `RUN` the `/proc` files of ranikust's
+  PID namespace that no ptrace check guards.** In rootless overlay mode where a new `/proc` is refused (a
   container's masked `/proc`), the flag gives each `RUN` a read-only rbind of
   `/proc`: it sees every process of ranikust's PID namespace and reads the
   files of `/proc/<pid>` not under ptrace's check, such as `cmdline`,
@@ -140,9 +140,9 @@ These are documented properties, not vulnerabilities:
   Kubernetes `shareProcessNamespace` or `hostPID`, no `--pid`)
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks)),
-  and rootless overlay mode with `--allow proc.rbind` in the same cases, or
-  in the host's PID namespace or one whose PID 1 is in another mount
-  namespace
+  and rootless overlay mode with `--allow proc.rbind` in a PID namespace
+  shared with a process of another mount namespace that it can open as it
+  starts, the host's, or one whose PID 1 is in another mount namespace
   ([ADR-0129](docs/adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md),
   [ADR-0134](docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md));
   the AppArmor advice for Ubuntu 24.04 or later is Phase 3

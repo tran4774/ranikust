@@ -280,8 +280,8 @@ The steps, in order:
       `RUN` keeps a PID namespace of its own, but sees every process of the
       PID namespace ranikust runs in, as BuildKit's
       `--oci-worker-no-process-sandbox` documents: the container's, or one
-      it shares with the host or other containers (`hostPID`,
-      `shareProcessNamespace`, `--pid=host`, `--pid container:<name>`). It
+      it shares with other containers (`shareProcessNamespace`,
+      `--pid container:<name>`; the host's is refused, below). It
       reads the files of `/proc/<pid>` not under ptrace's check, such as
       `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, of
       each, ranikust's included (build-argument values, secret paths), but

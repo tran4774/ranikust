@@ -97,7 +97,7 @@ impl Fallbacks {
     /// writes nothing there, not even its own `oom_score_adj` as a new
     /// `proc` lets it (ADR-0132). Through it a `RUN` sees every
     /// process of the PID namespace ranikust runs in (the container's, or
-    /// one it shares with the host or other containers), and reads the
+    /// one it shares with other containers), and reads the
     /// files of `/proc/<pid>` not under ptrace's check, such as `cmdline`,
     /// `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, of each,
     /// ranikust's included (its build arguments, its secret paths). Their
@@ -113,10 +113,11 @@ impl Fallbacks {
     /// residual; against it, keep no secrets in other processes' command
     /// lines, ranikust's included, and give the build container a PID
     /// namespace of its own. The `ranikust` binary calls it for `--allow
-    /// proc.rbind`. This crate does not scan for a PID namespace shared with
-    /// a process of another mount namespace: its caller runs ADR-0101's
-    /// peer scan before it enters the build's user namespace, as the binary
-    /// does (ADR-0129, ADR-0130).
+    /// proc.rbind`. This crate does not check for a PID namespace shared
+    /// with another mount namespace or the host: its caller runs ADR-0101's
+    /// peer scan and ADR-0134's check of PID 1 and PID 2 before it enters
+    /// the build's user namespace, as the binary does (ADR-0129, ADR-0130,
+    /// ADR-0134).
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -175,8 +176,8 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
 /// the warning alike (ADR-0127, ADR-0130, ADR-0132).
 macro_rules! proc_rbind_exposure {
     () => {
-        "each RUN sees every process of this PID namespace (the host's or other \
-         containers' too where the container shares one) and reads the files of \
+        "each RUN sees every process of this PID namespace (other containers' too \
+         where the container shares one) and reads the files of \
          /proc/<pid> not under ptrace's check, such as cmdline, status, stat, mountinfo, \
          cgroup and net/*, ranikust's included, though not their environment, files or \
          memory; the rbind is read-only, so a RUN writes nothing there, not even its own \

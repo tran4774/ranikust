@@ -2200,7 +2200,7 @@ fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
     };
     let held = match state.open_at(rel, &OpenHow::read().directory().no_follow()) {
         Ok(held) => held,
-        // Another store removed it since.
+        // Removed since it was listed: by its probe, or by another store.
         Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
         Err(e) => return Err(e.into()),
     };
