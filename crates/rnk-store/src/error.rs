@@ -1,7 +1,7 @@
 //! Errors of the store.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A store result.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -259,6 +259,21 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+impl Error {
+    /// Whether this is [`crate::Store::check_prune`]'s refusal to open the
+    /// state directory `state` itself, as given, for a symbolic link on
+    /// its path, as against a refusal of what it found there.
+    #[must_use]
+    pub fn is_symlink_on(&self, state: &Path) -> bool {
+        matches!(
+            self,
+            Self::Rootfs(rnk_rootfs::Error::Io { path, source, .. })
+                if path == state
+                    && source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+        )
+    }
 }
 
 /// What [`Error::Unmarked`] says of the state directory.

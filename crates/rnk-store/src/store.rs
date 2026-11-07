@@ -1415,7 +1415,9 @@ impl Store {
     ///
     /// As [`Store::prune_all`], but for [`Error::InUse`], [`Error::NoFlock`],
     /// the [`Error::Io`] of resolving `state` and what deleting returns;
-    /// [`Error::Rootfs`] when `state` holds a symlink.
+    /// [`Error::Rootfs`] when `state` cannot be opened as given with no
+    /// symlink followed on it ([`Error::is_symlink_on`] tells a symlink on
+    /// its path), or holds a symlink.
     pub fn check_prune(state: &Path) -> Result<PruneCheck> {
         let root = RootPath::open(state)?;
         rnk_rootfs::refuse_own_root(&root, state)?;

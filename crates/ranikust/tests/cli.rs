@@ -1084,6 +1084,23 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
         before.contains(&rnk_store::STATE_MARKER.into()),
         "{before:?}"
     );
+    // A path ending in `..` is refused before anything is opened, even one
+    // that leads to the state directory.
+    let out = ranikust(
+        tmp.path(),
+        &["prune", "--all", "--state-dir=state/blobs/.."],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains(&format!(
+            "the state directory {} ends in ..: give the state directory's own path",
+            state.join("blobs/..").display()
+        )),
+        "{err}"
+    );
+    assert_eq!(names(&state), before);
     let out = ranikust(tmp.path(), &["prune", "--all", "--state-dir=state"], &[]);
     match out.status.code() {
         Some(0) => {

@@ -143,6 +143,39 @@ fn prune_all_refuses_a_directory_without_the_marker() {
 /// A marked directory holding, at its top, one name neither the store nor
 /// a build makes there is refused whole, the marker kept in place, also
 /// when an earlier prune renamed it.
+/// `check_prune`'s refusal to open a path with a symbolic link on it,
+/// last or not, is told apart from every other refusal.
+#[test]
+fn check_prune_tells_a_symlink_on_the_path_apart() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("real");
+    let state = real.join("state");
+    used_store(&state);
+    symlink(&real, tmp.path().join("link")).unwrap();
+    symlink(&state, tmp.path().join("last")).unwrap();
+    for typed in [tmp.path().join("link/state"), tmp.path().join("last")] {
+        let e = Store::check_prune(&typed).unwrap_err();
+        assert!(e.is_symlink_on(&typed), "{e}");
+        assert!(!e.is_symlink_on(&state), "{e}");
+    }
+    let unmarked = tmp.path().join("unmarked");
+    fs::create_dir(&unmarked).unwrap();
+    fs::write(unmarked.join("keep"), b"x").unwrap();
+    let odd = tmp.path().join("odd");
+    used_store(&odd);
+    fs::remove_file(odd.join(rnk_store::STATE_MARKER)).unwrap();
+    symlink(
+        state.join(rnk_store::STATE_MARKER),
+        odd.join(rnk_store::STATE_MARKER),
+    )
+    .unwrap();
+    for dir in [tmp.path().join("missing"), unmarked, odd] {
+        let e = Store::check_prune(&dir).unwrap_err();
+        assert!(!e.is_symlink_on(&dir), "{e}");
+    }
+}
+
 #[test]
 fn prune_all_refuses_a_name_the_store_does_not_make() {
     let dir = tempfile::tempdir().unwrap();

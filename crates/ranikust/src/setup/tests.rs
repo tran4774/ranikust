@@ -627,16 +627,21 @@ fn a_store_refusal_names_its_state_directory_once() {
 #[test]
 fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     use rnk_store::Error;
-    let given = Path::new("/home/u/link");
-    let real = Path::new("/home/u/my state");
+    // Paths that do not exist, below no host directory a symlink may be.
+    let tmp = tempfile::tempdir().unwrap();
+    let given = &tmp.path().join("link");
+    let real = &tmp.path().join("gone/my state");
     let cut_short = || Error::PruneCutShort {
         path: real.to_owned(),
     };
     let refusal = store_refusal(&cut_short(), given, 1000);
     assert_eq!(
         refusal.guidance,
-        "ranikust prune --all finishes emptying it or says what stops it: run ranikust prune \
-         --all --state-dir '/home/u/my state'"
+        format!(
+            "ranikust prune --all finishes emptying it or says what stops it: run ranikust prune \
+             --all --state-dir '{}'",
+            real.display()
+        )
     );
     assert!(
         refusal
@@ -648,12 +653,13 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     // cannot.
     let root = store_refusal(&cut_short(), given, 0);
     assert!(
-        root.guidance
-            .starts_with("ranikust gives no commands for '/home/u/my state': "),
+        root.guidance.starts_with(&format!(
+            "ranikust gives no commands for '{}': ",
+            real.display()
+        )),
         "{root}"
     );
     assert!(!root.guidance.contains("cd -P"), "{root}");
-    let tmp = tempfile::tempdir().unwrap();
     let left = tmp.path().join("my state");
     std::fs::create_dir_all(left.join("blobs")).unwrap();
     std::fs::write(left.join(rnk_store::PRUNING_MARKER), b"").unwrap();

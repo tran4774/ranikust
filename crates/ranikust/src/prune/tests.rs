@@ -172,7 +172,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
         shell_word(state.as_os_str()),
         shell_word(tmp.path().as_os_str()),
     );
-    let script = r#"'find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'"#;
+    let script = r#"'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'"#;
     let want = format!(
         "; the emptying needs GNU findutils (Alpine: apk add findutils): ( CDPATH= cd -P -- {d} && stat -c %d:%i:%u . | grep -qxF {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && stat -c %d:%i:%u ./state | grep -qxF {dev}:{ino}:{uid} && rmdir -- ./state )"
     );
@@ -182,8 +182,8 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     // be one the system needs, named by mistake.
     let refusal = prune_all(0, &empty_dir).unwrap_err();
     let want = format!(
-        "ranikust gives no commands for {}, which is empty: it removes only a directory that \
-         holds its marker",
+        "ranikust gives no commands for {}, which is empty: it gives commands only for a \
+         directory that holds its marker",
         shell_word(empty_dir.as_os_str())
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
@@ -230,11 +230,13 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
         );
     }
     // The path the user gave, quoted.
-    let refusal = prune_all(0, Path::new("/srv/the 'state'")).unwrap_err();
+    let quoted = tmp.path().join("the 'state'");
+    let refusal = prune_all(0, &quoted).unwrap_err();
     assert!(
         refusal
             .guidance
-            .starts_with(r"ranikust gives no commands for '/srv/the '\''state'\''': "),
+            .starts_with("ranikust gives no commands for '")
+            && refusal.guidance.contains(r"/the '\''state'\''': "),
         "{refusal}"
     );
     assert_eq!(listing(&state), before);
@@ -413,6 +415,12 @@ fn the_scripts_change_nothing_without_gnu_findutils() {
             "#!/bin/sh\ntest \"$1\" = --version && exit 0\nexec env PATH=\"$REAL_PATH\" find \
              \"$@\"\n",
         ),
+        (
+            "gnu-without-fts",
+            "#!/bin/sh\nif test \"$1\" = --version; then\n  echo \"find (GNU findutils) \
+             4.4.2\"\n  echo \"Features enabled: D_TYPE O_NOFOLLOW(enabled) \
+             LEAF_OPTIMISATION\"\n  exit 0\nfi\nexec env PATH=\"$REAL_PATH\" find \"$@\"\n",
+        ),
     ];
     for (name, shim) in shims {
         let bin = tmp.path().join(format!("bin-{name}"));
@@ -449,7 +457,7 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     let guidance = no_user_namespace(dir, Ok(pin));
     assert!(
         guidance.contains(
-            r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { "#
+            r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { "#
         ),
         "{guidance}"
     );

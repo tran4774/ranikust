@@ -5,10 +5,11 @@
 //!
 //! In order, each step before the next: without `--all`, a usage error
 //! naming Phase 5; root refused (euid 0 in any user namespace, a
-//! container's root included), naming Phase 5's `prune`; then a build's
-//! checks of the state directory, outside, which neither make it nor
-//! change its mode ([`statedir::check`]): one that does not exist, or is
-//! empty, is left so; then the build's user namespace
+//! container's root included), naming Phase 5's `prune`; a path ending in
+//! `..` refused, before anything is opened; then a build's checks of the
+//! state directory, outside, which neither make it nor change its mode
+//! ([`statedir::check`]): one that does not exist, or is empty, is left
+//! so; then the build's user namespace
 //! ([`setup::enter_build_userns`]); then, in it, `RLIMIT_NOFILE` raised and
 //! [`rnk_store::Store::prune_all`], which removes nothing while a build
 //! holds the store, refuses a directory that is not the store's, and keeps
@@ -67,12 +68,13 @@ macro_rules! needs_gnu_find {
 const NEEDS_GNU_FIND: &str = needs_gnu_find!();
 
 /// `$rest` after the check both scripts start with: unless `find` is GNU
-/// findutils', whose behaviour they are written for, the script stops
-/// there with nothing changed, saying what it needs ([`NEEDS_GNU_FIND`]).
+/// findutils' and lists `FTS(FTS_CWDFD)`, the walk they are written for,
+/// the script stops there with nothing changed, saying what it needs
+/// ([`NEEDS_GNU_FIND`]).
 macro_rules! gnu_find_first {
     ($rest:literal) => {
         concat!(
-            r#"find --version 2>/dev/null | grep -q "GNU findutils" || { echo ""#,
+            r#"find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo ""#,
             needs_gnu_find!(),
             r#"" >&2; exit 1; }; "#,
             $rest
@@ -122,8 +124,8 @@ fn root_commands(dir: &Path) -> String {
     match pin(dir) {
         Ok((pin, true)) => root_empties(dir, pin),
         Ok((_, false)) => format!(
-            "ranikust gives no commands for {}, which is empty: it removes only a directory \
-             that holds its marker",
+            "ranikust gives no commands for {}, which is empty: it gives commands only for a \
+             directory that holds its marker",
             shell_word(dir.as_os_str())
         ),
         Err(why) => no_commands(dir, &why, true),
@@ -281,8 +283,9 @@ impl Pin {
         }
     }
 
-    /// The check of the entry `entry`, one shell word, against the pin:
-    /// the word `stat` reads is the one the command then acts on.
+    /// The check of the entry `entry`, one shell word, against the pin;
+    /// piped rather than compared in a quoted command substitution, so an
+    /// interactive shell's history expansion or quoting does not touch it.
     fn test(self, entry: &str) -> String {
         let Self { dev, ino, uid } = self;
         format!("stat -c %d:%i:%u {entry} | grep -qxF {dev}:{ino}:{uid}")
@@ -309,16 +312,6 @@ fn ends_in_dotdot(dir: &Path) -> bool {
     dir.components().next_back() == Some(Component::ParentDir)
 }
 
-/// Whether `e`, from [`Store::check_prune`] on `dir`, is the open of `dir`
-/// itself refused for a symbolic link on it (`RESOLVE_NO_SYMLINKS`).
-fn symlink_on_path(e: &rnk_store::Error, dir: &Path) -> bool {
-    matches!(
-        e,
-        rnk_store::Error::Rootfs(rnk_rootfs::Error::Io { path, source, .. })
-            if path == dir && source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
-    )
-}
-
 /// The state directory `dir` checked as [`Store::check_prune`] does, at
 /// the path as given with no symlink followed on it, with its [`Pin`] and
 /// whether it holds anything; else why no command can be given for it.
@@ -329,7 +322,7 @@ pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
         return Err(NoPin::NoName);
     }
     let check = Store::check_prune(dir).map_err(|e| {
-        if symlink_on_path(&e, dir) {
+        if e.is_symlink_on(dir) {
             NoPin::Symlink(e.to_string())
         } else {
             NoPin::Refused(e.to_string())
@@ -445,7 +438,7 @@ pub(crate) fn run(args: &PruneArgs) -> Result<(PathBuf, Pruned), Failed> {
 
 /// `prune --all` on `state_dir`, by the effective user `euid`: refused for
 /// root, changing nothing, with commands only for a directory [`pin`]
-/// checks; else [`empty`]. Call while single-threaded.
+/// checks and that holds a marker; else [`empty`]. Call while single-threaded.
 ///
 /// # Errors
 ///
