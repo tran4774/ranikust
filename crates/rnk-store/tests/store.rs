@@ -102,6 +102,16 @@ fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     // The state directory itself is left as it is.
     let m = fs::metadata(&state).unwrap();
     assert_eq!((m.gid(), m.mode() & 0o7777), (group, 0o2700));
+
+    // A store directory of another gid without the bit, as a `grpid`
+    // mount gives one, takes the effective gid at the next open.
+    drop(store);
+    let tmp = state.join("tmp");
+    std::os::unix::fs::chown(&tmp, None, Some(group)).unwrap();
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o700)).unwrap();
+    let _store = Store::open(&paths(dir.path())).unwrap();
+    let m = fs::metadata(&tmp).unwrap();
+    assert_eq!((m.gid(), m.mode() & 0o7777), (egid, 0o700));
 }
 
 #[test]

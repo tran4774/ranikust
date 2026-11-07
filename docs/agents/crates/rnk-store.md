@@ -108,8 +108,9 @@ Design: [locks](../../design/cache-and-store.md#locks),
   mistake. A new state directory is `0700`; one owned by another user or
   writable by others is used with a warning. The store's own directories
   (`blobs/`, `layers/`, `tmp/`...) of the user's take the process's gid and
-  lose a setgid bit a setgid state directory gave them, so what the store
-  makes has a gid a user namespace maps (ADR-0099).
+  no setgid bit, whatever a setgid state directory or a `grpid` mount gave
+  them, so what the store makes has a gid a user namespace maps
+  (ADR-0099).
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
@@ -173,7 +174,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   as a lock file, a directory as a dead build's lock file; in
   `src/store/tests.rs`, a directory swapped for a symlink or another
   directory between `statx` and open. A setgid state directory of another
-  group passes neither its gid nor the bit to a directory of the store.
+  group passes neither its gid nor the bit to a directory of the store,
+  and a store directory of another group takes the process's gid.
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).

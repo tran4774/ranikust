@@ -149,7 +149,8 @@ a killed extraction leaves its entry in `tmp/`, which the next build removes.
 Every directory the store creates has a mapped uid and gid, since an unmapped
 gid alone stops the rename of a `0555` directory and the `chown` of what is
 written below it: `Store::open` gives its own directories the process's gid
-and clears the setgid bit a setgid state directory passed on to them.
+and no setgid bit, whatever a setgid state directory or a `grpid` mount gave
+them.
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular

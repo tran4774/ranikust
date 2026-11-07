@@ -322,8 +322,9 @@ impl Store {
     /// marker, and a non-empty one without it is refused. A state directory
     /// owned by another user or writable by others is used with a warning.
     /// The store's own directories take the process's gid and no setgid
-    /// bit, whatever a setgid state directory gave them, so that what the
-    /// store makes carries ids a user namespace maps (ADR-0099).
+    /// bit, whatever a setgid state directory or a `grpid` mount gave them,
+    /// so that what the store makes carries ids a user namespace maps
+    /// (ADR-0099).
     ///
     /// The store holds a shared `flock` on the state directory for its
     /// life: persistent builds share it, and an anonymous store (kaniko
@@ -1750,19 +1751,20 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
 }
 
 /// Gives `d`, one of [`DIRS`] and this user's, the effective gid and no
-/// setgid bit when it has the bit, as a setgid state directory gives its
-/// new directories: entries below then get the gid of the process that
-/// makes them, which a user namespace maps (ADR-0099), and never a gid
-/// and setgid bit from the host in an extracted layer.
+/// setgid bit, which a setgid state directory, or one on a `grpid` mount,
+/// gives its new directories otherwise: entries below then get the gid of
+/// the process that makes them, which a user namespace maps (ADR-0099),
+/// and never a gid and setgid bit from the host in an extracted layer.
 fn own_group(state: &RootPath, d: &str) -> Result<()> {
     let st = state.statx(d)?;
-    if st.mode & SETGID == 0 || st.uid != rustix::process::geteuid().as_raw() {
+    let egid = rustix::process::getegid().as_raw();
+    if st.uid != rustix::process::geteuid().as_raw() || (st.mode & SETGID == 0 && st.gid == egid) {
         return Ok(());
     }
     state.set_meta(
         d,
         &rnk_rootfs::Meta {
-            gid: Some(rustix::process::getegid().as_raw()),
+            gid: Some(egid),
             mode: Some(st.permissions() & !SETGID),
             ..rnk_rootfs::Meta::default()
         },
