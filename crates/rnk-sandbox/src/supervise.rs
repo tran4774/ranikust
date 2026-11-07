@@ -296,15 +296,16 @@ enum Then {
 
 /// What the parent does once the child ended as `end`, a stop signal
 /// `stop` having come meanwhile, the child having sent `reason`: a stop
-/// wins over the fallback, and stands for the forwarded signal that ended
-/// the child; the fallback needs the reason and the child's status for it,
-/// whose status without the reason is an error's.
+/// wins over the fallback's status, and stands for the forwarded signal
+/// that ended the child; the fallback needs the reason and the child's
+/// status for it, whose status without the reason is an error's.
 fn then(end: End, stop: Option<i32>, reason: Option<String>) -> Then {
     match (end, stop, reason) {
-        (End::Exited(FALLBACK_STATUS), Some(sig), Some(_)) => Then::Raise(sig),
-        (End::Killed(FORWARDED_STOP), Some(sig), _) => Then::Raise(sig),
+        (End::Exited(FALLBACK_STATUS) | End::Killed(FORWARDED_STOP), Some(sig), _) => {
+            Then::Raise(sig)
+        }
         (End::Exited(FALLBACK_STATUS), None, Some(reason)) => Then::FallBack(reason),
-        (End::Exited(FALLBACK_STATUS), _, None) => Then::Exit(ERROR_STATUS),
+        (End::Exited(FALLBACK_STATUS), None, None) => Then::Exit(ERROR_STATUS),
         (End::Exited(code), _, _) => Then::Exit(code),
         (End::Killed(sig), _, _) | (End::Lost, Some(sig), _) => Then::Raise(sig),
         (End::Lost, None, Some(reason)) => Then::Fail(reason),
@@ -318,9 +319,10 @@ impl Waiting {
     /// container's PID 1). Returns only where the child asked for the
     /// fallback and no stop signal came, with the reason, the process's
     /// mask and `SIGCHLD`'s disposition as before the fork. Otherwise the
-    /// process ends as the child did: its exit code, or its signal (the
-    /// stop signal for the forwarded one), with the default action, and
-    /// the shell's `128 + n` where that does not end it (PID 1).
+    /// process ends as the child did: its exit code (1 for the fallback's
+    /// status without its reason), or its signal (the stop signal for the
+    /// forwarded one and for the fallback's status), with the default
+    /// action, and the shell's `128 + n` where that does not end it (PID 1).
     pub fn wait(self: Box<Self>) -> String {
         let waited = signal_set(&WAITED);
         let mut stop = None;
@@ -473,6 +475,10 @@ mod tests {
             Then::Raise(int)
         );
         assert_eq!(
+            then(End::Exited(FALLBACK_STATUS), Some(int), None),
+            Then::Raise(int)
+        );
+        assert_eq!(
             then(End::Killed(FORWARDED_STOP), Some(int), None),
             Then::Raise(int)
         );
@@ -480,8 +486,8 @@ mod tests {
             then(End::Killed(FORWARDED_STOP), None, None),
             Then::Raise(FORWARDED_STOP)
         );
-        // The fallback's status without its reason is an error's, and a
-        // reason with an error's status is no fallback.
+        // The fallback's status without its reason is an error's, unless a
+        // stop came, and a reason with an error's status is no fallback.
         assert_eq!(
             then(End::Exited(FALLBACK_STATUS), None, None),
             Then::Exit(1)

@@ -77,7 +77,7 @@ its properties, stood for this.
   container's PID 1, which the kernel keeps from its own default action).
   While a failed set-up abandons its store, the child ignores `SIGUSR1`
   until it exits, and the parent then ends by the stop. A stop wins over a
-  fallback. The child gets `SIGKILL` when the parent dies
+  fallback and over its status. The child gets `SIGKILL` when the parent dies
   (`PR_SET_PDEATHSIG`, armed again before the build). The parent reaps any
   other child it gets, as PID 1.
 - **The state directory** is where the child writes before the build,
