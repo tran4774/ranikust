@@ -175,7 +175,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `tests/descriptors.rs` (a binary of its own): `delete_contents` and
   `prune` on trees 2,000 levels deep with only the 32 or 64 fds they
   promise left free under the soft `RLIMIT_NOFILE`, `prune` keeping its
-  entries and setting every level's times back. A
+  entries and setting every level's times back; `prune` on a chain of
+  100,000 levels within 20 times the time it took to make, and both on a
+  comb whose teeth are deeper than those fds, every other tooth kept;
+  `tests/memory.rs`: that chain pruned in memory linear in its depth. A
   directory reopened through `..` must be the one left
   (`a_directory_reopened_through_dotdot_must_be_the_one_left`,
   `prune_reopens_through_dotdot_only_the_directory_it_left`: a directory
@@ -202,7 +205,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_prune_*`): equals `copy_filtered` entry for entry, never follows a
   link out, reports `linked_outside` in every walk order, a racing directory
   exchange deletes nothing outside; `move_sub_root` refuses `/` and a
-  swapped name. The glob matcher is linear
+  swapped name. Ancestors closed by a deep deletion
+  (`src/delete/tests/reopen.rs`, changed from the walk's callback at the
+  bottom of a chain): one renamed in the root or replaced by a symlink or
+  another directory stops `delete_contents` with `Error::Changed` and
+  `prune` there or in the parent it left, deleting nothing beside where it
+  went; one moved out of the root loses only the names the walk read in
+  the root; the root itself moved is still the one emptied; one no longer
+  searchable stops the walk with `EACCES`; the parent of a mount root is
+  never reopened (`EXDEV`). The glob matcher is linear
   (`the_linear_matcher_agrees_with_every_split`, proptest against the old
   matcher as oracle).
   `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
@@ -247,7 +258,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T1** (`just test-rootless`): extraction and live extraction never
   write below or skip-wrongly real mounts (profile `privileged`, with the
   lane's `RNK_T1_ROOT`); foreign owners and setuid kept raw in `extract`
-  (profile `default`).
+  (profile `default`). In a private mount namespace (`privileged`): a
+  closed ancestor or the root that became a mount point (a tmpfs, a bind
+  of itself or of the outside) is never reopened through `..`, nothing on
+  the mount deleted; a 192-level chain with a bind and a tmpfs at depth
+  keeps both and every level above them (`delete_contents`), and `prune`
+  refuses it.
 - **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
   and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
   directory on the same filesystem and a tmpfs inside a root, with links to

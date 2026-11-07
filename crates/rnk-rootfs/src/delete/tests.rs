@@ -11,6 +11,7 @@ use super::*;
 use crate::test_util::{Fixture, errno, snapshot, tree};
 
 mod overlay;
+mod reopen;
 
 #[test]
 fn deletes_everything_but_the_root() {

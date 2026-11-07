@@ -156,14 +156,19 @@ fn file(at: &OwnedFd, name: &str) {
 /// `files` (made by descriptor, a couple open at a time). Returns the last,
 /// empty level.
 fn chain(at: &OwnedFd, name: &str, files: &[&str]) -> OwnedFd {
+    chain_of(at, name, DEPTH, NAME, files)
+}
+
+/// [`chain`] of `depth` levels named `level`.
+fn chain_of(at: &OwnedFd, name: &str, depth: usize, level: &str, files: &[&str]) -> OwnedFd {
     rustix::fs::mkdirat(at, name, Mode::from_raw_mode(0o755)).unwrap();
     let mut cur = dir_fd(at, name);
-    for _ in 0..DEPTH {
+    for _ in 0..depth {
         for f in files {
             file(&cur, f);
         }
-        rustix::fs::mkdirat(&cur, NAME, Mode::from_raw_mode(0o755)).unwrap();
-        cur = dir_fd(&cur, NAME);
+        rustix::fs::mkdirat(&cur, level, Mode::from_raw_mode(0o755)).unwrap();
+        cur = dir_fd(&cur, level);
     }
     cur
 }
@@ -260,4 +265,171 @@ fn prune_empties_a_tree_far_deeper_than_the_descriptors_it_may_use() {
     }
     assert_eq!(names(&cur), ["leaf"]);
     assert_eq!(mtime(&cur), TIMES, "the last level");
+}
+
+/// Levels of the deepest chain: a `RUN` makes one in seconds, its path some
+/// 50 times `PATH_MAX`.
+const DEEPEST: usize = 100_000;
+
+/// Writes `measured: <line>` to stderr past libtest's capture.
+fn measured(line: &str) {
+    use std::io::Write as _;
+    // The line is for the log only; the assertions decide.
+    let _ = writeln!(std::io::stderr().lock(), "measured: {line}");
+}
+
+/// A chain of [`DEEPEST`] levels, each holding a file, is pruned of its
+/// files, then removed whole, with only the descriptors [`prune`] promises
+/// free, each pass in time linear in its depth.
+#[test]
+fn a_chain_of_100k_levels_is_pruned_within_the_descriptors_promised() {
+    let _serial = serial();
+    let r = Root::new();
+    let top = r.top();
+    let made = std::time::Instant::now();
+    drop(chain_of(&top, "deep", DEEPEST, "d", &["f"]));
+    let made = made.elapsed();
+
+    let files = std::time::Instant::now();
+    let pruned = {
+        let _free = Free::only(PRUNE_FDS);
+        prune(&r.root, &|_: &Path, t: FileType| t == FileType::Regular)
+    };
+    let files = files.elapsed();
+    assert!(!pruned.unwrap().linked_outside);
+    let mut cur = dir_fd(&top, "deep");
+    for level in 0..DEEPEST {
+        if level % 10_000 == 0 {
+            assert_eq!(names(&cur), ["d"], "level {level}");
+        }
+        cur = dir_fd(&cur, "d");
+    }
+    assert!(names(&cur).is_empty());
+    drop(cur);
+
+    let whole = std::time::Instant::now();
+    let pruned = {
+        let _free = Free::only(PRUNE_FDS);
+        prune(&r.root, &|p: &Path, _: FileType| p == Path::new("deep"))
+    };
+    let whole = whole.elapsed();
+    assert!(!pruned.unwrap().linked_outside);
+    assert!(names(&top).is_empty());
+    measured(&format!(
+        "{DEEPEST} levels: made in {made:.2?}, pruned of its files in {files:.2?}, \
+         removed whole in {whole:.2?}"
+    ));
+    // A fixed amount of work per level, as making it: never quadratic in
+    // depth, which would take minutes here.
+    for (what, took) in [("pruning files", files), ("removing whole", whole)] {
+        assert!(
+            took < 20 * made + std::time::Duration::from_secs(5),
+            "{what} took {took:?}, making {made:?}"
+        );
+    }
+}
+
+/// Levels of the comb's spine, and of each of its teeth: three times
+/// [`DELETE_FDS`], and more than it.
+const SPINE: usize = 96;
+const TOOTH: usize = 40;
+const _: () = assert!(SPINE as u64 == 3 * DELETE_FDS && TOOTH as u64 > DELETE_FDS);
+
+/// A spine of [`SPINE`] levels, each holding a file `f` and a tooth: a
+/// chain of [`TOOTH`] levels, each holding a file `f`. Every walk climbs out
+/// of a tooth through `..` and goes down the next one from a directory it
+/// reopened, again and again.
+fn comb(top: &OwnedFd) {
+    rustix::fs::mkdirat(top, "comb", Mode::from_raw_mode(0o755)).unwrap();
+    let mut cur = dir_fd(top, "comb");
+    for _ in 0..SPINE {
+        file(&cur, "f");
+        drop(chain_of(&cur, "tooth", TOOTH, NAME, &["f"]));
+        rustix::fs::mkdirat(&cur, NAME, Mode::from_raw_mode(0o755)).unwrap();
+        cur = dir_fd(&cur, NAME);
+    }
+}
+
+/// The names of each level of the chain below `name` in `at`, down to its
+/// end.
+fn levels(at: &OwnedFd, name: &str) -> Vec<Vec<OsString>> {
+    let mut out = Vec::new();
+    let mut cur = dir_fd(at, name);
+    loop {
+        let n = names(&cur);
+        let next = n.iter().any(|n| n == NAME);
+        out.push(n);
+        if !next {
+            return out;
+        }
+        cur = dir_fd(&cur, NAME);
+    }
+}
+
+/// The comb is deleted whole, and pruned of its files and of every other
+/// tooth, with only the descriptors each function promises free: a walk
+/// that went back down from a reopened directory keeps to the bound, and
+/// `prune` leaves exactly what it should, its spine's times included.
+#[test]
+fn a_comb_of_deep_teeth_is_deleted_and_pruned_within_the_descriptors_promised() {
+    let _serial = serial();
+    let r = Root::new();
+    let top = r.top();
+    comb(&top);
+    let times = Timestamps {
+        last_access: TIMES,
+        last_modification: TIMES,
+    };
+    let mut parent = r.top();
+    let mut name = "comb";
+    for _ in 0..=SPINE {
+        rustix::fs::utimensat(&parent, name, &times, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        parent = dir_fd(&parent, name);
+        name = NAME;
+    }
+    drop(parent);
+
+    // Every other tooth goes whole, from the spine's first level on; every
+    // file goes.
+    let pruned = {
+        let _free = Free::only(PRUNE_FDS);
+        prune(&r.root, &|p: &Path, t: FileType| match t {
+            FileType::Regular => true,
+            FileType::Directory if p.file_name() == Some("tooth".as_ref()) => {
+                p.components().count().is_multiple_of(2)
+            }
+            _ => false,
+        })
+    };
+    assert!(!pruned.unwrap().linked_outside);
+    let mut cur = dir_fd(&top, "comb");
+    for level in 0..SPINE {
+        let want: &[&str] = if level.is_multiple_of(2) {
+            &[NAME]
+        } else {
+            &[NAME, "tooth"]
+        };
+        assert_eq!(names(&cur), want, "spine level {level}");
+        assert_eq!(mtime(&cur), TIMES, "spine level {level}");
+        if !level.is_multiple_of(2) {
+            let tooth = levels(&cur, "tooth");
+            assert_eq!(tooth.len(), TOOTH + 1, "spine level {level}");
+            assert!(
+                tooth[..TOOTH].iter().all(|n| n == &[NAME]) && tooth[TOOTH].is_empty(),
+                "spine level {level}: {tooth:?}"
+            );
+        }
+        cur = dir_fd(&cur, NAME);
+    }
+    assert!(names(&cur).is_empty());
+    drop(cur);
+
+    rustix::fs::mkdirat(&top, "again", Mode::from_raw_mode(0o755)).unwrap();
+    comb(&dir_fd(&top, "again"));
+    let deleted = {
+        let _free = Free::only(DELETE_FDS);
+        delete_contents(&r.root, &IgnoreList::new())
+    };
+    deleted.unwrap();
+    assert!(names(&top).is_empty());
 }
