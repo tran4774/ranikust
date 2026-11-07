@@ -75,6 +75,14 @@ them for rootless overlay mode.
   (ADR-0051). Nothing passing leaves the process as it was
   (`Error::NoUserNamespace`); a step failing once inside is
   `Error::UserNamespaceBroken`, after which the process must end.
+- The process left outside that namespace (`supervise.rs`, ADR-0136): for
+  root's `--mode=auto`, `ranikust` forks before it enters; the child sets
+  up and builds, the parent waits with `SIGINT`, `SIGTERM` and `SIGCHLD`
+  blocked, forwards each stop as `SIGUSR1` (`FORWARDED_STOP`), reaps any
+  other child (PID 1), and ends as the child did, or, where the child
+  exited asking for it before its build and no stop came, returns the
+  reason so that kaniko mode follows in the parent. The child ignores
+  `SIGINT` and `SIGTERM` and gets `SIGKILL` when the parent dies.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`. In the
   build's user namespace (#78): the `proc` and `sysfs` the probe chose;
@@ -152,6 +160,10 @@ impl Sandbox {
     pub fn cancel(&self);                                     // cgroup.kill and SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub struct SeccompProfile;  // compiled for this architecture, kernel and Docker's 14 capabilities: docker_default(), from_json(&[u8]); Error::SeccompProfile (ADR-0109)
+pub fn fork_to_wait() -> io::Result<Forked>; // ADR-0136, single-threaded, before enter_build_user_namespace: Forked::Child(Supervised) enters; Forked::Parent(Box<Waiting>) waits outside; Err: the process as before
+pub struct Supervised;   // proceed(self) -> io::Result<()>: before the build, the fallback no longer possible (Err: parent gone); fall_back(self, reason: &str) -> !: exits 1 with the reason (at most 4000 bytes) for the parent
+pub struct Waiting;      // wait(self: Box<Self>) -> String: returns the reason only where the child fell back and no SIGINT/SIGTERM came, mask and SIGCHLD as before the fork; else ends the process as the child ended (exit code, or the signal: the stop for FORWARDED_STOP; 128 + n where the default action does not end it)
+pub const FORWARDED_STOP: i32; // SIGUSR1: what the child's build takes as SIGINT/SIGTERM
 pub fn block_stop_signals() -> io::Result<StopSignals>; // kaniko mode on / (ADR-0077): SIGINT/SIGTERM blocked while single-threaded, read from a signalfd
 pub struct StopSignals;  // wait() -> io::Result<StopSignal>, blocking
 pub struct StopSignal { pub signo: i32, pub pid: u32, pub obeyed: bool }  // obeyed: from the kernel, or kill/tgkill from pid 0 or ranikust's parent; never rt_sigqueueinfo
@@ -485,7 +497,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   denied in a one-id map) and the tty gid read from `/proc/self`
   (`src/userns/tests.rs`),
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
-  failure records, the sealed copy (the order of the ways and the stop
+  failure records, what the parent outside the build's user namespace
+  does once its child ended (`supervise.rs`: a stop signal wins over the
+  fallback, which needs exit status 1 and a reason, else the child's end,
+  `the_parent_ends_as_the_child_unless_it_falls_back_unstopped`),
+  the sealed copy (the order of the ways and the stop
   when the core-file limit cannot go back, one marker in the copy's
   environment, a memfd sealed against writes, an `O_TMPFILE` copy with
   no name, open read-only, a `#!` copy refused before the exec in a child

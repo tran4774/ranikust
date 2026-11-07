@@ -49,7 +49,10 @@
 //! [`Sandbox::start_direct`] (ADR-0078). A build in its own user namespace
 //! calls [`probe_user_namespace`], then [`enter_build_user_namespace`] in
 //! place of [`enter_build_namespace`], before any thread, then
-//! [`probe_with_fallbacks`] in place of [`probe`].
+//! [`probe_with_fallbacks`] in place of [`probe`]. Where a set-up failing
+//! there may still fall back to another mode (ADR-0136), [`fork_to_wait`]
+//! comes before: the child enters the namespace and builds, the parent
+//! waits outside it.
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
 //! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. Phase 3 adds a
@@ -83,6 +86,7 @@ mod setup;
 mod spawner;
 mod spec;
 mod stop;
+mod supervise;
 mod sweep;
 mod userns;
 
@@ -98,6 +102,7 @@ pub use spec::{
     forbid_core_dumps,
 };
 pub use stop::{StopSignal, StopSignals, block_stop_signals};
+pub use supervise::{FORWARDED_STOP, Forked, Supervised, Waiting, fork_to_wait};
 pub use userns::{
     BuildUserNamespace, IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds,
     UsernsReport, probe_user_namespace,
