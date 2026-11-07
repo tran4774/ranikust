@@ -111,8 +111,7 @@ fn root_is_refused_naming_phase_5_before_anything() {
         // Under the lock builds take, the marker first: what an interrupted
         // removal leaves is unmarked, and a directory without it stays.
         let d = shell_word(dir.as_os_str());
-        let script =
-            r#"'rm "$1/.ranikust-state" && cd "${1:?}" && find . -xdev -mindepth 1 -delete'"#;
+        let script = r#"'rm "$1/.ranikust-state" && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 -delete'"#;
         let want = format!("test -d {d} && flock -xn {d} sh -c {script} sh {d}, then rmdir {d}");
         assert!(refusal.guidance.contains(&want), "{refusal}");
         assert!(refusal.guidance.contains("nothing is mounted below it"));
@@ -148,7 +147,7 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     let at = |what: &str| guidance.find(what);
     let renamed = at(r#"mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && "#);
     let removed = at(r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && "#);
-    let marker = at(r#"rm .ranikust-pruning'"#);
+    let marker = at(r#"test "$(ls -A)" = .ranikust-pruning && rm .ranikust-pruning'"#);
     assert!(
         matches!((renamed, removed, marker), (Some(m), Some(r), Some(l)) if m < r && r < l),
         "{guidance}"
@@ -211,6 +210,20 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
         assert!(state.join("keep").is_file(), "{script}");
         fs::remove_dir_all(&state).unwrap();
     }
+    // What the user may not remove stays, and the marker with it; root may
+    // remove it.
+    if rustix::process::geteuid().as_raw() == 0 {
+        return;
+    }
+    let state = tmp.path().join("my 'state' $x");
+    fill(&state);
+    let kept = state.join("builds/b/deep");
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o555)).unwrap();
+    let ran = run_script(USER_SCRIPT, tmp.path(), &state).success();
+    fs::set_permissions(&kept, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!ran);
+    assert!(kept.join("er").is_dir());
+    assert!(state.join(".ranikust-pruning").is_file());
 }
 
 /// A state directory's path, as one word bash reads back byte for byte;
@@ -364,6 +377,12 @@ fn a_directory_without_the_marker_is_refused_before_the_namespace() {
             .contains("is not empty and has no regular file .ranikust-state"),
         "{refusal}"
     );
+    // Prune's advice, not a build's.
+    assert!(
+        refusal.reason.contains("empties only a state directory"),
+        "{refusal}"
+    );
+    assert!(!refusal.reason.contains("--state-dir"), "{refusal}");
     assert_eq!(refusal.kind, Kind::Other);
     assert_eq!(
         listing(tmp.path()),
@@ -371,6 +390,33 @@ fn a_directory_without_the_marker_is_refused_before_the_namespace() {
         "nothing changed, modes included"
     );
     assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
+}
+
+/// A marked directory holding a name the store does not make is refused
+/// before the namespace, as the store refuses it, so no guidance for a
+/// user without one is given for it either.
+#[test]
+fn a_name_the_store_does_not_make_is_refused_before_the_namespace() {
+    let tmp = private_tempdir();
+    let dir = tmp.path().join("state");
+    marked_state(&dir);
+    fs::write(dir.join("notes"), b"x").unwrap();
+    let before = listing(tmp.path());
+    let user_ns = fs::read_link("/proc/self/ns/user").unwrap();
+    let refusal = empty(&dir).unwrap_err();
+    assert!(
+        refusal
+            .reason
+            .contains(r#"holds "notes", which ranikust does not make there"#),
+        "{refusal}"
+    );
+    assert_eq!(refusal.guidance, "");
+    assert_eq!(listing(tmp.path()), before);
+    assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
+    // Every name the store makes is taken.
+    fs::remove_file(dir.join("notes")).unwrap();
+    fs::create_dir_all(dir.join(rnk_store::SANDBOX_DIR).join("runs")).unwrap();
+    assert_eq!(statedir::check(&dir).unwrap(), Found::Entries);
 }
 
 #[test]

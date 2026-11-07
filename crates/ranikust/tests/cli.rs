@@ -1098,6 +1098,14 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
             // needs it), under the builds' lock.
             assert!(err.contains("flock -xn "), "{err}");
             assert!(err.contains(&*state.to_string_lossy()), "{err}");
+            let plain = state.to_str().is_some_and(|s| {
+                s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&b))
+            });
+            if plain {
+                let lock = format!("flock -xn {} sh -c '", state.display());
+                assert!(err.contains(&lock), "{err}");
+            }
             assert!(err.contains("find . -xdev"), "{err}");
             assert_eq!(names(&state), before);
         }

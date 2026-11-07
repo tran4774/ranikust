@@ -74,8 +74,9 @@ hold, so the commands fail while one runs; the error gives them with the
 real directory in place of `'DIR'`:
 
 ```sh
-test -d 'DIR' && flock -xn 'DIR' \
-  sh -c 'rm "$1/.ranikust-state" && cd "${1:?}" && find . -xdev -mindepth 1 -delete' sh 'DIR'
+test -d 'DIR' && flock -xn 'DIR' sh -c \
+  'rm "$1/.ranikust-state" && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 -delete' sh 'DIR'
+rmdir 'DIR'
 ```
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in

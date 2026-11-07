@@ -504,8 +504,9 @@ per stage made for the build (ADR-0059). Before anything is written,
 
 `ranikust prune --all` checks an existing state directory by these rules
 through `statedir::check`, which makes nothing and sets no mode: its chain
-as step 2 checks it again, never `/`, and its contents as step 3; not the
-system directories, since it empties only a marked directory
+as step 2 checks it again, never `/`, and its contents as step 3, with no
+name the store does not make; not the system directories, since it
+empties only a marked directory
 ([prune](cache-and-store.md#prune)).
 
 `ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/` for

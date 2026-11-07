@@ -53,17 +53,18 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
 
 /// Root's emptying of the state directory `$1`, for [`locked`]: the
 /// marker first, so that what an interrupted removal leaves is unmarked,
-/// and nothing where there is none; no top-level entry is an operand, so a
-/// mount point there stops it instead of being emptied, and `find -xdev`
-/// enters no other filesystem.
+/// and nothing where there is none; then from inside it (`CDPATH` unset),
+/// with no top-level entry an operand and `find -xdev` entering no other
+/// filesystem: a mount point is left, and the command fails.
 const ROOT_SCRIPT: &str =
-    r#"rm "$1/.ranikust-state" && cd "${1:?}" && find . -xdev -mindepth 1 -delete"#;
+    r#"rm "$1/.ranikust-state" && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 -delete"#;
 
 /// A user's emptying of the state directory `$1` without a user namespace,
 /// for [`locked`]: the marker renamed `.ranikust-pruning` first (or the one
 /// an earlier run renamed kept), which keeps builds out; then all but it,
-/// as [`ROOT_SCRIPT`] does; it last, once nothing else is left.
-const USER_SCRIPT: &str = r#"{ test -f "$1/.ranikust-pruning" || mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && cd "${1:?}" && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && rm .ranikust-pruning"#;
+/// as [`ROOT_SCRIPT`] does; it last, once a listing shows nothing else
+/// left, since not every `find` fails when a removal does.
+const USER_SCRIPT: &str = r#"{ test -f "$1/.ranikust-pruning" || mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(ls -A)" = .ranikust-pruning && rm .ranikust-pruning"#;
 
 /// What root does instead with the state directory `dir` (ADR-0105).
 fn root_guidance(dir: &Path) -> String {

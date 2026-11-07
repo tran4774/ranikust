@@ -41,7 +41,9 @@ writer) before `unshare`, the probes and the state directory's checks.
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; then
   `statedir::check` (a build's checks, outside, with nothing made and no
-  mode changed): a missing or empty state directory left so; then
+  mode changed, and no name the store does not make,
+  `rnk_store::is_store_name`): a missing or empty state directory left so;
+  then
   `setup::enter_build_userns` (the namespace, no store opened), with its
   own guidance where the user gets no namespace
   (`prune::no_user_namespace`; the build's sends the user to root); in it,
@@ -137,7 +139,8 @@ Modules of `crates/ranikust/src/` (all crate-private):
   writable by group or others (root's sticky directories excepted); created
   `0700` by `mkdirat` below the checked descriptor; chain checked again.
   `statedir::check(state_dir)`: the same rules on an existing directory,
-  `Found { Missing, Empty, Entries }`, nothing made or chmodded. Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
+  and only names the store makes, `Found { Missing, Empty, Entries }`,
+  nothing made or chmodded. Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
 
 ### Set-up order
 
@@ -341,8 +344,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   directory unchanged, no process or mount left), `prune` (`--all` and
   `--state-dir` parsed, `--kaniko-dir` refused; without `--all` a usage
   error naming Phase 5; root refused before anything, a missing directory
-  left missing, an empty one left as it is, one without the marker
-  refused before the namespace, modes unchanged; the guidance's commands:
+  left missing, an empty one left as it is, one without the marker or
+  holding a name the store does not make refused before the namespace,
+  modes unchanged; the guidance's commands:
   paths quoted so bash reads them back byte for byte, the `flock` failing
   while a store is open, nothing made at a missing path, the scripts run
   as given emptying a marked directory, the user's again after a run cut

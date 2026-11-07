@@ -50,5 +50,5 @@ pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
 pub use store::{
     BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper,
-    PRUNING_MARKER, SANDBOX_DIR, STATE_MARKER, Store, TmpEntry,
+    PRUNING_MARKER, SANDBOX_DIR, STATE_MARKER, Store, TmpEntry, is_store_name,
 };

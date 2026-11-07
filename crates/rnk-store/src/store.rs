@@ -1,7 +1,7 @@
 //! The store: opening and clean-up, per-digest locks, publication.
 
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
@@ -1344,13 +1344,14 @@ impl Store {
         if names.is_empty() {
             return Ok(false);
         }
-        let foreign: Vec<OsString> = names.into_iter().filter(|n| !made_by_store(n)).collect();
+        let foreign: Vec<OsString> = names.into_iter().filter(|n| !is_store_name(n)).collect();
         if !foreign.is_empty() {
             return Err(Error::NotAStateDir {
                 path: state_path,
                 why: format!(
                     "holds {}, which ranikust does not make there, so ranikust prune --all \
-                     removes nothing: move them out of it, then run ranikust prune --all again",
+                     removes nothing: move what ranikust did not make out of it, then run \
+                     ranikust prune --all again",
                     shown_names(&foreign)
                 ),
             });
@@ -1895,9 +1896,10 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
 }
 
 /// Whether `name`, at the top of a state directory, is one the store or a
-/// build makes there: the markers, [`DIRS`], [`SANDBOX_DIR`], and an
-/// anonymous store's names.
-fn made_by_store(name: &OsString) -> bool {
+/// build makes there: the markers, the store's directories, [`SANDBOX_DIR`],
+/// and an anonymous store's names. [`Store::prune_all`] refuses a directory
+/// holding any other.
+pub fn is_store_name(name: &OsStr) -> bool {
     let name = name.as_encoded_bytes();
     [MARKER, PRUNING, BUILDING, SANDBOX_DIR]
         .iter()
