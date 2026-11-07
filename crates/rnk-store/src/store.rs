@@ -338,6 +338,9 @@ pub struct Store {
     anon: Option<Anon>,
     /// [`Store::anonymous_file`] in a persistent store, made on first use.
     build_files: OnceLock<AnonFiles>,
+    /// Whether [`Store::open`] made the state directory a store: it wrote
+    /// [`STATE_MARKER`] ([`Store::abandon`]).
+    made: bool,
     /// Keeps names and `RUN`s apart in an anonymous store; open otherwise.
     fence: Fence,
     /// The per-digest locks held by this store's threads.
@@ -412,7 +415,7 @@ impl Store {
         }
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
-        check_marker(&state, &state_path)?;
+        let made = check_marker(&state, &state_path)?;
         for d in DIRS {
             state.create_dir_all(d, DIR_MODE)?;
             own_group(&state, d)?;
@@ -428,6 +431,7 @@ impl Store {
             _state_lock: Some(state_lock),
             anon: None,
             build_files: OnceLock::new(),
+            made,
             fence: Fence::default(),
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
@@ -628,6 +632,7 @@ impl Store {
             _build_lock: None,
             _state_lock: None,
             build_files: OnceLock::new(),
+            made: false,
             fence,
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
@@ -1342,6 +1347,58 @@ impl Store {
         emptied
     }
 
+    /// Closes a store no build used, as [`Store::close`] does, then, where
+    /// its [`Store::open`] made the state directory a store (it wrote
+    /// [`STATE_MARKER`]), empties the directory as [`Store::prune_all`]
+    /// does: for a set-up that fails before its build and falls back to
+    /// kaniko mode on `/` (ADR-0136), which takes only an empty state
+    /// directory. The store's shared `flock` is turned exclusive without
+    /// waiting, never released before: while another build holds the
+    /// directory, nothing is emptied. A build that opened the store and
+    /// ended meanwhile loses what it left, a cache. `false` when nothing
+    /// was emptied: a store this one did not make, an anonymous one, or one
+    /// another build holds.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::close`]; as [`Store::prune_all`] once the lock is taken,
+    /// [`Error::NoFlock`] when it cannot be.
+    pub fn abandon(self) -> Result<bool> {
+        if self.anon.is_some() || !self.made {
+            self.close()?;
+            return Ok(false);
+        }
+        let Self {
+            state,
+            state_path,
+            id,
+            _build_lock: build_lock,
+            _state_lock: state_lock,
+            ..
+        } = self;
+        remove_build(&state, &id)?;
+        drop(build_lock);
+        let Some(lock) = state_lock else {
+            return Ok(false);
+        };
+        let span = tracing::info_span!("rnk_store.prune");
+        let _entered = span.enter();
+        rnk_rootfs::refuse_own_root(&state, &state_path)?;
+        // A conversion: the shared lock goes, and the exclusive one comes
+        // only where no other descriptor holds the directory.
+        match lock::try_lock(&lock) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(source) => {
+                return Err(Error::NoFlock {
+                    path: state_path,
+                    source,
+                });
+            }
+        }
+        empty_locked(&state, state_path, &lock)
+    }
+
     /// Empties the state directory `state`, for `ranikust prune --all`
     /// (ADR-0105): every entry, lock and build directory, and the marker
     /// last. `false` when it was empty already.
@@ -1401,67 +1458,7 @@ impl Store {
                 });
             }
         }
-        let renamed = match prune_check(&root, &state_path)? {
-            Prunable::Empty => return Ok(false),
-            // A prune cut short: this one finishes it.
-            Prunable::CutShort => false,
-            Prunable::Marked => {
-                // No new inode, which a full disk or quota would refuse;
-                // not RENAME_NOREPLACE, which NFS refuses (the flock is ours).
-                root.rename(MARKER, PRUNING)?;
-                true
-            }
-        };
-        // On disk before any entry is emptied in place, even when an
-        // earlier prune renamed it and was killed before its sync.
-        if let Err(e) = rustix::fs::fsync(&lock) {
-            // Only this call's: an earlier prune's may cover removed entries.
-            if renamed && let Err(back) = root.rename(PRUNING, MARKER) {
-                tracing::warn!(
-                    target: "rnk_store",
-                    "state directory {}: {PRUNING} cannot be renamed back to {MARKER} \
-                     ({back}); builds refuse the directory until ranikust prune --all empties it",
-                    state_path.display()
-                );
-            }
-            return Err(Error::Io {
-                op: "sync",
-                path: state_path,
-                source: e.into(),
-            });
-        }
-        let mut keep = IgnoreList::new();
-        keep.insert(PRUNING)?;
-        let deleted = delete_contents(&root, &keep);
-        let left: Vec<OsString> = list(&root, Path::new("."))?
-            .into_iter()
-            .filter(|n| n != PRUNING)
-            .collect();
-        let left = match (left.is_empty(), deleted) {
-            (true, Ok(())) => None,
-            (true, Err(e)) => Some(format!("nothing it can name (removing failed: {e})")),
-            (false, Err(e)) => Some(format!(
-                "{} (removing them failed: {e})",
-                shown_names(&left)
-            )),
-            (false, Ok(())) => Some(format!("{} (on another mount?)", shown_names(&left))),
-        };
-        if let Some(left) = left {
-            return Err(Error::NotPruned {
-                path: state_path,
-                left,
-            });
-        }
-        // The removals on disk before the marker's, which a filesystem may
-        // otherwise keep alone: an unmarked, non-empty directory.
-        rustix::fs::syncfs(&lock).map_err(|e| Error::Io {
-            op: "sync",
-            path: state_path,
-            source: e.into(),
-        })?;
-        root.remove_file(PRUNING)?;
-        drop(lock);
-        Ok(true)
+        empty_locked(&root, state_path, &lock)
     }
 
     /// [`Store::prune_all`]'s checks of the state directory `state`, run
@@ -1955,6 +1952,71 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
+/// [`Store::prune_all`] once its exclusive `lock` on the state directory
+/// `root` is taken: checks it again, then empties it, the marker last.
+fn empty_locked(root: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<bool> {
+    let renamed = match prune_check(root, &state_path)? {
+        Prunable::Empty => return Ok(false),
+        // A prune cut short: this one finishes it.
+        Prunable::CutShort => false,
+        Prunable::Marked => {
+            // No new inode, which a full disk or quota would refuse;
+            // not RENAME_NOREPLACE, which NFS refuses (the flock is ours).
+            root.rename(MARKER, PRUNING)?;
+            true
+        }
+    };
+    // On disk before any entry is emptied in place, even when an
+    // earlier prune renamed it and was killed before its sync.
+    if let Err(e) = rustix::fs::fsync(lock) {
+        // Only this call's: an earlier prune's may cover removed entries.
+        if renamed && let Err(back) = root.rename(PRUNING, MARKER) {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory {}: {PRUNING} cannot be renamed back to {MARKER} \
+                 ({back}); builds refuse the directory until ranikust prune --all empties it",
+                state_path.display()
+            );
+        }
+        return Err(Error::Io {
+            op: "sync",
+            path: state_path,
+            source: e.into(),
+        });
+    }
+    let mut keep = IgnoreList::new();
+    keep.insert(PRUNING)?;
+    let deleted = delete_contents(root, &keep);
+    let left: Vec<OsString> = list(root, Path::new("."))?
+        .into_iter()
+        .filter(|n| n != PRUNING)
+        .collect();
+    let left = match (left.is_empty(), deleted) {
+        (true, Ok(())) => None,
+        (true, Err(e)) => Some(format!("nothing it can name (removing failed: {e})")),
+        (false, Err(e)) => Some(format!(
+            "{} (removing them failed: {e})",
+            shown_names(&left)
+        )),
+        (false, Ok(())) => Some(format!("{} (on another mount?)", shown_names(&left))),
+    };
+    if let Some(left) = left {
+        return Err(Error::NotPruned {
+            path: state_path,
+            left,
+        });
+    }
+    // The removals on disk before the marker's, which a filesystem may
+    // otherwise keep alone: an unmarked, non-empty directory.
+    rustix::fs::syncfs(lock).map_err(|e| Error::Io {
+        op: "sync",
+        path: state_path,
+        source: e.into(),
+    })?;
+    root.remove_file(PRUNING)?;
+    Ok(true)
+}
+
 /// The state directory `state` resolved and opened for
 /// [`Store::prune_all`], this process's own `/` refused.
 fn open_to_prune(state: &Path) -> Result<(PathBuf, RootPath)> {
@@ -2086,17 +2148,17 @@ fn shown_names(names: &[OsString]) -> String {
 }
 
 /// Refuses a non-empty state directory without a regular-file marker, and
-/// marks an empty one. A directory of the user namespace probe
-/// ([`is_probe_dir`]: of a build cut short before its store) does not
-/// count.
-fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
+/// marks an empty one: `true` when this call wrote the marker. A directory
+/// of the user namespace probe ([`is_probe_dir`]: of a build cut short
+/// before its store) does not count.
+fn check_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
     if !needs_marker(state, state_path)? {
-        return Ok(());
+        return Ok(false);
     }
     match state.open_at(MARKER, &OpenHow::write().create_new(0o644)) {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(true),
         Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => match marker(state)? {
-            Some(true) => Ok(()),
+            Some(true) => Ok(false),
             _ => Err(not_a_state_dir(state_path)),
         },
         Err(e) => Err(e.into()),
@@ -2198,6 +2260,8 @@ fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
         Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
         Err(e) => return Err(e.into()),
     };
+    #[cfg(test)]
+    tests::probe_dir_listed(state, rel);
     let held = match state.open_at(rel, &OpenHow::read().directory().no_follow()) {
         Ok(held) => held,
         // Removed since it was listed: by its probe, or by another store.

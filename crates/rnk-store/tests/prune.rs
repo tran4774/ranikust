@@ -466,3 +466,38 @@ fn links_out_of_the_state_directory_are_removed_not_followed() {
     assert_eq!(fs::metadata(outside.join("own")).unwrap().nlink(), 1);
     assert_eq!(fs::read(outside.join("sub/f")).unwrap(), b"keep");
 }
+
+/// A store whose open made the state directory one leaves it empty when
+/// abandoned, the sandbox's directory and probe leftovers included, so
+/// that kaniko mode on `/` takes it (ADR-0136); one it found, or one
+/// another build holds, is kept whole.
+#[test]
+fn abandon_empties_only_a_store_its_open_made_and_no_build_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let made = open(&state);
+    fs::create_dir(state.join(rnk_store::SANDBOX_DIR)).unwrap();
+    fs::write(made.build_dir().join("probe"), b"x").unwrap();
+    assert!(made.abandon().unwrap(), "emptied");
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+    let anon = Store::open_anonymous(&state).unwrap();
+    anon.close().unwrap();
+
+    // Found marked: closed, the rest kept.
+    let state = dir.path().join("found");
+    used_store(&state);
+    // The dead build's directories go at the next open.
+    open(&state).close().unwrap();
+    let before = tree(&state);
+    assert!(!open(&state).abandon().unwrap(), "kept");
+    assert_eq!(tree(&state), before);
+
+    // Made, but another build holds it: closed, the rest kept.
+    let state = dir.path().join("held");
+    let made = open(&state);
+    let other = open(&state);
+    assert!(!made.abandon().unwrap(), "kept while held");
+    assert!(state.join(rnk_store::STATE_MARKER).is_file());
+    other.close().unwrap();
+    assert!(Store::prune_all(&state).unwrap());
+}

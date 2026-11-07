@@ -18,6 +18,33 @@ thread_local! {
     /// thread: a `.ranikust-state`, and the forged `layers/`.
     static MARKER_CREATE_SAW: std::cell::RefCell<Vec<(bool, bool)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Whether the next probe directory `remove_probe_dir` has seen on
+    /// this thread is removed before it opens it, as by its probe.
+    static PROBE_DIR_GOES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The hook in `remove_probe_dir`, between its `statx` and its `open`.
+pub(super) fn probe_dir_listed(state: &RootPath, rel: &Path) {
+    if PROBE_DIR_GOES.with(|g| g.replace(false)) {
+        state.remove_dir(rel).unwrap();
+    }
+}
+
+/// A probe directory removed between its `statx` and its `open` (by its
+/// probe, or by another store) is not removed again, and fails nothing.
+#[test]
+fn a_probe_directory_gone_before_it_is_opened_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = format!("{USERNS_PROBE_PREFIX}1-2");
+    fs::create_dir(dir.path().join(&name)).unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    PROBE_DIR_GOES.with(|g| g.set(true));
+    assert!(!remove_probe_dir(&root, Path::new(&name)).unwrap());
+    assert!(!dir.path().join(&name).exists());
+    // Unhooked, one is removed.
+    fs::create_dir(dir.path().join(&name)).unwrap();
+    assert!(remove_probe_dir(&root, Path::new(&name)).unwrap());
+    assert!(!dir.path().join(&name).exists());
 }
 
 /// The hook in `create_building_marker`, given the state directory:
