@@ -173,20 +173,32 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
         shell_word(tmp.path().as_os_str()),
     );
     let marker_first = r#"'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && "#;
-    // In a directory another account owns, only its entries and those of
-    // no account go.
-    let (only, emptying) = if uid == 0 {
-        (String::new(), "find . -xdev -mindepth 1 -delete".to_owned())
-    } else {
-        (
+    // In a directory a user owns, only the entries of its uid and of its
+    // subordinate range go.
+    let (only, emptying) = match (uid, Owner::of(uid).range) {
+        (0, _) => (String::new(), "find . -xdev -mindepth 1 -delete".to_owned()),
+        (_, None) => (
             format!(
-                " and deletes only the entries of uid {uid}, the directory's owner, and of no \
-                 account, stopping where another account owns any"
+                " and deletes only the entries of uid {uid}, the directory's owner, stopping \
+                 where another uid owns any"
             ),
             format!(
-                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} -o -nouser \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of accounts other than uid {uid} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
+                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of uids other than {uid} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
             ),
-        )
+        ),
+        (_, Some(IdRange { start, count })) => (
+            format!(
+                " and deletes only the entries of uid {uid}, the directory's owner, and of its \
+                 subordinate ids {start}-{}, stopping where another uid owns any",
+                start + count - 1
+            ),
+            format!(
+                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} -o \( -uid +{} -uid -{} \) \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of uids other than {uid} and its subordinate range {start}-{} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#,
+                start - 1,
+                start + count,
+                start + count - 1
+            ),
+        ),
     };
     let script = format!("{marker_first}{emptying}'");
     let want = format!(
@@ -314,7 +326,7 @@ fn the_printed_commands_run_on_the_directory_ranikust_checked() {
     );
     let scripts = [
         ROOT_SCRIPT.to_owned(),
-        root_script(uid),
+        root_script(Owner::of(uid)),
         USER_SCRIPT.to_owned(),
     ];
     for (i, script) in scripts.iter().enumerate() {
@@ -360,7 +372,7 @@ fn the_printed_commands_change_nothing_in_another_directory() {
     let commands: [(&str, Printed); 5] = [
         ("root", |d, p| in_dir(d, p, ROOT_SCRIPT)),
         ("root's for the owner", |d, p| {
-            in_dir(d, p, &root_script(p.uid))
+            in_dir(d, p, &root_script(Owner::of(p.uid)))
         }),
         ("user", |d, p| in_dir(d, p, USER_SCRIPT)),
         ("rmdir", remove_dir),
@@ -455,7 +467,7 @@ fn the_scripts_change_nothing_without_gnu_findutils() {
         fs::set_permissions(bin.join("find"), fs::Permissions::from_mode(0o755)).unwrap();
         for script in [
             ROOT_SCRIPT.to_owned(),
-            root_script(owner),
+            root_script(Owner::of(owner)),
             USER_SCRIPT.to_owned(),
         ] {
             marked_state(&state);
@@ -591,7 +603,7 @@ fn the_suggested_scripts_stay_in_the_directory_they_locked() {
     let owner = pin_of(tmp.path()).uid;
     let scripts = [
         (ROOT_SCRIPT.to_owned(), "rm"),
-        (root_script(owner), "rm"),
+        (root_script(Owner::of(owner)), "rm"),
         (USER_SCRIPT.to_owned(), "mv"),
     ];
     for (i, (script, tool)) in scripts.iter().enumerate() {
@@ -646,8 +658,8 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
     for (script, renamed_before) in [
         (ROOT_SCRIPT.to_owned(), false),
         (ROOT_SCRIPT.to_owned(), true),
-        (root_script(owner), false),
-        (root_script(owner), true),
+        (root_script(Owner::of(owner)), false),
+        (root_script(Owner::of(owner)), true),
         (USER_SCRIPT.to_owned(), false),
         (USER_SCRIPT.to_owned(), true),
     ] {
@@ -782,17 +794,51 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
     }
 }
 
-/// Root's emptying deletes, in a directory another account owns, only
-/// that account's entries and those of no account: run for the owner, it
-/// empties the directory; run for any other account, it removes nothing
-/// but the marker and stops, saying so, with `rmdir` not reached. In a
-/// directory root owns, every entry goes.
+/// Root's emptying deletes, in a directory a user owns, only the entries
+/// of that user's uid and of its subordinate range, `find` given the
+/// owner's uid and the range's bounds; with no range, or one holding root's
+/// uid, the owner's uid alone. In a directory root owns, every entry goes.
 #[test]
 fn roots_emptying_of_a_users_directory_deletes_only_that_users_entries() {
-    // The predicate is there for an owner other than root only.
-    assert_eq!(root_script(0), ROOT_SCRIPT);
-    assert!(!ROOT_SCRIPT.contains("-uid") && !ROOT_SCRIPT.contains("-nouser"));
-    assert!(root_script(1).contains(r" \( -uid 1 -o -nouser \) -delete "));
+    let range = IdRange {
+        start: 100_000,
+        count: 65_536,
+    };
+    assert_eq!(root_script(Owner::new(0, Some(range))), ROOT_SCRIPT);
+    assert!(!ROOT_SCRIPT.contains("-uid"));
+    let ranged = root_script(Owner::new(1, Some(range)));
+    assert!(
+        ranged.contains(r" \( -uid 1 -o \( -uid +99999 -uid -165536 \) \) -delete && "),
+        "{ranged}"
+    );
+    assert!(
+        ranged.contains(
+            r#" || { echo "not emptied: entries of uids other than 1 and its subordinate range 100000-165535 are left in place, as is anything find names above" >&2; exit 1; }; }"#
+        ),
+        "{ranged}"
+    );
+    let holds_root = IdRange { start: 0, count: 5 };
+    for range in [None, Some(holds_root)] {
+        let alone = root_script(Owner::new(1, range));
+        assert!(alone.contains(r" \( -uid 1 \) -delete && "), "{alone}");
+        assert!(
+            alone.contains(
+                r#"echo "not emptied: entries of uids other than 1 are left in place, as"#
+            ),
+            "{alone}"
+        );
+        assert_eq!(
+            owner_only(Owner::new(1, range)),
+            " and deletes only the entries of uid 1, the directory's owner, stopping where another \
+             uid owns any"
+        );
+    }
+    assert_eq!(
+        owner_only(Owner::new(1, Some(range))),
+        " and deletes only the entries of uid 1, the directory's owner, and of its subordinate \
+         ids 100000-165535, stopping where another uid owns any"
+    );
+    assert_eq!(owner_only(Owner::new(0, Some(range))), "");
     let tmp = private_tempdir();
     let outside = tmp.path().join("outside");
     fs::create_dir(&outside).unwrap();
@@ -815,11 +861,11 @@ fn roots_emptying_of_a_users_directory_deletes_only_that_users_entries() {
     .unwrap();
     fs::set_permissions(bin.join("find"), fs::Permissions::from_mode(0o755)).unwrap();
     let args = tmp.path().join("args");
-    let run = |script: &str| {
+    let run = |owner: Owner| {
         let pin = pin_of(&state);
         let command = format!(
             "{} && {}",
-            in_dir(&state, pin, script),
+            in_dir(&state, pin, &root_script(owner)),
             remove_dir(&state, pin)
         );
         let mut bash = std::process::Command::new("bash");
@@ -837,56 +883,77 @@ fn roots_emptying_of_a_users_directory_deletes_only_that_users_entries() {
             .collect();
         (out, deleting)
     };
-    let owner = pin_of(tmp.path()).uid;
-    let mut cases = vec![(0, "-delete".to_owned())];
-    if owner != 0 {
-        cases.push((owner, format!("( -uid {owner} -o -nouser ) -delete")));
+    // The test's own files, run for their owner.
+    let me = pin_of(tmp.path()).uid;
+    let far = IdRange {
+        start: me + 10,
+        count: 5,
+    };
+    let mut cases = vec![(Owner::new(0, None), "-delete".to_owned())];
+    if me != 0 {
+        cases.push((Owner::new(me, None), format!("( -uid {me} ) -delete")));
+        cases.push((
+            Owner::new(me, Some(far)),
+            format!(
+                "( -uid {me} -o ( -uid +{} -uid -{} ) ) -delete",
+                me + 9,
+                me + 15
+            ),
+        ));
     }
-    for (uid, predicate) in cases {
+    for (owner, predicate) in cases {
         fill(&state);
-        let (out, deleting) = run(&root_script(uid));
-        assert!(out.status.success(), "{uid}: {out:?}");
-        assert!(!state.exists(), "{uid}");
-        assert!(outside.join("keep").is_file(), "{uid}");
+        let (out, deleting) = run(owner);
+        assert!(out.status.success(), "{owner:?}: {out:?}");
+        assert!(!state.exists(), "{owner:?}");
+        assert!(outside.join("keep").is_file(), "{owner:?}");
         assert_eq!(
             deleting,
             [format!(". -xdev -mindepth 1 {predicate}")],
-            "{uid}"
+            "{owner:?}"
         );
     }
-    // Another account's entries: the owner's own, run for an account that
-    // is not the owner, where the owner has an account here.
-    fill(&state);
-    let nouser = std::process::Command::new("find")
-        .arg(&state)
-        .args(["-maxdepth", "0", "-nouser"])
-        .output()
-        .unwrap();
-    assert!(nouser.status.success(), "{nouser:?}");
-    if !nouser.stdout.is_empty() {
-        eprintln!("skipped: uid {owner} has no account here");
+    // Run for another owner, with the test's uid at each edge of the
+    // range: just before it, its first, its last, just after it. Outside,
+    // nothing but the marker goes, and the script stops, saying so, before
+    // `rmdir`.
+    if me < 6 {
+        eprintln!("skipped: the edges of a range around uid {me}");
         return;
     }
-    let other = owner + 1;
-    let mut before = listing(&state);
-    before.retain(|(name, _)| name != Path::new(rnk_store::STATE_MARKER));
-    let (out, deleting) = run(&root_script(other));
-    assert!(!out.status.success(), "{out:?}");
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains(&format!(
-            "not emptied: entries of accounts other than uid {other} are left in place"
-        )),
-        "{err}"
-    );
-    assert_eq!(listing(&state), before);
-    assert!(outside.join("keep").is_file());
-    assert_eq!(
-        deleting,
-        [format!(
-            ". -xdev -mindepth 1 ( -uid {other} -o -nouser ) -delete"
-        )]
-    );
+    let other = me + 100;
+    for (start, deleted) in [(me + 1, false), (me, true), (me - 4, true), (me - 5, false)] {
+        let range = IdRange { start, count: 5 };
+        fill(&state);
+        let mut before = listing(&state);
+        before.retain(|(name, _)| name != Path::new(rnk_store::STATE_MARKER));
+        let (out, deleting) = run(Owner::new(other, Some(range)));
+        assert_eq!(
+            deleting,
+            [format!(
+                ". -xdev -mindepth 1 ( -uid {other} -o ( -uid +{} -uid -{} ) ) -delete",
+                start - 1,
+                start + 5
+            )],
+            "{start}"
+        );
+        assert!(outside.join("keep").is_file(), "{start}");
+        if deleted {
+            assert!(out.status.success(), "{start}: {out:?}");
+            assert!(!state.exists(), "{start}");
+            continue;
+        }
+        assert!(!out.status.success(), "{start}: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        let why = format!(
+            "not emptied: entries of uids other than {other} and its subordinate range {start}-{} \
+             are left in place",
+            start + 4
+        );
+        assert!(err.contains(&why), "{start}: {err}");
+        assert_eq!(listing(&state), before, "{start}");
+        fs::remove_dir_all(&state).unwrap();
+    }
 }
 
 /// A state directory's path, as one word bash reads back byte for byte;
@@ -970,13 +1037,22 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
         uid: 3,
     };
     let ways = unfinished(dir, Ok(pin));
+    let owner = Owner::of(3);
+    let root = format!(
+        "; or, as root, empty it in place, which needs GNU findutils (Alpine: apk add \
+         findutils){}, {}, then ",
+        owner_only(owner),
+        in_dir(dir, pin, &root_script(owner))
+    );
+    assert!(ways.contains(&root), "{ways}");
     for want in [
         "on another mount",
         "subordinate ids",
         "unmount anything below '/home/u/my state'",
         "with newuidmap installed and ranges for this user in /etc/subuid and /etc/subgid",
-        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, which needs GNU findutils (Alpine: apk add findutils) and deletes only the entries of uid 3, the directory's owner, and of no account, stopping where another account owns any, ( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version "#,
-        r#" \( -uid 3 -o -nouser \) -delete "#,
+        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, which needs GNU findutils (Alpine: apk add findutils) and deletes only the entries of uid 3, the directory's owner,"#,
+        r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version "#,
+        r#" \( -uid 3"#,
         r#"), then ( CDPATH= cd -P -- /home/u && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && rmdir -- './my state' )"#,
     ] {
         assert!(ways.contains(want), "{want}: {ways}");

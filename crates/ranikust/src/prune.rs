@@ -21,6 +21,7 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
 
+use rnk_sandbox::IdRange;
 use rnk_store::Store;
 
 use crate::cli::PruneArgs;
@@ -103,33 +104,85 @@ const ROOT_SCRIPT: &str = gnu_find_first!(concat!(
     "find . -xdev -mindepth 1 -delete"
 ));
 
-/// Root's emptying of the state directory it runs in, which `uid` owns,
+/// The owner of a state directory, whose entries root's emptying deletes
+/// ([`root_script`]): `uid`, and, for a user other than root, `range`, the
+/// first `/etc/subuid` range of it, the only other uids its builds' user
+/// namespace maps.
+#[derive(Clone, Copy, Debug)]
+struct Owner {
+    uid: u32,
+    range: Option<IdRange>,
+}
+
+impl Owner {
+    /// `uid` with the range [`crate::subids::lookup`] reads for it: none
+    /// where there is none or it cannot be read.
+    fn of(uid: u32) -> Self {
+        Self::new(
+            uid,
+            crate::subids::lookup(uid)
+                .ok()
+                .flatten()
+                .map(|ids| ids.uids),
+        )
+    }
+
+    /// `uid` with `range`, but for one that holds root's uid or ends past
+    /// the last uid, which is left out, its entries kept.
+    fn new(uid: u32, range: Option<IdRange>) -> Self {
+        let range =
+            range.filter(|r| r.start > 0 && r.count > 0 && r.start.checked_add(r.count).is_some());
+        Self { uid, range }
+    }
+
+    /// The range's first and last uids, as `first-last`.
+    fn range_text(range: IdRange) -> String {
+        format!("{}-{}", range.start, range.start + (range.count - 1))
+    }
+}
+
+/// Root's emptying of the state directory it runs in, which `owner` owns,
 /// for [`in_dir`]: [`ROOT_SCRIPT`] where root owns it; else the same steps
-/// deleting only `uid`'s entries and those of no account (the owner's
-/// subordinate ids have none), so that what other accounts own is left in
+/// deleting only the entries of the owner's uid and of its range (`find`'s
+/// `+n` and `-n` are strict), so that those of other uids are left in
 /// place; the script then stops, saying so, the directory not empty.
-fn root_script(uid: u32) -> String {
+fn root_script(owner: Owner) -> String {
+    let uid = owner.uid;
     if uid == 0 {
         return ROOT_SCRIPT.to_owned();
     }
+    let (or_range, and_range) = match owner.range {
+        Some(range) => (
+            format!(
+                r" -o \( -uid +{} -uid -{} \)",
+                range.start - 1,
+                range.start + range.count
+            ),
+            format!(" and its subordinate range {}", Owner::range_text(range)),
+        ),
+        None => (String::new(), String::new()),
+    };
     let mut script = String::from(gnu_find_first!(root_marker_first!()));
     script.push_str(&format!(
-        r#"{{ find . -xdev -mindepth 1 \( -uid {uid} -o -nouser \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of accounts other than uid {uid} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
+        r#"{{ find . -xdev -mindepth 1 \( -uid {uid}{or_range} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of uids other than {uid}{and_range} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
     ));
     script
 }
 
-/// What [`root_script`] deletes in a directory `uid` owns, to follow "the
+/// What [`root_script`] deletes in a directory `owner` owns, to follow "the
 /// emptying needs GNU findutils": nothing to add for root.
-fn owner_only(uid: u32) -> String {
+fn owner_only(owner: Owner) -> String {
+    let uid = owner.uid;
     if uid == 0 {
-        String::new()
-    } else {
-        format!(
-            " and deletes only the entries of uid {uid}, the directory's owner, and of no \
-             account, stopping where another account owns any"
-        )
+        return String::new();
     }
+    let range = owner.range.map_or(String::new(), |range| {
+        format!(" and of its subordinate ids {},", Owner::range_text(range))
+    });
+    format!(
+        " and deletes only the entries of uid {uid}, the directory's owner,{range} stopping \
+         where another uid owns any"
+    )
 }
 
 /// A user's emptying of the state directory it runs in without a user
@@ -146,13 +199,14 @@ const USER_SCRIPT: &str = gnu_find_first!(
 /// How root empties the state directory `dir`, pinned as `pin`, which
 /// holds a marker, with ordinary tools, then removes it.
 fn root_empties(dir: &Path, pin: Pin) -> String {
+    let owner = Owner::of(pin.uid);
     format!(
         "root empties a state directory with ordinary tools while no build uses it and nothing \
          is mounted below it, its marker first so that no build takes what an interrupted \
          removal leaves, and nothing in a directory without one or other than the one ranikust \
          checked; the emptying {NEEDS_GNU_FIND}{}: {}, then {}",
-        owner_only(pin.uid),
-        in_dir(dir, pin, &root_script(pin.uid)),
+        owner_only(owner),
+        in_dir(dir, pin, &root_script(owner)),
         remove_dir(dir, pin)
     )
 }
@@ -228,14 +282,17 @@ pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, NoPin>) -> String {
 pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let d = shell_word(dir.as_os_str());
     let commands = match pin {
-        Ok(pin) => format!(
-            "; or move the directory aside and remove it, {}; or, as root, empty it in place, \
-             which {NEEDS_GNU_FIND}{}, {}, then {}",
-            move_aside(dir, pin),
-            owner_only(pin.uid),
-            in_dir(dir, pin, &root_script(pin.uid)),
-            remove_dir(dir, pin)
-        ),
+        Ok(pin) => {
+            let owner = Owner::of(pin.uid);
+            format!(
+                "; or move the directory aside and remove it, {}; or, as root, empty it in \
+                 place, which {NEEDS_GNU_FIND}{}, {}, then {}",
+                move_aside(dir, pin),
+                owner_only(owner),
+                in_dir(dir, pin, &root_script(owner)),
+                remove_dir(dir, pin)
+            )
+        }
         Err(why) => format!("; {}", no_commands(dir, &why, false)),
     };
     format!(
