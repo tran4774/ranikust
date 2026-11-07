@@ -52,74 +52,116 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
      (ADR-0032); for now it takes --all, which empties the state directory of a user other than \
      root (ADR-0105)";
 
-/// Root's emptying of the state directory it runs in, for [`in_dir`]: its
-/// regular marker first, `.ranikust-state` or else the `.ranikust-pruning`
-/// a prune that did not finish left, so that what an interrupted removal
-/// leaves is unmarked, and nothing where there is neither; then
-/// everything, with no top-level entry an operand and `find -xdev`
-/// entering no other filesystem, so a mount point is left (GNU `find` then
-/// fails).
-const ROOT_SCRIPT: &str = "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete";
+/// What the printed guidance says the scripts need.
+const NEEDS_GNU_FIND: &str = "needs GNU findutils (Alpine: apk add findutils)";
+
+/// `$rest` after the check both scripts start with: unless `find` is GNU
+/// findutils', whose behaviour they are written for, the script stops
+/// there with nothing changed, saying what it needs ([`NEEDS_GNU_FIND`]).
+/// A literal, as `concat!` takes no constant.
+macro_rules! gnu_find_first {
+    ($rest:literal) => {
+        concat!(
+            r#"find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; "#,
+            $rest
+        )
+    };
+}
+
+/// Root's emptying of the state directory it runs in, for [`in_dir`]:
+/// with GNU `find` only ([`gnu_find_first`]); its regular marker first,
+/// `.ranikust-state` or else the `.ranikust-pruning` a prune that did not
+/// finish left, so that what an interrupted removal leaves is unmarked,
+/// and nothing where there is neither; then everything, with no top-level
+/// entry an operand and `find -xdev` entering no other filesystem, so a
+/// mount point is left (`find` then fails).
+const ROOT_SCRIPT: &str = gnu_find_first!(
+    "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete"
+);
 
 /// A user's emptying of the state directory it runs in without a user
-/// namespace, for [`in_dir`]: first a regular `.ranikust-pruning` an
-/// earlier run left is kept, or else, where nothing has that name, the
-/// regular marker is renamed to it (`mv -T`, never into a directory),
-/// which keeps builds out; then all but it, as [`ROOT_SCRIPT`] does; it
-/// last, once a listing shows nothing else left, since not every `find`
-/// fails when a removal does.
-const USER_SCRIPT: &str = r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#;
+/// namespace, for [`in_dir`]: with GNU `find` only ([`gnu_find_first`]);
+/// first a regular `.ranikust-pruning` an earlier run left is kept, or
+/// else, where nothing has that name, the regular marker is renamed to it
+/// (`mv -T`, never into a directory), which keeps builds out; then all but
+/// it, as [`ROOT_SCRIPT`] does; it last, once a listing shows nothing else
+/// left, since not every `find` fails when a removal does.
+const USER_SCRIPT: &str = gnu_find_first!(
+    r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#
+);
 
-/// How root empties the state directory `dir`, pinned as `pin`, with
-/// ordinary tools; `entries` when it holds anything, else it is only
-/// removed.
-fn root_empties(dir: &Path, pin: Pin, entries: bool) -> String {
-    let rmdir = remove_dir(dir, pin);
-    if !entries {
-        return format!("root removes the empty state directory with {rmdir}");
-    }
-    let rm = in_dir(dir, pin, ROOT_SCRIPT);
+/// How root empties the state directory `dir`, pinned as `pin`, which
+/// holds a marker, with ordinary tools, then removes it.
+fn root_empties(dir: &Path, pin: Pin) -> String {
     format!(
         "root empties a state directory with ordinary tools while no build uses it and nothing \
          is mounted below it, its marker first so that no build takes what an interrupted \
          removal leaves, and nothing in a directory without one or other than the one ranikust \
-         checked: {rm}, then {rmdir}"
+         checked, which {NEEDS_GNU_FIND}: {}, then {}",
+        in_dir(dir, pin, ROOT_SCRIPT),
+        remove_dir(dir, pin)
     )
 }
 
-/// What root does instead with the state directory `dir` (ADR-0105): the
-/// commands of [`root_empties`] for the directory [`pin`] checks at the
-/// path as given, else none.
+/// What root may do with the state directory `dir`, for root's refusal
+/// and a build's: the commands of [`root_empties`] for a directory [`pin`]
+/// checks at the path as given and finds a marker in, else none.
+fn root_commands(dir: &Path) -> String {
+    match pin(dir) {
+        Ok((pin, true)) => root_empties(dir, pin),
+        Ok((_, false)) => format!(
+            "ranikust gives no commands for {}, which is empty: it removes only a directory \
+             that holds its marker",
+            shell_word(dir.as_os_str())
+        ),
+        Err(why) => no_commands(dir, &why, true),
+    }
+}
+
+/// What root does instead with the state directory `dir` (ADR-0105).
 fn root_guidance(dir: &Path) -> String {
-    let what = match pin(dir) {
-        Ok((pin, entries)) => root_empties(dir, pin, entries),
-        Err(why) => no_commands(dir, &why),
-    };
-    format!("{what}; Phase 5's ranikust prune will serve root too")
+    format!(
+        "{}; Phase 5's ranikust prune will serve root too",
+        root_commands(dir)
+    )
 }
 
-/// Why no command is given for `dir`, and what to do instead.
-fn no_commands(dir: &Path, why: &str) -> String {
-    format!(
-        "ranikust gives no commands for {}, which it cannot check ({why}): give the path with \
-         no symbolic link on it; for a user's directory, run ranikust prune --all as that user",
-        shell_word(dir.as_os_str())
-    )
+/// Why no command is given for `dir`, and what to do instead; `root` when
+/// root reads it, who may be pruning a user's directory.
+fn no_commands(dir: &Path, why: &NoPin, root: bool) -> String {
+    let d = shell_word(dir.as_os_str());
+    match why {
+        NoPin::NoName => format!(
+            "ranikust gives no commands for {d}, which ends in ..: give the state directory's own \
+             path"
+        ),
+        NoPin::Unchecked(why) => {
+            let user = if root {
+                "; for a user's directory, run ranikust prune --all as that user"
+            } else {
+                ""
+            };
+            format!(
+                "ranikust gives no commands for {d}, which it cannot check ({why}): give the path \
+                 with no symbolic link on it{user}"
+            )
+        }
+    }
 }
 
 /// What a user does with the state directory `dir`, pinned as `pin`,
 /// where it gets no user namespace: the build's guidance ends in "run
 /// ranikust as root", which `prune --all` refuses.
-pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, String>) -> String {
+pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let what = match pin {
         Ok(pin) => format!(
-            "while nothing is mounted below the state directory, {} renames its marker, which \
-             keeps builds out, removes the user's own files, then the marker once nothing else \
-             is left; files of subordinate ids stay, and the marker with them, for a ranikust \
-             prune --all where a user namespace is allowed to finish",
+            "while nothing is mounted below the state directory, {}, which {NEEDS_GNU_FIND}, \
+             renames its marker, which keeps builds out, removes the user's own files, then the \
+             marker once nothing else is left; files of subordinate ids stay, and the marker \
+             with them, for a ranikust prune --all where a user namespace is allowed to finish",
             in_dir(dir, pin, USER_SCRIPT)
         ),
-        Err(why) => no_commands(dir, &why),
+        Err(why) => no_commands(dir, &why, false),
     };
     format!(
         "a user other than root gets a user namespace of its own only where \
@@ -131,17 +173,17 @@ pub(crate) fn no_user_namespace(dir: &Path, pin: Result<Pin, String>) -> String 
 /// The ways out of the state directory `dir`, pinned as `pin`, that
 /// `prune --all` could not finish emptying ([`rnk_store::Error::NotPruned`]),
 /// which no build opens.
-pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, String>) -> String {
+pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let d = shell_word(dir.as_os_str());
     let commands = match pin {
         Ok(pin) => format!(
-            "; or move the directory aside and remove it, {}; or, as root, empty it in place, {}, \
-             then {}",
+            "; or move the directory aside and remove it, {}; or, as root, empty it in place, \
+             which {NEEDS_GNU_FIND}, {}, then {}",
             move_aside(dir, pin),
             in_dir(dir, pin, ROOT_SCRIPT),
             remove_dir(dir, pin)
         ),
-        Err(why) => format!("; {}", no_commands(dir, &why)),
+        Err(why) => format!("; {}", no_commands(dir, &why, false)),
     };
     format!(
         "ranikust prune --all leaves what is on another mount, and files of ids it cannot remove \
@@ -157,10 +199,7 @@ pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, String>) -> String {
 /// other than root runs `prune --all` again, which root may not.
 pub(crate) fn cut_short(dir: &Path, euid: u32) -> String {
     if euid == 0 {
-        return match pin(dir) {
-            Ok((pin, entries)) => root_empties(dir, pin, entries),
-            Err(why) => no_commands(dir, &why),
-        };
+        return root_commands(dir);
     }
     format!(
         "ranikust prune --all finishes emptying it or says what stops it: run ranikust prune \
@@ -220,22 +259,33 @@ impl Pin {
     /// The pin of the state directory `dir` that `check` describes, for
     /// commands that name it: `dir` must end in a name, which they enter
     /// its parent to act on.
-    pub(crate) fn of(dir: &Path, check: &rnk_store::PruneCheck) -> Result<Self, String> {
+    pub(crate) fn of(dir: &Path, check: &rnk_store::PruneCheck) -> Result<Self, NoPin> {
         match (dir.parent(), dir.file_name()) {
             (Some(_), Some(_)) => Ok(Self {
                 dev: check.dev,
                 ino: check.ino,
                 uid: check.uid,
             }),
-            _ => Err(format!("{} does not end in a name", dir.display())),
+            _ => Err(NoPin::NoName),
         }
     }
 
-    /// The check of the entry `entry` against the pin, for `test`.
+    /// The check of the entry `entry`, one shell word, against the pin:
+    /// the word `stat` reads is the one the command then acts on.
     fn test(self, entry: &str) -> String {
         let Self { dev, ino, uid } = self;
-        format!(r#"test "$(stat -c %d:%i:%u {entry})" = {dev}:{ino}:{uid}"#)
+        format!("stat -c %d:%i:%u {entry} | grep -qxF {dev}:{ino}:{uid}")
     }
+}
+
+/// Why a refusal gives no commands for a state directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NoPin {
+    /// Its path ends in `..`, not in its name, whose parent the commands
+    /// enter to act on it.
+    NoName,
+    /// [`Store::check_prune`]'s refusal of it at the path as given.
+    Unchecked(String),
 }
 
 /// The state directory `dir` checked as [`Store::check_prune`] does, at
@@ -243,8 +293,8 @@ impl Pin {
 /// whether it holds anything; else why no command can be given for it.
 /// This process's user namespace must be the one the commands run in, for
 /// the owner.
-pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), String> {
-    let check = Store::check_prune(dir).map_err(|e| e.to_string())?;
+pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
+    let check = Store::check_prune(dir).map_err(|e| NoPin::Unchecked(e.to_string()))?;
     Ok((Pin::of(dir, &check)?, check.entries))
 }
 
@@ -415,7 +465,7 @@ pub(crate) fn empty(state_dir: &Path) -> Result<Pruned, Refusal> {
 /// [`Store::prune_all`]'s error `e` on `state_dir`, pinned outside as
 /// `pin`, met in the build's user namespace: of [`Kind::Broken`], with the
 /// ways out when entries stay.
-fn store_refusal(e: &rnk_store::Error, state_dir: &Path, pin: Result<Pin, String>) -> Refusal {
+fn store_refusal(e: &rnk_store::Error, state_dir: &Path, pin: Result<Pin, NoPin>) -> Refusal {
     setup::inside_userns(Refusal {
         kind: Kind::Other,
         reason: e.to_string(),

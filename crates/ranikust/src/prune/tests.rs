@@ -108,17 +108,22 @@ fn pin_of(dir: &Path) -> Pin {
     }
 }
 
+/// Puts `bin` first on `run`'s `PATH`, the machine's own as `REAL_PATH`.
+fn bin_first(run: &mut std::process::Command, bin: &Path) {
+    let path = std::env::var_os("PATH").expect("PATH");
+    let mut first = bin.as_os_str().to_owned();
+    first.push(":");
+    first.push(&path);
+    run.env("PATH", first).env("REAL_PATH", path);
+}
+
 /// `command` run by bash from `cwd`, with `bin` first on `PATH` (the
 /// machine's own as `REAL_PATH`) when given.
 fn run_command(command: &str, cwd: &Path, bin: Option<&Path>) -> std::process::ExitStatus {
     let mut run = std::process::Command::new("bash");
     run.args(["-c", command]).current_dir(cwd);
     if let Some(bin) = bin {
-        let path = std::env::var_os("PATH").expect("PATH");
-        let mut first = bin.as_os_str().to_owned();
-        first.push(":");
-        first.push(&path);
-        run.env("PATH", first).env("REAL_PATH", path);
+        bin_first(&mut run, bin);
     }
     run.status().unwrap()
 }
@@ -167,19 +172,44 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
         shell_word(state.as_os_str()),
         shell_word(tmp.path().as_os_str()),
     );
-    let script = "'{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'";
+    let script = r#"'find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'"#;
     let want = format!(
-        r#"( CDPATH= cd -P -- {d} && test "$(stat -c %d:%i:%u .)" = {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && test "$(stat -c %d:%i:%u ./state)" = {dev}:{ino}:{uid} && rmdir -- ./state )"#
+        "which needs GNU findutils (Alpine: apk add findutils): ( CDPATH= cd -P -- {d} && stat -c %d:%i:%u . | grep -qxF {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && stat -c %d:%i:%u ./state | grep -qxF {dev}:{ino}:{uid} && rmdir -- ./state )"
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
     assert!(refusal.guidance.contains("nothing is mounted below it"));
-    // An empty directory is only removed.
+    // An empty directory, which holds no marker, gets no `rmdir`: it may
+    // be one the system needs, named by mistake.
     let refusal = prune_all(0, &empty_dir).unwrap_err();
-    let Pin { dev, ino, uid } = pin_of(&empty_dir);
     let want = format!(
-        r#"root removes the empty state directory with ( CDPATH= cd -P -- {p} && test "$(stat -c %d:%i:%u ./empty)" = {dev}:{ino}:{uid} && rmdir -- ./empty )"#
+        "ranikust gives no commands for {}, which is empty: it removes only a directory that \
+         holds its marker",
+        shell_word(empty_dir.as_os_str())
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
+    assert!(!refusal.guidance.contains("rmdir"), "{refusal}");
+    // A refusal of the store's checks sends root to no `prune --all`.
+    let odd = tmp.path().join("odd");
+    marked_state(&odd);
+    fs::create_dir(odd.join(".ranikust-pruning")).unwrap();
+    let refusal = prune_all(0, &odd).unwrap_err();
+    assert!(
+        refusal.guidance.contains("not a regular file") && refusal.guidance.contains(OTHERWISE),
+        "{refusal}"
+    );
+    assert!(!refusal.guidance.contains("again"), "{refusal}");
+    fs::remove_dir_all(&odd).unwrap();
+    // A path that ends in `..`, not in the directory's name.
+    let up = state.join("blobs/..");
+    let refusal = prune_all(0, &up).unwrap_err();
+    assert!(
+        refusal.guidance.starts_with(&format!(
+            "ranikust gives no commands for {}, which ends in ..: give the state directory's own \
+             path;",
+            shell_word(up.as_os_str())
+        )),
+        "{refusal}"
+    );
     // No command for a path it cannot check, the path the user gave
     // quoted.
     let refusal = prune_all(0, &missing).unwrap_err();
@@ -352,6 +382,49 @@ fn the_printed_commands_change_nothing_in_another_directory() {
     }
 }
 
+/// Each script stops, saying what it needs, before it changes anything
+/// unless `find` is GNU findutils': with one that answers `--version` as
+/// BusyBox's does, or prints nothing, and otherwise runs the machine's,
+/// the marker and every entry stay.
+#[test]
+fn the_scripts_change_nothing_without_gnu_findutils() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    let shims = [
+        (
+            "busybox",
+            "#!/bin/sh\nif test \"$1\" = --version; then\n  echo \"find: unrecognized option: \
+             --version\" >&2\n  echo \"BusyBox v1.36.1 (2024-06-10 07:11:47 UTC) multi-call \
+             binary.\" >&2\n  exit 1\nfi\nexec env PATH=\"$REAL_PATH\" find \"$@\"\n",
+        ),
+        (
+            "silent",
+            "#!/bin/sh\ntest \"$1\" = --version && exit 0\nexec env PATH=\"$REAL_PATH\" find \
+             \"$@\"\n",
+        ),
+    ];
+    for (name, shim) in shims {
+        let bin = tmp.path().join(format!("bin-{name}"));
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("find"), shim).unwrap();
+        fs::set_permissions(bin.join("find"), fs::Permissions::from_mode(0o755)).unwrap();
+        for script in [ROOT_SCRIPT, USER_SCRIPT] {
+            marked_state(&state);
+            let before = listing(tmp.path());
+            let command = in_dir(&state, pin_of(&state), script);
+            let mut run = std::process::Command::new("bash");
+            run.args(["-c", &command]).current_dir(tmp.path());
+            bin_first(&mut run, &bin);
+            let out = run.output().unwrap();
+            assert!(!out.status.success(), "{name}: {command}");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains(NEEDS_GNU_FIND), "{name}: {err}");
+            assert_eq!(listing(tmp.path()), before, "{name}: {command}");
+            fs::remove_dir_all(&state).unwrap();
+        }
+    }
+}
+
 #[test]
 fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     // Builds refuse the directory meanwhile; its marker goes once nothing
@@ -365,11 +438,16 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     let guidance = no_user_namespace(dir, Ok(pin));
     assert!(
         guidance.contains(
-            r#"( CDPATH= cd -P -- '/home/u/my state' && test "$(stat -c %d:%i:%u .)" = 1:2:3 && exec flock -xn . sh -c '{ "#
+            r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { "#
         ),
         "{guidance}"
     );
-    assert!(guidance.contains("' ) renames its marker"), "{guidance}");
+    assert!(
+        guidance.contains(
+            "' ), which needs GNU findutils (Alpine: apk add findutils), renames its marker"
+        ),
+        "{guidance}"
+    );
     let at = |what: &str| guidance.find(what);
     let renamed = at(
         "! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state \
@@ -385,14 +463,19 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     );
     assert!(guidance.contains("nothing is mounted below the state directory"));
     assert!(guidance.contains("subordinate ids stay"));
-    // No command for a directory ranikust could not pin.
-    let guidance = no_user_namespace(dir, Err("why".to_owned()));
+    // No command for a directory ranikust could not pin; the user is not
+    // told to run `prune --all` as a user.
+    let guidance = no_user_namespace(dir, Err(NoPin::Unchecked("why".to_owned())));
     assert!(
-        guidance.contains(
+        guidance.ends_with(
             "without it, ranikust gives no commands for '/home/u/my state', which it cannot \
-             check (why): give the path with no symbolic link on it; for a user's directory, \
-             run ranikust prune --all as that user"
+             check (why): give the path with no symbolic link on it"
         ),
+        "{guidance}"
+    );
+    let guidance = no_user_namespace(dir, Err(NoPin::NoName));
+    assert!(
+        guidance.ends_with("which ends in ..: give the state directory's own path"),
         "{guidance}"
     );
     assert!(!guidance.contains("cd -P"), "{guidance}");
@@ -414,11 +497,7 @@ fn run_script_with(
         .current_dir(cwd)
         .envs(env.iter().copied());
     if let Some(bin) = bin {
-        let path = std::env::var_os("PATH").expect("PATH");
-        let mut first = bin.as_os_str().to_owned();
-        first.push(":");
-        first.push(&path);
-        command.env("PATH", first).env("REAL_PATH", path);
+        bin_first(&mut command, bin);
     }
     command.status().unwrap()
 }
@@ -718,18 +797,17 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
         "subordinate ids",
         "unmount anything below '/home/u/my state'",
         "with newuidmap installed and ranges for this user in /etc/subuid and /etc/subgid",
-        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && test "$(stat -c %d:%i:%u './my state')" = 1:2:3 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, ( CDPATH= cd -P -- '/home/u/my state' && test "$(stat -c %d:%i:%u .)" = 1:2:3 && exec flock -xn . sh -c '{ test -f .ranikust-state "#,
-        r#"), then ( CDPATH= cd -P -- /home/u && test "$(stat -c %d:%i:%u './my state')" = 1:2:3 && rmdir -- './my state' )"#,
+        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, which needs GNU findutils (Alpine: apk add findutils), ( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version "#,
+        r#"), then ( CDPATH= cd -P -- /home/u && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && rmdir -- './my state' )"#,
     ] {
         assert!(ways.contains(want), "{want}: {ways}");
     }
     // No command for a directory ranikust could not pin.
-    let none = unfinished(dir, Err("why".to_owned()));
+    let none = unfinished(dir, Err(NoPin::Unchecked("why".to_owned())));
     assert!(
         none.ends_with(
             "/etc/subgid; ranikust gives no commands for '/home/u/my state', which it cannot \
-             check (why): give the path with no symbolic link on it; for a user's directory, \
-             run ranikust prune --all as that user"
+             check (why): give the path with no symbolic link on it"
         ),
         "{none}"
     );

@@ -1102,7 +1102,7 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
                 let m = fs::metadata(&state).expect("state");
                 format!("{}:{}:{}", m.dev(), m.ino(), m.uid())
             };
-            let check = format!(r#" && test "$(stat -c %d:%i:%u .)" = {pin} && exec flock -xn . "#);
+            let check = format!(" && stat -c %d:%i:%u . | grep -qxF {pin} && exec flock -xn . ");
             assert!(err.contains(&check), "{err}");
             assert!(err.contains(" && exec flock -xn . sh -c '"), "{err}");
             assert!(err.contains(&*state.to_string_lossy()), "{err}");

@@ -1949,7 +1949,7 @@ fn prune_check(root: &RootPath, state_path: &Path) -> Result<Prunable> {
         (Some(false), _) => {
             return Err(refuse(format!(
                 "holds {PRUNING}, which is not a regular file and which ranikust prune --all \
-                 neither takes nor removes: remove it, then run ranikust prune --all again"
+                 neither takes nor removes: remove it first"
             )));
         }
         (None, Some(true)) => Prunable::Marked,
@@ -1981,8 +1981,7 @@ fn foreign_names<'a>(names: impl IntoIterator<Item = &'a OsStr>) -> Option<Strin
     (!foreign.is_empty()).then(|| {
         format!(
             "holds {}, which ranikust does not make there, so ranikust prune --all removes \
-             nothing: move what ranikust did not make out of it, then run ranikust prune --all \
-             again",
+             nothing: move what ranikust did not make out of it first",
             shown_names(&foreign)
         )
     })

@@ -373,10 +373,7 @@ fn a_journal_that_is_not_a_file_is_refused() {
     assert!(matches!(e, Error::NotAStateDir { .. }), "{e}");
     let e = e.to_string();
     assert!(e.contains("not a regular file"), "{e}");
-    assert!(
-        e.contains("remove it, then run ranikust prune --all"),
-        "{e}"
-    );
+    assert!(e.contains("remove it first"), "{e}");
     assert_eq!(tree(&state), before);
     let Err(e) = Store::open(&BuildPaths::new(&state, &state)) else {
         panic!("a store opened")
