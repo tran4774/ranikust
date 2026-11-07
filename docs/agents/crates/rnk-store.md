@@ -186,7 +186,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
   symlink of another group at a store directory's name keeps its group and
   the open fails on it
-  (`a_symlink_at_a_store_directory_s_name_keeps_its_group`).
+  (`a_symlink_at_a_store_directory_s_name_keeps_its_group`); a symlink out
+  of the state directory at each store directory's name, absolute or
+  climbing, leaves what it leads to, setgid and of another group, unchanged
+  through the open, a fill and a cache lease
+  (`red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).
