@@ -20,7 +20,7 @@ The probe ends in exactly one of these:
 | Outcome | Snapshot | Stage roots | `RUN` execution | Stages |
 |---|---|---|---|---|
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
-| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused (ADR-0126) | parallel |
+| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)) | parallel |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
 | **kaniko, cannot mount** | walk + hash | `/` in a container (a host is refused, ADR-0050) | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | none | none | none | exit with guidance |
@@ -54,7 +54,7 @@ table per CI system in §6) and
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
-| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3, there with `--allow proc.rbind`, the container's `/proc` being masked: ADR-0126); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
+| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3, there with `--allow proc.rbind`, the container's `/proc` being masked: [ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
 | Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
@@ -161,7 +161,8 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    ([sandbox](sandbox.md)). In the build's user namespace, a `sysfs` mount
    refused with `EPERM` is tried again as an rbind, only where the
    user-namespace probe (step 2) found the same; a refused `proc` mount
-   only at the operator's request (ADR-0126; `--allow proc.rbind`, planned
+   only at the operator's request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md);
+   `--allow proc.rbind`, planned
    with [#79](https://github.com/tran4774/ranikust/issues/79))
    (`rnk_sandbox::probe_with_fallbacks`,
    [#78](https://github.com/tran4774/ranikust/issues/78)). Every `RUN` of
