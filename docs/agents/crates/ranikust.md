@@ -48,27 +48,32 @@ writer) before `unshare`, the probes and the state directory's checks.
   its own guidance where the user gets no namespace
   (`prune::no_user_namespace`; the build's sends the user to root); in it,
   `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
-  guidance gives enter the state directory once, shell-quoted, check that
-  it is the one ranikust checked (`prune::Pin`: device, inode, owner and
-  mode from `Store::check_prune` on the path as given, outside any
-  namespace, then `statedir::check_for_commands`: the build's rule with
-  its owner as the user, no system directory, so commands only for a
-  directory a build would accept),
-  then name only `.`, under `flock -xn .`, so they act on that directory
-  and fail while a build holds it; the emptying scripts first check that
+  guidance gives refuse a `PATH` with a relative or empty entry
+  (`prune::PATH_CHECK`), enter the state directory once, shell-quoted,
+  check that it is the one ranikust checked (`prune::Pin`: device, inode
+  and owner from `Store::check_prune` on the path as given, outside any
+  namespace, and the mode `statedir::check_for_commands` judged: the
+  build's rule with its owner as the user, no system directory, so
+  commands only for a directory a build would accept, a refusal saying to
+  fix the owner or mode or remove the directory by hand), then name only
+  `.`, under `flock -xn .`, so they act on that directory and fail while
+  a build holds it; the emptying scripts first check that
   `find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, and
-  otherwise stop, changing nothing; root's, for a directory another user
-  owns (`prune::root_script`), deletes only that user's entries and those
-  of its subordinate ids (`prune::Owner`: its uid and its first
-  `/etc/subuid` range, from `subids::lookup`), and stops, saying so, where
-  others are left. No
+  otherwise stop, changing nothing; root's tests for its marker, then
+  removes it, with a message for each failure; root's, for a directory
+  another user owns (`prune::root_script`), changes nothing, saying so,
+  where another uid owns an entry, deletes only that user's entries and
+  those of its subordinate ids (`prune::Owner`: its uid and its first
+  `/etc/subuid` range, from `subids::lookup`, whose error the guidance
+  names), and stops, saying so, where others are left after. No
   commands where the check fails (for a symbolic link on the path, give
   the path with none, and, to root only, for a user's directory,
   `prune --all` as that user; else the check's reason), for a path
   ending in `..` (which a user's `prune --all` refuses too, before
   anything is opened), or, for root, for an empty directory (no marker,
   so maybe not a state directory). A prune that could not finish
-  (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
+  (`NotPruned`) gets the ways out (`prune::unfinished`, root's being its
+  own `prune --all`, which prints root's commands); a build refused
   by one cut short (`PruneCutShort`) is told the next step
   (`prune::cut_short`: `prune --all` for a user, root's commands for
   root). Prints one line on stdout; a refusal exits 1, `prune` without
@@ -392,16 +397,22 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   with a `find` that answers `--version` as BusyBox's does, not at all,
   or as GNU's without `FTS(FTS_CWDFD)`; root's script for a user's
   directory giving `find` the owner's uid and its range's strict bounds,
-  or the uid alone without a range or with one holding root's uid,
-  emptying it of the owner's files and, with them just outside the
-  range, removing only the marker and stopping before `rmdir`, saying
-  so; root given no commands, the reason instead, for a marked directory
-  a build would refuse (`0o1777`, `0o777`, `0o770`, or below a parent at
-  `0o770`), the pin carrying the mode, the commands failing with nothing
-  changed once it differs; root's scripts stopping without a marker,
-  saying so, and each script counting a listing that fails as entries
-  left; the ways
-  out only in `prune`'s refusal of a prune that could not finish; its red
+  or the uid alone without a range, with one holding root's uid or one
+  that could not be read (named in the guidance), the same predicate
+  negated before the marker, emptying it of the owner's files and, with
+  them just outside the range, changing nothing and stopping before
+  `rmdir`, saying so; root given no commands, the reason and the
+  prune's advice instead, for a marked directory a build would refuse
+  (`0o1777`, `0o777`, `0o770`, or below a parent at `0o770`), the pin
+  carrying the mode, `0o2700`'s as `stat` prints it, the commands
+  failing with nothing changed once it differs; each command refusing a
+  `PATH` with an empty, `.` or relative entry before it enters a
+  directory, no tool put there run (the control: without the check,
+  one is); root's scripts stopping without a marker, where it cannot be
+  removed, or where the search for other uids fails, saying so, and each
+  script counting a listing that fails as entries left; the ways out
+  only in `prune`'s refusal of a prune that could not finish, root's
+  commands not among them; its red
   team, `prune/tests/red_team.rs`: root's commands for paths with quotes,
   a leading `-`, a line feed, bytes that are not UTF-8 and a terminal
   escape, cut from the error line as printed and run by each shell the
@@ -411,8 +422,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changing nothing, and GNU `find` beside them emptying; directories the
   walk listed swapped for symlinks to look-alikes outside, and the tree
   being walked moved out, while GNU `find` deletes under each script,
-  nothing outside removed; `/`, system directories and `$HOME` neither
-  emptied, with no user namespace entered, nor given root's commands),
+  nothing outside removed; `/`, system directories and `$HOME` taken by
+  none of the read-only checks a user's `prune --all` runs before its
+  namespace, nor given root's commands),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, named rightly through `..`, nothing created through a planted
@@ -476,8 +488,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   naming Phase 5; `--all` as root exit 1 naming Phase 5, as a user a
   missing state directory, the default one included, left missing (exit
   0); as a user, a directory without the marker and a path ending in
-  `..` refused unchanged, and a state directory emptied or, without a user namespace, refused with
-  `prune`'s guidance, naming it under `flock`, and unchanged.
+  `..` refused unchanged, and a state directory emptied or, without a
+  user namespace, refused with `prune`'s guidance, naming it under
+  `flock`, and unchanged.
   `red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed`
   (`setup/tests/userns.rs`): the T1 red team's links out as the user who
   ran sudo, with files of subordinate ids, through `newuidmap`'s map;
@@ -580,12 +593,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone`;
   `prune/tests/red_team.rs`, profile `default`:
   `red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside`
-  (root's commands for uid 1000's directory, run by root: the entries of
-  the owner and of its range's edges go, special files, a setuid file and
-  links out among them, while those of root, `nobody` and the ids just
-  outside the range stay, with the directories above them, the emptying
-  saying so and the `rmdir` failing; a hardlinked file outside keeps its
-  content, owner and mode); profile `sysadmin`:
+  (root's commands for uid 1000's directory, run by root: with entries
+  of root, `nobody` and the ids just outside the range there, nothing
+  changes, the emptying saying so and the `rmdir` failing; without
+  them, the entries of the owner and of its range's edges go, special
+  files, a setuid file and links out among them, and the directory; a
+  hardlinked file outside keeps its content, owner and mode); profile
+  `sysadmin`:
   `red_team_roots_commands_leave_a_filesystem_mounted_below` (a tmpfs
   below root's own state directory and what it holds stay, the commands
   failing).

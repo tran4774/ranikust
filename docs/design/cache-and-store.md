@@ -191,56 +191,69 @@ last, so the marker's removal never reaches the disk without the
 deletions; a failed sync keeps it. Where it cannot finish (a mount below,
 files of ids no user namespace maps), its refusal names the ways out:
 unmount, set up the user's subordinate ids, move the directory aside and
-remove it in `podman unshare`, or, as root, empty it in place.
+remove it in `podman unshare`, or have root run `ranikust prune --all`,
+whose refusal gives root's commands to empty it in place: root's
+commands are printed only by root's own process.
 
 The commands a refusal prints (those ways out, root's, and a user's
-without a user namespace) act only on the directory ranikust checked: the
-process that prints them opens the path as given, made absolute, with no
-symlink followed on it, runs `Store::check_prune` on it, then the
-build's own rule with the directory's owner as the user, and refuses one
-of the system directories (`statedir::check_for_commands`): commands
-only for a directory a build would accept, none for one another user
-may write, or below one. It takes its device, inode, owner and mode.
-Each command checks, right after its one
-`cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u:%a`
-piped to `grep -qxF`, a hardening: no quoted command substitution for an
-interactive shell's history expansion or quoting to touch):
-`.` for the emptying, `./name` in the parent it entered for `rmdir` and
-the move aside. So a path changed after the message was printed, a
-parent swapped for a symlink included, makes it fail before it changes
+without a user namespace) act only on the directory ranikust checked:
+the process that prints them opens the path as given, made absolute,
+with no symlink followed on it, runs `Store::check_prune` on it, then
+the build's own rule with the directory's owner as the user, and
+refuses one of the system directories (`statedir::check_for_commands`):
+commands only for a directory a build would accept, none for one
+another user may write, or below one, the refusal then saying to fix
+the owner or mode or to remove the directory by hand. It takes the
+directory's device, inode and owner, and the mode the rule judged.
+Each command first refuses a `PATH` with a relative or empty entry,
+since it runs its tools from inside a directory another user may own
+(in `eval '…'`, so that no interactive shell's history expansion reads
+the pattern's `!`). It then checks, right after its one `cd -P`, that
+the directory it acts on has that identity (`stat -c %d:%i:%u:%a`
+piped to `grep -qxF`, a hardening: no quoted command substitution for
+an interactive shell's history expansion or quoting to touch): `.` for
+the emptying, `./name` in the parent it entered for `rmdir` and the
+move aside. So a path changed after the message was printed, a parent
+swapped for a symlink included, makes it fail before it changes
 anything. A path that ends in `..` is refused before anything is
 opened, whatever it leads to, by root's refusal (no commands) and a
 user's `prune --all` alike, saying to give the directory's own path.
 Where root's open of the path refuses it for a symbolic link on it, no
-commands are printed either, and the refusal says to give the path with
-none and, for a user's directory, to run `ranikust prune --all` as that
-user; where the check refuses the directory for any other reason, the
-refusal gives that reason instead (a user's own `prune --all` is
-refused before, with the check's reason).
+commands are printed either, and the refusal says to give the path
+with none and, for a user's directory, to run `ranikust prune --all`
+as that user; where the check refuses the directory for any other
+reason, the refusal gives that reason instead (a user's own
+`prune --all` is refused before, with the check's reason).
+
 Root gets no `rmdir` for an empty directory: only one that holds the
 marker is a state directory. Both emptying scripts first check that
 `find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, the
 walk they rely on, and otherwise stop before changing anything, saying
 so (Alpine: `apk add findutils`); the behaviour below is that `find`'s.
-Root's emptying stops, saying so, before changing anything where no
-regular marker is found, and each script counts a listing that fails as
+Root's emptying tests for a regular marker, then removes it, and stops
+before changing anything, with a message for each, where there is none
+or it cannot be removed; each script counts a listing that fails as
 entries left.
 Root's emptying of a directory another user owns deletes only that
 user's entries and those of its subordinate ids: its uid and its first
 `/etc/subuid` range (`subids::lookup`), the only uids its builds' user
-namespace maps, or its uid alone where it has none, then checks that
-nothing is left; what other uids own stays (a range changed since the
-build included), and it stops, saying which uids it kept, before the
-`rmdir`. A directory root owns has every entry deleted: root's store
-holds image ids that may match host accounts.
-In the directory, the emptying names only `.`, so the lock, the marker's
-check and the deletion act on it whatever is put at its path meanwhile;
-it takes the same exclusive `flock` (`flock -xn .`), so it fails while a
-build runs there, takes a marker only as a regular file, and enters no
-other filesystem (`find -xdev`); a bind mount of the same filesystem is
-not told apart, its contents deleted with the rest, so the commands say
-to run only while nothing is mounted below (ranikust's own deletion
-compares mount IDs instead).
+namespace maps, or its uid alone where it has no range in `/etc/subuid`
+and `/etc/subgid` or they cannot be read (the guidance names the
+error). Before the marker goes, it looks for an entry of any other uid
+(a range changed since the build included) and stops there, with
+nothing changed, saying so, also where that search fails; after the
+deletion, it checks that nothing is left, and stops before the
+`rmdir`, naming the uids it left. A directory root owns has every
+entry deleted: root's store holds image ids that may match host
+accounts.
+In the directory, the emptying names only `.`, so the lock, the
+marker's check and the deletion act on it whatever is put at its path
+meanwhile; it takes the same exclusive `flock` (`flock -xn .`), so it
+fails while a build runs there, takes a marker only as a regular file,
+and enters no other filesystem (`find -xdev`); a bind mount of the same
+filesystem is not told apart, its contents deleted with the rest, so
+the commands say to run only while nothing is mounted below
+(ranikust's own deletion compares mount IDs instead).
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

@@ -62,49 +62,60 @@ removes nothing while a build uses the directory, refuses a directory
 ranikust did not make (one without its `.ranikust-state` marker, or the
 `.ranikust-pruning` an interrupted prune leaves, or holding anything other
 than what ranikust puts there) and a path that ends in `..` (give the
-directory's own path), leaves a missing or empty one as it is,
-and prints what it did. If it is interrupted or cannot remove everything,
-builds refuse the directory until it is emptied, saying how: `prune --all`
-again for a user, root's commands below for root; where `prune --all`
-cannot finish (a mount below the directory, no subordinate ids for the
-user), its error says how to get out, naming the directory.
+directory's own path), leaves a missing or empty one as it is, and prints
+what it did. If it is interrupted or cannot remove everything, builds refuse
+the directory until it is emptied, saying how: `prune --all` again for a
+user, root's commands below for root. Where `prune --all` cannot finish (a
+mount below the directory, no subordinate ids for the user), its error says
+how to get out, naming the directory; root's way is to run
+`ranikust prune --all --state-dir DIR`, which prints root's commands.
+
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves
-([ADR-0105]), then removes it with `rmdir`. `find -xdev` stops at a mount
-of another filesystem, but a bind mount of the same one below the
-directory would be emptied with it: hence nothing mounted below it. The
-emptying needs GNU
-findutils (Alpine: `apk add findutils`), a build that lists
+([ADR-0105]), then removes it with `rmdir`. `find -xdev` stops at a mount of
+another filesystem, but a bind mount of the same one below the directory
+would be emptied with it: hence nothing mounted below it. The emptying needs
+GNU findutils (Alpine: `apk add findutils`), a build that lists
 `FTS(FTS_CWDFD)` in `find --version`, as recent ones do: without it, it
-stops before changing anything. The commands enter the directory once, check that it
-is the one ranikust checked, by its device, inode, owner and mode, and work
-only inside it; `flock` takes the lock builds hold, so they fail while
-one runs. Run them from a shell whose `PATH` holds absolute directories
-only (no `.` or empty entry): they run their tools from inside the
-directory. The error gives them with the directory, its parent, its name
-and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
+stops before changing anything. The commands refuse a `PATH` with a relative
+or empty entry, since they run their tools from inside the directory. They
+enter the directory once, check that it is the one ranikust checked, by its
+device, inode, owner and mode, and work only inside it; `flock` takes the
+lock builds hold, so they fail while one runs. The error gives them with the
+directory, its parent, its name and its identity in place of `'DIR'`,
+`'PARENT'`, `'./NAME'` and `ID`:
 
 ```sh
-( CDPATH= cd -P -- 'DIR' && stat -c %d:%i:%u:%a . | grep -qxF ID &&
+( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac' &&
+  CDPATH= cd -P -- 'DIR' && stat -c %d:%i:%u:%a . | grep -qxF ID &&
   exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" &&
   find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" ||
   { echo "needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet)" >&2;
   exit 1; };
-  { test -f .ranikust-state &&
-  ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning &&
-  ! test -h .ranikust-pruning && rm .ranikust-pruning; } ||
-  { echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2;
-  exit 1; }; } &&
+  if test -f .ranikust-state && ! test -h .ranikust-state; then marker=.ranikust-state;
+  elif test -f .ranikust-pruning && ! test -h .ranikust-pruning; then marker=.ranikust-pruning;
+  else echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2;
+  exit 1; fi;
+  rm "$marker" || { echo "cannot remove $marker: nothing else changed" >&2; exit 1; };
   find . -xdev -mindepth 1 -delete' )
-( CDPATH= cd -P -- 'PARENT' && stat -c %d:%i:%u:%a './NAME' | grep -qxF ID &&
+( eval 'case ":$PATH:" in *::*|*:[!/]*) echo "PATH holds a relative or empty entry: use absolute directories only" >&2; exit 1;; esac' &&
+  CDPATH= cd -P -- 'PARENT' && stat -c %d:%i:%u:%a './NAME' | grep -qxF ID &&
   rmdir -- './NAME' )
 ```
 
 For a directory another user owns, uid `UID`, whose first `/etc/subuid`
-range runs from `FIRST` to `LAST`, the emptying's last line is instead,
-with `BEFORE` and `AFTER` the uids just outside the range (`find`'s `+n`
-and `-n` are strict):
+range runs from `FIRST` to `LAST`, with `BEFORE` and `AFTER` the uids just
+outside it (`find`'s `+n` and `-n` are strict), the emptying first checks,
+before the `if`, that no other uid owns an entry:
+
+```sh
+  test -z "$(find . -xdev -mindepth 1 ! \( -uid UID -o \( -uid +BEFORE -uid -AFTER \) \) -print -quit || echo failed)" ||
+  { echo "nothing changed: entries of uids other than UID and its subordinate range FIRST-LAST are here, which this emptying would leave in place, or find failed" >&2;
+  exit 1; };
+```
+
+and its last line is instead:
 
 ```sh
   { find . -xdev -mindepth 1 \( -uid UID -o \( -uid +BEFORE -uid -AFTER \) \) -delete &&
@@ -114,19 +125,21 @@ and `-n` are strict):
 ```
 
 It deletes only the entries owned by that user's uids, its own and its
-subordinate ids, wherever they sit: the only ids its builds' user
-namespace maps. What other uids own is left in place, and the emptying
-then stops, saying so, so the directory is not removed. Where the user
-has no range, or it cannot be read, the line names `UID` alone.
+subordinate ids, wherever they sit: the only ids its builds' user namespace
+maps. Where another uid owns an entry, it stops before the marker goes,
+saying so, and changes nothing; one that appears meanwhile is left in place,
+and the emptying stops after the deletion, so the directory is not removed.
+Where the user has no range in `/etc/subuid` and `/etc/subgid`, or they
+cannot be read (the error says why), the lines name `UID` alone.
 
-The error gives commands only for a directory a build would accept: none
-for an empty directory (ranikust gives
-commands only for one that holds its marker), for a path that ends in `..` (give the
-directory's own path), for a path with a symbolic link on it (give the
-path with none, or, for a user's directory, run `ranikust prune --all`
-as that user), or for a directory ranikust or a build refuses (another
-user may write it or a directory above it, or it is a system directory),
-saying why.
+The error gives commands only for a directory that holds the marker and
+that a build would accept. An empty directory gets none, and no `rmdir`:
+only one with the marker is a state directory. Nor are commands given for a
+path that ends in `..` (give the directory's own path), for a path with a
+symbolic link on it (give the path with none, or, for a user's directory,
+run `ranikust prune --all` as that user), or for a directory ranikust or a
+build refuses (another user may write it or a directory above it, or it is
+a system directory), saying why.
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in
 Phase 5.
