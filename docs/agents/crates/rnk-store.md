@@ -109,17 +109,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
 - A non-empty state directory without a regular `.ranikust-state` file is
   refused, so clean-up never runs in a directory the user pointed at by
   mistake. A new state directory is `0700`; one owned by another user or
-  writable by others is used with a warning. The store's own directories
-  (`blobs/`, `layers/`, `tmp/`...) of the user's take the process's gid and
-  no setgid bit, whatever a setgid state directory or a `grpid` mount gave
-  them, so what the store makes has a gid a user namespace maps
-  (ADR-0099). Each is pinned once and read and changed through that
-  descriptor (`RootPath::set_meta_if`), only when it needs it. Outside a
-  user namespace no map needs the gid, so a filesystem that refuses the
-  `chown` itself (`EPERM`) does not stop the store: a warning; in one, or
-  where the namespace cannot be told, an error, as is any other failure, a
-  refused `chmod` included (the `chown` before it needs the same
-  ownership).
+  writable by others is used with a warning. The store's directories the
+  user owns take the process's gid and no setgid bit, each pinned once
+  (`RootPath::set_meta_if`): the rule, its reason and its exception are in
+  [atomic publication](../../design/cache-and-store.md#atomic-publication).
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
@@ -186,7 +179,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   group passes neither its gid nor the bit to a directory of the store,
   and a store directory of another group takes the process's gid (the gid
   checks skipped for a user of one group), while one already the
-  process's keeps its ctime; a refused change is a warning only outside a
+  process's keeps its ctime; a refused `chown` is a warning only outside a
   user namespace, and the refusal itself is the error in one or where the
   namespace cannot be told, while another errno of the `chown`, a refused
   `chmod`, or `EPERM` from a step before them, is an error everywhere

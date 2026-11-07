@@ -904,9 +904,13 @@ impl RootPath {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when `p` cannot be reached or a change fails, of op
-    /// `chown` for the owner or group and `chmod` for the mode; earlier
-    /// changes stay applied.
+    /// [`Error::Io`] of op `chown` (owner, group), `setxattr`, `chmod`
+    /// (mode) or `utimensat` (times) when a change fails, and of the step
+    /// that failed when `p` cannot be reached or read; [`Error::Unsupported`]
+    /// without `openat2` or without procfs at `/proc` (xattrs, mode);
+    /// [`Error::InvalidPath`] when `p` ends in `..`, and for a symlink
+    /// root's xattrs; [`Error::Changed`] when a symlink's name is swapped
+    /// while its xattrs are set. Earlier changes stay applied.
     pub fn set_meta_if(
         &self,
         p: impl AsRef<Path>,

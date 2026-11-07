@@ -24,9 +24,10 @@ shows the name, else the layer is refused.
 The set of remembered names belongs to one layer. So a hardlink in an upper
 layer to a device a *lower* layer left out takes the same path: the lower layer
 has nothing at that name, so the link copies a deeper layer's entry at that name
-if there is one, and the layer is refused if there is none. Only a crafted image
-reaches this, since Docker and BuildKit never emit hardlinks across layers
-**[inferred]**. Overlay as root creates the device, so the link there succeeds.
+if there is one, and the layer is refused if there is none. Docker and BuildKit
+never emit hardlinks across layers **[inferred]**, so of their images only a
+crafted one reaches this; whether kaniko does was not checked. Overlay as root
+creates the device, so the link there succeeds.
 The question, put to the maintainer on 2026-11-07, was whether to keep that.
 
 ## Considered Options
@@ -64,8 +65,8 @@ copy, and record it in an ADR (recommended)").
 
 ### Consequences
 
-- Good, because there is no code to write or maintain, and the result fails
-  closed.
+- Good, because there is no code to write or maintain, and a link with no
+  deeper entry fails closed.
 - Bad, because a crafted image that overlay as root accepts is refused in the
   namespace, or gets a deeper layer's file at that path.
 - Neutral, because option (b) stays possible later, as a separate task.
@@ -84,7 +85,8 @@ Nothing is measured here.
   the device with no deeper entry is refused, and the link to the other holds
   the deeper file's bytes.
 - **[inferred]** That Docker and BuildKit never emit hardlinks across layers
-  comes from the question as put to the maintainer; nothing measures it.
+  comes from the question as put to the maintainer; nothing measures it, and
+  kaniko was not checked.
 
 ## More Information
 

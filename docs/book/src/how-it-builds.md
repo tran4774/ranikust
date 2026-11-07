@@ -65,7 +65,8 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   entry already at a left-out device's path, if any. Past a budget for their
   names (1 MiB, about 14 000 short ones), with a warning, a hardlink to a
   later one is linked or copied from what this layer or a lower one has at
-  its name, or the layer is refused ([ADR-0128]). A layer with a
+  its name, or the layer is refused ([ADR-0128]). A hardlink to a device a
+  lower layer left out takes the same path ([ADR-0131]). A layer with a
   `security.*` xattr other than `security.capability`, such as an SELinux
   label, is refused where no security module manages the name (SELinux
   decides `security.selinux` by policy), as the namespace may not set
@@ -324,3 +325,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
 [ADR-0128]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md
+[ADR-0131]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md

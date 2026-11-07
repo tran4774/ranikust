@@ -71,7 +71,13 @@ fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join(".ranikust");
     fs::create_dir(&state).unwrap();
-    std::os::unix::fs::chown(&state, None, Some(group)).unwrap();
+    match std::os::unix::fs::chown(&state, None, Some(group)) {
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => {
+            eprintln!("skipped: that group is not mapped here");
+            return;
+        }
+        r => r.unwrap(),
+    }
     fs::set_permissions(&state, fs::Permissions::from_mode(0o2700)).unwrap();
     // The control: the kernel gives a new directory there the gid and bit.
     fs::create_dir(state.join("probe")).unwrap();

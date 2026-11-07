@@ -417,8 +417,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
   directories as overlay as root makes them, `0555` roots published, devices
   skipped and counted, keys other than the chain IDs, an owner outside the map
-  and a `security.selinux` xattr each failing the extraction, the latter
-  skipped where SELinux runs, with a `measured:` line in the lane's log) and
+  and `security.selinux` and `security.rnktest` xattrs each failing the
+  extraction, the `security.selinux` case skipped where SELinux runs, with a
+  `measured:` line in the lane's log, while `security.rnktest`, a name no
+  security module claims, is refused with `EPERM` everywhere) and
   `a_killed_extraction_in_the_user_namespace_publishes_nothing`.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
@@ -467,8 +469,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of a gid no map holds: refused on 24.04; on 22.04 as root makes them,
   devices aside, owned outside by the user and by subordinate ids, a `0555`
   root of a subordinate id the user cannot move outside, and the layers of an
-  owner outside the map and of a `security.selinux` xattr, which real root
-  publishes, refused, the latter skipped where SELinux runs; a `SIGKILL`ed
+  owner outside the map and of `security.selinux` and `security.rnktest`
+  xattrs, which real root publishes, refused, the `security.selinux` case
+  skipped where SELinux runs; a `SIGKILL`ed
   extraction publishes nothing).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another

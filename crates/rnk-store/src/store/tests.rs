@@ -436,7 +436,13 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     let state = dir.path().join("state");
     fs::remove_dir_all(state.join("tmp")).unwrap();
     std::os::unix::fs::symlink("blobs", state.join("tmp")).unwrap();
-    std::os::unix::fs::lchown(state.join("tmp"), None, Some(group)).unwrap();
+    match std::os::unix::fs::lchown(state.join("tmp"), None, Some(group)) {
+        Err(e) if e.raw_os_error() == Some(Errno::INVAL.raw_os_error()) => {
+            eprintln!("skipped: that group is not mapped here");
+            return;
+        }
+        r => r.unwrap(),
+    }
     let seen = || {
         let m = fs::symlink_metadata(state.join("tmp")).unwrap();
         (m.uid(), m.gid(), m.ctime(), m.ctime_nsec())

@@ -161,9 +161,10 @@ gid alone stops the rename of a `0555` directory and the `chown` of what is
 written below it: `Store::open` gives its own directories the process's gid
 and no setgid bit, whatever a setgid state directory or a `grpid` mount gave
 them. Outside a user namespace no map needs the gid, so a `chown` the
-filesystem refuses (`EPERM`) is a warning and the directory keeps the group
-or setgid bit it had; in one, or where the namespace cannot be told, it is
-an error, as is any other failure, a refused `chmod` included.
+filesystem refuses (`EPERM`) is a warning and the directory keeps its group
+and mode; in one, or where the namespace cannot be told, it is an error, as
+is any other failure, a refused `chmod` included (the `chown` before it
+needs the same ownership).
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular

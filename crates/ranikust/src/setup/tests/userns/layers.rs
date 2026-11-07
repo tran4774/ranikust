@@ -221,8 +221,9 @@ opq/b f 0:0 644 \"b\"";
 /// Each entry below `root` as this process sees it, one sorted line each:
 /// path, type, owner, mode, then the links to a file and its contents, a
 /// symlink's target, the numbers of a device, an mtime other than the
-/// tars' [`MTIME`] and every xattr but `security.selinux`.
-fn dump(root: &Path) -> String {
+/// tars' [`MTIME`] and every xattr, but `security.selinux` where
+/// `skip_selinux`.
+fn dump(root: &Path, skip_selinux: bool) -> String {
     let mut lines = Vec::new();
     let mut todo = vec![PathBuf::from(".")];
     while let Some(rel) = todo.pop() {
@@ -270,9 +271,11 @@ fn dump(root: &Path) -> String {
             .split(|&b| b == 0)
             .filter(|n| !n.is_empty())
             .collect();
-        // SELinux labels every inode by policy where it runs; no layer dumped
+        // Where SELinux runs, its policy labels every inode; no layer dumped
         // here sets the name.
-        names.retain(|&x| x != b"security.selinux");
+        if skip_selinux {
+            names.retain(|&x| x != b"security.selinux");
+        }
         names.sort_unstable();
         for x in names {
             let x = std::ffi::OsStr::from_bytes(x);
@@ -302,8 +305,9 @@ fn holds(dir: &Path, name: &str) -> bool {
 
 /// In a build with `store`: the bottom and top layers through `overlay`,
 /// then a diff ID the bottom layer's tar does not hash to, a layer of an
-/// owner no map holds and one with a `security.selinux` xattr, unless
-/// `skip_selinux`. What it saw, for [`expected`], then where the two layers
+/// owner no map holds, one with a `security.selinux` xattr, unless
+/// `skip_selinux`, and one with `security.rnktest`, a name no security
+/// module claims. What it saw, for [`expected`], then where the two layers
 /// are. Closes the store.
 fn extract_layers(store: Store, skip_selinux: bool) -> String {
     let capture = rnk_metrics::Capture::new();
@@ -364,6 +368,16 @@ fn extract_layers(store: Store, skip_selinux: bool) -> String {
     } else {
         selinux_outcome
     };
+    // No security module claims it, so the capability check decides it
+    // wherever the test runs, SELinux hosts included.
+    let unclaimed_outcome = outcome(
+        Tar::default()
+            .dir("./", ROOT, 0o755)
+            .xattrs(&[("security.rnktest", b"rnk")])
+            .file("rnk", ROOT, 0o644, b"rnk")
+            .finish(),
+        "setxattr",
+    );
     let published = fs::read_dir(lower.path().parent().unwrap())
         .unwrap()
         .count();
@@ -371,12 +385,12 @@ fn extract_layers(store: Store, skip_selinux: bool) -> String {
     let tmp_left = fs::read_dir(tmp).unwrap().count();
     let report = format!(
         "nodes_skipped {skipped}\nnamed by diff ID {}\nmismatch refused {}\nfar owner {far}\n\
-         security.selinux {selinux_outcome}\npublished {published}\ntmp {tmp_left}\n-- bottom\n{}\n\
-         -- top\n{}\n-- paths\n{}\n{}",
+         security.selinux {selinux_outcome}\nsecurity.rnktest {unclaimed_outcome}\n\
+         published {published}\ntmp {tmp_left}\n-- bottom\n{}\n-- top\n{}\n-- paths\n{}\n{}",
         lower.path().ends_with(b_id.encoded()),
         mismatch.contains("the uncompressed tar has diff ID"),
-        dump(lower.path()),
-        dump(upper.path()),
+        dump(lower.path(), skip_selinux),
+        dump(upper.path(), skip_selinux),
         lower.path().display(),
         upper.path().display(),
     );
@@ -426,7 +440,8 @@ fn selinux_case_skipped() -> bool {
 /// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets
 /// where no security module manages the name (SELinux decides
 /// `security.selinux` by policy, so the case is skipped where it runs:
-/// `skip_selinux`).
+/// `skip_selinux`; `security.rnktest`, which no module claims, is refused
+/// with `EPERM` everywhere).
 fn expected(userns: bool, skip_selinux: bool) -> String {
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
@@ -435,7 +450,8 @@ fn expected(userns: bool, skip_selinux: bool) -> String {
     }
     format!(
         "nodes_skipped {}\nnamed by diff ID {}\nmismatch refused true\nfar owner {}\n\
-         security.selinux {}\npublished {}\ntmp 0\n-- bottom\n{}\n-- top\n{TOP_DUMP}",
+         security.selinux {}\nsecurity.rnktest {}\npublished {}\ntmp 0\n-- bottom\n{}\n\
+         -- top\n{TOP_DUMP}",
         if userns { 2 } else { 0 },
         !userns,
         if userns {
@@ -448,10 +464,15 @@ fn expected(userns: bool, skip_selinux: bool) -> String {
             (true, false) => "refused: setxattr ./sel",
             (false, false) => "published",
         },
+        if userns {
+            "refused: setxattr ./rnk: Operation not permitted (os error 1)"
+        } else {
+            "published"
+        },
         match (userns, skip_selinux) {
             (true, _) => 2,
-            (false, true) => 3,
-            (false, false) => 4,
+            (false, true) => 4,
+            (false, false) => 5,
         },
         bottom.join("\n"),
     )
@@ -509,8 +530,12 @@ impl std::io::Read for Blocking<'_> {
 /// bottom layer publishes nothing; the next build's store removes what it
 /// left, as root of the namespace, and extracts the layer whole. The
 /// killed build's map, or `None` when the set-up was refused (asserted by
-/// the caller).
-fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -> Option<String> {
+/// the caller). `skip_selinux` for [`dump`].
+fn killed_extraction_publishes_nothing(
+    state: &Path,
+    user: Option<(u32, u32)>,
+    skip_selinux: bool,
+) -> Option<String> {
     let (tar, diff_id, cut) = bottom();
     let (pid, r) = spawn_child(user, |w| {
         let set_up = match enter_user_namespace(state) {
@@ -587,7 +612,7 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
         drop(overlay);
         let closed = Arc::into_inner(store).map(Store::close);
         match (layer, closed) {
-            (Ok(l), Some(Ok(()))) => format!("left {left}\n{}", dump(l.path())),
+            (Ok(l), Some(Ok(()))) => format!("left {left}\n{}", dump(l.path(), skip_selinux)),
             (l, c) => format!("error: {l:?} {c:?}"),
         }
     });
@@ -605,9 +630,11 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 /// give, as overlay as root extracts them; a `0555` root, root's or a
 /// user's, is published by the rename; device nodes are left out and
 /// counted; a diff ID the tar does not hash to, an owner the namespace does
-/// not map, or a `security.selinux` xattr publishes nothing, the last
-/// refused by its `setxattr`; where SELinux runs, which decides it by
-/// policy, that case is skipped, with a `measured:` line in the lane's log.
+/// not map, or a `security.selinux` or `security.rnktest` xattr publishes
+/// nothing, the last two refused by their `setxattr`; where SELinux runs,
+/// which decides `security.selinux` by policy, that case is skipped, with a
+/// `measured:` line in the lane's log, while `security.rnktest`, which no
+/// module claims, is still refused (`EPERM`).
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container extracts layers in the build's user namespace"]
 fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() {
@@ -646,7 +673,8 @@ fn a_killed_extraction_in_the_user_namespace_publishes_nothing() {
         "run as root of a rootless Podman container (just test-rootless)"
     );
     let tmp = private_tempdir();
-    let map = killed_extraction_publishes_nothing(&tmp.path().join("state"), None);
+    let map =
+        killed_extraction_publishes_nothing(&tmp.path().join("state"), None, selinux_enabled());
     assert_eq!(map.as_deref(), Some("multi-range"));
 }
 
@@ -669,11 +697,12 @@ const UNMAPPED_GID: u32 = 4242;
 
 /// T2: the same layers as real root, with no user namespace, give the
 /// device nodes too and the chain IDs as names, and publish the layers of
-/// an owner no map holds and of a `security.selinux` xattr. As the user who
+/// an owner no map holds and of `security.selinux` and `security.rnktest`
+/// xattrs. As the user who
 /// ran sudo, with the user's subordinate ids and a setgid state directory
 /// of a gid no map holds: where AppArmor restricts unprivileged user
 /// namespaces (Ubuntu 24.04) the set-up is refused; elsewhere (22.04) the
-/// layers come out as root's, devices aside and those two layers refused,
+/// layers come out as root's, devices aside and those three layers refused,
 /// owned outside by the user (the namespace's root) and by subordinate ids
 /// (the others), and the user outside the namespace cannot move a `0555`
 /// root of a subordinate id. Where SELinux runs, the `security.selinux`
@@ -758,7 +787,7 @@ fn a_regular_user_s_killed_extraction_publishes_nothing() {
     let tmp = private_tempdir();
     chown(tmp.path(), Some(user.0), Some(user.1)).unwrap();
     let state = tmp.path().join("state");
-    match killed_extraction_publishes_nothing(&state, Some(user)) {
+    match killed_extraction_publishes_nothing(&state, Some(user), selinux_enabled()) {
         None => {
             assert!(
                 restricted,

@@ -160,7 +160,9 @@ never called.
   (`cap_inode_setxattr`; SELinux decides `security.selinux` by policy), so
   the kernel refuses it and the layer fails, as in BuildKit rootless
   (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:419-436`;
-  T1 `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`).
+  T1 `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`,
+  whose `security.rnktest`, a name no security module claims, is refused on
+  every host).
 - **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
   so a symlink target is linked itself. In the overlay form the target may
   be in a lower layer, which `layers/<id>` does not hold:

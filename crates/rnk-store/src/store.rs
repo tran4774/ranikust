@@ -324,7 +324,8 @@ impl Store {
     /// The store's own directories take the process's gid and no setgid
     /// bit, whatever a setgid state directory or a `grpid` mount gave them,
     /// so that what the store makes carries ids a user namespace maps
-    /// (ADR-0099).
+    /// (ADR-0099); outside a user namespace, a filesystem that refuses the
+    /// `chown` (`EPERM`) leaves them as they were, with a warning.
     ///
     /// The store holds a shared `flock` on the state directory for its
     /// life: persistent builds share it, and an anonymous store (kaniko
@@ -1757,7 +1758,8 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
 /// and never a gid and setgid bit from the host in an extracted layer.
 /// Read and changed through one pinned descriptor, and only when it needs
 /// it. Outside a user namespace no map needs the gid, so a filesystem that
-/// refuses the change does not stop the store: a warning; in one, an error.
+/// refuses the `chown` (`EPERM`) does not stop the store: a warning; in
+/// one, an error.
 fn own_group(state: &RootPath, d: &str) -> Result<()> {
     let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
@@ -1797,7 +1799,7 @@ fn refused_group(
         Ok(false) => {
             tracing::warn!(
                 target: "rnk_store",
-                "state directory: {d} keeps the group or setgid bit it had: {e}"
+                "state directory: {d} keeps its group and mode: {e}"
             );
             Ok(())
         }
