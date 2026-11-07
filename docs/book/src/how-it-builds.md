@@ -108,10 +108,13 @@ overlay mount options.
   rootless overlay mode and, where it cannot run, builds in kaniko mode as
   before. It does not try where `/proc/sys` is writable or cannot be told: a
   `RUN` as the namespace's root could write it, and kaniko mode on `/` is
-  refused there for the same reason ([ADR-0054]). `--mode=overlay` there builds
-  rootless or is refused with both reasons.
+  refused there for the same reason ([ADR-0054]); nor with `--ignore-path`,
+  which only kaniko mode honours. `--mode=overlay` there builds rootless or is
+  refused with both reasons.
 - **After the namespace.** Once ranikust is in it no other mode can follow, so
-  a failure there ends the build.
+  a failure there ends the build. The probe that chose the mode has already
+  run the same steps in a child process, so such a failure is one it could
+  not see, such as the state directory's store.
 
 ## kaniko mode
 

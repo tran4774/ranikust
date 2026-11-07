@@ -685,8 +685,9 @@ fn build(
                 Err(refusal) if refusal.needs_kaniko_mode() => {
                     let why = refusal.reason;
                     // Root may not mount: rootless overlay mode first, where
-                    // ADR-0107 lets it run, then kaniko mode, as before it.
-                    let by = match rootless_kept_off() {
+                    // ADR-0107 lets it run and no flag needs kaniko mode,
+                    // then kaniko mode, as before it.
+                    let by = match kaniko_only_kept_off(args).or_else(rootless_kept_off) {
                         Some(off) => {
                             tracing::info!("ranikust: {off}");
                             KanikoBy::Auto
@@ -742,6 +743,19 @@ enum Rootless {
     Built(Result<(), Failure>),
     /// Rootless overlay mode cannot run here; the process is unchanged.
     NotHere(setup::rootless::NotHere),
+}
+
+/// Why `--mode=auto`, as root that may not mount, does not try rootless
+/// overlay mode: a flag only kaniko mode honours, which overlay mode refuses
+/// and kaniko mode, the mode such a build got before rootless overlay mode,
+/// builds with (ADR-0049).
+fn kaniko_only_kept_off(args: &BuildArgs) -> Option<String> {
+    config::kaniko_only_flag(args).map(|flag| {
+        format!(
+            "rootless overlay mode is not tried: {flag} takes effect in kaniko mode only \
+             (ADR-0049)"
+        )
+    })
 }
 
 /// Why root that may not mount does not try rootless overlay mode: a
@@ -2177,6 +2191,37 @@ mod tests {
             not_here.refusal.reason
         );
         assert!(not_here.refusal.guidance.contains("sudo"));
+    }
+
+    /// Under `--mode=auto`, root that may not mount keeps kaniko mode for a
+    /// flag only kaniko mode honours, where rootless overlay mode would
+    /// refuse it; a flag overlay mode only warns about tries it still.
+    #[test]
+    fn auto_mode_keeps_kaniko_mode_for_a_flag_only_it_honours() {
+        let args_of = |flags: &[&str]| {
+            let argv = std::iter::once("ranikust").chain(flags.iter().copied());
+            let Command::Build(args) = cli::parse(argv).unwrap().cli.into_command() else {
+                panic!("expected build");
+            };
+            args
+        };
+        let ignored = args_of(&["--no-push", "--ignore-path=/var/cache/*"]);
+        let note = kaniko_only_kept_off(&ignored).expect("--ignore-path keeps kaniko mode");
+        assert!(
+            note.starts_with("rootless overlay mode is not tried: --ignore-path "),
+            "{note}"
+        );
+        assert!(config::overlay_mode_flags(&ignored).is_err());
+        for flags in [
+            &["--no-push"][..],
+            &["--no-push", "--snapshot-mode=redo", "--snapshot-workers=4"],
+        ] {
+            assert_eq!(kaniko_only_kept_off(&args_of(flags)), None, "{flags:?}");
+            assert!(
+                config::overlay_mode_flags(&args_of(flags)).is_ok(),
+                "{flags:?}"
+            );
+        }
     }
 
     /// `--snapshot-mode` and `--snapshot-workers` reach the walk with their

@@ -234,9 +234,10 @@ Each step before the next; design in
    kernel never routes there; per-stage directories, `can_mount`). A user
    other than root, with `--mode=overlay` or `--mode=auto`, goes to rootless
    overlay mode (step 5) before the namespace; root refused for lack of
-   privilege tries it first, except where `/proc/sys` is writable or cannot
-   be told (`rootless_kept_off`, ADR-0107), and `--mode=overlay` there is
-   refused with both reasons.
+   privilege tries it first, except with `--ignore-path`
+   (`kaniko_only_kept_off`, `config::kaniko_only_flag`, ADR-0049) or where
+   `/proc/sys` is writable or cannot be told (`rootless_kept_off`,
+   ADR-0107), and `--mode=overlay` there is refused with both reasons.
 5. **Overlay mode** (`setup::set_up`): `enter_namespace`
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
    `unshare(CLONE_NEWNS)`, `/` rslave) → `statedir::prepare`, refused on
@@ -535,8 +536,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_build_with_an_rbind_of_proc_refuses_a_reachable_process_of_another_mount_namespace`
   (ADR-0129: the same refusal, naming what the rbind exposes),
   `a_build_with_an_rbind_of_proc_refuses_a_pid_namespace_shared_as_unchecked_files_show`
-  (ADR-0134) and
-  `the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe`;
+  (ADR-0134),
+  `the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe` and
+  `auto_mode_keeps_kaniko_mode_for_a_flag_only_it_honours`;
   `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
   and never uncovers protected paths. `build.rs`: `kaniko_units` (what each
@@ -589,7 +591,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the kaniko leg (a default container), `--mode=auto` picking kaniko mode,
   its user-namespace probe stopping at `proc` (the rbind of `/proc` works but
   needs the flag) and the log saying why rootless overlay mode did not run
-  (#74, #79); `rootless` rootless overlay mode end to end
+  (#74, #79), and `--ignore-path` keeping kaniko mode even with
+  `--allow proc.rbind`; `rootless` rootless overlay mode end to end
   ([its steps](../../testing.md#quick-smoke-cases));
   `userns-probe` the probe's red team (one line per build, in either form of
   the line, nothing of it seen by a `RUN`,

@@ -5,7 +5,8 @@
 # changes nothing. A --mode=auto build also logs the user namespace probe
 # (#74): printed here; in the T1 kaniko leg (rootless Podman's defaults),
 # where it routes (#79), it stops at proc, whose rbind would work but needs
-# --allow proc.rbind, and kaniko mode builds.
+# --allow proc.rbind, and kaniko mode builds. There --ignore-path keeps
+# kaniko mode, which honours it, even with --allow proc.rbind.
 
 kaniko_leg() { [[ " ${MODE_ARGS[*]} " == *" --mode=kaniko "* ]]; }
 
@@ -59,5 +60,14 @@ case_run() {
       fail "the user namespace probe should stop at proc, with an rbind of /proc: $line"
     grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at proc' \
       "$(out auto)/build.log" || fail "--mode=auto did not say why rootless overlay mode did not run"
+    # Rootless overlay mode, which the flag lets run here, would refuse
+    # --ignore-path: kaniko mode builds it, as before rootless overlay mode.
+    build auto-ignored '--ignore-path=/var/cache/*' --allow proc.rbind >/dev/null
+    grep -q 'rootless overlay mode is not tried: --ignore-path' "$(out auto-ignored)/build.log" ||
+      fail "--mode=auto with --ignore-path did not say why it kept kaniko mode"
+    grep -q 'kaniko mode, because root may not mount here' "$(out auto-ignored)/build.log" ||
+      fail "--mode=auto with --ignore-path did not pick kaniko mode"
+    expect "$(run auto-ignored sh -c 'test ! -e /var/cache/app && cat /opt/kept')" kept \
+      "--mode=auto with --ignore-path=/var/cache/*"
   fi
 }

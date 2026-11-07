@@ -216,8 +216,10 @@ How `--mode=auto` routes (ADR-0040, ADR-0059, ADR-0107):
   anything is written. Root refused there for lack of privilege tries
   rootless overlay mode, except where `/proc/sys` is writable or cannot be
   told (ADR-0107, case (ii)): a `RUN` as the map's uid 0 could write it, and
-  kaniko mode on `/` is refused there for the same reason (ADR-0054). Where
-  rootless overlay mode cannot run, its refusal is logged and root gets
+  kaniko mode on `/` is refused there for the same reason (ADR-0054); nor
+  with `--ignore-path`, which only kaniko mode honours (ADR-0049): overlay
+  mode would refuse it, and kaniko mode builds it, with a note saying so.
+  Where rootless overlay mode cannot run, its refusal is logged and root gets
   kaniko mode "cannot mount", with the reason logged. A forced
   `--mode=overlay` there builds rootless or is refused with both reasons.
   Where root may mount, the overlay probes run.
@@ -254,7 +256,10 @@ cannot leave the namespace once it is in:
    namespace), the store, the sandbox probe with the fallbacks `plan`
    allows (step 3), the overlay probe (step 4), then the mode line and the
    spawner. A failure here is `Kind::Broken`: no other mode follows, the
-   process ends.
+   process ends. `plan`'s probe child has already run what this repeats,
+   each step a `RUN` needs and an overlay mount on the state directory's
+   filesystem, so what fails here is what that child could not see: the
+   store, the spawner's start, or a change between the two.
 
 The mode line says what the build got: `overlay mode, rootless, in the
 build's user namespace, RUN enters its root with pivot_root, proc: a new
