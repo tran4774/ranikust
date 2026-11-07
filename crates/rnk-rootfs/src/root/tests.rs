@@ -710,3 +710,86 @@ fn create_sub_root_refuses_another_mount_without_following_it() {
     let e = other.create_sub_root("x", 0o700).unwrap_err();
     assert!(e.to_string().contains("another mount"), "{e}");
 }
+
+/// `set_meta_if` changes the inode it read, even when `decide` swaps its
+/// name for another directory first; `None` changes nothing.
+#[test]
+fn set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then() {
+    let f = Fixture::new();
+    let dir = |name: &str| {
+        fs::create_dir(f.host(name)).unwrap();
+        fs::set_permissions(f.host(name), fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    let state = |name: &str| {
+        let md = fs::symlink_metadata(f.host(name)).unwrap();
+        (md.ino(), md.mode() & 0o7777, md.ctime(), md.ctime_nsec())
+    };
+    dir("d");
+    let before = state("d");
+    let none = f.root.set_meta_if("d", |st| {
+        assert_eq!(st.permissions(), 0o700);
+        None
+    });
+    assert!(!none.unwrap());
+    assert_eq!(state("d"), before);
+    assert!(!f.root.set_meta_if("/", |_| None).unwrap());
+
+    let swapped = f.root.set_meta_if("d", |_| {
+        fs::rename(f.host("d"), f.host("d-old")).unwrap();
+        dir("d");
+        Some(Meta {
+            mode: Some(0o750),
+            ..Meta::default()
+        })
+    });
+    assert!(swapped.unwrap());
+    let (old_ino, old_mode, ..) = state("d-old");
+    assert_eq!((old_ino, old_mode), (before.0, 0o750));
+    assert_eq!(state("d").1, 0o700);
+}
+
+/// A refused group change is an `Io` error of op `chown` with `EPERM`:
+/// `rnk-store` tells a filesystem that refuses its group by them.
+#[test]
+fn a_refused_group_change_is_a_chown_error_with_eperm() {
+    let groups = rustix::process::getgroups().unwrap();
+    let chown_cap = rustix::thread::capabilities(None)
+        .unwrap()
+        .effective
+        .contains(rustix::thread::CapabilitySet::CHOWN);
+    if rustix::process::geteuid().is_root()
+        || rustix::process::getegid().is_root()
+        || groups.iter().any(|g| g.is_root())
+        || chown_cap
+    {
+        eprintln!("skipped: the process may take group 0");
+        return;
+    }
+    // Where no map holds gid 0, the chown fails with EINVAL before any
+    // permission check.
+    let gid_map = fs::read_to_string("/proc/self/gid_map").unwrap();
+    let maps_root = gid_map.lines().any(|l| {
+        let f: Vec<u64> = l.split_whitespace().map(|n| n.parse().unwrap()).collect();
+        f[0] == 0 && f[2] > 0
+    });
+    if !maps_root {
+        eprintln!("skipped: gid 0 is not mapped here");
+        return;
+    }
+    let f = Fixture::new();
+    fs::create_dir(f.host("d")).unwrap();
+    let e = f
+        .root
+        .set_meta_if("d", |_| {
+            Some(Meta {
+                gid: Some(0),
+                ..Meta::default()
+            })
+        })
+        .unwrap_err();
+    assert!(
+        matches!(e, Error::Io { op: "chown", .. })
+            && e.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error()),
+        "{e}"
+    );
+}

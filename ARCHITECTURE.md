@@ -132,8 +132,10 @@ The persistent, content-addressed store in the state directory
 `RUN --mount=type=cache` directories, entries being written. Per-digest locks,
 publication by atomic rename, start-up clean-up, the emptying of `prune --all`
 while no build holds the state directory (ADR-0105), and `BuildPaths`, the
-paths handed down to every crate; `prune` by size and age comes in Phase 5.
-**Must not** decide what
+paths handed down to every crate. It tells whether the process runs in a user
+namespace (by the inode of `/proc/self/ns/user`), for its own directories'
+group and `rnk-snapshot`'s layer keys and device nodes. `prune` by size and
+age comes in Phase 5. **Must not** decide what
 an entry contains (the caller fills a temporary entry, `rnk-store` publishes
 it), transfer blobs, decode layers, mount, or delete except through
 `rnk-rootfs`.

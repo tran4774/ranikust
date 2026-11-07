@@ -154,7 +154,15 @@ never called.
   the order of [Metadata](#metadata); a regular file gets them through its
   open fd. Directories are created `0700` and get their mode and times last,
   deepest first, so later entries neither move their mtime nor hit a
-  read-only directory.
+  read-only directory. In a user namespace, a `security.*` xattr other
+  than `security.capability` needs `CAP_SYS_ADMIN` over the filesystem's
+  namespace where no security module manages the name
+  (`cap_inode_setxattr`; SELinux decides `security.selinux` by policy), so
+  the kernel refuses it and the layer fails, as in BuildKit rootless
+  (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:419-436`;
+  T1 `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`,
+  whose `security.rnktest`, a name no security module claims, is refused on
+  every host).
 - **Hardlinks** link the target named in the archive with `linkat(…, 0)`,
   so a symlink target is linked itself. In the overlay form the target may
   be in a lower layer, which `layers/<id>` does not hold:
@@ -209,7 +217,28 @@ never called.
   later keeps it, as overlay's merged view does.
 - Other `.wh..wh.*` names (AUFS bookkeeping) are skipped; global PAX
   headers are ignored; unknown entry types are refused. Device nodes need
-  `CAP_MKNOD` (T2); foreign owners need root or a user namespace (T1).
+  `CAP_MKNOD` in the initial user namespace (T2): `extract_overlay` with
+  `DeviceNodes::Skip`, as a build in a user namespace extracts, makes no
+  block or character device and counts each in `nodes_skipped`, as
+  `extract_live` does (ADR-0106). The entry already at a device's name (a
+  lower layer's, or an earlier one of this layer) then stays, as in kaniko
+  mode, in kaniko, whose `ExtractFile` has no case for a device
+  (`kaniko@44aa7ddc0 pkg/util/fs_util.go:439-581`), and in BuildKit
+  rootless, which skips one before it clears the path
+  (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:251-262`;
+  [ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
+  A hardlink to a device left out by the same layer is left out with it
+  while its name is remembered. Names are remembered within a budget of
+  about 1 MiB a layer; once a name passes it, with one warning, no further
+  name is remembered, and a link to one of those takes the normal hardlink
+  path: linked to what the layer has at that name, else copied from the
+  nearest lower layer that shows it, else refused (ADR-0128). A link to a
+  device a lower layer left out takes that path too, as the names are
+  remembered per layer: a deeper layer's entry at that name is copied, and
+  with none the layer is refused
+  ([ADR-0131](../adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md)).
+  A device as the layer's root is refused either way. Foreign owners need
+  root or a user namespace (T1).
 
 ## Copy
 

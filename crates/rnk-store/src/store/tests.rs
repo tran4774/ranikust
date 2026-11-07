@@ -388,3 +388,71 @@ fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
     }
     anonymous.close().unwrap();
 }
+
+/// A store directory whose group cannot be made the process's: a warning
+/// outside a user namespace, where no map needs the gid; an error in one,
+/// or where the namespace cannot be told. Any other failure, another errno
+/// of the `chown`, a refused `chmod` or `EPERM` from a step before them, is
+/// an error everywhere.
+#[test]
+fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
+    let io = |op, errno: Errno| rnk_rootfs::Error::Io {
+        op,
+        path: PathBuf::from("tmp"),
+        source: io::Error::from_raw_os_error(errno.raw_os_error()),
+    };
+    let outside = || Ok(false);
+    assert!(refused_group(io("chown", Errno::PERM), "tmp", outside).is_ok());
+    let e = refused_group(io("chown", Errno::PERM), "tmp", || Ok(true)).unwrap_err();
+    assert!(matches!(e, Error::Rootfs(_)), "{e}");
+    let unknown = || Err(Error::Random(io::Error::other("no procfs")));
+    let e = refused_group(io("chown", Errno::PERM), "tmp", unknown).unwrap_err();
+    assert!(matches!(e, Error::Rootfs(_)), "{e}");
+    assert!(refused_group(io("chown", Errno::ROFS), "tmp", outside).is_err());
+    assert!(refused_group(io("chmod", Errno::PERM), "tmp", outside).is_err());
+    assert!(refused_group(io("open", Errno::PERM), "tmp", outside).is_err());
+}
+
+/// A symlink of another group planted at a store directory's name keeps
+/// its owner, group and ctime when the store opens: only a directory takes
+/// the process's group. The open then fails on the symlink.
+#[test]
+fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
+    use std::os::unix::fs::MetadataExt as _;
+    let egid = rustix::process::getegid().as_raw();
+    // Another group the user is in; root may take any.
+    let Some(group) = rustix::process::getgroups()
+        .unwrap()
+        .into_iter()
+        .map(rustix::process::Gid::as_raw)
+        .find(|&g| g != egid)
+        .or_else(|| rustix::process::geteuid().is_root().then_some(egid ^ 1))
+    else {
+        eprintln!("skipped: the user has one group");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    drop(store(dir.path()));
+    let state = dir.path().join("state");
+    fs::remove_dir_all(state.join("tmp")).unwrap();
+    std::os::unix::fs::symlink("blobs", state.join("tmp")).unwrap();
+    match std::os::unix::fs::lchown(state.join("tmp"), None, Some(group)) {
+        Err(e) if e.raw_os_error() == Some(Errno::INVAL.raw_os_error()) => {
+            eprintln!("skipped: that group is not mapped here");
+            return;
+        }
+        r => r.unwrap(),
+    }
+    let seen = || {
+        let m = fs::symlink_metadata(state.join("tmp")).unwrap();
+        (m.uid(), m.gid(), m.ctime(), m.ctime_nsec())
+    };
+    let before = seen();
+    let opened = Store::open(&BuildPaths::new(dir.path(), &state));
+    assert_eq!(seen(), before, "{:?}", opened.as_ref().err());
+    let e = opened.expect_err("a symlink as tmp/ fails the open");
+    assert!(
+        matches!(&e, Error::Rootfs(r) if r.raw_os_error() == Some(Errno::NOTDIR.raw_os_error())),
+        "{e}"
+    );
+}

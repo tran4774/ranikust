@@ -36,8 +36,11 @@ tracing.workspace = true
 # `fork` and the credential drop of the user-namespace tests, whose set-up
 # must run in a single-threaded process.
 libc.workspace = true
-# `examples/smoke-build.rs`, the sandbox's smoke test without the builder.
+# `examples/smoke-build.rs`, the sandbox's smoke test without the builder;
+# the diff IDs of the user-namespace extraction tests.
 sha2.workspace = true
+# Tar headers of the layers the user-namespace extraction tests extract.
+tar.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

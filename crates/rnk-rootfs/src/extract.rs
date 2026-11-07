@@ -4,7 +4,7 @@
 //! records); every filesystem change goes through `RootPath`. Its `unpack`
 //! family, which joins entry names onto a host path, is never used.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::ops::Bound;
@@ -54,6 +54,24 @@ pub enum Whiteouts {
     Literal,
 }
 
+/// What [`extract_overlay`] does with a layer's block and character device
+/// nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeviceNodes {
+    /// Creates them, as overlay mode as root does.
+    Create,
+    /// Creates none, nor a hardlink to one the same layer left out while
+    /// its name is remembered, and counts each as `nodes_skipped`, for a
+    /// process in a user namespace, where `mknod` of a device needs
+    /// `CAP_MKNOD` in the initial one (ADR-0106). FIFOs and whiteouts are
+    /// still made. A link to a device whose name came past a budget for the
+    /// names remembered (ADR-0128), or to one a lower layer left out
+    /// (ADR-0131), is linked to what the layer has at that name, else
+    /// copied from the nearest lower layer that shows it (ADR-0012), else
+    /// refused.
+    Skip,
+}
+
 const WHITEOUT_PREFIX: &[u8] = b".wh.";
 const OPAQUE: &[u8] = b".wh..wh..opq";
 /// AUFS bookkeeping (`.wh..wh.plnk`, `.wh..wh.aufs`, ...), skipped.
@@ -66,6 +84,12 @@ const PAX_XATTR: &[u8] = b"SCHILY.xattr.";
 const SKIPPED_XATTR: &[u8] = meta::LAYER_SKIPPED_XATTR;
 /// Mode of a directory until its own mode is set at the end.
 const DIR_PENDING_MODE: u32 = 0o700;
+/// The bytes [`Extractor::remember_skipped`] spends at most per layer on
+/// the names of devices left out, which take no room on disk.
+const SKIPPED_NAMES_MAX: usize = 1 << 20;
+/// What one remembered name costs besides its own bytes: its `PathBuf` and
+/// its share of the set's nodes.
+const SKIPPED_NAME_COST: usize = 64;
 /// Mode of missing parent directories the layer does not list.
 const PARENT_MODE: u32 = 0o755;
 
@@ -92,7 +116,7 @@ const PARENT_MODE: u32 = 0o755;
 /// entry, [`Error::Io`] when the filesystem refuses an operation (for
 /// example a device node or a foreign owner without privileges).
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
-    extract_with(dst, tar, wh, &[], None).map(drop)
+    extract_with(dst, tar, wh, &[], None, DeviceNodes::Create).map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into a live root, as kaniko mode
@@ -127,7 +151,15 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// As [`extract`]; [`Error::Entry`] when the physical path of a directory
 /// cannot be told (`/proc/self/fd` gives a path outside the root).
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
-    extract_with(dst, tar, Whiteouts::Apply, &[], Some(keep)).map(drop)
+    extract_with(
+        dst,
+        tar,
+        Whiteouts::Apply,
+        &[],
+        Some(keep),
+        DeviceNodes::Skip,
+    )
+    .map(drop)
 }
 
 /// [`extract_live`] with [`Whiteouts::Literal`]: a snapshot of a tree, not
@@ -138,7 +170,15 @@ pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result
 ///
 /// As [`extract_live`].
 pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
-    extract_with(dst, tar, Whiteouts::Literal, &[], Some(keep)).map(drop)
+    extract_with(
+        dst,
+        tar,
+        Whiteouts::Literal,
+        &[],
+        Some(keep),
+        DeviceNodes::Skip,
+    )
+    .map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into `dst` in the overlay form
@@ -158,6 +198,11 @@ pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -
 /// link to that copy, so the bytes written stay bounded by the lower
 /// layers' size. The lower layers are only read.
 ///
+/// `devices` tells whether block and character device nodes are made or
+/// left out ([`DeviceNodes::Skip`], ADR-0106), as if the tar did not hold
+/// them, apart from a hardlink to one, left out with it while its name is
+/// remembered (ADR-0128). One as the layer's root is refused either way.
+///
 /// Returns what the caller cannot see on disk afterwards: whether the layer
 /// set the root's metadata (an entry `./`). Without one, the root of an
 /// image keeps what the layers below gave it, so the caller takes it from
@@ -167,8 +212,13 @@ pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -
 ///
 /// As [`extract`]; [`Error::Entry`] when the target is in no layer or hidden,
 /// is a directory, or lies below a symlink in a lower layer.
-pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted> {
-    extract_with(dst, tar, Whiteouts::Overlay, lowers, None)
+pub fn extract_overlay(
+    dst: &RootPath,
+    tar: impl Read,
+    lowers: &[&RootPath],
+    devices: DeviceNodes,
+) -> Result<Extracted> {
+    extract_with(dst, tar, Whiteouts::Overlay, lowers, None, devices)
 }
 
 /// What [`extract_overlay`] reports about a layer.
@@ -223,6 +273,7 @@ fn extract_with(
     wh: Whiteouts,
     lowers: &[&RootPath],
     keep: Option<&IgnoreList>,
+    devices: DeviceNodes,
 ) -> Result<Extracted> {
     let span = tracing::info_span!(
         "rnk_rootfs.extract",
@@ -256,10 +307,13 @@ fn extract_with(
         wh,
         lowers,
         live,
+        devices,
         dirs: BTreeMap::new(),
         created: Created::default(),
         copied: HashMap::new(),
         copy_names: BTreeMap::new(),
+        devices_skipped: BTreeSet::new(),
+        skipped_bytes: 0,
         stats: Stats::default(),
         first_skipped: None,
     };
@@ -337,6 +391,8 @@ struct Extractor<'r> {
     lowers: &'r [&'r RootPath],
     /// [`extract_live`]: the ignore list and physical paths.
     live: Option<Live<'r>>,
+    /// Whether block and character device nodes are made.
+    devices: DeviceNodes,
     /// Lower inodes copied for a hardlink, by index in `lowers`, device and
     /// inode, and where the copy is with its `statx`, so that every further
     /// link to any of their names links to it while it is still there.
@@ -344,6 +400,12 @@ struct Extractor<'r> {
     /// The same copies by name: a copy the layer removes or replaces is
     /// forgotten ([`Extractor::forget_copies`]).
     copy_names: BTreeMap<PathBuf, LowerInode>,
+    /// [`DeviceNodes::Skip`]: the names of the devices left out, and of the
+    /// hardlinks to them, until the layer puts something else there.
+    devices_skipped: BTreeSet<PathBuf>,
+    /// The bytes charged for `devices_skipped`, never refunded; past
+    /// [`SKIPPED_NAMES_MAX`] once the budget is closed.
+    skipped_bytes: usize,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
@@ -649,9 +711,21 @@ impl Extractor<'_> {
             reason: reason.to_owned(),
         };
 
-        // kaniko creates no device node or FIFO in its root (ADR-0041).
-        if self.live.is_some() && matches!(kind, Kind::Node(..)) {
+        // kaniko creates no device node or FIFO in its root (ADR-0041); a
+        // user namespace can make no device node (ADR-0106).
+        let skipped = match &kind {
+            Kind::Node(RawFileType::CharacterDevice | RawFileType::BlockDevice, ..) => {
+                self.live.is_some()
+                    || (self.devices == DeviceNodes::Skip && !path.as_os_str().is_empty())
+            }
+            Kind::Node(..) => self.live.is_some(),
+            Kind::Dir | Kind::File | Kind::Symlink(_) | Kind::Hardlink(_) => false,
+        };
+        if skipped {
             self.stats.nodes_skipped += 1;
+            if self.live.is_none() {
+                self.remember_skipped(path);
+            }
             return Ok(());
         }
         if let Some(live) = &self.live
@@ -685,6 +759,19 @@ impl Extractor<'_> {
                 }
             };
         }
+        // As root this links the device: nothing at its name now, such as a
+        // lower layer's file, is what it names.
+        if let Kind::Hardlink(t) = &kind
+            && self.devices_skipped.contains(t)
+        {
+            self.stats.nodes_skipped += 1;
+            self.remember_skipped(path);
+            return Ok(());
+        }
+        // By the cleaned name, as recorded: the entry takes the place of any
+        // device left out there, and of those below it unless it is a
+        // directory, merged.
+        self.forget_skipped(&path, !matches!(kind, Kind::Dir));
         let (parent, name) = path::entry(&path)?;
         let name = name.to_owned();
         // In a live root, `path` becomes where the entry lands on disk.
@@ -762,6 +849,52 @@ impl Extractor<'_> {
         }
         self.mark_created(&path);
         Ok(())
+    }
+
+    /// Remembers `path` as a device left out, within [`SKIPPED_NAMES_MAX`]
+    /// bytes a layer, counted from the names alone so that what is
+    /// remembered depends on the layer only: once a name passes them,
+    /// nothing more is remembered, with one warning, and a link to one of
+    /// those is linked to what the layer has at that name, else copied from
+    /// the nearest lower layer that shows it, else refused (ADR-0128), so
+    /// that memory never grows with names the layer puts nowhere.
+    fn remember_skipped(&mut self, mut path: PathBuf) {
+        let cost = path.as_os_str().len().saturating_add(SKIPPED_NAME_COST);
+        let total = self.skipped_bytes.saturating_add(cost);
+        if total <= SKIPPED_NAMES_MAX {
+            self.skipped_bytes = total;
+            path.shrink_to_fit();
+            self.devices_skipped.insert(path);
+        } else if self.skipped_bytes <= SKIPPED_NAMES_MAX {
+            self.skipped_bytes = total;
+            tracing::warn!(
+                "the names this layer leaves out (devices and links to them) passed the \
+                 {SKIPPED_NAMES_MAX}-byte budget: a link to one past it is linked to what the \
+                 layer has at that name, else copied from the nearest lower layer that shows \
+                 it, else refused"
+            );
+        }
+    }
+
+    /// Forgets the devices left out at `path`, and below it when `below`:
+    /// the layer puts something else there.
+    fn forget_skipped(&mut self, path: &Path, below: bool) {
+        if self.devices_skipped.is_empty() {
+            return;
+        }
+        if !below {
+            self.devices_skipped.remove(path);
+            return;
+        }
+        let gone: Vec<PathBuf> = self
+            .devices_skipped
+            .range::<Path, _>((Bound::Included(path), Bound::Unbounded))
+            .take_while(|p| p.starts_with(path))
+            .cloned()
+            .collect();
+        for p in gone {
+            self.devices_skipped.remove(&p);
+        }
     }
 
     /// The hardlink `name` in `pfd` (at `path`) to `target`: linked within
@@ -1134,6 +1267,7 @@ impl Extractor<'_> {
                     .mkdir_all(&dir, PARENT_MODE, Mounts::Stay)
                     .map_err(|e| on_mount(e, raw))?;
                 self.make_room(&target, pfd.as_fd(), hidden, false, raw)?;
+                self.forget_skipped(&target, true);
                 rustix::fs::mknodat(
                     &pfd,
                     hidden,
