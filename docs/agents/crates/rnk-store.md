@@ -27,8 +27,9 @@ extract the same digest at once.
   (Phase 3, ADR-0105), neither built. `ranikust prune` only calls it. A
   user other than root opens the store inside the build's user namespace
   (`ranikust`'s `setup::enter_user_namespace`, #75), where the clean-up
-  removes files of the user's subordinate ids as root of the namespace;
-  nothing here knows which namespace it runs in.
+  removes files of the user's subordinate ids as root of the namespace, and
+  where extracted layers are filled and published (#77); nothing here knows
+  which namespace it runs in.
 - `BuildPaths`, the paths handed down to every crate.
 
 ## Must not
@@ -77,7 +78,7 @@ pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked:
 pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped
 impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer); path() -> &Path for messages only: write through file()/root()
-pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, ADR-0032) [open: #1]; digest() -> &Digest
+pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID, in a user namespace by chain ID and id map (rnk-snapshot, ADR-0032, ADR-0104) [open: #1]; digest() -> &Digest
 pub enum Error { NotAStateDir, NoFlock, Busy, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 ```
 
@@ -105,7 +106,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
 - A non-empty state directory without a regular `.ranikust-state` file is
   refused, so clean-up never runs in a directory the user pointed at by
   mistake. A new state directory is `0700`; one owned by another user or
-  writable by others is used with a warning.
+  writable by others is used with a warning. The store's own directories
+  (`blobs/`, `layers/`, `tmp/`...) of the user's take the process's gid and
+  lose a setgid bit a setgid state directory gave them, so what the store
+  makes has a gid a user namespace maps (ADR-0099).
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
@@ -149,8 +153,8 @@ Design: [locks](../../design/cache-and-store.md#locks),
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout), [`#locks`](../../design/cache-and-store.md#locks), [`#atomic-publication`](../../design/cache-and-store.md#atomic-publication), [`#prune`](../../design/cache-and-store.md#prune), [`#ownership`](../../design/cache-and-store.md#ownership), [`#failure-handling`](../../design/cache-and-store.md#failure-handling); [`design/overlay-snapshot.md#state-directory-layout`](../../design/overlay-snapshot.md#state-directory-layout); [threat model T7, T13, T14](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (planned, Phase 3: in rootless mode every operation on extracted layers runs inside the build's user namespace), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (planned, Phase 3: a minimal `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: in rootless mode and under `--userns` extracted layers are keyed by their id map in the same state directory)
-- **Open:** [#1](https://github.com/tran4774/ranikust/issues/1) (which digest names an extracted layer, where locks live; it must include the id map of a rootless or `--userns` build, ADR-0104; interim: layers named by the digest the caller gives, `rnk-snapshot` uses the chain ID), [#2](https://github.com/tran4774/ranikust/issues/2) (proving the lock protocol under crashes and races), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds)
+- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (in rootless mode every operation on extracted layers runs inside the build's user namespace, and the store's directories carry mapped ids, #77), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (planned, Phase 3: a minimal `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (in rootless mode and under `--userns` extracted layers are keyed by their id map in the same state directory: `rnk-snapshot` makes the key, #77)
+- **Open:** [#1](https://github.com/tran4774/ranikust/issues/1) (which digest names an extracted layer, where locks live; it must include the id map of a rootless or `--userns` build, ADR-0104; interim: layers named by the digest the caller gives, `rnk-snapshot` uses the chain ID, and in a user namespace a digest of the chain ID and the id map), [#2](https://github.com/tran4774/ranikust/issues/2) (proving the lock protocol under crashes and races), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds)
 - **Evidence:** [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) §5 (parallel extraction 0.37 s against 0.88 s), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) finding 4 (a state directory in the walked root leaks), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) finding 9 (a hardlink farm corrupts the store)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/config/init.go:41` (`KanikoDir`), `:49-81` (its per-purpose directories); `pkg/util/fs_util.go:72-89` (the ignore list starts with `KanikoDir`). kaniko keeps no store between builds and takes no locks.
 - **External:** <https://man7.org/linux/man-pages/man2/flock.2.html>, <https://man7.org/linux/man-pages/man2/rename.2.html>
@@ -168,7 +172,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `tests/spans.rs`. Planted symlinks as entries or build directories, a FIFO
   as a lock file, a directory as a dead build's lock file; in
   `src/store/tests.rs`, a directory swapped for a symlink or another
-  directory between `statx` and open.
+  directory between `statx` and open. A setgid state directory of another
+  group passes neither its gid nor the bit to a directory of the store.
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).
@@ -178,6 +183,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   other ids: as root of a rootless Podman container (`just
   test-rootless`), and as a regular user with subordinate ids (the VM,
   where AppArmor does not restrict user namespaces).
+  `setup/tests/userns/layers.rs` (#77): base layers filled and published in
+  the namespace, `0555` roots included; a `SIGKILL`ed fill publishes nothing
+  and the next build removes it; in T2, from a setgid state directory of a
+  gid no map holds.
 - To do: `prune` by size and age (Phase 5) and a minimal `prune --all` (Phase 3,
   ADR-0105); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device

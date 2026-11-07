@@ -49,7 +49,7 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 <state-dir>/
 ├── .ranikust-state
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
-├── layers/v3/sha256/<hex>/     extracted layers by chain ID, immutable [open: #1]
+├── layers/v3/sha256/<hex>/     extracted layers by chain ID (and id map), immutable [open: #1]
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
@@ -69,12 +69,15 @@ ranikust, `0700`, below directories only root or that user may write
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
 
-Planned, Phase 3 (rootless mode and `--userns`, nothing built): an extracted
-layer's key includes the digest of the build's id map, so one state directory
-holds one copy per map
-([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md);
-how [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must
-include the map).
+In a user namespace other than the initial one (a rootless or `--userns`
+build, or ranikust started in a rootless container), an extracted layer's key
+is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
+uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
+one copy per map, and no such key is a chain ID
+([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
+#77). `rnk-snapshot` makes the key and the store keeps it as a chain ID; how
+[#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep
+the map.
 
 - **Overlay mode:** stage roots are overlay mounts in
   `builds/<id>/stages/<n>/rootfs` ([overlay-snapshot](overlay-snapshot.md)),
@@ -134,12 +137,16 @@ process dies (a T0 test kills with `SIGKILL`).
    not synced, as containerd's defaults under BuildKit
    ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)).
 
-Planned, Phase 3 (rootless mode, nothing built): the same steps, with every
-operation on extracted layers run inside the build's user namespace, since the
-user cannot rename, `chmod` or unlink entries of subordinate ids from outside it
-([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
+In a build's user namespace (rootless mode, #77), the same steps, with every
+operation on extracted layers run inside it as its mapped root, since the store
+is opened there and the user cannot rename, `chmod` or unlink entries of
+subordinate ids from outside it
+([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)):
+a killed extraction leaves its entry in `tmp/`, which the next build removes.
 Every directory the store creates has a mapped uid and gid, since an unmapped
-gid alone stops the rename of a `0555` directory.
+gid alone stops the rename of a `0555` directory and the `chown` of what is
+written below it: `Store::open` gives its own directories the process's gid
+and clears the setgid bit a setgid state directory passed on to them.
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular

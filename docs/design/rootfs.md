@@ -209,7 +209,11 @@ never called.
   later keeps it, as overlay's merged view does.
 - Other `.wh..wh.*` names (AUFS bookkeeping) are skipped; global PAX
   headers are ignored; unknown entry types are refused. Device nodes need
-  `CAP_MKNOD` (T2); foreign owners need root or a user namespace (T1).
+  `CAP_MKNOD` in the initial user namespace (T2): `extract_overlay` with
+  `DeviceNodes::Skip`, as a build in a user namespace extracts, makes no
+  block or character device and counts each in `nodes_skipped`, as
+  `extract_live` does (ADR-0106); a device as the layer's root is refused
+  either way. Foreign owners need root or a user namespace (T1).
 
 ## Copy
 
