@@ -159,26 +159,41 @@ fn root_shown_as() -> rustix::io::Result<Option<u32>> {
         Mode::empty(),
     )?;
     let fs = rustix::fs::fstatfs(&fd)?;
-    let st = rustix::fs::fstat(&fd)?;
+    let st = rustix::fs::statx(
+        &fd,
+        c"",
+        AtFlags::EMPTY_PATH,
+        rustix::fs::StatxFlags::BASIC_STATS,
+    )?;
     let mut buf = [0u8; 16];
     let n = rustix::io::read(&fd, &mut buf)?;
     Ok(sysctl_owner(
         fs.f_type,
-        st.st_mode,
+        st.stx_mode.into(),
+        crate::probe::mount_root_attr(st.stx_attributes_mask, st.stx_attributes),
         buf.get(..n).unwrap_or_default(),
-        st.st_uid,
+        st.stx_uid,
     ))
 }
 
 /// `uid`, the owner of a file of filesystem type `f_type` and mode `mode`
-/// that reads `content`, where it is the kernel's `ostype` sysctl: a
-/// regular file of a procfs, mode 0444, that reads `Linux`; not a file of
-/// a tmpfs, nor a procfs file of another mode or content, such as a
-/// process's `comm`.
-fn sysctl_owner(f_type: FsWord, mode: u32, content: &[u8], uid: u32) -> Option<u32> {
+/// that reads `content`, and is the root of a mount where `mount_root` says
+/// so, where it is the kernel's `ostype` sysctl: a regular file of a
+/// procfs, mode 0444, that reads `Linux` and is no mount's root; not a
+/// file of a tmpfs, nor a procfs file of another mode or content, such as
+/// a process's `comm`, nor any file bound over it. Where the kernel does
+/// not report mount roots (`None`, before Linux 5.8), the rest decides.
+fn sysctl_owner(
+    f_type: FsWord,
+    mode: u32,
+    mount_root: Option<bool>,
+    content: &[u8],
+    uid: u32,
+) -> Option<u32> {
     (f_type == rustix::fs::PROC_SUPER_MAGIC
         && FileType::from_raw_mode(mode) == FileType::RegularFile
         && mode & 0o7777 == 0o444
+        && mount_root != Some(true)
         && content == b"Linux\n")
         .then_some(uid)
 }

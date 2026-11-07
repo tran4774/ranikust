@@ -395,7 +395,8 @@ What a change here must keep, with where it lives:
   `enter_build_user_namespace` records first whether ranikust's effective
   uid is the owner `/proc/sys/kernel/ostype` shows, a sysctl uid 0 of the
   initial user namespace owns, seen through every level (`root_shown_as`,
-  a regular file of a procfs, mode 0444, that reads `Linux`), else
+  a regular file of a procfs, mode 0444, that reads `Linux` and is no
+  mount's root), else
   whether `/proc/self/uid_map` maps it to 0, `maps_to_root`; since
   rootless overlay mode reads the marks as root of the build's user
   namespace, where `trusted.*` reads as absent) or is the root of its
@@ -490,7 +491,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   delegation marks and which a root or other ranikust trusts, whether
   ranikust is the initial user namespace's root by the owner a
   root-owned sysctl shows, else by the map, the sysctl taken only as a
-  procfs file of mode 0444 that reads `Linux`
+  procfs file of mode 0444 that reads `Linux` and is no mount's root
   (`root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner`), the single
   layout's reason, a taken `run-` name, a `RUN`'s cgroup that cannot be
   made (its step, its path, nothing left), the limits written, the removal

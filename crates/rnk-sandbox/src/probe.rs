@@ -351,8 +351,9 @@ pub(crate) fn slash_is_mount_root() -> Result<Option<bool>> {
     Ok(mount_root_attr(st.stx_attributes_mask, st.stx_attributes))
 }
 
-/// [`slash_is_mount_root`] from the raw `statx` fields.
-fn mount_root_attr(
+/// Whether a file is a mount's root, from the raw `statx` fields; `None`
+/// where the kernel does not report it.
+pub(crate) fn mount_root_attr(
     mask: rustix::fs::StatxAttributes,
     attributes: rustix::fs::StatxAttributes,
 ) -> Option<bool> {

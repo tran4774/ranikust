@@ -61,9 +61,10 @@ nghị)" ("Fix it in #79 now (recommended)").
     through every level of user namespaces, or as the overflow uid where a
     level maps it to nothing.
   - The file counts only as a regular file of a procfs (`statfs`
-    `PROC_SUPER_MAGIC`), mode 0444, that reads `Linux`, which excludes a
-    tmpfs, and a procfs file of another mode or content over it, such as a
-    process's `comm`.
+    `PROC_SUPER_MAGIC`), mode 0444, that reads `Linux` and is no mount's
+    root (`statx`'s `STATX_ATTR_MOUNT_ROOT`, where the kernel reports it),
+    which excludes a tmpfs, a procfs file of another mode or content over
+    it, such as a process's `comm`, and any file bound over it.
   - Elsewhere `/proc/self/uid_map` decides: whether it maps the uid to 0 one
     level up. A map ranikust cannot read or parse, or that maps the uid
     nowhere, counts as 0.

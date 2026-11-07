@@ -319,7 +319,7 @@ fn root_is_uid_0_in_the_parent_user_namespace() {
 fn root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner() {
     let proc = rustix::fs::PROC_SUPER_MAGIC;
     let file = 0o100_444;
-    let ostype = |uid| sysctl_owner(proc, file, b"Linux\n", uid);
+    let ostype = |uid| sysctl_owner(proc, file, Some(false), b"Linux\n", uid);
     let never = || -> String { panic!("the map is read only without the sysctl") };
     // A host root, and root of a namespace that maps it, at any depth.
     assert!(is_kernel_root(0, ostype(0), never));
@@ -332,15 +332,25 @@ fn root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner() {
     assert!(!is_kernel_root(0, ostype(65534), never));
     // Overflow uid on both sides: cannot tell, so root.
     assert!(is_kernel_root(65534, ostype(65534), never));
-    // Not on a procfs, not a regular file, or another procfs file bound
-    // over it (a process named `Linux` has a `comm` of mode 0644): the map
-    // decides.
+    // A kernel that does not report mount roots (before Linux 5.8).
+    assert_eq!(sysctl_owner(proc, file, None, b"Linux\n", 0), Some(0));
+    // Not on a procfs, not a regular file, another procfs file bound over
+    // it (a process named `Linux` has a `comm` of mode 0644), or any file
+    // bound over it, a mount's root: the map decides.
     let tmpfs = 0x0102_1994;
-    assert_eq!(sysctl_owner(tmpfs, file, b"Linux\n", 0), None);
-    assert_eq!(sysctl_owner(proc, 0o040_555, b"Linux\n", 0), None);
-    assert_eq!(sysctl_owner(proc, 0o100_644, b"Linux\n", 1000), None);
-    assert_eq!(sysctl_owner(proc, file, b"1000 (sh) S 1\n", 1000), None);
-    assert_eq!(sysctl_owner(proc, file, b"Linux", 0), None);
+    let not_root = Some(false);
+    assert_eq!(sysctl_owner(tmpfs, file, not_root, b"Linux\n", 0), None);
+    assert_eq!(sysctl_owner(proc, 0o040_555, not_root, b"Linux\n", 0), None);
+    assert_eq!(
+        sysctl_owner(proc, 0o100_644, not_root, b"Linux\n", 1000),
+        None
+    );
+    assert_eq!(
+        sysctl_owner(proc, file, not_root, b"1000 (sh) S 1\n", 1000),
+        None
+    );
+    assert_eq!(sysctl_owner(proc, file, not_root, b"Linux", 0), None);
+    assert_eq!(sysctl_owner(proc, file, Some(true), b"Linux\n", 1000), None);
     let podman = "         0       1000          1\n";
     assert!(!is_kernel_root(0, None, || podman.to_owned()));
     assert!(is_kernel_root(0, None, String::new));
