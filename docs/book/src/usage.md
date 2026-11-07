@@ -63,9 +63,10 @@ ranikust did not make (one without its `.ranikust-state` marker, or the
 `.ranikust-pruning` an interrupted prune leaves, or holding anything other
 than what ranikust puts there), leaves a missing or empty one as it is,
 and prints what it did. If it is interrupted or cannot remove everything,
-builds refuse the directory until `prune --all` runs to the end; where it
-cannot (a mount below the directory, no subordinate ids for the user), its
-error says how to get out, naming the directory.
+builds refuse the directory until it is emptied, saying how: `prune --all`
+again for a user, root's commands below for root; where `prune --all`
+cannot finish (a mount below the directory, no subordinate ids for the
+user), its error says how to get out, naming the directory.
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves

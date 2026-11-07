@@ -288,10 +288,7 @@ fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
             panic!("a store opened on a prune cut short")
         };
         assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
-        assert!(
-            e.to_string().contains("run ranikust prune --all again"),
-            "{e}"
-        );
+        assert!(e.to_string().ends_with("so no build uses it"), "{e}");
     }
     assert_eq!(tree(&state), before, "the refusal changes nothing");
     assert!(Store::prune_all(&state).unwrap());

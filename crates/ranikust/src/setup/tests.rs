@@ -649,7 +649,8 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_how_to_finish_it() {
             .contains("( CDPATH= cd -P -- '/home/u/my state' && exec flock -xn . sh -c '"),
         "{root}"
     );
-    assert!(!root.guidance.contains("prune --all"), "{root}");
+    // Only the reason's account of the prune: nothing sends root to it.
+    assert_eq!(root.to_string().matches("prune --all").count(), 1, "{root}");
     for e in [
         Error::Busy {
             path: real.to_owned(),

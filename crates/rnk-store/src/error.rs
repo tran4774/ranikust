@@ -86,10 +86,11 @@ pub enum Error {
     /// The state directory holds [`crate::PRUNING_MARKER`]: a `ranikust
     /// prune --all` was cut short or failed there, and may have emptied
     /// entries part-way under their published names, which a build would
-    /// reuse as they are.
+    /// reuse as they are. It names no way to finish, which depends on who
+    /// runs the build: the caller's to give.
     #[error(
         "ranikust prune --all did not finish emptying the state directory {}: what it holds may \
-         be partly removed, so no build uses it; run ranikust prune --all again",
+         be partly removed, so no build uses it",
         path.display()
     )]
     PruneCutShort {

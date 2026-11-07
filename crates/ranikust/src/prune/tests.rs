@@ -36,19 +36,18 @@ fn listing(dir: &Path) -> Vec<(PathBuf, u32)> {
     out
 }
 
-/// A state directory a build left: the store's marker and a blob.
+/// A state directory a build left: the store's marker and a blob. By
+/// hand: a store opened in this process would leave its lock with a child
+/// another test spawns meanwhile, until that child runs its program.
 fn marked_state(state: &Path) {
-    let store = Store::open(&rnk_store::BuildPaths::new(state, state)).unwrap();
-    store
-        .fill(
-            &rnk_store::EntryKey::Blob(rnk_oci::Digest::from_sha256_bytes(&[7; 32])),
-            |e| {
-                std::io::Write::write_all(&mut e.file().expect("a blob"), b"blob")?;
-                Ok::<_, std::io::Error>(4)
-            },
-        )
+    use std::os::unix::fs::DirBuilderExt as _;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state.join("blobs/sha256"))
         .unwrap();
-    store.close().unwrap();
+    fs::write(state.join("blobs/sha256").join("07".repeat(32)), b"blob").unwrap();
+    fs::write(state.join(rnk_store::STATE_MARKER), b"").unwrap();
 }
 
 fn parse(args: &[&str]) -> PruneArgs {
@@ -146,7 +145,7 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     let at = |what: &str| guidance.find(what);
     let renamed = at(
         "! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state \
-         && ! test -h .ranikust-state && mv .ranikust-state .ranikust-pruning; }; } && ",
+         && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && ",
     );
     let removed = at(r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && "#);
     let marker = at(
@@ -579,47 +578,41 @@ fn the_summary_names_the_state_directory() {
 fn the_checks_outside_refuse_what_the_store_refuses() {
     use std::os::unix::fs::symlink;
     let tmp = private_tempdir();
-    let target = tmp.path().join("target");
-    fs::write(&target, b"").unwrap();
     let marker = |d: &Path| d.join(rnk_store::STATE_MARKER);
     let pruning = |d: &Path| d.join(rnk_store::PRUNING_MARKER);
-    // By hand: a store opened in this process would leave its lock with a
-    // child another test spawns meanwhile, until that child runs its
-    // program.
-    let marked = |d: &Path| {
-        fs::create_dir_all(d.join("blobs/sha256")).unwrap();
-        fs::write(d.join("blobs/sha256/x"), b"blob").unwrap();
-        fs::write(marker(d), b"").unwrap();
-    };
     type Case<'a> = (&'a str, bool, &'a dyn Fn(&Path));
     let cases: [Case<'_>; 9] = [
         ("empty", true, &|_| {}),
-        ("marked", true, &marked),
+        ("marked", true, &|d| marked_state(d)),
         ("cut short", true, &|d| {
-            marked(d);
+            marked_state(d);
             fs::rename(marker(d), pruning(d)).unwrap();
         }),
         ("marker and .ranikust-building", false, &|d| {
-            marked(d);
+            marked_state(d);
             fs::write(d.join(rnk_store::BUILDING_MARKER), b"").unwrap();
         }),
         ("anonymous names only", false, &|d| {
             fs::write(d.join(format!("{}x", rnk_store::ANON_PREFIX)), b"").unwrap();
         }),
         ("marker and a .ranikust-pruning directory", false, &|d| {
-            marked(d);
+            marked_state(d);
             fs::create_dir(pruning(d)).unwrap();
         }),
+        // To a regular file in the directory, which either check would
+        // take if it followed the link.
         ("symlinked marker", false, &|d| {
             fs::create_dir(d.join("blobs")).unwrap();
-            symlink(&target, marker(d)).unwrap();
+            fs::write(d.join("blobs/x"), b"").unwrap();
+            symlink("blobs/x", marker(d)).unwrap();
         }),
         ("symlinked .ranikust-pruning", false, &|d| {
             fs::create_dir(d.join("blobs")).unwrap();
-            symlink(&target, pruning(d)).unwrap();
+            fs::write(d.join("blobs/x"), b"").unwrap();
+            symlink("blobs/x", pruning(d)).unwrap();
         }),
         ("foreign name", false, &|d| {
-            marked(d);
+            marked_state(d);
             fs::write(d.join("notes"), b"x").unwrap();
         }),
     ];

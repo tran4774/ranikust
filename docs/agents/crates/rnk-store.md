@@ -166,8 +166,7 @@ Design: [locks](../../design/cache-and-store.md#locks),
   It deletes through `rnk-rootfs::delete_contents` by descriptor (no
   symlink followed, no mount crossed or emptied), and only when nothing
   else is left syncs the filesystem (`syncfs`) and removes
-  `.ranikust-pruning`; else `Error::NotPruned` names what is. One that is not a regular file is neither taken nor removed:
-  `NotPruned` says to remove it.
+  `.ranikust-pruning`; else `Error::NotPruned` names what is.
   `prune` by size and age (Phase 5) removes entries while builds run: per
   [ADR-0122](../../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
   not built yet, a shared `flock` on each entry a build uses, and the

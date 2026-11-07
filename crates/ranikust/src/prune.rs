@@ -52,20 +52,20 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
      root (ADR-0105)";
 
 /// Root's emptying of the state directory it runs in, for [`pinned`]: its
-/// marker first (the one a prune that did not finish left, if any), so
-/// that what an interrupted removal leaves is unmarked, and nothing where
-/// there is no regular one; then everything, with no top-level entry an
+/// regular marker first, `.ranikust-state` or else the `.ranikust-pruning`
+/// a prune that did not finish left, so that what an interrupted removal
+/// leaves is unmarked, and nothing where there is neither; then everything, with no top-level entry an
 /// operand and `find -xdev` entering no other filesystem, so a mount point
 /// is left (GNU `find` then fails).
 const ROOT_SCRIPT: &str = "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete";
 
 /// A user's emptying of the state directory it runs in without a user
 /// namespace, for [`pinned`]: the regular marker renamed `.ranikust-pruning`
-/// first, where no such name is (or the regular one an earlier run renamed
-/// kept), which keeps builds out; then all but it, as [`ROOT_SCRIPT`]
+/// first, where no such name is and never into a directory (or the regular
+/// one an earlier run renamed kept), which keeps builds out; then all but it, as [`ROOT_SCRIPT`]
 /// does; it last, once a listing shows nothing else left, since not every
 /// `find` fails when a removal does.
-const USER_SCRIPT: &str = r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#;
+const USER_SCRIPT: &str = r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#;
 
 /// How root empties the state directory `dir` with ordinary tools.
 fn root_empties(dir: &Path) -> String {
