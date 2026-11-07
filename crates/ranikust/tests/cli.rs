@@ -16,7 +16,9 @@ fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         .current_dir(cwd)
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
-        .env_remove("RANIKUST_DEBUG_FAULT")
+        // No test here makes a user namespace (T0): rootless overlay mode is
+        // refused before its probe, unless the test sets another fault.
+        .env("RANIKUST_DEBUG_FAULT", "no-userns")
         .env_remove("RANIKUST_SEALED_COPY")
         .env_remove("DOCKER_CONFIG")
         .env_remove("DOCKER_AUTH_CONFIG")
@@ -89,10 +91,16 @@ fn running_as_root() -> bool {
         .expect("Uid: line")
 }
 
-/// The run stops here as a user: the private mount namespace needs root.
+/// The run stops here as a user: rootless overlay mode, refused by the test
+/// hook before its probe (a user namespace is T1, `just test-rootless`).
 /// As root the set-up would really run, so the tests that use this stop
 /// are skipped as root (`just test-vm smoke` covers that).
-const STOPS_AS_A_USER: &str = "a private mount namespace";
+const STOPS_AS_A_USER: &str = "rootless overlay mode cannot run here";
+
+/// Where a test sets a fault of its own, which replaces the hook's
+/// `no-userns`: kaniko mode refuses a user other than root before any
+/// namespace.
+const KANIKO_STOPS_AS_A_USER: &str = "kaniko mode needs root";
 
 /// Skips the calling test as root, where the run would go past the stop.
 fn skip_as_root() -> bool {
@@ -208,6 +216,8 @@ fn materialize_is_refused_before_any_work() {
     }
 }
 
+/// With rootless overlay mode refused (the test hook), a user's build
+/// stops before the state directory is touched.
 #[test]
 fn without_root_the_set_up_refuses_before_touching_the_state_dir() {
     if skip_as_root() {
@@ -604,7 +614,7 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
     let tmpdir = tmp.path().to_str().expect("UTF-8 temp dir");
     let args = [
         "--no-push",
-        "--mode=overlay",
+        "--mode=kaniko",
         "--log-format=text",
         "-v",
         "debug",
@@ -616,7 +626,7 @@ fn a_build_runs_from_a_sealed_copy_made_once() {
         let err = stderr(&out);
         assert_eq!(out.status.code(), Some(1), "{err}");
         // The copy got `-v debug`: the stop's debug lines are there.
-        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        assert!(err.contains(KANIKO_STOPS_AS_A_USER), "{err}");
         assert!(err.contains("build settings validated"), "{err}");
         err
     };
@@ -685,7 +695,7 @@ fn red_team_a_hostile_tmpdir_only_loses_the_tmpfile_copy() {
     let missing = tmp.path().join("missing");
     let args = [
         "--no-push",
-        "--mode=overlay",
+        "--mode=kaniko",
         "--log-format=text",
         "-v",
         "debug",
@@ -696,7 +706,7 @@ fn red_team_a_hostile_tmpdir_only_loses_the_tmpfile_copy() {
         let out = ranikust(tmp.path(), &args, &env);
         let err = stderr(&out);
         assert_eq!(out.status.code(), Some(1), "{tmpdir}: {err}");
-        assert!(err.contains(STOPS_AS_A_USER), "{tmpdir}: {err}");
+        assert!(err.contains(KANIKO_STOPS_AS_A_USER), "{tmpdir}: {err}");
         err
     };
     for lost in [&file, &fifo, &missing] {
@@ -801,7 +811,7 @@ fn ranikust_os(cwd: &Path, args: &[std::ffi::OsString]) -> Output {
         .current_dir(cwd)
         .env_remove("RANIKUST_METRICS_FILE")
         .env_remove("RANIKUST_METRICS_SUMMARY")
-        .env_remove("RANIKUST_DEBUG_FAULT")
+        .env("RANIKUST_DEBUG_FAULT", "no-userns")
         .env_remove("RANIKUST_SEALED_COPY")
         .env("RUST_BACKTRACE", "0");
     cmd.output().expect("run ranikust")

@@ -157,6 +157,25 @@ fn open_refuses_a_non_empty_directory_without_the_marker() {
     assert_eq!(names(dir.path()), ["precious"]);
 }
 
+/// A probe directory of a build cut short before its store opened is
+/// ranikust's own: the directory is still a new store, the name stays.
+#[test]
+fn open_marks_a_directory_holding_only_ranikusts_leftovers() {
+    let dir = tempfile::tempdir().unwrap();
+    let at = |d: &Path| BuildPaths::new(d, d);
+    let left = format!("{}userns-probe-1-2", rnk_store::ANON_PREFIX);
+    fs::create_dir(dir.path().join(&left)).unwrap();
+    Store::open(&at(dir.path())).unwrap().close().unwrap();
+    assert!(dir.path().join(rnk_store::STATE_MARKER).is_file());
+    assert!(dir.path().join(&left).is_dir());
+    // Anything else still makes it foreign.
+    let other = tempfile::tempdir().unwrap();
+    fs::create_dir(other.path().join(&left)).unwrap();
+    fs::write(other.path().join("precious"), "x").unwrap();
+    let err = Store::open(&at(other.path())).unwrap_err();
+    assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
+}
+
 #[test]
 fn open_refuses_a_directory_with_the_old_workdir_marker_only() {
     // An old kaniko-mode workdir (or an image's `/`) marked `.ranikust-root`

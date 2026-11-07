@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Barrier;
 
@@ -75,20 +74,47 @@ const RUNS: [Run; 3] = [
     ("", Network::None, NETWORK),
 ];
 
-/// The `argv[0]` of [`Sleeper`], which [`OUTER`] looks for.
-const SLEEPER: &str = "rnk-outer-sleeper";
-
 /// What a root `RUN` prints about a [`Sleeper`] outside it, of its kernel
-/// uid, seen through an rbind of `/proc`: `outer=` its PID there, or
-/// `none`; `outer-oom=` as [`KERNEL`]'s `oom=`, for its `oom_score_adj`.
+/// uid, given its PID as this test sees it (`{pid}`), which an rbind of
+/// `/proc` shows and a new `proc` does not: `outer=` that PID if it is
+/// there, else `none`; `outer-oom=` as [`KERNEL`]'s `oom=`, for its
+/// `oom_score_adj`; then, for each of its environment, memory, root,
+/// current directory and descriptor 0, `outer-<what>=opened` or the
+/// shell's error.
 const OUTER: &str = r#"
-p=none
-for d in /proc/[0-9]*; do
-  if grep -qs "rnk-outer-[s]leeper" "$d/cmdline"; then p=${d#/proc/}; fi
-done
-echo "outer=$p"
+p={pid}
+if test -e /proc/$p; then echo "outer=$p"; else echo outer=none; fi
 echo "outer-oom=$( (read v </proc/$p/oom_score_adj && echo "$v" >/proc/$p/oom_score_adj && echo written) 2>&1)"
+for f in environ mem root cwd fd/0; do
+  echo "outer-${f%/0}=$( (exec 3</proc/$p/$f && echo opened) 2>&1)"
+done
 "#;
+
+/// What [`OUTER`] opens of the [`Sleeper`].
+const OUTER_FILES: [&str; 5] = ["environ", "mem", "root", "cwd", "fd"];
+
+/// [`OUTER`] for the [`Sleeper`] `sleeper`, by its PID: a `RUN` cannot
+/// spoof it as it could a command line. Leaked: a test's `RUN` takes a
+/// `'static` script.
+fn outer(sleeper: &Sleeper) -> &'static str {
+    Box::leak(
+        OUTER
+            .replace("{pid}", &sleeper.0.id().to_string())
+            .into_boxed_str(),
+    )
+}
+
+/// Whether the `RUN` that ran [`OUTER`] as `RUN` `n` opened nothing of the
+/// [`Sleeper`]: each of [`OUTER_FILES`] gave an error.
+fn opened_nothing(out: &str, n: usize) {
+    for f in OUTER_FILES {
+        let got = value(out, &format!("{n}:outer-{f}"));
+        assert!(
+            !got.is_empty() && !got.contains("opened"),
+            "the RUN opened {f} of a process outside the build:\n{out}"
+        );
+    }
+}
 
 /// A `sleep` this test process starts, outside the build's user namespace
 /// but of its kernel uid: killed and reaped on drop.
@@ -97,10 +123,6 @@ struct Sleeper(std::process::Child);
 impl Sleeper {
     fn start() -> Self {
         let child = std::process::Command::new("sleep")
-            // A `sleep` of its own (GNU coreutils' usual build) ignores
-            // `argv[0]`; a multi-call one (BusyBox, uutils,
-            // `coreutils-single`) would not sleep.
-            .arg0(SLEEPER)
             .arg("300")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -448,7 +470,12 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let dir = leg_dir();
     let sleeper = Sleeper::start();
-    let runs = [RUNS[0], RUNS[1], RUNS[2], ("", Network::Host, OUTER)];
+    let runs = [
+        RUNS[0],
+        RUNS[1],
+        RUNS[2],
+        ("", Network::Host, outer(&sleeper)),
+    ];
     let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, true, &runs));
     drop(sleeper);
     measured(&format!(
@@ -481,6 +508,61 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
         value(&out, "3:outer-oom").ends_with("Read-only file system"),
         "{out}"
     );
+}
+
+/// A `RUN` in the build's user namespace, given `proc_rbind`, against a
+/// dumpable [`Sleeper`] of its kernel uid outside that namespace: the
+/// sandbox's `caps=` line and [`OUTER`]'s, as `RUN` 0.
+fn against_a_process_outside(proc_rbind: bool) -> String {
+    let dir = leg_dir();
+    let sleeper = Sleeper::start();
+    let runs = [("", Network::Host, outer(&sleeper))];
+    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, proc_rbind, &runs));
+    drop(sleeper);
+    out
+}
+
+/// T1: root of rootless Podman, under an rbind of `/proc` (asked for): a
+/// `RUN` sees a process outside the build's user namespace, dumpable and
+/// of its kernel uid, yet opens none of its environment, memory, root,
+/// current directory or descriptors (ADR-0130).
+#[test]
+#[ignore = "T1: default: a RUN under an rbind of /proc opens nothing of a process outside the build in a rootless Podman container"]
+fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = against_a_process_outside(true);
+    measured(&format!(
+        "a RUN under an rbind of /proc, against a process outside the build: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Rbind, "{out}");
+    assert_eq!(value(&out, "run0"), "exit 0", "{out}");
+    assert_ne!(
+        value(&out, "0:outer"),
+        "none",
+        "the process is not seen:\n{out}"
+    );
+    opened_nothing(&out, 0);
+}
+
+/// T1: root of rootless `podman run --privileged`, where a new `proc`
+/// mounts: a `RUN` does not see a process outside the build's user
+/// namespace, dumpable and of its kernel uid, and opens nothing of it.
+#[test]
+#[ignore = "T1: privileged: a RUN with a new proc opens nothing of a process outside the build"]
+fn a_run_with_a_new_proc_opens_nothing_of_a_process_outside_the_build() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = against_a_process_outside(false);
+    measured(&format!(
+        "a RUN with a new proc, against a process outside the build: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Fresh, "{out}");
+    assert_eq!(value(&out, "run0"), "exit 0", "{out}");
+    assert_eq!(value(&out, "0:outer"), "none", "{out}");
+    opened_nothing(&out, 0);
 }
 
 /// T1: below a one-id user namespace (`unshare -r`), `setgroups` denied

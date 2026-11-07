@@ -1,0 +1,252 @@
+//! Rootless overlay mode (ADR-0104, ADR-0107): the user namespace probe
+//! routes before the build's user namespace is entered ([`plan`]), the
+//! process unchanged; the build is then set up in that namespace
+//! ([`set_up`]), from which no other mode may follow.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use rnk_sandbox::{Fallbacks, KernelFs, MountResult, Sandbox, SubordinateIds};
+
+use super::{Kind, Outcome, Refusal, Setup};
+use crate::config::Seccomp;
+
+/// What the probe before the build's user namespace found: how to enter
+/// it, and what the sandbox may bind there.
+pub(crate) struct Plan {
+    /// The subordinate ids the probe's maps used.
+    subordinate: Option<SubordinateIds>,
+    /// The operator's request and what the probe needed.
+    fallbacks: Fallbacks,
+    /// Whether the build binds `/proc`.
+    proc_rbind: bool,
+}
+
+impl Plan {
+    /// Whether the build gets an rbind of `/proc`: `--allow proc.rbind`
+    /// where the probe found a new `proc` refused. The caller runs the
+    /// peer scan before [`set_up`] then (ADR-0129, ADR-0130).
+    pub(crate) fn proc_rbind(&self) -> bool {
+        self.proc_rbind
+    }
+}
+
+/// Why [`plan`] found no rootless overlay mode here; the process is
+/// unchanged.
+pub(crate) struct NotHere {
+    /// What failed, and what to do instead.
+    pub(crate) refusal: Refusal,
+    /// Whether the user namespace probe ran and logged its line.
+    pub(crate) probed: bool,
+}
+
+/// Guidance where the state directory is on overlayfs.
+const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
+     `-v ranikust-state:/var/lib/ranikust`, or pass --state-dir on one";
+
+/// Guidance where a new `proc` is refused and an rbind of `/proc` would
+/// work, which the operator did not ask for (ADR-0126): the three ways on,
+/// the flag with what it exposes (threat model, section 6).
+const PROC_RBIND: &str = "a RUN needs a new proc, which this user namespace may not mount (a \
+     container whose /proc has masked paths): build as a regular user on a host that allows \
+     user namespaces, or in a container where ranikust may mount, or pass --allow proc.rbind, \
+     through which every RUN sees each process of this PID namespace and reads its command \
+     line, status and mount table, ranikust's included, and RUNs run one at a time; keep no \
+     secrets in other processes' command lines and give the build container a PID namespace \
+     of its own (ADR-0126, ADR-0130)";
+
+/// Guidance where another step of the user namespace fails.
+const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), or in a \
+     container: kaniko mode, or overlay mode when it is started with --privileged";
+
+/// The test hook's `no-userns` (`env`, the hook's variable): rootless
+/// overlay mode refused before its probe, the process unchanged.
+pub(crate) fn refused_by_hook(env: &str) -> NotHere {
+    NotHere {
+        refusal: Refusal {
+            kind: Kind::Other,
+            reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
+            guidance: UNUSABLE,
+        },
+        probed: false,
+    }
+}
+
+/// The user namespace probe for rootless overlay mode, before the build's
+/// user namespace: the state directory's check (refused on overlayfs, as
+/// overlay mode as root is), the subordinate ids of this user
+/// ([`crate::subids`]), then the steps and the overlay mount in a user
+/// namespace, in a directory made for them in the state directory, named
+/// as the leftovers an anonymous store removes, and removed after. Logs
+/// the probe's line, whose verdict counts an rbind of `/proc` only with
+/// `proc_rbind` (`--allow proc.rbind`, ADR-0126). Call while
+/// single-threaded.
+///
+/// # Errors
+///
+/// [`NotHere`]: the step that failed and what to do instead, with the
+/// process unchanged.
+pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> {
+    let euid = rustix::process::geteuid().as_raw();
+    let unprobed = |refusal| NotHere {
+        refusal,
+        probed: false,
+    };
+    super::prepare_state_dir(state_dir).map_err(unprobed)?;
+    if crate::statedir::on_overlayfs(state_dir) {
+        return Err(unprobed(Refusal {
+            kind: Kind::Other,
+            reason: format!(
+                "rootless overlay mode cannot run here: the state directory {} is on overlayfs, \
+                 a container's own root, where it cannot keep its upper directories",
+                state_dir.display()
+            ),
+            guidance: ON_OVERLAYFS,
+        }));
+    }
+    let subordinate = crate::subids::lookup(euid).map_err(|e| {
+        unprobed(Refusal {
+            kind: Kind::Other,
+            reason: format!("cannot read this user's subordinate ids: {e}"),
+            guidance: "",
+        })
+    })?;
+    let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
+    let _entered = span.enter();
+    let name = format!("{}userns-probe-{}", rnk_store::ANON_PREFIX, unique());
+    let probed = super::probe_in_dir(state_dir, &name, subordinate).map_err(|e| {
+        tracing::warn!("ranikust: user namespace probe could not run: {e}");
+        NotHere {
+            refusal: Refusal {
+                kind: Kind::Other,
+                reason: format!(
+                    "rootless overlay mode cannot run here: the user namespace probe could not \
+                     run: {e}"
+                ),
+                guidance: "",
+            },
+            probed: true,
+        }
+    })?;
+    let allowed = super::allowed(proc_rbind);
+    let (passes, line) = probed.summary(allowed);
+    span.record("passes", passes);
+    tracing::info!("ranikust: user namespace probe: {line}");
+    let report = &probed.report;
+    let not_here = |reason: String, guidance| NotHere {
+        refusal: Refusal {
+            kind: Kind::Other,
+            reason: format!("rootless overlay mode cannot run here: {reason}"),
+            guidance,
+        },
+        probed: true,
+    };
+    if let Some(step) = report.stop(allowed) {
+        let guidance = match step {
+            "proc" if matches!(report.proc, MountResult::Rbind { .. }) => PROC_RBIND,
+            "unshare" | "map" if euid != 0 => super::NO_USER_NAMESPACE,
+            _ => UNUSABLE,
+        };
+        return Err(not_here(
+            format!("the user namespace probe stops at {step}"),
+            guidance,
+        ));
+    }
+    if let Some(e) = probed.overlay_error() {
+        return Err(not_here(
+            format!("an overlay mount in the user namespace: {e}"),
+            UNUSABLE,
+        ));
+    }
+    let bind_proc = proc_rbind && matches!(report.proc, MountResult::Rbind { .. });
+    let fallbacks = if bind_proc {
+        report.fallbacks().allow_proc_rbind()
+    } else {
+        report.fallbacks()
+    };
+    Ok(Plan {
+        subordinate,
+        fallbacks,
+        proc_rbind: bind_proc,
+    })
+}
+
+/// A name no other build's probe takes at once: this process's id and the
+/// time.
+fn unique() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{}-{nanos}", std::process::id())
+}
+
+/// Enters the build's user namespace as `plan` says
+/// ([`rnk_sandbox::enter_build_user_namespace`], which also enters the
+/// build's mount namespace) and sets rootless overlay mode up in it: the
+/// store, opened as root of the namespace ([`super::open_store`]); the
+/// sandbox's probe with the fallbacks `plan` allows
+/// ([`rnk_sandbox::probe_with_fallbacks`]); the overlay probe in the
+/// build's directory; the outcome; then the spawner thread. `scanned` says
+/// the peer scan passed (ADR-0129): a sandbox that binds `/proc` without it
+/// is refused. `userns_network` and `seccomp` as for [`super::set_up`]. Call
+/// while single-threaded.
+///
+/// # Errors
+///
+/// A [`Refusal`]: of [`Kind::Other`] only where
+/// [`rnk_sandbox::enter_build_user_namespace`] left the process unchanged,
+/// else of [`Kind::Broken`]: the process must end.
+pub(crate) fn set_up(
+    state_dir: &Path,
+    plan: Plan,
+    scanned: bool,
+    userns_network: bool,
+    seccomp: &Seccomp,
+) -> Result<Setup, Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
+    let userns = rnk_sandbox::enter_build_user_namespace(plan.subordinate)
+        .map_err(|e| super::userns_refusal(e, euid))?;
+    tracing::info!("ranikust: the build's user namespace: {userns}");
+    let store = super::open_store(state_dir, state_dir).map_err(super::inside_userns)?;
+    let sandbox_dir = state_dir.join("sandbox");
+    let (caps, overlay) = {
+        let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
+        let _entered = span.enter();
+        let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, plan.fallbacks)
+            .map_err(|e| broken(format!("the RUN sandbox cannot run here: {e}")))?;
+        span.record("steps", 1_u64);
+        if caps.proc() == KernelFs::Rbind && !scanned {
+            return Err(broken(
+                "the RUN sandbox would bind /proc, yet no peer scan ran".to_owned(),
+            ));
+        }
+        let overlay = super::probe_overlay(store.build_dir(), 0).map_err(|r| broken(r.reason))?;
+        span.record("steps", 2_u64);
+        (caps, overlay)
+    };
+    let outcome = Outcome::OverlayRootless {
+        sandbox: caps,
+        overlay,
+    };
+    tracing::info!("ranikust: {outcome}");
+    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| broken(e.to_string()))?;
+    if userns_network {
+        sandbox.allow_userns_network();
+    }
+    seccomp.apply(&mut sandbox);
+    Ok(Setup {
+        outcome,
+        state_dir: state_dir.to_path_buf(),
+        store: Arc::new(store),
+        sandbox,
+    })
+}
+
+/// A failure in the build's user namespace: no other mode may follow.
+fn broken(reason: String) -> Refusal {
+    Refusal {
+        kind: Kind::Broken,
+        reason: format!("rootless overlay mode: {reason}"),
+        guidance: "",
+    }
+}

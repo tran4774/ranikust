@@ -1717,7 +1717,10 @@ fn shown_names(names: &[OsString]) -> String {
 }
 
 /// Refuses a non-empty state directory without a regular-file marker, and
-/// marks an empty one.
+/// marks an empty one. A name only ranikust makes there
+/// ([`crate::ANON_PREFIX`]: an anonymous store's leftover, or the user
+/// namespace probe's directory of a build cut short before its store) does
+/// not count, and stays.
 fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
     let refuse = || Error::NotAStateDir {
         path: state_path.to_owned(),
@@ -1734,7 +1737,10 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
         Some(false) => return Err(refuse()),
         None => {}
     }
-    if !list(state, Path::new("."))?.is_empty() {
+    if !list(state, Path::new("."))?
+        .iter()
+        .all(|n| anon::is_leftover(n))
+    {
         // A build creating the store concurrently writes the marker first.
         return match marked(state)? {
             Some(true) => Ok(()),

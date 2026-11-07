@@ -101,10 +101,11 @@ impl Fallbacks {
     /// where the seccomp profile allows one). The rest is an accepted
     /// residual; against it, keep no secrets in other processes' command
     /// lines, ranikust's included, and give the build container a PID
-    /// namespace of its own. The `ranikust` binary has no flag for it
-    /// before #79. This crate does not scan for a PID namespace shared with
+    /// namespace of its own. The `ranikust` binary calls it for `--allow
+    /// proc.rbind`. This crate does not scan for a PID namespace shared with
     /// a process of another mount namespace: its caller runs ADR-0101's
-    /// peer scan (ADR-0129), as the binary will with #79.
+    /// peer scan before it enters the build's user namespace, as the binary
+    /// does (ADR-0129, ADR-0130).
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }

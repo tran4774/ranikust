@@ -226,6 +226,8 @@ pub(crate) struct BuildConfig {
     pub(crate) allow_network_host: bool,
     /// `--allow network.none-userns` (ADR-0033).
     pub(crate) allow_network_none_userns: bool,
+    /// `--allow proc.rbind` (ADR-0126).
+    pub(crate) allow_proc_rbind: bool,
     /// `--seccomp`, its file not read yet ([`read_seccomp`]).
     pub(crate) seccomp: Option<SeccompArg>,
     /// `--limit`s over the defaults (ADR-0079).
@@ -487,6 +489,7 @@ impl BuildConfig {
             allow_network_none_userns: args
                 .allow
                 .contains(&crate::cli::Entitlement::NetworkNoneUserns),
+            allow_proc_rbind: args.allow.contains(&crate::cli::Entitlement::ProcRbind),
             seccomp: args.seccomp.clone(),
             limits: crate::limits::Limits::from_args(&args.limits),
             compression_level,

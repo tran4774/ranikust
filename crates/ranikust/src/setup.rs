@@ -3,13 +3,15 @@
 //! spawner thread (`design/sandbox.md#process-set-up-once-per-build`,
 //! `design/modes-and-detection.md#probe-order---modeauto`).
 //!
-//! The outcomes built so far, all as root: overlay mode, and kaniko mode
+//! The outcomes: overlay mode as root, overlay mode in the build's user
+//! namespace ([`rootless`], ADR-0104, ADR-0107), and kaniko mode, as root,
 //! on a container's `/` (ADR-0050) or with a directory per stage
 //! (ADR-0059). `--mode=auto` enters the namespace first
-//! ([`enter_namespace`]): where root may not mount, the binary picks kaniko
-//! mode instead (ADR-0040); where overlayfs refuses the state directory
-//! outside a container, kaniko mode with a directory per stage; every other
-//! environment is refused with the probe's diagnosis.
+//! ([`enter_namespace`]): where root may not mount, the binary tries
+//! rootless overlay mode, then picks kaniko mode (ADR-0040); where overlayfs
+//! refuses the state directory outside a container, kaniko mode with a
+//! directory per stage; a user other than root builds in rootless overlay
+//! mode; every other environment is refused with the probe's diagnosis.
 
 use std::fmt;
 use std::os::fd::OwnedFd;
@@ -26,6 +28,8 @@ use rnk_store::{BuildPaths, Store};
 
 use crate::config::Seccomp;
 
+pub(crate) mod rootless;
+
 /// The outcome the probes picked (ADR-0002, ADR-0004). Each library gets
 /// only its own part (Q-017, interim (b)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,20 +42,50 @@ pub(crate) enum Outcome {
         /// For `rnk-snapshot` (task 9).
         overlay: OverlayCaps,
     },
+    /// Overlay mode in the build's user namespace, which the whole build
+    /// runs in as its root (ADR-0104): stage roots are overlay mounts that
+    /// namespace owns, `RUN` runs in the full sandbox there, with `proc`
+    /// and `sysfs` as [`rnk_sandbox::probe_with_fallbacks`] chose them.
+    OverlayRootless {
+        /// For `rnk_sandbox::Sandbox::start`.
+        sandbox: Caps,
+        /// For `rnk-snapshot`.
+        overlay: OverlayCaps,
+    },
 }
 
 impl fmt::Display for Outcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        let (sandbox, overlay) = match self {
             Outcome::OverlayRoot { sandbox, overlay } => {
-                write!(f, "overlay mode as root, RUN enters its root with ")?;
-                f.write_str(match sandbox.root_entry {
-                    rnk_sandbox::RootEntry::PivotRoot => "pivot_root",
-                    rnk_sandbox::RootEntry::MoveMount => "MS_MOVE",
-                })?;
-                write!(f, ", overlay mounts with {}", mount_api_name(overlay.api))
+                f.write_str("overlay mode as root")?;
+                (sandbox, overlay)
             }
+            Outcome::OverlayRootless { sandbox, overlay } => {
+                f.write_str("overlay mode, rootless, in the build's user namespace")?;
+                (sandbox, overlay)
+            }
+        };
+        f.write_str(", RUN enters its root with ")?;
+        f.write_str(match sandbox.root_entry {
+            rnk_sandbox::RootEntry::PivotRoot => "pivot_root",
+            rnk_sandbox::RootEntry::MoveMount => "MS_MOVE",
+        })?;
+        if let Outcome::OverlayRootless { .. } = self {
+            let kernel_fs = |how| match how {
+                rnk_sandbox::KernelFs::Fresh => "a new instance",
+                rnk_sandbox::KernelFs::Rbind => "a read-only rbind",
+                // `#[non_exhaustive]` across crates: the log line only.
+                _ => "another way",
+            };
+            write!(
+                f,
+                ", proc: {}, sysfs: {}",
+                kernel_fs(sandbox.proc()),
+                kernel_fs(sandbox.sysfs())
+            )?;
         }
+        write!(f, ", overlay mounts with {}", mount_api_name(overlay.api))
     }
 }
 
@@ -135,11 +169,11 @@ impl fmt::Display for Refusal {
     }
 }
 
-/// Guidance where a user other than root builds: every mode built so far
-/// needs root.
-const NEEDS_ROOT: &str = "ranikust builds as root only (rootless overlay mode is planned for \
-     Phase 3): run it with sudo, or as root in a container, which builds in kaniko mode, or \
-     in overlay mode when the container is started with --privileged";
+/// Guidance where a user other than root reaches a step of overlay mode as
+/// root: that user builds in rootless overlay mode instead.
+const NEEDS_ROOT: &str = "overlay mode as root needs root: a user other than root builds in \
+     rootless overlay mode (--mode=auto or --mode=overlay), or run ranikust with sudo, or as \
+     root in a container";
 
 /// Guidance where root may not mount: the outcome that would run here is
 /// kaniko mode. Shown only with a forced `--mode=overlay`: `--mode=auto`
@@ -199,13 +233,7 @@ const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user 
      ranikust as root";
 
 /// The build's user namespace, entered, and the store opened in it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "`prune --all` (#76) and rootless overlay mode (#79) read it"
-    )
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "`prune --all` (#76) reads it"))]
 pub(crate) struct UsernsSetup {
     /// Its map, and the maps passed over on the way.
     pub(crate) userns: rnk_sandbox::BuildUserNamespace,
@@ -229,13 +257,7 @@ pub(crate) struct UsernsSetup {
 /// error of [`rnk_sandbox::enter_build_user_namespace`] not known to leave
 /// the process unchanged, or the store refused), it is of [`Kind::Broken`]:
 /// the process must end, and no caller, in any mode, may ignore it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "`prune --all` (#76) and rootless overlay mode (#79) call it"
-    )
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "`prune --all` (#76) calls it"))]
 pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
@@ -291,7 +313,8 @@ fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
 /// again when the spawner starts. `userns_network` is `--allow
 /// network.none-userns` (ADR-0033); `seccomp` the profile of every `RUN`
 /// (ADR-0109); `userns_probe` (`--mode=auto`) adds the user namespace
-/// probe, reported only, and is cleared once the set-up reaches the probe,
+/// probe, reported only, its verdict weighing `proc_rbind` (`--allow
+/// proc.rbind`), and is cleared once the set-up reaches the probe,
 /// whatever follows; `refuse_overlay`, the test hook's `overlay-refused`,
 /// takes the overlay probe, once it passed, as a failed probe check, which
 /// routes as a mount the kernel refused does.
@@ -304,6 +327,7 @@ pub(crate) fn set_up(
     userns_network: bool,
     seccomp: &Seccomp,
     userns_probe: &mut bool,
+    proc_rbind: bool,
     refuse_overlay: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
@@ -324,10 +348,10 @@ pub(crate) fn set_up(
     let store = open_store(state_dir, state_dir)?;
     // Before the overlay probe: a thread it joined may still be counted.
     if std::mem::take(userns_probe) {
-        report_user_namespace(&store);
+        report_user_namespace(&store, allowed(proc_rbind));
     }
     let sandbox_dir = state_dir.join("sandbox");
-    let outcome = {
+    let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let sandbox = rnk_sandbox::probe(&sandbox_dir);
@@ -340,11 +364,13 @@ pub(crate) fn set_up(
             }
         });
         span.record("steps", 2_u64);
-        let (sandbox, overlay) = pick(sandbox, overlay, euid)?;
-        Outcome::OverlayRoot { sandbox, overlay }
+        pick(sandbox, overlay, euid)?
+    };
+    let outcome = Outcome::OverlayRoot {
+        sandbox: caps,
+        overlay,
     };
     tracing::info!("ranikust: {outcome}");
-    let Outcome::OverlayRoot { sandbox: caps, .. } = outcome;
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
         kind: Kind::Other,
         reason: e.to_string(),
@@ -426,7 +452,9 @@ const KANIKO_NEEDS_ROOT: &str = "kaniko mode needs root (chown, chroot, switchin
 /// started with, given back to every `RUN`; `seccomp` the profile of a
 /// full-sandbox `RUN` (ADR-0109), which the caller refused on `/`;
 /// `userns_probe` (`--mode=auto`) adds the user namespace probe, reported
-/// only.
+/// only, its verdict weighing `proc_rbind` (`--allow proc.rbind`), with
+/// ADR-0107's hint on `/` where only the state directory on overlayfs
+/// keeps rootless overlay mode away.
 ///
 /// # Errors
 ///
@@ -439,6 +467,7 @@ pub(crate) fn set_up_kaniko(
     nofile: rnk_sandbox::NofileLimit,
     seccomp: &Seccomp,
     userns_probe: bool,
+    proc_rbind: bool,
 ) -> Result<KanikoSetup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     if euid != 0 {
@@ -498,8 +527,13 @@ pub(crate) fn set_up_kaniko(
         span.record("steps", 1_u64);
         Some(caps)
     };
-    if userns_probe {
-        report_user_namespace(&store);
+    if userns_probe
+        && let Some(probed) = report_user_namespace(&store, allowed(proc_rbind))
+        && on_slash
+        && crate::statedir::on_overlayfs(store.state_dir())
+        && let Some(hint) = volume_hint(&probed, proc_rbind)
+    {
+        tracing::info!("ranikust: {hint}");
     }
     let isolation = if caps.is_some() {
         rnk_sandbox::Isolation::Full
@@ -582,36 +616,107 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
     }
 }
 
-/// Step 2 of the probe order, reported only: whether a `RUN` could
-/// run in a user namespace here (`rnk_sandbox::probe_user_namespace`), and
-/// an overlay mount in it (`rnk_snapshot::probe`), tried in a directory of
-/// this build on the state directory's filesystem (where it mounts is
-/// \[open: #4], interim (a)). Logs one line; nothing here refuses or
-/// changes the outcome. Root only: the effective uid is checked.
-/// Call while single-threaded, before the spawner starts and before
-/// `probe_overlay`, whose joined thread may still be counted.
-fn report_user_namespace(store: &Store) {
+/// Step 2 of the probe order, reported only where it routes nothing (root's
+/// overlay and kaniko modes): whether a `RUN` could run in a user namespace
+/// here (`rnk_sandbox::probe_user_namespace`), and an overlay mount in it
+/// (`rnk_snapshot::probe`), tried in a directory of this build on the state
+/// directory's filesystem (where it mounts is \[open: #4], interim (a)).
+/// Logs one line, whose verdict counts an rbind of `/proc` only where
+/// `allowed` has it; nothing here refuses or changes the outcome. Root
+/// only: the effective uid is checked. Call while single-threaded, before
+/// the spawner starts and before `probe_overlay`, whose joined thread may
+/// still be counted. What it found, if it ran.
+fn report_user_namespace(store: &Store, allowed: rnk_sandbox::Fallbacks) -> Option<Probed> {
     let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
     let _entered = span.enter();
     if !rustix::process::geteuid().is_root() {
         tracing::debug!("user namespace probe not run: not root");
-        return;
+        return None;
     }
     match probe_user_namespace(store) {
-        Ok((passes, line)) => {
+        Ok(probed) => {
+            let (passes, line) = probed.summary(allowed);
             span.record("passes", passes);
             tracing::info!("ranikust: user namespace probe (reported only): {line}");
+            Some(probed)
         }
         Err(e) => {
             tracing::warn!("ranikust: user namespace probe (reported only) could not run: {e}");
+            None
         }
     }
 }
 
-/// [`report_user_namespace`]'s probes in a directory made for them and
-/// removed after, unless a child of the probe was left there: whether the
-/// path passes, and the line to log.
-fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
+/// The operator's request as [`rnk_sandbox::Fallbacks`]: an rbind of
+/// `/proc` with `proc_rbind` (`--allow proc.rbind`, ADR-0126).
+pub(crate) fn allowed(proc_rbind: bool) -> rnk_sandbox::Fallbacks {
+    if proc_rbind {
+        rnk_sandbox::Fallbacks::default().allow_proc_rbind()
+    } else {
+        rnk_sandbox::Fallbacks::default()
+    }
+}
+
+/// What the user namespace probe and the overlay probe in it found.
+pub(crate) struct Probed {
+    /// The steps.
+    pub(crate) report: rnk_sandbox::UsernsReport,
+    /// The overlay probe in the namespace.
+    overlay: OverlayInNamespace,
+    /// `kernel.apparmor_restrict_unprivileged_userns`, for the line.
+    apparmor: String,
+}
+
+impl Probed {
+    /// Whether the path passes for a build that `allowed` lets bind, and
+    /// the line to log.
+    pub(crate) fn summary(&self, allowed: rnk_sandbox::Fallbacks) -> (bool, String) {
+        userns_summary(
+            self.report.stop(allowed),
+            &self.report.to_string(),
+            self.overlay.clone(),
+            &self.apparmor,
+        )
+    }
+
+    /// The overlay probe in the namespace's error, `None` where it passed.
+    pub(crate) fn overlay_error(&self) -> Option<String> {
+        match &self.overlay {
+            Some(Ok(Ok(_))) => None,
+            Some(Ok(Err(e))) => Some(format!("refused: {e}")),
+            Some(Err(e)) => Some(format!("could not run: {e}")),
+            None => Some("not run (no id map)".to_owned()),
+        }
+    }
+}
+
+/// ADR-0107's hint where kaniko mode on `/` builds because the state
+/// directory is on overlayfs: what lets rootless overlay mode run here,
+/// once the steps pass (an rbind of `/proc` only with `proc_rbind`, or
+/// with the flag the hint then names).
+fn volume_hint(probed: &Probed, proc_rbind: bool) -> Option<&'static str> {
+    let report = &probed.report;
+    if report.stop(allowed(proc_rbind)).is_none() {
+        Some(
+            "rootless overlay mode would build here with a volume at the state directory \
+             (e.g. -v ranikust-state:/var/lib/ranikust): the state directory is on overlayfs, \
+             where it cannot keep its upper directories (ADR-0107)",
+        )
+    } else if report.stop(allowed(true)).is_none() {
+        Some(
+            "rootless overlay mode would build here with a volume at the state directory \
+             (e.g. -v ranikust-state:/var/lib/ranikust) and --allow proc.rbind, through which \
+             every RUN reads the command lines of this PID namespace's processes, ranikust's \
+             included (see --help) (ADR-0107, ADR-0126)",
+        )
+    } else {
+        None
+    }
+}
+
+/// [`report_user_namespace`]'s probes, in a directory of the store made for
+/// them ([`probe_in_dir`]).
+fn probe_user_namespace(store: &Store) -> Result<Probed, String> {
     // An anonymous store has no build directory: a name its next start
     // removes if this build leaves it, made while no `RUN` runs.
     let (_window, parent, name) = if store.is_anonymous() {
@@ -621,21 +726,32 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
     } else {
         (None, store.build_dir(), "userns-probe".to_owned())
     };
+    probe_in_dir(parent, &name, None)
+}
+
+/// The probes, for the subordinate ids `subordinate`, in `parent/name`,
+/// made for them and removed after, unless a child of the probe was left
+/// there.
+pub(crate) fn probe_in_dir(
+    parent: &Path,
+    name: &str,
+    subordinate: Option<rnk_sandbox::SubordinateIds>,
+) -> Result<Probed, String> {
     let root = RootPath::open(parent).map_err(|e| e.to_string())?;
     let scratch = root
-        .create_sub_root(&name, 0o700)
+        .create_sub_root(name, 0o700)
         .map_err(|e| e.to_string())?;
-    let (r, left) = probe_in_scratch(&scratch, &parent.join(&name));
+    let (r, left) = probe_in_scratch(&scratch, &parent.join(name), subordinate);
     if left {
         // The child may still write there; the error in the line says so.
         return r;
     }
     let removed = rnk_rootfs::delete_contents(&scratch, &rnk_rootfs::IgnoreList::new())
-        .and_then(|()| root.remove_dir(&name));
+        .and_then(|()| root.remove_dir(name));
     if let Err(e) = removed {
         tracing::warn!(
             "ranikust: cannot remove the user namespace probe's {}: {e}",
-            parent.join(&name).display()
+            parent.join(name).display()
         );
     }
     r
@@ -644,8 +760,12 @@ fn probe_user_namespace(store: &Store) -> Result<(bool, String), String> {
 /// The probes in `scratch`, at `path`; and whether their directory stays
 /// ([`keeps_dir`]; never when `overlay` cannot be made in it, before any
 /// child of the overlay probe).
-fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), String>, bool) {
-    let report = match rnk_sandbox::probe_user_namespace(scratch, None) {
+fn probe_in_scratch(
+    scratch: &RootPath,
+    path: &Path,
+    subordinate: Option<rnk_sandbox::SubordinateIds>,
+) -> (Result<Probed, String>, bool) {
+    let report = match rnk_sandbox::probe_user_namespace(scratch, subordinate) {
         Ok(report) => report,
         Err(e) => return (Err(e.to_string()), keeps_dir(Some(&e), None)),
     };
@@ -665,8 +785,12 @@ fn probe_in_scratch(scratch: &RootPath, path: &Path) -> (Result<(bool, String), 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
         Err(e) => format!("unreadable: {e}"),
     };
-    let line = userns_summary(report.stop(), &report.to_string(), overlay, &apparmor);
-    (Ok(line), keep)
+    let probed = Probed {
+        report,
+        overlay,
+        apparmor,
+    };
+    (Ok(probed), keep)
 }
 
 /// `rnk-snapshot`'s overlay probe in `dir`, run in the user namespace: the

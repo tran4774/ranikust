@@ -46,22 +46,56 @@ pub(crate) fn looks_secret(name: &str) -> bool {
     SECRET_WORDS.iter().any(|w| upper.contains(w))
 }
 
+/// How a `RUN` reaches the processes of ranikust's PID namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// Kaniko mode on `/`: a `RUN` shares ranikust's `/proc`, and opens
+    /// what root opens there (ADR-0051, ADR-0101).
+    Slash,
+    /// `--allow proc.rbind`: a `RUN` reads every process's command line,
+    /// status and mount table through the rbind, though not its
+    /// environment, files or memory (ADR-0130).
+    ProcRbind,
+}
+
+impl Reach {
+    /// The build, as a refusal names it.
+    pub(crate) fn build(self) -> &'static str {
+        match self {
+            Self::Slash => "kaniko mode on /",
+            Self::ProcRbind => "a build with an rbind of /proc (--allow proc.rbind)",
+        }
+    }
+}
+
 /// Warns for each `--build-arg NAME=value` whose name looks like a
-/// secret's: its value is on ranikust's command line. `--build-arg NAME`
-/// alone, which takes the value from the environment, is not on it.
-pub(crate) fn warn_build_args(args: &[BuildArg]) {
+/// secret's: its value is on ranikust's command line, which a `RUN` reads
+/// as `reach` says. `--build-arg NAME` alone, which takes the value from
+/// the environment, is not on it.
+pub(crate) fn warn_build_args(args: &[BuildArg], reach: Reach) {
     for arg in args {
         if arg.value.is_some() && looks_secret(&arg.name) {
-            tracing::warn!(
-                "--build-arg {}=…: the value is on ranikust's command line, which every RUN can \
-                 read through /proc/<pid>/cmdline in kaniko mode on /; pass a secret with \
-                 --secret, or as `--build-arg {}` with the value in the environment and \
-                 ranikust started as the container's PID 1 (exec it), else the shell that \
-                 started it holds the value where a RUN reads it",
-                arg.name,
-                arg.name
-            );
+            tracing::warn!("{}", build_arg_warning(&arg.name, reach));
         }
+    }
+}
+
+/// [`warn_build_args`]'s warning for the argument `name`.
+fn build_arg_warning(name: &str, reach: Reach) -> String {
+    match reach {
+        Reach::Slash => format!(
+            "--build-arg {name}=…: the value is on ranikust's command line, which every RUN can \
+             read through /proc/<pid>/cmdline in kaniko mode on /; pass a secret with \
+             --secret, or as `--build-arg {name}` with the value in the environment and \
+             ranikust started as the container's PID 1 (exec it), else the shell that \
+             started it holds the value where a RUN reads it"
+        ),
+        // Under the rbind a `RUN` reads no other process's environment.
+        Reach::ProcRbind => format!(
+            "--build-arg {name}=…: the value is on ranikust's command line, which every RUN can \
+             read through /proc/<pid>/cmdline with --allow proc.rbind; pass a secret with \
+             --secret, or as `--build-arg {name}` with the value in the environment"
+        ),
     }
 }
 
@@ -1241,6 +1275,30 @@ mod tests {
         for n in ["VERSION", "NODE_ENV", "TARGETPLATFORM"] {
             assert!(!looks_secret(n), "{n}");
         }
+    }
+
+    #[test]
+    fn a_build_arg_warning_names_how_a_run_reads_the_command_line() {
+        let slash = build_arg_warning("NPM_TOKEN", Reach::Slash);
+        assert!(
+            slash.starts_with("--build-arg NPM_TOKEN=…: ")
+                && slash.contains("in kaniko mode on /")
+                && slash.contains("--secret")
+                && slash.contains("PID 1"),
+            "{slash}"
+        );
+        // Through the rbind a `RUN` reads no environment: no PID 1 advice.
+        let rbind = build_arg_warning("NPM_TOKEN", Reach::ProcRbind);
+        assert!(
+            rbind.starts_with("--build-arg NPM_TOKEN=…: ")
+                && rbind.contains("with --allow proc.rbind")
+                && rbind.contains("--secret")
+                && rbind.ends_with("with the value in the environment")
+                && !rbind.contains("PID 1"),
+            "{rbind}"
+        );
+        assert_eq!(Reach::Slash.build(), "kaniko mode on /");
+        assert!(Reach::ProcRbind.build().contains("--allow proc.rbind"));
     }
 
     #[test]
