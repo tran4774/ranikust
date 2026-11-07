@@ -107,16 +107,25 @@ fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     let m = fs::metadata(&state).unwrap();
     assert_eq!((m.gid(), m.mode() & 0o7777), (group, 0o2700));
     // A store directory already the process's is not changed again: its
-    // ctime stays, past a tick of the kernel's coarse clock.
+    // ctime stays, once a change would get a later one.
     drop(store);
-    let ctime = || {
-        let m = fs::metadata(state.join("layers")).unwrap();
+    let ctime = |p: &Path| {
+        let m = fs::metadata(p).unwrap();
         (m.ctime(), m.ctime_nsec())
     };
-    let before = ctime();
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    let before = ctime(&state.join("layers"));
+    let control = dir.path().join("control");
+    fs::write(&control, b"").unwrap();
+    for mode in [0o600, 0o644].into_iter().cycle().take(1000) {
+        if ctime(&control) > before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        fs::set_permissions(&control, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    assert!(ctime(&control) > before, "the ctime clock never moved");
     let store = Store::open(&paths(dir.path())).unwrap();
-    assert_eq!(ctime(), before);
+    assert_eq!(ctime(&state.join("layers")), before);
 
     // A store directory of another gid without the bit, as a `grpid`
     // mount gives one, takes the effective gid at the next open.

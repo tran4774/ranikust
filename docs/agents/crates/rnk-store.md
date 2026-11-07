@@ -116,8 +116,9 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (ADR-0099). Each is pinned once and read and changed through that
   descriptor (`RootPath::set_meta_if`), only when it needs it. Outside a
   user namespace no map needs the gid, so a filesystem that refuses the
-  change (`EPERM`) does not stop the store: a warning; in one, or where the
-  namespace cannot be told, an error, as is any other failure.
+  `chown` or `chmod` itself (`EPERM`) does not stop the store: a warning;
+  in one, or where the namespace cannot be told, an error, as is any other
+  failure.
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
@@ -187,7 +188,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   process's keeps its ctime; a refused change is a warning only outside a
   user namespace, and the refusal itself is the error in one or where the
   namespace cannot be told
-  (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`).
+  (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
+  symlink of another group at a store directory's name keeps its group and
+  the store refuses it
+  (`a_symlink_at_a_store_directory_s_name_keeps_its_group`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).

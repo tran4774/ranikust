@@ -1778,22 +1778,29 @@ fn own_group(state: &RootPath, d: &str) -> Result<()> {
 }
 
 /// What [`own_group`] does when the change of `d` fails with `e`: a
-/// warning for a refused change (`EPERM`) outside a user namespace; an
-/// error for any other failure, in one, or where `in_user_namespace`
-/// cannot tell.
+/// warning for a refused change (`EPERM` from `chown` or `chmod` itself)
+/// outside a user namespace; an error for any other failure, in one, or
+/// where `in_user_namespace` cannot tell.
 fn refused_group(
     e: rnk_rootfs::Error,
     d: &str,
     in_user_namespace: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
-    if e.raw_os_error() != Some(rustix::io::Errno::PERM.raw_os_error()) {
+    let refused = matches!(
+        &e,
+        rnk_rootfs::Error::Io {
+            op: "chown" | "chmod",
+            ..
+        }
+    ) && e.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error());
+    if !refused {
         return Err(e.into());
     }
     match in_user_namespace() {
         Ok(false) => {
             tracing::warn!(
                 target: "rnk_store",
-                "state directory: {d} keeps its group and setgid bit: {e}"
+                "state directory: {d} keeps the group or setgid bit it had: {e}"
             );
             Ok(())
         }
