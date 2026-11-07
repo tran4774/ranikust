@@ -54,6 +54,7 @@ use crate::userns::OwnNamespace;
 pub struct Sandbox {
     runner: Runner,
     running: Running,
+    turns: Turns,
     requests: Option<mpsc::Sender<Request>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -187,6 +188,7 @@ impl Sandbox {
             .spawn(move || spawner(&received, parent))
             .map_err(|e| sys_err("start the spawner thread", e))?;
         Ok(Self {
+            turns: Turns::for_proc(runner.kernel_fs.0),
             runner,
             running: Running::default(),
             requests: Some(requests),
@@ -197,7 +199,11 @@ impl Sandbox {
     /// Runs one `RUN` and waits for it; the exit status is the command's.
     ///
     /// Blocking: an async caller runs it on a blocking thread. The child is
-    /// cloned on the spawner thread whatever thread calls this.
+    /// cloned on the spawner thread whatever thread calls this. Where
+    /// [`Caps::proc`] is [`KernelFs::Rbind`], `RUN`s take turns: a call
+    /// waits until no other `RUN` of this `Sandbox` runs, and holds its turn
+    /// until its `RUN` is reaped, the processes of its PID namespace gone
+    /// with it (ADR-0127).
     ///
     /// # Errors
     ///
@@ -208,6 +214,7 @@ impl Sandbox {
     /// [`Error::Cancelled`] after [`Sandbox::cancel`], or a host-side error.
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus> {
         let requests = self.requests.as_ref().ok_or(Error::SpawnerGone)?;
+        let _turn = self.turns.take();
         self.runner.run(spec, Some(&self.running), |job| {
             let (reply, answer) = mpsc::sync_channel(1);
             requests
@@ -1771,6 +1778,30 @@ fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
         options: cstring(options)?,
         files,
     })
+}
+
+/// Whether a [`Sandbox`]'s `RUN`s take turns: only where they get the
+/// outer `/proc`, through which `RUN`s sharing a kernel uid could reach
+/// each other's processes (ADR-0127).
+#[derive(Debug)]
+struct Turns(Option<Mutex<()>>);
+
+impl Turns {
+    fn for_proc(proc: KernelFs) -> Self {
+        match proc {
+            KernelFs::Rbind => Self(Some(Mutex::new(()))),
+            KernelFs::Fresh => Self(None),
+        }
+    }
+
+    /// Waits for this caller's turn, held until the guard drops; `None`
+    /// where `RUN`s run side by side.
+    fn take(&self) -> Option<MutexGuard<'_, ()>> {
+        // The lock guards no data: a `RUN` that panicked left none broken.
+        self.0
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(PoisonError::into_inner))
+    }
 }
 
 /// The `RUN`s running now, for [`Sandbox::cancel`].
@@ -5252,5 +5283,40 @@ mod tests {
         let runner = Runner::new(dir.path(), None).unwrap();
         assert!(runner.runs_dir().is_dir());
         assert_ne!(runner.next_id(), runner.next_id());
+    }
+
+    /// Under an rbind of `/proc` a second caller gets its turn only once the
+    /// first has dropped its own; with a new `proc` both run at once.
+    #[test]
+    fn runs_take_turns_only_under_an_rbind_of_proc() {
+        let side_by_side = Turns::for_proc(KernelFs::Fresh);
+        let both = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    let _turn = side_by_side.take();
+                    // Passed only while the other holds its turn too.
+                    both.wait();
+                });
+            }
+        });
+
+        let turns = Turns::for_proc(KernelFs::Rbind);
+        let (entered, second) = mpsc::channel();
+        std::thread::scope(|s| {
+            let first = turns.take();
+            assert!(first.is_some());
+            s.spawn(|| {
+                let _turn = turns.take();
+                entered.send(()).unwrap();
+            });
+            assert_eq!(
+                second.recv_timeout(std::time::Duration::from_millis(200)),
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "a second turn while the first is held"
+            );
+            drop(first);
+            second.recv().unwrap();
+        });
     }
 }

@@ -5,7 +5,8 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Barrier;
 
 use rustix::mount::MountFlags;
 use rustix::process::DumpableBehavior;
@@ -13,7 +14,8 @@ use rustix::process::DumpableBehavior;
 use super::super::tests::{as_user, in_subreaper, measured, subordinate_range};
 use super::tests::one_id_parent;
 use crate::{
-    Caps, Error, KernelFs, Network, RunSpec, Sandbox, Stdio, Step, SubordinateIds, UsernsReport,
+    BindMount, Caps, Error, KernelFs, MountKind, Network, RunSpec, Sandbox, Stdio, Step,
+    SubordinateIds, UsernsReport,
 };
 
 /// What a root `RUN` prints about its kernel filesystems, one `key=value`
@@ -91,6 +93,28 @@ fn steps(
     runs: &[Run],
     out: &mut Vec<String>,
 ) -> Result<(), String> {
+    let sandbox = start_sandbox(top, sub, proc_rbind, out)?;
+    let root = make_root(top, "root")?;
+    for (n, (user, network, script)) in runs.iter().enumerate() {
+        let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), (*script).into()]);
+        spec.user = (*user).to_owned();
+        spec.network = *network;
+        out.extend(run_logged(&sandbox, spec, top, n)?);
+    }
+    drop(sandbox);
+    Ok(())
+}
+
+/// The user-namespace probe in `top`, the build's user namespace, the
+/// sandbox's probe with the fallbacks the first found (and an rbind of
+/// `/proc` if `proc_rbind`), and its [`Sandbox`]; `report=`, `userns=`
+/// and `caps=` lines in `out`.
+fn start_sandbox(
+    top: &Path,
+    sub: Option<SubordinateIds>,
+    proc_rbind: bool,
+    out: &mut Vec<String>,
+) -> Result<Sandbox, String> {
     let s = |e: &dyn std::fmt::Display| e.to_string();
     // As ranikust is before it reads a credential (ADR-0051).
     rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable).map_err(|e| s(&e))?;
@@ -104,19 +128,6 @@ fn steps(
     out.push(format!("report={report}"));
     let userns = crate::enter_build_user_namespace(sub).map_err(|e| s(&e))?;
     out.push(format!("userns={userns}"));
-    let root = top.join("root");
-    fs::create_dir_all(root.join("usr")).map_err(|e| s(&e))?;
-    fs::create_dir(root.join("etc")).map_err(|e| s(&e))?;
-    for (f, text) in [("passwd", PASSWD), ("group", GROUP)] {
-        fs::write(root.join("etc").join(f), text).map_err(|e| s(&e))?;
-    }
-    for l in ["bin", "lib", "lib64", "sbin"] {
-        std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).map_err(|e| s(&e))?;
-    }
-    // In the build's mount namespace: gone with this child.
-    rustix::mount::mount_bind("/usr", root.join("usr")).map_err(|e| s(&e))?;
-    rustix::mount::mount_remount(root.join("usr"), MountFlags::BIND | MountFlags::RDONLY, c"")
-        .map_err(|e| s(&e))?;
     let sandbox_dir = top.join("sandbox");
     let fallbacks = if proc_rbind {
         report.fallbacks().allow_proc_rbind()
@@ -129,24 +140,129 @@ fn steps(
         Err(e) => return Err(s(&e)),
     };
     out.push(format!("caps={caps:?}"));
-    let sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| s(&e))?;
-    for (n, (user, network, script)) in runs.iter().enumerate() {
-        let log = top.join(format!("run{n}.log"));
-        let file = fs::File::create(&log).map_err(|e| s(&e))?;
-        let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), (*script).into()]);
-        spec.user = (*user).to_owned();
-        spec.network = *network;
-        spec.stdout = Stdio::Fd(file.try_clone().map_err(|e| s(&e))?.into());
-        spec.stderr = Stdio::Fd(file.into());
-        let outcome = match sandbox.run(spec) {
-            Ok(status) => format!("exit {}", status.code().unwrap_or(-1)),
-            Err(Error::Setup { step, source }) => format!("setup {step:?} {source}"),
-            Err(e) => format!("error {e}"),
-        };
-        out.push(format!("run{n}={outcome}"));
-        let text = fs::read_to_string(&log).map_err(|e| s(&e))?;
-        out.extend(text.lines().map(|l| format!("{n}:{l}")));
+    Sandbox::start(caps, &sandbox_dir).map_err(|e| s(&e))
+}
+
+/// `top/name`, a root holding this host's `/usr` (bound read-only, in the
+/// build's mount namespace: gone with this child) and [`PASSWD`] and
+/// [`GROUP`].
+fn make_root(top: &Path, name: &str) -> Result<PathBuf, String> {
+    let s = |e: &dyn std::fmt::Display| e.to_string();
+    let root = top.join(name);
+    fs::create_dir_all(root.join("usr")).map_err(|e| s(&e))?;
+    fs::create_dir(root.join("etc")).map_err(|e| s(&e))?;
+    for (f, text) in [("passwd", PASSWD), ("group", GROUP)] {
+        fs::write(root.join("etc").join(f), text).map_err(|e| s(&e))?;
     }
+    for l in ["bin", "lib", "lib64", "sbin"] {
+        std::os::unix::fs::symlink(format!("usr/{l}"), root.join(l)).map_err(|e| s(&e))?;
+    }
+    rustix::mount::mount_bind("/usr", root.join("usr")).map_err(|e| s(&e))?;
+    rustix::mount::mount_remount(root.join("usr"), MountFlags::BIND | MountFlags::RDONLY, c"")
+        .map_err(|e| s(&e))?;
+    Ok(root)
+}
+
+/// Runs `spec` as `RUN` `n`, its output to a log in `top`: the `run<n>=`
+/// outcome, then its output lines prefixed `<n>:`.
+fn run_logged(
+    sandbox: &Sandbox,
+    mut spec: RunSpec,
+    top: &Path,
+    n: usize,
+) -> Result<Vec<String>, String> {
+    let s = |e: &dyn std::fmt::Display| e.to_string();
+    let log = top.join(format!("run{n}.log"));
+    let file = fs::File::create(&log).map_err(|e| s(&e))?;
+    spec.stdout = Stdio::Fd(file.try_clone().map_err(|e| s(&e))?.into());
+    spec.stderr = Stdio::Fd(file.into());
+    let outcome = match sandbox.run(spec) {
+        Ok(status) => format!("exit {}", status.code().unwrap_or(-1)),
+        Err(Error::Setup { step, source }) => format!("setup {step:?} {source}"),
+        Err(e) => format!("error {e}"),
+    };
+    let text = fs::read_to_string(&log).map_err(|e| s(&e))?;
+    Ok(std::iter::once(format!("run{n}={outcome}"))
+        .chain(text.lines().map(|l| format!("{n}:{l}")))
+        .collect())
+}
+
+/// What each of two `RUN`s started together prints, `{me}` and `{other}`
+/// being `a` and `b` or the reverse: `overlap=yes` when the other had
+/// started and not ended once this one had waited for it (both write to
+/// the `/shared` they share), `leftover=yes` when a process the other left
+/// behind is still there (seen only through an rbind of `/proc`), and
+/// `seen=yes` when the same search finds its own, the control. The marker
+/// is built at run time, so that no command line holds it but the one left
+/// behind. A `RUN` that sees nothing of the other waits 10 s.
+const TURN: &str = r#"
+touch /shared/{me}.start
+i=0
+while ! test -e /shared/{other}.start && test $i -lt 100; do sleep 0.1; i=$((i+1)); done
+if test -e /shared/{other}.start && ! test -e /shared/{other}.end; then
+  echo overlap=yes
+else
+  echo overlap=no
+fi
+m=rnk-left
+if grep -qs "$m-[b]ehind-{other}" /proc/[0-9]*/cmdline; then echo leftover=yes; else echo leftover=no; fi
+sh -c 'sleep 300; :' "$m-behind-{me}" </dev/null >/dev/null 2>&1 &
+j=0
+until grep -qs "$m-[b]ehind-{me}" /proc/[0-9]*/cmdline || test $j -ge 50; do sleep 0.1; j=$((j+1)); done
+if grep -qs "$m-[b]ehind-{me}" /proc/[0-9]*/cmdline; then echo seen=yes; else echo seen=no; fi
+touch /shared/{me}.end
+"#;
+
+/// In this forked child: [`start_sandbox`], then two [`TURN`] `RUN`s on
+/// roots of their own, started together from two threads, `/shared`
+/// bound into both. One line per step, as [`runs_in_build_namespace`].
+fn runs_started_together(top: &Path, proc_rbind: bool) -> String {
+    let mut out = Vec::new();
+    if let Err(e) = together(top, proc_rbind, &mut out) {
+        out.push(format!("error={e}"));
+    }
+    out.join("\n")
+}
+
+fn together(top: &Path, proc_rbind: bool, out: &mut Vec<String>) -> Result<(), String> {
+    let s = |e: &dyn std::fmt::Display| e.to_string();
+    let sandbox = start_sandbox(top, None, proc_rbind, out)?;
+    let shared = top.join("shared");
+    fs::create_dir(&shared).map_err(|e| s(&e))?;
+    let mut specs = Vec::new();
+    for (me, other) in [("a", "b"), ("b", "a")] {
+        let root = make_root(top, &format!("root-{me}"))?;
+        let script = TURN.replace("{me}", me).replace("{other}", other);
+        let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), script.into()]);
+        spec.mounts.push(BindMount {
+            source: shared.clone(),
+            target: "/shared".into(),
+            kind: MountKind::Directory,
+            read_only: false,
+        });
+        specs.push(spec);
+    }
+    let start = Barrier::new(specs.len());
+    let lines = std::thread::scope(|scope| {
+        let runs: Vec<_> = specs
+            .into_iter()
+            .enumerate()
+            .map(|(n, spec)| {
+                let (sandbox, start) = (&sandbox, &start);
+                scope.spawn(move || {
+                    start.wait();
+                    run_logged(sandbox, spec, top, n)
+                })
+            })
+            .collect();
+        runs.into_iter()
+            .map(|r| {
+                r.join()
+                    .unwrap_or_else(|_| Err("a RUN's thread panicked".to_owned()))
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
+    out.extend(lines.into_iter().flatten());
     drop(sandbox);
     Ok(())
 }
@@ -390,6 +506,53 @@ fn an_rbind_of_proc_needs_a_request() {
         "{out}"
     );
     assert!(!out.contains("caps=") && !out.contains("run0="), "{out}");
+}
+
+/// T1: root of rootless Podman with an rbind of `/proc` (asked for): two
+/// `RUN`s started together run one after the other, and the second finds
+/// no process of the first, whose PID namespace went with it (ADR-0127).
+#[test]
+#[ignore = "T1: default: RUNs take turns under an rbind of /proc in a rootless Podman container"]
+fn runs_take_turns_under_an_rbind_of_proc() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let dir = leg_dir();
+    let out = in_subreaper(|| runs_started_together(dir.path(), true));
+    measured(&format!(
+        "two RUNs started together under an rbind of /proc: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Rbind, "{out}");
+    for n in 0..2 {
+        assert_eq!(value(&out, &format!("run{n}")), "exit 0", "{out}");
+        assert_eq!(value(&out, &format!("{n}:overlap")), "no", "{out}");
+        assert_eq!(value(&out, &format!("{n}:leftover")), "no", "{out}");
+        assert_eq!(value(&out, &format!("{n}:seen")), "yes", "{out}");
+    }
+}
+
+/// T1: root of rootless `podman run --privileged`, where a new `proc`
+/// mounts: two `RUN`s started together run at once, the control of
+/// [`runs_take_turns_under_an_rbind_of_proc`].
+#[test]
+#[ignore = "T1: privileged: RUNs with a new proc run side by side in the build's user namespace"]
+fn runs_with_a_new_proc_run_side_by_side() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let dir = leg_dir();
+    let out = in_subreaper(|| runs_started_together(dir.path(), false));
+    measured(&format!(
+        "two RUNs started together with a new proc: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Fresh, "{out}");
+    for n in 0..2 {
+        assert_eq!(value(&out, &format!("run{n}")), "exit 0", "{out}");
+    }
+    assert!(
+        value(&out, "0:overlap") == "yes" || value(&out, "1:overlap") == "yes",
+        "{out}"
+    );
 }
 
 /// [`Caps`] in a line, as [`chosen`] reads it.
