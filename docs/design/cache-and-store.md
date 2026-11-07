@@ -73,15 +73,21 @@ In a user namespace other than the initial one (a rootless or `--userns`
 build, or ranikust started in a rootless container), an extracted layer's key
 is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
 uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
-one copy per map, and the tag keeps the keys apart from chain IDs
+one copy per map
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
-#77). The maps are relative to the parent namespace, so nested namespaces
-with the same maps under parents with different ones share a key, and a build
-in one sees the owners of a layer the other extracted through its own maps:
-the overflow id for ids it does not map, other owners where the ranges
-overlap. For example a namespace ranikust makes in a rootless Podman
-container, its state directory on a volume, after the user's ranges in
-`/etc/subuid` change.
+#77). The tag puts the keys in a space of their own: no chain ID of several
+layers hashes an input starting with it, and one of a single layer equals a
+key only for a tar whose bytes are the key's input. The maps are relative to
+the parent namespace, so nested namespaces with the same maps under parents
+with different ones share a key, and a build in one sees the owners of a
+layer the other extracted through its own maps: the overflow id for ids it
+does not map, other owners where the ranges overlap. This happens, for
+example, to a namespace ranikust makes in a rootless Podman container whose
+state directory is on a volume, after the user's ranges in `/etc/subuid`
+change: the moved range of the enclosing container is not seen. A canary per
+state directory and map will refuse such layers
+([#183](https://github.com/tran4774/ranikust/issues/183),
+[ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
 `rnk-snapshot` makes the key and the store takes it as it takes a chain ID,
 an opaque digest; how
 [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep

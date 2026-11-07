@@ -416,7 +416,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
   directories as overlay as root makes them, `0555` roots published, devices
-  skipped and counted, keys apart from chain IDs, an owner outside the map
+  skipped and counted, keys other than the chain IDs, an owner outside the map
   failing the extraction) and
   `a_killed_extraction_in_the_user_namespace_publishes_nothing`.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for

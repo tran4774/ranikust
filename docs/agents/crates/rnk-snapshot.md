@@ -141,8 +141,9 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   namespace other than the initial one (`src/userns.rs`, told by the inode of
   `/proc/self/ns/user`, not by its map: a namespace mapping every id to itself
   still lacks `CAP_MKNOD`), the key is the `sha256` of a tag, the chain ID and
-  the namespace's maps (ADR-0104), kept apart from chain IDs by the tag, and
-  devices are left out with `DeviceNodes::Skip` (ADR-0106).
+  the namespace's maps (ADR-0104), in a space of its own by the tag
+  (`KEY_DOMAIN`), and devices are left out with `DeviceNodes::Skip`
+  (ADR-0106).
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
   from a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
   (containerd's way, ADR-0032), and logs through its caller's `tracing`

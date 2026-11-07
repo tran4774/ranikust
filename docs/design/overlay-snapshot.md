@@ -237,7 +237,9 @@ initial one; there, block and character devices of a base layer are left out
 and counted as `nodes_skipped`
 ([ADR-0106](../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)):
 a `COPY --from` of a path holding one lacks it, and the image, built on the
-base blobs unchanged, keeps it.
+base blobs unchanged, keeps it. A lower layer's entry at such a path stays
+visible, as in kaniko mode, kaniko and BuildKit rootless
+([ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
 
 ## Lazy export
 
