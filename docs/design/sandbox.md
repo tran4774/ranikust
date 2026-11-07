@@ -310,8 +310,9 @@ The steps, in order:
       against it, keep no secrets in other processes' command lines,
       ranikust's included, and give the build container a PID namespace of
       its own. With the flag, `ranikust` also refuses, before the build's
-      user namespace, a PID namespace shared with a process of another mount
-      namespace that it can open as it starts, as T21
+      user namespace, a PID namespace shared with a process, of another
+      mount namespace, that ranikust can open through `/proc` as it starts,
+      as T21
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
       and warns for a `--build-arg` whose name looks like a secret's: its
       value is on the command line a `RUN` reads; the build keeps the
