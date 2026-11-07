@@ -15,8 +15,8 @@
 //! user on the T2 VM.
 //!
 //! ```sh
-//! smoke-build --out DIR [--image REF] [--work DIR] [--tag NAME] [--userns]
-//!             [--allow proc.rbind] [--run CMD]...
+//! smoke-build --out DIR [--image REF] [--work DIR] [--tag NAME]
+//!             [--userns [--allow proc.rbind]] [--run CMD]...
 //! ```
 
 use std::collections::BTreeMap;

@@ -277,18 +277,19 @@ The steps, in order:
       `mount_setattr(AT_RECURSIVE)` (without it the `RUN` fails); the
       sandbox's probe chooses it once and logs it once per build. Unasked,
       the probe fails at `Step::MountProc` and warns how to get a new `proc`:
-      build as a regular user on a host, where one mounts, or in a container
-      where ranikust may mount (overlay mode as root,
-      [where environments land](modes-and-detection.md#where-environments-land)),
+      build as a regular user on a host that allows user namespaces, where
+      one mounts, or in a container where ranikust may mount (overlay mode
+      as root), both in
+      [where environments land](modes-and-detection.md#where-environments-land);
       or ask for the rbind. So a `RUN` never sees the container's `/proc`
-      unasked, and always gets a new `proc` where one mounts. Otherwise a refused `proc` mount fails the
-      `RUN` (`Step::MountProc`). `proc`, `sysfs` (3) and the `/dev` tmpfs
-      (4) go only on a real directory of the root: `/proc`, `/sys` or `/dev`
-      as a symlink is refused before any stub is placed, and the child
-      resolves them again with `RESOLVE_NO_SYMLINKS`, as runc requires for
-      `proc` and `sysfs`.
-      Through a symlink, `proc` could land below a directory a later mount
-      hides, out of reach of step 7.
+      unasked, and always gets a new `proc` where one mounts. Outside the
+      build's user namespace, a refused `proc` mount fails the `RUN`
+      (`Step::MountProc`). `proc`, `sysfs` (3) and the `/dev` tmpfs (4) go
+      only on a real directory of the root: `/proc`, `/sys` or `/dev` as a
+      symlink is refused before any stub is placed, and the child resolves
+      them again with `RESOLVE_NO_SYMLINKS`, as runc requires for `proc` and
+      `sysfs`. Through a symlink, `proc` could land below a directory a
+      later mount hides, out of reach of step 7.
    3. A read-only `sysfs`. It needs privileges over the user namespace that
       owns the network namespace, so it fails (`EPERM`) with the host network
       in the build's user namespace: then an rbind of `/sys`, every mount of

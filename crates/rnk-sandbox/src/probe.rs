@@ -112,18 +112,23 @@ pub fn probe(dir: &Path) -> Result<Caps> {
 pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
     let result = probe_in(dir, allowed);
     if let Err(e) = &result
-        && is_proc_refusal(e)
-        && !allowed.proc
+        && let Some(guidance) = proc_guidance(e, allowed)
     {
-        tracing::warn!(
-            "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
-             (a container whose /proc has masked paths): build as a regular user on a host, \
-             or in a container where ranikust may mount, or allow an rbind of /proc \
-             (--allow proc.rbind), through which each RUN sees this container's processes \
-             and reaches those of its uid"
-        );
+        tracing::warn!("{guidance}");
     }
     result
+}
+
+/// How to get a new `proc`, where the probe ended in `e`, a new one refused,
+/// and `allowed` has no rbind of `/proc`.
+fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
+    (is_proc_refusal(e) && !allowed.proc).then_some(
+        "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
+         (a container whose /proc has masked paths): build as a regular user on a host that \
+         allows user namespaces, or in a container where ranikust may mount, or allow an \
+         rbind of /proc (--allow proc.rbind), through which each RUN sees this container's \
+         processes and reaches those of its uid",
+    )
 }
 
 fn probe_in(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
@@ -222,8 +227,8 @@ fn log_rbinds(caps: Caps) {
     }
 }
 
-/// A new `proc` refused with `EPERM`, as in a user namespace whose `/proc`
-/// has masked paths.
+/// A new `proc` refused with `EPERM`, as in the build's user namespace in a
+/// container whose `/proc` has masked paths.
 fn is_proc_refusal(e: &Error) -> bool {
     matches!(
         e,
@@ -453,6 +458,15 @@ mod tests {
         );
         assert!(Fallbacks::default().allow_proc_rbind().proc);
         assert!(!Fallbacks::default().allow_proc_rbind().sysfs);
+        // The way out, only where the refusal was final for want of a request.
+        let guidance = proc_guidance(&proc_eperm, report).unwrap();
+        assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
+        assert!(guidance.contains("processes"), "{guidance}");
+        assert_eq!(proc_guidance(&proc_eperm, asked), None);
+        assert_eq!(
+            proc_guidance(&setup(Step::MountSys, libc::EPERM), report),
+            None
+        );
     }
 
     #[test]
