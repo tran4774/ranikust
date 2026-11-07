@@ -1136,7 +1136,7 @@ fn extract_overlay_reports_whether_the_layer_set_the_root() {
 /// ADR-0106: in a user namespace, block and character devices are left out;
 /// FIFOs, whiteouts and opaque markers are still made, unprivileged as
 /// there. `tests/spans.rs` checks the count; the budget for the names
-/// remembered is `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`.
+/// remembered is `past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused`.
 #[test]
 fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     let f = Fixture::new();
@@ -1243,9 +1243,9 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     }
 }
 
-/// ADR-0128: a layer remembers only the devices it leaves out itself. A
-/// link to one a lower layer left out finds nothing there: it is refused,
-/// or copies what a deeper layer has at that name.
+/// A layer remembers only the devices it leaves out itself. A link to one
+/// a lower layer left out finds nothing there: it is refused, or copies
+/// what a deeper layer has at that name (`ADR-0012`).
 #[test]
 fn a_link_to_a_device_a_lower_layer_left_out_is_refused_or_copies_a_deeper_layer() {
     let deep = Fixture::new();
@@ -1355,8 +1355,10 @@ fn past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused() {
         let e = extract_overlay(&f.root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap_err();
         assert!(e.to_string().contains("target s is neither"), "{e}");
 
+        // The layer's own "y" comes before a lower layer's.
         let lower = Fixture::new();
         fs::write(lower.host("s"), b"lower").unwrap();
+        fs::write(lower.host("y"), b"lower").unwrap();
         let f = Fixture::new();
         extract_overlay(&f.root, tar.as_slice(), &[&lower.root], DeviceNodes::Skip).unwrap();
         assert!(fs::symlink_metadata(f.host("first")).is_err());

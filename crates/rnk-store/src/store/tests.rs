@@ -394,7 +394,7 @@ fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
 /// or where the namespace cannot be told. Any other failure is an error
 /// everywhere.
 #[test]
-fn a_refused_group_change_fails_only_in_a_user_namespace() {
+fn a_refused_group_change_is_only_a_warning_outside_a_user_namespace() {
     let refused = || rnk_rootfs::Error::Io {
         op: "chown",
         path: PathBuf::from("tmp"),
@@ -404,7 +404,8 @@ fn a_refused_group_change_fails_only_in_a_user_namespace() {
     let e = refused_group(refused(), "tmp", || Ok(true)).unwrap_err();
     assert!(matches!(e, Error::Rootfs(_)), "{e}");
     let unknown = || Err(Error::Random(io::Error::other("no procfs")));
-    assert!(refused_group(refused(), "tmp", unknown).is_err());
+    let e = refused_group(refused(), "tmp", unknown).unwrap_err();
+    assert!(matches!(e, Error::Rootfs(_)), "{e}");
     let missing = rnk_rootfs::Error::Io {
         op: "open",
         path: PathBuf::from("tmp"),
