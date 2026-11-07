@@ -11,8 +11,10 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{
+    Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, mpsc,
+};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,13 +38,14 @@ use crate::error::{Error, Result, Step, io_err, sys_err};
 use crate::fd::fd_above_stdio;
 use crate::journal::{self, Content, Journal};
 use crate::plan::{self, DEV_NODES, EtcFiles, MountOp};
-use crate::probe::Caps;
+use crate::probe::{Caps, KernelFs};
 use crate::relay::Relay;
 use crate::seccomp::{self, Program, SeccompProfile};
 use crate::spec::{
     DEFAULT_HOSTNAME, Isolation, MountKind, Network, RootId, RunSpec, SecretFile, Stdio, root_id,
 };
 use crate::sweep;
+use crate::userns::OwnNamespace;
 
 /// Runs `RUN` commands.
 ///
@@ -55,6 +58,9 @@ pub struct Sandbox {
     running: Running,
     requests: Option<mpsc::Sender<Request>>,
     thread: Option<JoinHandle<()>>,
+    // `TURNS`, or in a test a lock of its own, so a failed test breaks no
+    // other test's turns.
+    turns: &'static Turns,
 }
 
 impl Sandbox {
@@ -63,9 +69,11 @@ impl Sandbox {
     /// state directory, `<state-dir>/sandbox`; `caps` is what [`crate::probe`]
     /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
     /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
-    /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
-    /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
-    /// under [`SeccompProfile::docker_default`] until
+    /// the full sandbox can run (ADR-0014, ADR-0060). Where [`Caps::proc`]
+    /// is [`KernelFs::Rbind`] it runs no `Direct` `RUN` at all: a turn ends
+    /// with the `RUN`'s PID namespace, which `Direct` lacks (ADR-0127).
+    /// Kaniko mode that cannot mount uses [`Sandbox::start_direct`]. Every
+    /// `Full` `RUN` runs under [`SeccompProfile::docker_default`] until
     /// [`Sandbox::set_seccomp`] says otherwise (ADR-0103).
     ///
     /// Where ranikust's cgroup v2 tree is delegated, it also probes the
@@ -156,6 +164,9 @@ impl Sandbox {
 
     fn start_inner(caps: Option<Caps>, dir: &Path, shared_root: Option<&RootPath>) -> Result<Self> {
         let mut runner = Runner::new(dir, caps.map(|c| c.root_entry))?;
+        if let Some(c) = caps {
+            runner = runner.with_kernel_fs(c.proc, c.sysfs);
+        }
         let replayed = journal::replay(&runner.runs_dir, &runner.state_dir, shared_root)?;
         if replayed.journals > 0 {
             tracing::info!(
@@ -187,13 +198,21 @@ impl Sandbox {
             running: Running::default(),
             requests: Some(requests),
             thread: Some(thread),
+            turns: &TURNS,
         })
     }
 
     /// Runs one `RUN` and waits for it; the exit status is the command's.
     ///
     /// Blocking: an async caller runs it on a blocking thread. The child is
-    /// cloned on the spawner thread whatever thread calls this.
+    /// cloned on the spawner thread whatever thread calls this. Where
+    /// [`Caps::proc`] is [`KernelFs::Rbind`], a `RUN` runs alone among those
+    /// of every `Sandbox` of the process: a call waits until none of them
+    /// runs, and holds its turn until its `RUN` is reaped, the processes of
+    /// its PID namespace gone with it. Other `RUN`s run side by side, but
+    /// never during such a turn. Such a `Sandbox` refuses
+    /// [`Isolation::Direct`], which has no PID namespace, before any wait
+    /// (ADR-0127).
     ///
     /// # Errors
     ///
@@ -201,15 +220,22 @@ impl Sandbox {
     /// stub, [`Error::Setup`] with the failing step and errno, [`Error::Exec`]
     /// when the command cannot be executed, [`Error::Privilege`] for
     /// [`Isolation::Full`] without `CAP_SYS_ADMIN` or without [`Caps`],
-    /// [`Error::Cancelled`] after [`Sandbox::cancel`], or a host-side error.
+    /// [`Error::Cancelled`] after [`Sandbox::cancel`],
+    /// [`Error::TurnPoisoned`] once a `RUN` panicked or lost the spawner
+    /// thread during its turn, or a host-side error.
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus> {
         let requests = self.requests.as_ref().ok_or(Error::SpawnerGone)?;
+        let turn = self.turns.take(self.runner.kernel_fs.0, spec.isolation)?;
         self.runner.run(spec, Some(&self.running), |job| {
             let (reply, answer) = mpsc::sync_channel(1);
             requests
                 .send(Request { job, reply })
                 .map_err(|_| Error::SpawnerGone)?;
-            answer.recv().map_err(|_| Error::SpawnerGone)?
+            answer.recv().map_err(|_| {
+                // The spawner may have gone after the clone, its child alive.
+                turn.break_turns();
+                Error::SpawnerGone
+            })?
         })
     }
 
@@ -693,6 +719,10 @@ pub(crate) struct Runner {
     seccomp: Option<SeccompProfile>,
     /// The probe's runner ([`Runner::for_probe`]).
     probe: bool,
+    /// How a full-sandbox `RUN` gets `proc` and `sysfs` ([`Caps`]).
+    kernel_fs: (KernelFs, KernelFs),
+    /// What the user namespace this process is in allows a `RUN`.
+    own_ns: OwnNamespace,
 }
 
 /// Refuses a `root_dir` that is not the path the kernel gives its
@@ -752,6 +782,8 @@ impl Runner {
             cgroups: None,
             seccomp: None,
             probe: false,
+            kernel_fs: (KernelFs::Fresh, KernelFs::Fresh),
+            own_ns: OwnNamespace::read(),
         })
     }
 
@@ -773,6 +805,8 @@ impl Runner {
             cgroups: None,
             seccomp: None,
             probe: false,
+            kernel_fs: (KernelFs::Fresh, KernelFs::Fresh),
+            own_ns: OwnNamespace::read(),
         }
     }
 
@@ -789,6 +823,13 @@ impl Runner {
     /// that follow, under their own profile (ADR-0109).
     pub(crate) fn for_probe(mut self) -> Self {
         self.probe = true;
+        self
+    }
+
+    /// Gives full-sandbox `RUN`s `proc` and `sysfs` as `proc` and `sysfs`
+    /// say, as the probe found them ([`Caps`]).
+    pub(crate) fn with_kernel_fs(mut self, proc: KernelFs, sysfs: KernelFs) -> Self {
+        self.kernel_fs = (proc, sysfs);
         self
     }
 
@@ -826,6 +867,11 @@ impl Runner {
         let traced = running.is_some();
         spec.validate()?;
         let root_entry = match (spec.isolation, self.root_entry) {
+            // A turn under an rbind of `/proc` ends with the `RUN`'s PID
+            // namespace, which `Direct` has none of (ADR-0127).
+            (Isolation::Direct, _) if is_rbind(self.kernel_fs.0) => {
+                return Err(Error::InvalidSpec(DIRECT_UNDER_RBIND.into()));
+            }
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
             // A bare `chroot` is never used where mounting is possible: the
             // full sandbox runs that root (ADR-0014, ADR-0043).
@@ -1030,7 +1076,7 @@ impl Runner {
             };
         }
         match place(&mut journal, spec).and_then(|files| {
-            let mounts = plan::mount_plan(spec, &files);
+            let mounts = plan::mount_plan(spec, &files, self.kernel_fs.0, self.kernel_fs.1);
             self.job(
                 spec,
                 &user,
@@ -1208,6 +1254,11 @@ impl Runner {
             secrets,
             dev_remount,
             dev_pipes: plan::dev_pipes(spec),
+            devpts: if self.own_ns.tty_gid {
+                plan::DEVPTS
+            } else {
+                plan::DEVPTS_NO_TTY_GID
+            },
             root_entry,
             hostname: hostname(spec).as_bytes().to_vec(),
             loopback,
@@ -1226,6 +1277,7 @@ impl Runner {
                 .copied()
                 .map(Gid::from_raw)
                 .collect(),
+            set_groups: self.own_ns.setgroups,
             workdir: cstring(&spec.workdir)?,
             chroot,
             // Checked after the bind of the full sandbox's root.
@@ -1561,13 +1613,29 @@ fn hostname(spec: &RunSpec) -> &str {
     }
 }
 
+/// Whether the child binds the kernel filesystem instead of mounting one;
+/// for `proc`, also whether a `RUN` runs alone and `Direct` is refused
+/// (ADR-0127).
+fn is_rbind(how: KernelFs) -> bool {
+    match how {
+        KernelFs::Fresh => false,
+        KernelFs::Rbind => true,
+    }
+}
+
+/// Why `Direct` is refused where `RUN`s get an rbind of `/proc`.
+const DIRECT_UNDER_RBIND: &str =
+    "Isolation::Direct where RUNs get an rbind of /proc: use Isolation::Full";
+
 fn child_mount(op: MountOp) -> Result<ChildMount> {
     Ok(match op {
-        MountOp::Proc { target } => ChildMount::Proc {
+        MountOp::Proc { target, how } => ChildMount::Proc {
             target: cstring(&target)?,
+            rbind: is_rbind(how),
         },
-        MountOp::Sysfs { target } => ChildMount::Sysfs {
+        MountOp::Sysfs { target, how } => ChildMount::Sysfs {
             target: cstring(&target)?,
+            rbind: is_rbind(how),
         },
         MountOp::Dev { target } => ChildMount::Dev {
             target: cstring(&target)?,
@@ -1736,6 +1804,83 @@ fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
         options: cstring(options)?,
         files,
     })
+}
+
+/// The turns of the process's `RUN`s (ADR-0127). One that gets the outer
+/// `/proc` runs alone: through it `RUN`s of one user namespace could reach
+/// each other's processes, whichever [`Sandbox`] runs them. The others
+/// share theirs. A spawner thread lost during a turn breaks them, as a
+/// panic does; neither happens today (nothing after the clone panics,
+/// and release builds abort).
+static TURNS: Turns = Turns::new();
+
+#[derive(Debug)]
+struct Turns {
+    lock: RwLock<()>,
+    // Set by a panic during a turn (a shared turn's panic does not poison
+    // `lock`) or by a spawner thread lost during one.
+    broken: AtomicBool,
+}
+
+/// A `RUN`'s turn, until it drops.
+struct Turn<'a> {
+    _held: Held<'a>,
+    broken: &'a AtomicBool,
+}
+
+enum Held<'a> {
+    Alone { _guard: RwLockWriteGuard<'a, ()> },
+    Shared { _guard: RwLockReadGuard<'a, ()> },
+}
+
+impl Turns {
+    const fn new() -> Self {
+        Self {
+            lock: RwLock::new(()),
+            broken: AtomicBool::new(false),
+        }
+    }
+
+    /// Waits for the turn of a `RUN` run with `isolation` where `RUN`s get
+    /// `/proc` as `proc`; a `Direct` one there is refused at once, as
+    /// [`Runner::run`] refuses it too.
+    fn take(&self, proc: KernelFs, isolation: Isolation) -> Result<Turn<'_>> {
+        let held = match (isolation, is_rbind(proc)) {
+            (Isolation::Direct, true) => {
+                return Err(Error::InvalidSpec(DIRECT_UNDER_RBIND.into()));
+            }
+            (Isolation::Full, true) => Held::Alone {
+                _guard: self.lock.write().map_err(|_| Error::TurnPoisoned)?,
+            },
+            (Isolation::Full | Isolation::Direct, false) => Held::Shared {
+                _guard: self.lock.read().map_err(|_| Error::TurnPoisoned)?,
+            },
+        };
+        // A turn must outlast its `RUN`'s processes; one a panic ended may
+        // not have, so no turn follows it.
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(Error::TurnPoisoned);
+        }
+        Ok(Turn {
+            _held: held,
+            broken: &self.broken,
+        })
+    }
+}
+
+impl Turn<'_> {
+    /// Refuses every later turn.
+    fn break_turns(&self) {
+        self.broken.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.break_turns();
+        }
+    }
 }
 
 /// The `RUN`s running now, for [`Sandbox::cancel`].
@@ -5217,5 +5362,215 @@ mod tests {
         let runner = Runner::new(dir.path(), None).unwrap();
         assert!(runner.runs_dir().is_dir());
         assert_ne!(runner.next_id(), runner.next_id());
+    }
+
+    /// Whether thread `tid` of this process is asleep within 60 s, as one
+    /// waiting for its turn is; `false` once it has ended.
+    fn asleep(tid: i32) -> bool {
+        let stat = format!("/proc/self/task/{tid}/stat");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < deadline {
+            let Ok(s) = fs::read_to_string(&stat) else {
+                return false;
+            };
+            // The state follows the name, which may hold a `)`.
+            let state = s
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next());
+            if state == Some("S") {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        false
+    }
+
+    /// Runs `call` on a detached thread, so that a turn never released fails
+    /// the test instead of hanging it: the thread's id, and its result.
+    fn detached<T: Send + 'static>(
+        call: impl FnOnce() -> T + Send + 'static,
+    ) -> (i32, mpsc::Receiver<T>) {
+        let (ready, tid) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            ready
+                .send(rustix::thread::gettid().as_raw_nonzero().get())
+                .unwrap();
+            // A test that already failed no longer listens.
+            let _ = done.send(call());
+        });
+        (tid.recv().unwrap(), result)
+    }
+
+    /// A `Full` spec that [`RunSpec::validate`] refuses once its turn has
+    /// come, before anything is cloned.
+    fn empty_argv() -> RunSpec {
+        RunSpec::new("/", Vec::new())
+    }
+
+    /// Within 60 s, why `result` was refused.
+    #[track_caller]
+    fn refusal(result: &mpsc::Receiver<Result<ExitStatus>>) -> String {
+        match result.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(Err(Error::InvalidSpec(why))) => why,
+            r => panic!("not a refusal: {r:?}"),
+        }
+    }
+
+    /// The `RUN` on thread `tid` waits for its turn.
+    #[track_caller]
+    fn assert_waits((tid, result): &(i32, mpsc::Receiver<Result<ExitStatus>>)) {
+        assert!(
+            asleep(*tid),
+            "a RUN that should wait: {:?}",
+            result.try_recv()
+        );
+        assert!(result.try_recv().is_err(), "a RUN that should wait");
+    }
+
+    /// Under an rbind of `/proc` a `RUN` runs alone, whichever `Sandbox`
+    /// runs it: it waits for every `RUN` of the process, every `RUN` waits
+    /// for it, and a `Direct` one is refused without waiting. With a new
+    /// `proc`, `RUN`s do not wait for each other. The T1
+    /// `runs_take_turns_under_an_rbind_of_proc` checks that a turn lasts
+    /// until its `RUN` is reaped.
+    #[test]
+    fn rbind_runs_run_alone_and_the_others_side_by_side() {
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
+        static OWN_TURNS: Turns = Turns::new();
+        let turns = &OWN_TURNS;
+        // Without `Sandbox::start`'s cgroups and profile. Kept here, so that a
+        // waiting thread's only sleep is its turn, not the drop of its `Sandbox`.
+        let [fresh, rbind] =
+            [(&dirs[0], KernelFs::Fresh), (&dirs[1], KernelFs::Rbind)].map(|(dir, proc)| {
+                let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot))
+                    .unwrap()
+                    .with_kernel_fs(proc, KernelFs::Fresh);
+                let mut sandbox = Sandbox::spawn_thread(runner).unwrap();
+                assert!(std::ptr::eq(sandbox.turns, &TURNS));
+                sandbox.turns = turns;
+                std::sync::Arc::new(sandbox)
+            });
+        let run = |sandbox: &std::sync::Arc<Sandbox>, spec: RunSpec| {
+            let sandbox = sandbox.clone();
+            detached(move || sandbox.run(spec))
+        };
+
+        assert!(matches!(
+            turns.take(KernelFs::Rbind, Isolation::Direct),
+            Err(Error::InvalidSpec(_))
+        ));
+        let shared = turns.take(KernelFs::Fresh, Isolation::Full).unwrap();
+        let side_by_side = refusal(&run(&fresh, empty_argv()).1);
+        assert!(side_by_side.contains("argv is empty"), "{side_by_side}");
+        let alone = run(&rbind, empty_argv());
+        assert_waits(&alone);
+        drop(shared);
+        let after = refusal(&alone.1);
+        assert!(after.contains("argv is empty"), "{after}");
+
+        let held = turns.take(KernelFs::Rbind, Isolation::Full).unwrap();
+        let direct = refusal(&run(&rbind, direct(&missing, &missing)).1);
+        assert!(direct.contains("rbind of /proc"), "{direct}");
+        let waiting = [run(&fresh, empty_argv()), run(&rbind, empty_argv())];
+        waiting.iter().for_each(assert_waits);
+        drop(held);
+        for (_, result) in &waiting {
+            let after = refusal(result);
+            assert!(after.contains("argv is empty"), "{after}");
+        }
+    }
+
+    /// A panic during a turn, alone or shared, refuses every later turn: the
+    /// `RUN`'s processes may have outlived it.
+    #[test]
+    fn a_panic_during_a_turn_refuses_every_later_one() {
+        let kinds = [
+            (KernelFs::Rbind, Isolation::Full),
+            (KernelFs::Fresh, Isolation::Full),
+            (KernelFs::Fresh, Isolation::Direct),
+        ];
+        for (proc, isolation) in kinds {
+            let turns = Turns::new();
+            std::thread::scope(|s| {
+                let panicked = s.spawn(|| {
+                    let _turn = turns.take(proc, isolation).unwrap();
+                    panic!("a RUN that panics during its turn");
+                });
+                assert!(panicked.join().is_err());
+            });
+            for (later, how) in kinds {
+                assert!(
+                    matches!(turns.take(later, how), Err(Error::TurnPoisoned)),
+                    "{later:?} {how:?} after a panic in {proc:?} {isolation:?}"
+                );
+            }
+        }
+    }
+
+    /// A spawner thread lost during a turn, which may have cloned the
+    /// `RUN`, refuses every later turn.
+    #[test]
+    fn a_spawner_lost_during_a_turn_refuses_every_later_one() {
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        let dir = tempfile::tempdir().unwrap();
+        let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot)).unwrap();
+        let (requests, received) = mpsc::channel::<Request>();
+        // Takes the job and drops it unanswered, as a spawner that died.
+        let lost = std::thread::spawn(move || drop(received.recv()));
+        static OWN_TURNS: Turns = Turns::new();
+        let turns = &OWN_TURNS;
+        let sandbox = Sandbox {
+            runner,
+            running: Running::default(),
+            requests: Some(requests),
+            thread: Some(lost),
+            turns,
+        };
+        match sandbox.run(direct(&missing, &missing)) {
+            Err(Error::SpawnerGone) => {}
+            r => panic!("a RUN whose spawner is lost: {r:?}"),
+        }
+        for (proc, isolation) in [
+            (KernelFs::Rbind, Isolation::Full),
+            (KernelFs::Fresh, Isolation::Full),
+            (KernelFs::Fresh, Isolation::Direct),
+        ] {
+            assert!(
+                matches!(turns.take(proc, isolation), Err(Error::TurnPoisoned)),
+                "{proc:?} {isolation:?}"
+            );
+        }
+    }
+
+    /// Where `RUN`s get an rbind of `/proc`, a `Direct` one is refused
+    /// before its clone, whatever the root entry; with a new `proc` it gets
+    /// as far as the clone.
+    #[test]
+    fn direct_is_refused_where_runs_get_an_rbind_of_proc() {
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        let cases = [Some(RootEntry::PivotRoot), None]
+            .into_iter()
+            .flat_map(|entry| [KernelFs::Rbind, KernelFs::Fresh].map(|proc| (entry, proc)));
+        for (entry, proc) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let runner = Runner::new(dir.path(), entry)
+                .unwrap()
+                .with_kernel_fs(proc, KernelFs::Fresh);
+            let r = runner.run(direct(&missing, &missing), None, |_| {
+                Err(Error::SpawnerGone)
+            });
+            match (proc, r) {
+                (KernelFs::Rbind, Err(Error::InvalidSpec(why))) => {
+                    assert!(why.contains("rbind of /proc"), "{why}");
+                }
+                (KernelFs::Fresh, Err(Error::SpawnerGone)) => {}
+                (proc, r) => panic!("{entry:?} {proc:?}: {r:?}"),
+            }
+        }
     }
 }

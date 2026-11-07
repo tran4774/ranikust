@@ -9,7 +9,8 @@
 # tests/smoke/e2e in each environment too; Docker runs that image, and on
 # the VM itself `--reproducible` must give one digest with `--jobs 1` and the
 # default. Each build's user-namespace probe line is printed, and a default
-# `docker run` checks where that probe stops (#74).
+# `docker run` checks where that probe stops (#74). smoke-build runs as the
+# VM's regular user too, in the build's user namespace (#78).
 set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
@@ -231,7 +232,7 @@ for v in "${VARIANTS[@]}"; do
       "$IMAGE" /smoke-build --image "$IMAGE" --out /out --tag "$tag" "${runs[@]}" |
       sudo tee "$dir/log"
   fi
-  grep -q "^probe: Caps { root_entry: $entry }" "$dir/log" ||
+  grep -q "^probe: Caps { root_entry: $entry, proc: Fresh, sysfs: Fresh }" "$dir/log" ||
     { echo "error: $name: expected root entry $entry" >&2; exit 1; }
   sudo bash -c "$(declare -f smoke_check_no_stub_leak); smoke_check_no_stub_leak '$dir/out'"
   sudo tar -C "$dir/out" -cf "$dir/oci.tar" .
@@ -422,6 +423,38 @@ done
 echo "=== default: a default docker run, --mode=auto"
 default_userns
 echo "default: ok"
+
+# #78: smoke-build as this regular user, in the build's user namespace
+# through newuidmap. Where AppArmor restricts unprivileged user namespaces
+# (Ubuntu 24.04) it is refused before anything runs; elsewhere (22.04) a
+# RUN gets a fresh proc in its own PID namespace, so every check applies,
+# and an rbind of /sys, whose network namespace the user does not own;
+# neither needs --allow proc.rbind.
+echo "=== user: $(id -un), smoke-build --userns"
+dir="$W/user" rc=0
+sudo mkdir -p "$dir" && sudo chown "$(id -u):$(id -g)" "$dir"
+mkdir -p "$dir/out" "$dir/work"
+tag=localhost/rnk-smoke-user:latest
+"$BIN" --userns --image "$IMAGE" --work "$dir/work" --out "$dir/out" --tag "$tag" "${runs[@]}" \
+  >"$dir/log" 2>&1 || rc=$?
+grep -E '^(userns|probe)' "$dir/log" || true
+if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+  [ "$rc" != 0 ] && grep -q '^smoke-build: no user namespace' "$dir/log" ||
+    { echo "error: user: expected the refusal of a restricted user namespace, got $rc:" >&2; cat "$dir/log" >&2; exit 1; }
+  echo "user: refused where AppArmor restricts unprivileged user namespaces, as expected"
+else
+  [ "$rc" = 0 ] || { echo "error: user: smoke-build failed ($rc):" >&2; cat "$dir/log" >&2; exit 1; }
+  grep -qx 'probe: Caps { root_entry: PivotRoot, proc: Fresh, sysfs: Rbind }' "$dir/log" ||
+    { echo "error: user: expected a fresh proc and an rbind of /sys" >&2; cat "$dir/log" >&2; exit 1; }
+  smoke_check_no_stub_leak "$dir/out"
+  tar -C "$dir/out" -cf "$dir/oci.tar" .
+  loaded="$(sudo docker load -i "$dir/oci.tar" | sed -nE 's/^Loaded image( ID)?: //p' | tail -1)"
+  got="$(sudo docker run --rm "$loaded" sh -c 'cat /hello && jq --version')"
+  [[ "$got" == "hello from ranikust"$'\n'jq-* ]] ||
+    { echo "error: user: the image does not run as built: $got" >&2; exit 1; }
+  sudo docker rmi -f "$loaded" >/dev/null
+fi
+echo "user: ok"
 
 echo "=== escape control: a plain chroot into the host variant's root"
 # Each escape must work there, or its check in the sandbox proves nothing.
