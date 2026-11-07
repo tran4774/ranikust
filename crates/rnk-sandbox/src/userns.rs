@@ -665,14 +665,14 @@ fn ids(map: &str) -> Option<u64> {
 }
 
 /// What a `RUN` may ask of the user namespace this process is in, from its
-/// `/proc/self` files. A file that cannot be read counts as the initial
-/// namespace's: the step that needs it then fails the `RUN`, never is
-/// skipped.
+/// `/proc/self` files. A file that cannot be read or parsed counts as the
+/// initial namespace's: the step that needs it runs, and fails the `RUN`
+/// if the kernel refuses it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OwnNamespace {
     /// Call `setgroups(2)`: false only where `/proc/self/setgroups` is
-    /// `deny` and the gid map gives one id (ADR-0098); denied with several
-    /// ids it is called and fails the `RUN`.
+    /// `deny` and the gid map gives one id, a one-id map (ADR-0098);
+    /// denied with several ids it is called and fails the `RUN`.
     pub(crate) setgroups: bool,
     /// gid 5 (`tty`), which `devpts` is mounted with, is mapped.
     pub(crate) tty_gid: bool,

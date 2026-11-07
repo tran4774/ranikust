@@ -17,7 +17,8 @@ the build's user namespace
 ([#75](https://github.com/tran4774/ranikust/issues/75)), and a `RUN` in
 it with the `sysfs` rbind the probe chooses (`/proc`'s only on request,
 [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)),
-`setgroups` except in a one-id map that denies it, and `--network=none`
+`setgroups` except where the gid map gives one id and `setgroups` is
+denied, and `--network=none`
 ([#78](https://github.com/tran4774/ranikust/issues/78)), which the binary
 does not call yet.
 

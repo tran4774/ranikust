@@ -789,11 +789,11 @@ without `--allow proc.rbind`
 ([ADR-0126](adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md))
 and with it choose an rbind of `/proc` and of `/sys` there (#78); the
 `smoke_checks` run but for the first, which needs the `RUN`'s own `/proc`
-(`smoke_checks_own_proc`; the init's checks find it as the shell's
-parent), and the host name, which Podman's seccomp profile refuses to set without
-`CAP_SYS_ADMIN`; podman then runs that image too. The recipe then builds `tests/smoke/e2e`
-with the `ranikust` binary in the same kind of container (two stages,
-`COPY --from`, wildcards, `.dockerignore`, cache and secret mounts,
+(`smoke_checks_own_proc`), and the host name, which Podman's seccomp
+profile refuses to set without `CAP_SYS_ADMIN`; the other checks of the
+init find it as the shell's parent. podman then runs that image too. The
+recipe then builds `tests/smoke/e2e` with the `ranikust` binary in the
+same kind of container (two stages, `COPY --from`, wildcards, `.dockerignore`, cache and secret mounts,
 `RUN --network=none`, heredocs, `WORKDIR`, `USER`, `ENV`, `LABEL`,
 `EXPOSE`, `CMD`), loads its Docker tar into podman and runs it, checks
 that no stub or secret reached a blob, and that `--reproducible` gives one

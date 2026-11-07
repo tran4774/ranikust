@@ -211,12 +211,13 @@ fn setgroups_is_skipped_only_where_denied_in_a_one_id_map() {
     assert!(calls("deny\n", Some("0 1000 1\n1 100000 65536\n")));
     assert!(calls("deny\n", Some("0 1000 2\n")));
     assert!(calls("deny\n", Some("0 1000 1\n5 2000 1\n")));
+    assert!(calls("allow\n", Some("0 1000 1\n")));
+    assert!(calls("denied\n", Some("0 1000 1\n")));
     // A file that cannot be read or parsed never leads to a skip.
     assert!(OwnNamespace::parse(None, Some("0 1000 1\n")).setgroups);
     assert!(calls("deny\n", None));
     assert!(calls("deny\n", Some("0 x 1\n")));
     assert!(calls("deny\n", Some("")));
-    assert!(calls("allow\n", Some("0 1000 1\n")));
 }
 
 #[test]
