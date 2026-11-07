@@ -7,7 +7,7 @@
 # `read`, a builtin, reads the shell's own `/proc/self/stat`.
 smoke_checks=(
   'test "$$" = 2 && test "$(cat /proc/1/comm)" = ranikust-init'      # PID 2 under its init (ADR-0080)
-  'read -r pid comm state init rest </proc/self/stat && test "$(cat "/proc/$init/comm")" = ranikust-init && ! grep -Eq "^Cap(Eff|Prm):[[:space:]]*0*[1-9a-f]" "/proc/$init/status"' # the init holds no capability
+  'read -r pid comm state init rest </proc/self/stat && test "$(cat "/proc/$init/comm")" = ranikust-init && grep -Eq "^CapEff:[[:space:]]*0+$" "/proc/$init/status" && grep -Eq "^CapPrm:[[:space:]]*0+$" "/proc/$init/status"' # the init holds no capability
   'read -r pid comm state init rest </proc/self/stat && grep -q "^Seccomp:[[:space:]]*2$" "/proc/$init/status" && test "$(grep -E "^Seccomp(_filters)?:" "/proc/$init/status")" = "$(grep -E "^Seccomp(_filters)?:" /proc/self/status)"' # the init under the command's filters
   'test "$(hostname)" = ranikust'
   'grep -q "^CapBnd:[[:space:]]*00000000a80425fb$" /proc/self/status' # Docker's 14 capabilities

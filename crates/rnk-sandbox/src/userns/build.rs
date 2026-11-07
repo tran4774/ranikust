@@ -23,8 +23,8 @@ use rustix::thread::UnshareFlags;
 use super::{
     ATTEMPT_DEADLINE, CLOSURE_OK, CLOSURE_REFUSED, DONE, IdMap, NO_MAP, Plan, REAP_GRACE, SLAVE,
     SLAVE_OP, STOPPED, StepFailure, StepResult, SubordinateIds, Supervised, UNSHARE_MOUNT,
-    assemble, enter, enter_mount_namespace, map_lines, plans, read_records, reap, result_frame,
-    send, supervise, write_all, write_map, write_own,
+    assemble, enter, enter_mount_namespace, ids, plans, read_records, reap, result_frame, send,
+    supervise, write_all, write_map, write_own,
 };
 use crate::child;
 use crate::error::{Error, Result, sys_err};
@@ -263,15 +263,6 @@ fn as_entered(plan: IdMap, uid_map: &str, gid_map: &str, setgroups: &str) -> Opt
         _ => return None,
     };
     Some((map, allowed))
-}
-
-/// How many ids a map's text gives: `None` when a line is not three
-/// numbers, or it gives none.
-fn ids(map: &str) -> Option<u64> {
-    let total = map_lines(map)?
-        .iter()
-        .try_fold(0_u64, |t, [_, _, count]| t.checked_add(u64::from(*count)))?;
-    (total > 0).then_some(total)
 }
 
 /// Writes this process's one-id map itself, `setgroups` denied first, as

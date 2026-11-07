@@ -16,8 +16,8 @@ the probe of that path, reported only
 the build's user namespace
 ([#75](https://github.com/tran4774/ranikust/issues/75)), and a `RUN` in
 it with the `sysfs` rbind the probe chooses (`/proc`'s only on request,
-[ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), `setgroups` but in a one-id map that denies it, and
-`--network=none`
+[ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)),
+`setgroups` except in a one-id map that denies it, and `--network=none`
 ([#78](https://github.com/tran4774/ranikust/issues/78)), which the binary
 does not call yet.
 
@@ -468,8 +468,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   detection on this host, which only reads); spec validation, mount plan
   order (a new `proc` and `sysfs` or their rbinds), the probe's next
   attempt (an rbind only after an allowed `EPERM`; `/proc`'s only on
-  request, `/sys`'s without one), `setgroups` (skipped only denied in a
-  one-id map) and the tty gid read from `/proc/self` (`src/userns/tests.rs`),
+  request, `/sys`'s without one), `setgroups` (skipped only where
+  denied in a one-id map) and the tty gid read from `/proc/self`
+  (`src/userns/tests.rs`),
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, the sealed copy (the order of the ways and the stop
   when the core-file limit cannot go back, one marker in the copy's

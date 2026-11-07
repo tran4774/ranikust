@@ -655,15 +655,24 @@ fn map_lines(map: &str) -> Option<Vec<[u32; 3]>> {
         .collect()
 }
 
+/// How many ids a map's text gives: `None` when a line is not three
+/// numbers, or it gives none.
+fn ids(map: &str) -> Option<u64> {
+    let total = map_lines(map)?
+        .iter()
+        .try_fold(0_u64, |t, [_, _, count]| t.checked_add(u64::from(*count)))?;
+    (total > 0).then_some(total)
+}
+
 /// What a `RUN` may ask of the user namespace this process is in, from its
 /// `/proc/self` files. A file that cannot be read counts as the initial
 /// namespace's: the step that needs it then fails the `RUN`, never is
 /// skipped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OwnNamespace {
-    /// Call `setgroups(2)`: skipped only where it would fail in a one-id
-    /// map (ADR-0098), `/proc/self/setgroups` `deny` and the gid map one
-    /// id; with several ids it is called and fails, never skipped.
+    /// Call `setgroups(2)`: false only where `/proc/self/setgroups` is
+    /// `deny` and the gid map gives one id (ADR-0098); denied with several
+    /// ids it is called and fails the `RUN`.
     pub(crate) setgroups: bool,
     /// gid 5 (`tty`), which `devpts` is mounted with, is mapped.
     pub(crate) tty_gid: bool,
@@ -688,13 +697,7 @@ impl OwnNamespace {
                 .any(|&[inside, _, count]| TTY.checked_sub(inside).is_some_and(|d| d < count))
         });
         let denied = setgroups.is_some_and(|s| s.trim_end() == "deny");
-        let one_gid = gid_map.and_then(map_lines).is_some_and(|lines| {
-            lines
-                .iter()
-                .map(|&[_, _, count]| u64::from(count))
-                .sum::<u64>()
-                == 1
-        });
+        let one_gid = gid_map.and_then(ids) == Some(1);
         Self {
             setgroups: !(denied && one_gid),
             tty_gid,
