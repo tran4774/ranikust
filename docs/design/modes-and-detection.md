@@ -20,7 +20,7 @@ The probe ends in exactly one of these:
 | Outcome | Snapshot | Stage roots | `RUN` execution | Stages |
 |---|---|---|---|---|
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
-| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind if a new `proc` is refused | parallel |
+| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused (ADR-0126) | parallel |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
 | **kaniko, cannot mount** | walk + hash | `/` in a container (a host is refused, ADR-0050) | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | none | none | none | exit with guidance |
@@ -139,7 +139,7 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      namespace is owned by the new user namespace and a refusal names its
      step.
    - A new `proc` in a new PID namespace; if that fails, an rbind of the
-     existing `/proc`, whose processes the `RUN` then sees
+     existing `/proc`, which the build may use only on request
      ([sandbox.md, step 3.2](sandbox.md#per-run-sequence)). Read-only
      `sysfs`, else an rbind of `/sys`. `mknod`, reported only: no user
      namespace allows it, and the sandbox binds `/dev`'s nodes.
@@ -158,12 +158,14 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
 3. **Sandbox capabilities.** Try `pivot_root` (Docker's seccomp profile
    blocks it even with `CAP_SYS_ADMIN`; fallback `MS_MOVE` + `chroot`) and a
    read-only `sysfs`, so the sandbox knows which variant to use
-   ([sandbox](sandbox.md)). In the build's user namespace, a `proc` or
-   `sysfs` mount refused with `EPERM` is tried again as an rbind, only where
-   the user-namespace probe (step 2) found the same
+   ([sandbox](sandbox.md)). In the build's user namespace, a `sysfs` mount
+   refused with `EPERM` is tried again as an rbind, only where the
+   user-namespace probe (step 2) found the same; a refused `proc` mount
+   only at the operator's request (ADR-0126; `--allow proc.rbind`, planned
+   with [#79](https://github.com/tran4774/ranikust/issues/79))
    (`rnk_sandbox::probe_with_fallbacks`,
-   [#78](https://github.com/tran4774/ranikust/issues/78)); every `RUN` of the
-   build then gets what worked, and an rbind of `/proc` is logged once.
+   [#78](https://github.com/tran4774/ranikust/issues/78)). Every `RUN` of
+   the build then gets what worked, and an rbind of `/proc` is logged once.
    Elsewhere a refused mount fails this probe.
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at
