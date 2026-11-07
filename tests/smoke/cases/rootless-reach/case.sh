@@ -1,6 +1,7 @@
 # Red team of rootless overlay mode (#79), Podman only (T1, both legs).
 # A RUN with --allow proc.rbind writes no kernel, cgroup or sysfs file,
-# reaches no process outside its PID namespace (T17, T21, T24), leaves no
+# reaches no process outside its PID namespace (T17, T21, T24), with
+# --network=none sees no network device outside its own, leaves no
 # tree past PATH_MAX in the state directory (T15) and no process running
 # (T8), and its exit 75 fails the build without a fallback (ADR-0136). The
 # VM's smoke suite builds `writes` and `deep-cache` as a regular user too
@@ -58,6 +59,10 @@ writes() {
   grep -qx 'cgroup 0::/' <<<"$report" || fail "a RUN sees a cgroup outside its own: $report"
   grep -q '^control reach=done ' <<<"$report" && grep -qx 'write /tmp/control=done' <<<"$report" ||
     fail "the controls: $report"
+  # A new sysfs of its own shows lo, the rbind no device.
+  grep -Eqx 'none netdevs=(lo )?' <<<"$report" &&
+    grep -Eqx 'none addresses=(00:00:00:00:00:00 )?' <<<"$report" ||
+    fail "a RUN with --network=none sees a network device outside: $report"
 }
 
 # A tree deeper than PATH_MAX that a RUN makes, partly a mapped user's and

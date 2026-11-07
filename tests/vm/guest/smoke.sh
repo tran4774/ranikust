@@ -517,7 +517,8 @@ else
   echo "user: a set-up failing in the build's user namespace is an error, with no fallback"
   # Red team (#79): a RUN's fresh proc shows no process outside it, and it
   # writes no kernel, cgroup or sysfs file, where /sys/fs/cgroup is the
-  # host's, writable by this user; a tree deeper than PATH_MAX it leaves
+  # host's, writable by this user, nor, with --network=none, sees a network
+  # device outside its own; a tree deeper than PATH_MAX it leaves
   # in a cache mount, partly a mapped user's, goes with `prune --all` as
   # this user, and a build in the emptied directory is not refused (T15,
   # T17, T24).
@@ -534,7 +535,9 @@ else
   printf '%s\n' "$report" >"$dir/rootless-reach.report"
   ! grep -Eq '^(write [^/]*/(proc|sys)/.*|mkdir cgroup|mount proc)=done$|^reached |^seen: [0-9]+ ranikust$' \
     <<<"$report" && [ "$(grep -c '=refused$' <<<"$report")" = 12 ] &&
-    grep -q '^control reach=done ' <<<"$report" && grep -qx 'write /tmp/control=done' <<<"$report" ||
+    grep -q '^control reach=done ' <<<"$report" && grep -qx 'write /tmp/control=done' <<<"$report" &&
+    grep -Eqx 'none netdevs=(lo )?' <<<"$report" &&
+    grep -Eqx 'none addresses=(00:00:00:00:00:00 )?' <<<"$report" ||
     { echo "error: user: a RUN wrote, saw or reached outside it:" >&2; echo "$report" >&2; exit 1; }
   echo "user: a RUN writes no kernel, cgroup or sysfs file and sees no process outside it"
   rc=0
