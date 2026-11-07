@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mapped_key_depends_on_the_chain_and_both_maps_and_is_no_chain_id() {
+    fn a_mapped_key_depends_on_the_chain_and_both_maps_and_differs_from_its_chain_id() {
         let chain = Digest::from_sha256_bytes(&[1; 32]);
         let other = Digest::from_sha256_bytes(&[2; 32]);
         let a = ns("0 1000 1\n1 100000 65536\n", "0 1000 1\n1 100000 65536\n");

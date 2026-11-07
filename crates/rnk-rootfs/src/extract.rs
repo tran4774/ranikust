@@ -63,7 +63,9 @@ pub enum DeviceNodes {
     /// Creates none, nor a hardlink to one, and counts each as
     /// `nodes_skipped`, for a process in a user namespace, where `mknod` of
     /// a device needs `CAP_MKNOD` in the initial one (ADR-0106). FIFOs and
-    /// whiteouts are still made.
+    /// whiteouts are still made. Past a budget for the names it remembers,
+    /// a hardlink to a device is copied from a lower layer, or refused
+    /// (ADR-0128).
     Skip,
 }
 
@@ -195,8 +197,9 @@ pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -
 ///
 /// `devices` tells whether block and character device nodes are made or
 /// left out ([`DeviceNodes::Skip`], ADR-0106), as if the tar did not hold
-/// them, apart from a hardlink to one, left out with it. One as the layer's
-/// root is refused either way.
+/// them, apart from a hardlink to one, left out with it within a budget
+/// for their names (ADR-0128). One as the layer's root is refused either
+/// way.
 ///
 /// Returns what the caller cannot see on disk afterwards: whether the layer
 /// set the root's metadata (an entry `./`). Without one, the root of an
@@ -399,7 +402,7 @@ struct Extractor<'r> {
     /// hardlinks to them, until the layer puts something else there.
     devices_skipped: BTreeSet<PathBuf>,
     /// The bytes spent on `devices_skipped` so far, freed or not: a budget
-    /// per layer, never refunded, so its accounting stays one sum.
+    /// per layer, never refunded.
     skipped_bytes: usize,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
@@ -848,9 +851,10 @@ impl Extractor<'_> {
 
     /// Remembers `path` as a device left out, within [`SKIPPED_NAMES_MAX`]
     /// bytes a layer, counted from the names alone so that what is
-    /// remembered depends on the layer only: past them, a link to one is
-    /// extracted as if the device were not in the tar, with one warning, so
-    /// that memory never grows with names the layer puts nowhere.
+    /// remembered depends on the layer only: past them, nothing more is
+    /// remembered and a link to one is copied from a lower layer that has
+    /// its name, or refused, with one warning (ADR-0128), so that memory
+    /// never grows with names the layer puts nowhere.
     fn remember_skipped(&mut self, mut path: PathBuf) {
         let cost = path.as_os_str().len().saturating_add(SKIPPED_NAME_COST);
         let total = self.skipped_bytes.saturating_add(cost);
@@ -861,8 +865,9 @@ impl Extractor<'_> {
         } else if self.skipped_bytes <= SKIPPED_NAMES_MAX {
             self.skipped_bytes = total;
             tracing::warn!(
-                "the layer's names of device nodes left out pass {SKIPPED_NAMES_MAX} bytes: \
-                 a hardlink to one past them is extracted as if the node were not in the layer"
+                "the names this layer leaves out (devices and links to them) passed the \
+                 {SKIPPED_NAMES_MAX}-byte budget: a link to one past it is copied from a lower \
+                 layer or refused"
             );
         }
     }

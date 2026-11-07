@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, symlink};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tar::{EntryType, Header};
 
@@ -1135,7 +1135,13 @@ fn extract_overlay_reports_whether_the_layer_set_the_root() {
 
 /// ADR-0106: in a user namespace, block and character devices are left out;
 /// FIFOs, whiteouts and opaque markers are still made, unprivileged as
-/// there. `tests/spans.rs` checks the count.
+/// there. A hardlink to a device left out, or to such a link, is left out
+/// too, never copied from a lower layer; once the layer puts a file at the
+/// device's name, a link links it; a link to a device the layer whites out
+/// is refused; a device as the layer's root is refused in both modes; and,
+/// the control, an unprivileged `Create` fails.
+/// `tests/spans.rs` checks the count; the budget for the names remembered
+/// is `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`.
 #[test]
 fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     let f = Fixture::new();
@@ -1211,44 +1217,6 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     .unwrap_err();
     assert!(e.to_string().contains("whited out"), "{e}");
 
-    // The names remembered are bounded: past about 1 MiB of them, a link
-    // to a device is extracted as if the device were not in the tar.
-    // Long paths of names a filesystem takes.
-    let long = format!("{}/", "n".repeat(250)).repeat(16);
-    let header = |t| {
-        let mut h = tar::Header::new_gnu();
-        h.set_entry_type(t);
-        h.set_mode(0o644);
-        h.set_uid(0);
-        h.set_gid(0);
-        h.set_mtime(0);
-        h.set_size(0);
-        h
-    };
-    let devices = |link_to: usize| {
-        let mut b = tar::Builder::new(Vec::new());
-        for i in 0..300 {
-            let mut h = header(EntryType::Char);
-            h.set_device_major(1).unwrap();
-            h.set_device_minor(3).unwrap();
-            b.append_data(&mut h, format!("{long}{i}"), &b""[..])
-                .unwrap();
-        }
-        b.append_link(
-            &mut header(EntryType::Link),
-            "link",
-            format!("{long}{link_to}"),
-        )
-        .unwrap();
-        b.into_inner().unwrap()
-    };
-    let f = Fixture::new();
-    extract_overlay(&f.root, devices(0).as_slice(), &[], DeviceNodes::Skip).unwrap();
-    assert!(fs::symlink_metadata(f.host("link")).is_err());
-    let f = Fixture::new();
-    let e = extract_overlay(&f.root, devices(299).as_slice(), &[], DeviceNodes::Skip).unwrap_err();
-    assert!(e.to_string().contains("neither"), "{e}");
-
     // A device as the layer's root is refused, as when they are made.
     for devices in [DeviceNodes::Skip, DeviceNodes::Create] {
         let f = Fixture::new();
@@ -1267,6 +1235,95 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
             extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap_err();
         assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
     }
+}
+
+/// Counts the warnings logged while it is the default.
+#[derive(Default)]
+struct Warnings(AtomicUsize);
+
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        *m.level() == tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// ADR-0128: within the budget, a link to a device left out is left out;
+/// past it, the layer remembers no further name, a short one after the
+/// first that does not fit included, and warns once: a link to a device it
+/// does not remember is copied from a lower layer that has its name, or
+/// refused, never left out. The only test here that reaches the warning,
+/// so no other can cache it as unwanted.
+#[test]
+fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
+    let warnings = tracing::Dispatch::new(Warnings::default());
+    // Components under `NAME_MAX` and paths under `PATH_MAX`, so that the
+    // link to a device not remembered fails as "neither", not with
+    // `ENAMETOOLONG`.
+    let long = format!("{}/", "n".repeat(250)).repeat(16);
+    let name = |i: usize| format!("{long}{i:03}");
+    let cost = name(0).len() + SKIPPED_NAME_COST;
+    let fit = SKIPPED_NAMES_MAX / cost;
+    // What the names that fit leave would hold "s": only a budget closed
+    // at the first name past it leaves "s" unremembered.
+    assert!(SKIPPED_NAMES_MAX - fit * cost >= "s".len() + SKIPPED_NAME_COST);
+
+    let f = Fixture::new();
+    let (uid, gid) = f.ids();
+    let header = |t| {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(t);
+        h.set_mode(0o644);
+        h.set_uid(uid.into());
+        h.set_gid(gid.into());
+        h.set_mtime(0);
+        h.set_size(0);
+        h
+    };
+    let mut b = tar::Builder::new(Vec::new());
+    let mut device = |path: &str| {
+        let mut h = header(EntryType::Char);
+        h.set_device_major(1).unwrap();
+        h.set_device_minor(3).unwrap();
+        b.append_data(&mut h, path, &b""[..]).unwrap();
+    };
+    // Two names past the budget, for one warning.
+    for i in 0..fit + 2 {
+        device(&name(i));
+    }
+    device("s");
+    b.append_link(&mut header(EntryType::Link), "first", name(0))
+        .unwrap();
+    b.append_link(&mut header(EntryType::Link), "to-s", "s")
+        .unwrap();
+    let tar = b.into_inner().unwrap();
+
+    tracing::dispatcher::with_default(&warnings, || {
+        let e = extract_overlay(&f.root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap_err();
+        assert!(e.to_string().contains("neither"), "{e}");
+
+        let lower = Fixture::new();
+        fs::write(lower.host("s"), b"lower").unwrap();
+        let f = Fixture::new();
+        extract_overlay(&f.root, tar.as_slice(), &[&lower.root], DeviceNodes::Skip).unwrap();
+        assert!(fs::symlink_metadata(f.host("first")).is_err());
+        assert_eq!(fs::read(f.host("to-s")).unwrap(), b"lower");
+    });
+    let count = warnings
+        .downcast_ref::<Warnings>()
+        .unwrap()
+        .0
+        .load(Ordering::Relaxed);
+    assert_eq!(count, 2, "one warning a layer");
 }
 
 fn live_keep() -> IgnoreList {
