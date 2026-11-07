@@ -489,7 +489,7 @@ else
     { echo "error: user: --reproducible digest $got, root's $root_digest" >&2; exit 1; }
   echo "user: ranikust builds in rootless overlay mode, with root's --reproducible digest $got"
   ue="$ud/e2e" rc=0
-  mkdir -m 700 -p "$ue/w" "$ue/out"
+  mkdir -m 700 -p "$ue" "$ue/w" "$ue/out"
   printf %s "$SMOKE_E2E_SECRET" >"$ue/token"
   smoke_e2e_args "$CTX" "$ue/w" "$ue/out" "$ue/token"
   e2e_args+=(--build-arg "BASE=$E2E_BASE")
