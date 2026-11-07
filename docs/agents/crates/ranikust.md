@@ -390,7 +390,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   emptying it of the owner's files and, with them just outside the
   range, removing only the marker and stopping before `rmdir`, saying
   so; the ways
-  out only in `prune`'s refusal of a prune that could not finish),
+  out only in `prune`'s refusal of a prune that could not finish; its red
+  team, `prune/tests/red_team.rs`: root's commands for paths with quotes,
+  a leading `-`, a line feed, bytes that are not UTF-8 and a terminal
+  escape, cut from the error line as printed and run by each shell the
+  machine has, removing the directory checked or, where a shell reads
+  the path otherwise, changing nothing, a marked directory there
+  included; BusyBox's `sh`, `find`, `stat`, `grep`, `rm` and `mv`
+  changing nothing, and GNU `find` beside them emptying; directories the
+  walk listed swapped for symlinks to look-alikes outside, and the tree
+  being walked moved out, while GNU `find` deletes under each script,
+  nothing outside removed; `/`, system directories and `$HOME` neither
+  emptied, with no user namespace entered, nor given root's commands),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, named rightly through `..`, nothing created through a planted
@@ -552,7 +563,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ranikust build is using / in this container"); `exposure.rs`, profile
   `sysadmin` (T21): `one_thread_in_another_mount_namespace_listed_late_reaches_its_process`
   (one thread unshared after a hundred others refuses its process) and
-  `a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone`.
+  `a_process_of_another_mount_namespace_is_reached_and_its_zombie_is_gone`;
+  `prune/tests/red_team.rs`, profile `default`:
+  `red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside`
+  (root's commands for uid 1000's directory, run by root: the entries of
+  the owner and of its range's edges go, special files, a setuid file and
+  links out among them, while those of root, `nobody` and the ids just
+  outside the range stay, with the directories above them, the emptying
+  saying so and the `rmdir` failing; a hardlinked file outside keeps its
+  content, owner and mode); profile `sysadmin`:
+  `red_team_roots_commands_leave_a_filesystem_mounted_below` (a tmpfs
+  below root's own state directory and what it holds stay, the commands
+  failing).
 - **T3:** `just build-static`.
 
 ## Metrics

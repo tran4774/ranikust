@@ -1300,3 +1300,5 @@ fn the_checks_outside_refuse_what_the_store_refuses() {
         }
     }
 }
+
+mod red_team;
