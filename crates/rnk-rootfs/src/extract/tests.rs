@@ -2069,8 +2069,6 @@ fn kernel_refused(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
             "an xattr name over XATTR_NAME_MAX",
             xattr(&format!("user.{}", "a".repeat(251)), b"v"),
         ),
-        ("an xattr in no namespace", xattr("com.apple.x", b"v")),
-        ("an xattr that is only a namespace", xattr("user.", b"v")),
         ("an xattr name holding a NUL byte", xattr("user.a\0b", b"v")),
         (
             "an xattr value over XATTR_SIZE_MAX",
@@ -2084,9 +2082,9 @@ fn kernel_refused(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
                 .bytes(),
         ),
         (
-            "an xattr in no namespace on a directory",
+            "an xattr with an empty name on a directory",
             first()
-                .pax(&[("SCHILY.xattr.a", b"v")])
+                .pax(&[("SCHILY.xattr.", b"v")])
                 .dir("d", 0o755)
                 .bytes(),
         ),
@@ -2101,6 +2099,18 @@ fn kernel_refused(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
         (
             "a file capability of revision 2 in 24 bytes",
             xattr("security.capability", &capability(0x0200_0000, 24)),
+        ),
+        (
+            "a file capability with a flag the kernel does not know",
+            xattr("security.capability", &capability(0x0200_0002, 20)),
+        ),
+        (
+            "a file capability of revision 3 whose root id is -1",
+            xattr("security.capability", &{
+                let mut v = capability(0x0300_0000, 24);
+                v[20..].fill(0xff);
+                v
+            }),
         ),
     ]
 }
@@ -2171,8 +2181,8 @@ fn values_the_kernel_refuses_are_refused_by_the_check_and_every_extraction() {
 /// literal form, which writes their names as files; an entry whose whole
 /// path is over `PATH_MAX` in a directory that fits it (the kernel gets the
 /// directory, then the name); and by the check, a value of `XATTR_SIZE_MAX`
-/// bytes, xattrs in the kernel's other namespaces and file capabilities of
-/// each form it takes.
+/// bytes, xattrs of any namespace or none (a FUSE filesystem may take any
+/// name) and file capabilities of each form the kernel takes.
 #[test]
 fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
     let f = Fixture::new();
@@ -2242,15 +2252,23 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
     };
     xattr("user.big", &[b'v'; 65536]).unwrap();
     xattr("user.big", &[b'v'; 65537]).unwrap_err();
-    // Which namespace a filesystem takes (ext4 takes `gnu.*`), and who may
-    // set a file capability, are left to the extraction.
-    for name in ["gnu.x", "btrfs.compression", "os2.x", "osx.x"] {
+    // Which names a filesystem takes (ext4 takes `gnu.*`), and who may set a
+    // file capability, are left to the extraction.
+    for name in [
+        "gnu.x",
+        "btrfs.compression",
+        "os2.x",
+        "osx.x",
+        "com.apple.x",
+        "user.",
+    ] {
         xattr(name, b"zstd").unwrap_or_else(|e| panic!("{name}: {e}"));
     }
     for value in [
         capability(0x0200_0000, 20),
         capability(0x0200_0001, 20),
         capability(0x0300_0000, 24),
+        capability(0x0300_0001, 24),
         Vec::new(),
     ] {
         xattr("security.capability", &value).unwrap_or_else(|e| panic!("{value:?}: {e}"));
@@ -2266,7 +2284,7 @@ fn a_nodes_name_and_xattrs_are_refused_where_it_is_made() {
     let long = format!("d/{}", "n".repeat(256));
     let deep = format!("{}/p", dir_of(4096));
     let cases: [(&str, &str, &[u8]); 5] = [
-        ("SCHILY.xattr.com.apple.x", "d/p", b"v"),
+        ("SCHILY.xattr.", "d/p", b"v"),
         ("SCHILY.xattr.user.a", "d/p", b"v"),
         ("path", &long, b""),
         ("path", &deep, b""),
@@ -2354,25 +2372,24 @@ fn gen_record_names() -> Vec<Vec<u8>> {
 
 /// The link targets GNU long link records and PAX `linkpath` records
 /// carry: those above, a NUL byte, a name of 256 bytes, an entry in a
-/// directory of 4096 bytes, and targets of 4095 (in names a later entry
-/// may be looked up through) and of 4096 bytes.
+/// directory of 4096 bytes, and targets of 4095 and of 4096 bytes.
 fn gen_record_targets() -> Vec<Vec<u8>> {
     let mut targets: Vec<Vec<u8>> = GEN_TARGETS.iter().map(|t| t.as_bytes().to_vec()).collect();
     targets.extend([
         b"t\0u".to_vec(),
         format!("d/{}", "n".repeat(256)).into_bytes(),
         format!("{}/f", dir_of(4096)).into_bytes(),
-        dir_of(4095).into_bytes(),
+        vec![b't'; 4095],
         vec![b't'; 4096],
     ]);
     targets
 }
 
 /// The xattrs a PAX record sets: one the kernel takes, names empty, of 255
-/// and 256 bytes, in no namespace, only a namespace or holding a NUL byte,
-/// a value over 64 KiB, a `trusted.*` one (never set), a `user.overlay.*`
-/// one that only its escaped form puts over 255 bytes, one of a namespace
-/// a filesystem may not take, and a file capability of no form.
+/// and 256 bytes or holding a NUL byte, a value over 64 KiB, a `trusted.*`
+/// one (never set), a `user.overlay.*` one that only its escaped form puts
+/// over 255 bytes, names of a namespace or none a filesystem may not take,
+/// and a file capability of no form.
 fn gen_xattr(i: usize) -> (String, Vec<u8>) {
     let v = b"v".to_vec();
     let xattrs = [
@@ -2381,7 +2398,6 @@ fn gen_xattr(i: usize) -> (String, Vec<u8>) {
         (format!("user.{}", "a".repeat(250)), v.clone()),
         (format!("user.{}", "a".repeat(251)), v.clone()),
         ("com.apple.x".to_owned(), v.clone()),
-        ("user.".to_owned(), v.clone()),
         ("user.a\0b".to_owned(), v.clone()),
         ("user.big".to_owned(), vec![b'v'; 65537]),
         (format!("trusted.\0{}", "a".repeat(300)), vec![b'v'; 70_000]),
@@ -2389,29 +2405,69 @@ fn gen_xattr(i: usize) -> (String, Vec<u8>) {
         ("gnu.x".to_owned(), v),
         ("security.capability".to_owned(), vec![b'x'; 20]),
     ];
-    xattrs.into_iter().nth(i % 12).unwrap()
+    let n = xattrs.len();
+    xattrs.into_iter().nth(i % n).unwrap()
 }
 
-/// An error the kernel gives for a header value [`check_headers`] refuses
-/// first (#179): a NUL byte (`EINVAL`), a name or path too long
-/// (`ENAMETOOLONG`), an xattr it refuses by its name or size, a file
-/// capability's form, or a `user.*` one on a symlink (`EPERM`, unless
-/// `security` says the layer holds a `security.*` xattr, which a test
-/// without privilege is refused with `EPERM` too). Not a namespace the
-/// filesystem does not take (`EOPNOTSUPP`), nor where a live root's
-/// directory lies, read through `/proc/self/fd`, which depends on where
-/// the root is.
-fn is_kernel_refusal(e: &Error, security: bool) -> bool {
-    let Error::Io { op, .. } = e else {
+/// An error the kernel gives `tar`'s extraction for a header value
+/// [`check_headers`] refuses first (#179): a NUL byte (`EINVAL`), a name
+/// or symlink target too long (`ENAMETOOLONG` making a link, or for a path
+/// past the limits itself, not one looked up through a long symlink), an
+/// xattr it refuses by its name or size, a file capability's form, or a
+/// `user.*` one on a symlink (`EPERM`, unless the entry has a `security.*`
+/// xattr, which a test without privilege is refused with `EPERM` too). Not
+/// a name the filesystem does not take (`EOPNOTSUPP`), nor where a live
+/// root's directory lies, read through `/proc/self/fd`, which depends on
+/// where the root is.
+fn is_kernel_refusal(e: &Error, tar: &[u8]) -> bool {
+    let Error::Io { op, path, .. } = e else {
         return false;
     };
     match (*op, errno(e)) {
         ("readlink /proc/self/fd", _) => false,
-        ("setxattr", Some(Errno::PERM)) => !security,
-        ("setxattr", Some(Errno::RANGE | Errno::TOOBIG | Errno::INVAL)) => true,
-        (_, Some(Errno::NAMETOOLONG | Errno::INVAL)) => true,
+        ("setxattr", Some(Errno::PERM)) => !security_xattr_paths(tar).contains(&normal(path)),
+        ("setxattr", Some(Errno::RANGE | Errno::TOOBIG)) | (_, Some(Errno::INVAL)) => true,
+        ("symlink" | "link", Some(Errno::NAMETOOLONG)) => true,
+        (_, Some(Errno::NAMETOOLONG)) => {
+            let path = normal(path);
+            path.iter().any(|c| c.len() > NAME_MAX)
+                || path
+                    .parent()
+                    .is_some_and(|d| d.as_os_str().len() > PATH_MAX)
+        }
         _ => false,
     }
+}
+
+/// `path`'s normal components: a name as the extraction reports it.
+fn normal(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+        .collect()
+}
+
+/// The names of the entries of `tar` with a `security.*` xattr, as far as
+/// it reads.
+fn security_xattr_paths(tar: &[u8]) -> BTreeSet<PathBuf> {
+    let mut paths = BTreeSet::new();
+    let mut archive = tar::Archive::new(tar);
+    let Ok(entries) = archive.entries() else {
+        return paths;
+    };
+    for entry in entries {
+        let Ok(mut entry) = entry else {
+            break;
+        };
+        let path = normal(Path::new(OsStr::from_bytes(&entry.path_bytes())));
+        if let Ok(Some(pax)) = entry.pax_extensions()
+            && pax
+                .flatten()
+                .any(|r| r.key_bytes().starts_with(b"SCHILY.xattr.security."))
+        {
+            paths.insert(path);
+        }
+    }
+    paths
 }
 
 fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
@@ -2511,16 +2567,12 @@ fn applying_extractions(tar: &[u8]) -> Vec<(&'static str, Result<()>, BTreeSet<O
 /// one whose framing, `tar-header` limit or header values
 /// ([`is_kernel_refusal`]) the extraction then refuses.
 fn disagreement(tar: &[u8], checked: &Result<()>, r: &Result<()>) -> Option<String> {
-    const SECURITY: &[u8] = b"SCHILY.xattr.security.";
-    // A mutated file capability can be another `security.*` xattr, or one
-    // of a form the kernel takes, which only privilege sets.
-    let security = tar.windows(SECURITY.len()).any(|w| w == SECURITY);
     match (checked, r) {
         (Err(c), Ok(())) => Some(format!("checked {c}, but extracted")),
         (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
             Some(format!("checked, but the framing failed: {e}"))
         }
-        (Ok(()), Err(e)) if is_kernel_refusal(e, security) => {
+        (Ok(()), Err(e)) if is_kernel_refusal(e, tar) => {
             Some(format!("checked, but the kernel refused a value: {e}"))
         }
         _ => None,
@@ -2601,9 +2653,7 @@ fn make_kernel_members(f: &Fixture) -> Vec<(Vec<u8>, Vec<usize>)> {
     let mut t = Tar::new(f);
     t.pax(&[("path", format!("d/{name}").as_bytes())])
         .file("x", 0o644, b"")
-        // In names of at most 255 bytes, as a later entry may be looked up
-        // through it.
-        .pax(&[("linkpath", dir_of(4095).as_bytes())])
+        .pax(&[("linkpath", &[b't'; 4095])])
         .symlink("s", "x")
         .pax(&[
             (

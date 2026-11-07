@@ -1177,8 +1177,10 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
             false,
         ),
         (
-            "an xattr in no namespace",
-            pax(&[("SCHILY.xattr.com.apple.x", b"v")], |t| t.file("x", b"")),
+            "a file capability the kernel takes in no form",
+            pax(&[("SCHILY.xattr.security.capability", &[b'x'; 20])], |t| {
+                t.file("x", b"")
+            }),
             false,
         ),
         (

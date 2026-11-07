@@ -228,11 +228,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   paths left to the extraction; each value over the kernel's limits (#179: a
   NUL byte, a component over `NAME_MAX`, a directory path or symlink target
   past `PATH_MAX`, an empty PAX or GNU link target, an xattr name or value
-  the kernel refuses, a file capability of no form it takes, `user.*` on a
-  symlink) refused by the check and every
-  extraction with the same error before anything of it is written, values at
-  the limits or that the kernel never gets taken, and a node's name and
-  xattrs refused only where it is made;
+  the kernel refuses, a file capability it takes in no form, `user.*` on a
+  symlink) refused by the check and every extraction with the same error
+  before anything of it is written, values at the limits or that the kernel
+  never gets taken, xattr names of any namespace or none left to the
+  filesystem, and a node's name and xattrs refused only where it is made;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
   GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
   and xattr records, with values at and past the kernel's limits, included):

@@ -151,25 +151,25 @@ never called.
   name aside, since the kernel gets the directory, then the name; a symlink
   target over 4095 bytes. On a directory, file or symlink it refuses an
   xattr, as it is set (escaped in the overlay form), whose name is empty,
-  over 255 bytes (`XATTR_NAME_MAX`), holds a NUL byte or is not one of the
-  kernel's namespaces and more (`include/uapi/linux/xattr.h`: `btrfs.`,
-  `gnu.`, `os2.`, `osx.`, `security.`, `system.`, `trusted.`, `user.`),
-  whose value is over 64 KiB (`XATTR_SIZE_MAX`), a `security.capability`
-  that is not 20 bytes of revision 2 or 24 of revision 3 (`validheader` in
-  `security/commoncap.c`), and `user.*` on a symlink. A device node or
-  FIFO's name and xattrs are refused by the extraction that makes it,
-  before it or its parents are made: a live root makes none, a user
-  namespace no device. What the kernel never gets is taken: the `.wh.`
-  prefix of a whiteout (the name it hides is checked), AUFS metadata, a
-  hardlink's xattrs and `trusted.*` ones. An entry at an ignored path, a
-  whiteout whose directory is missing and a hardlink to a device left out
-  are refused all the same: whether they are skipped depends on the root
-  or on an earlier entry, which a header does not show. What depends on
-  the filesystem, the namespace or the root still fails at write time: a
-  namespace or `system.*` name the filesystem does not take, a POSIX ACL
-  it refuses, a value too big for its blocks, `security.*` in a user
-  namespace, and in a live root a directory whose path, with the root's
-  own, is past `PATH_MAX`.
+  over 255 bytes (`XATTR_NAME_MAX`) or holds a NUL byte, whose value is
+  over 64 KiB (`XATTR_SIZE_MAX`), a non-empty `security.capability` that
+  is not 20 bytes of revision 2 or 24 of revision 3 with a root id other
+  than -1 (`cap_convert_nscap` in `security/commoncap.c`), and `user.*` on
+  a symlink. A device node or FIFO's name and xattrs are refused by the
+  extraction that makes it, before it or its parents are made: a live root
+  makes none, a user namespace no device. What the kernel never gets is
+  taken: the `.wh.` prefix of a whiteout (the name it hides is checked),
+  AUFS metadata, a hardlink's xattrs and `trusted.*` ones. An entry at an
+  ignored path, a whiteout whose directory is missing and a hardlink to a
+  device left out are refused all the same: whether they are skipped
+  depends on the root or on an earlier entry, which a header does not
+  show. What depends on the filesystem, the namespace or the root still
+  fails at write time: an xattr name the filesystem does not take (most
+  take only some of the kernel's namespaces, `user.`, `security.` and the
+  like; a FUSE or Ceph one may take any name), a POSIX ACL it refuses, a
+  value too big for its blocks, `security.*` in a user namespace, and in a
+  live root a directory whose path, with the root's own, is past
+  `PATH_MAX`.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

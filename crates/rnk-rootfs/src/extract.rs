@@ -96,18 +96,6 @@ const PARENT_MODE: u32 = 0o755;
 const NAME_MAX: usize = 255;
 /// The kernel's `XATTR_NAME_MAX`: the longest xattr name.
 const XATTR_NAME_MAX: usize = 255;
-/// The xattr namespaces of the kernel (`include/uapi/linux/xattr.h`); a
-/// name is one of them and more. Which ones a filesystem takes is its own.
-const XATTR_NAMESPACES: &[&[u8]] = &[
-    b"btrfs.",
-    b"gnu.",
-    b"os2.",
-    b"osx.",
-    b"security.",
-    b"system.",
-    b"trusted.",
-    b"user.",
-];
 /// The namespace only regular files and directories take (`xattr(7)`).
 const USER_XATTR: &[u8] = b"user.";
 /// A file capability, whose value the kernel checks before it is set.
@@ -264,11 +252,11 @@ pub struct Extracted {
 /// link target with a NUL byte, a component over `NAME_MAX`, a directory
 /// path or symlink target over `PATH_MAX` less its NUL, and on a
 /// directory, file or symlink an xattr whose name is empty, over
-/// `XATTR_NAME_MAX`, holds a NUL byte or is not a kernel namespace and
-/// more, whose value is over `XATTR_SIZE_MAX` or a file capability of no
-/// form the kernel takes, or a `user.*` one on a symlink; also where the
-/// root would have the entry skipped (an ignored path, a whiteout whose
-/// directory is missing), which a header does not show.
+/// `XATTR_NAME_MAX` or holds a NUL byte, whose value is over
+/// `XATTR_SIZE_MAX` or a file capability the kernel takes in no form, or
+/// a `user.*` one on a symlink; also where the root would have the entry
+/// skipped (an ignored path, a whiteout whose directory is missing), which
+/// a header does not show.
 /// It refuses nothing such an extraction takes: what depends on the root
 /// or the ignore list (where an entry lands, a hardlink's target, a
 /// hardlink or device node as the layer's root) is left to the extraction,
@@ -758,11 +746,12 @@ fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr) -> Option<String> {
 }
 
 /// Why the kernel refuses one of `xattrs` (as they are set, escaped in the
-/// overlay form) on any filesystem: a name empty, over [`XATTR_NAME_MAX`],
-/// holding a NUL byte or none of [`XATTR_NAMESPACES`] and more, a value
-/// over [`meta::XATTR_MAX`] (`XATTR_SIZE_MAX`), a file capability of no
-/// form it takes, or a `user.*` name on an entry that is neither a regular
-/// file nor a directory, unless `user`.
+/// overlay form) on any filesystem: a name empty, over [`XATTR_NAME_MAX`]
+/// or holding a NUL byte, a value over [`meta::XATTR_MAX`]
+/// (`XATTR_SIZE_MAX`), a file capability it takes in no form, or a
+/// `user.*` name on an entry that is neither a regular file nor a
+/// directory, unless `user`. Which names a filesystem takes is its own: a
+/// FUSE or Ceph one may take any.
 fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<String> {
     for (name, value) in xattrs {
         let n = name.as_bytes();
@@ -779,14 +768,6 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
         if n.contains(&0) {
             return Some(format!("the xattr name {shown} holds a NUL byte"));
         }
-        if !XATTR_NAMESPACES
-            .iter()
-            .any(|ns| n.len() > ns.len() && n.starts_with(ns))
-        {
-            return Some(format!(
-                "the xattr {shown} is not a namespace of the kernel and a name after it"
-            ));
-        }
         if value.len() > meta::XATTR_MAX {
             return Some(format!(
                 "the value of the xattr {shown} is over {} bytes (XATTR_SIZE_MAX)",
@@ -795,7 +776,7 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
         }
         if n == CAPABILITY_XATTR && !value.is_empty() && !is_file_capability(value) {
             return Some(format!(
-                "the xattr {shown} is no file capability the kernel takes (revision 2 or 3)"
+                "the xattr {shown} is a file capability the kernel takes in no form"
             ));
         }
         if !user && n.starts_with(USER_XATTR) {
@@ -807,20 +788,24 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
     None
 }
 
-/// Whether `value` has the form of a file capability the kernel sets
-/// (`validheader` in `security/commoncap.c`): 20 bytes of revision 2 or 24
-/// of revision 3, its magic little-endian, the effective flag aside.
+/// Whether `value` is a file capability the kernel may set
+/// (`cap_convert_nscap` in `security/commoncap.c`): 20 bytes of revision 2,
+/// or 24 of revision 3 whose root id is not -1, its magic and root id
+/// little-endian, the effective flag aside.
 fn is_file_capability(value: &[u8]) -> bool {
     const REVISION_2: u32 = 0x0200_0000;
     const REVISION_3: u32 = 0x0300_0000;
     const EFFECTIVE: u32 = 0x0000_0001;
+    // No user namespace maps it.
+    const NO_ROOT: [u8; 4] = u32::MAX.to_le_bytes();
     let Some(magic) = value.first_chunk::<4>() else {
         return false;
     };
-    matches!(
-        (value.len(), u32::from_le_bytes(*magic) & !EFFECTIVE),
-        (20, REVISION_2) | (24, REVISION_3)
-    )
+    match (value.len(), u32::from_le_bytes(*magic) & !EFFECTIVE) {
+        (20, REVISION_2) => true,
+        (24, REVISION_3) => value.last_chunk::<4>() != Some(&NO_ROOT),
+        _ => false,
+    }
 }
 
 /// What a whiteout's name (`.wh.` and more) stands for.
