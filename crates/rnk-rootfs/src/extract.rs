@@ -4,7 +4,7 @@
 //! records); every filesystem change goes through `RootPath`. Its `unpack`
 //! family, which joins entry names onto a host path, is never used.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::ops::Bound;
@@ -58,11 +58,12 @@ pub enum Whiteouts {
 /// nodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeviceNodes {
-    /// Creates them, as overlay mode as root does (ADR-0041 left it so).
+    /// Creates them, as overlay mode as root does.
     Create,
-    /// Creates none and counts them as `nodes_skipped`, for a process in a
-    /// user namespace, where `mknod` of a device needs `CAP_MKNOD` in the
-    /// initial one (ADR-0106). FIFOs and whiteouts are still made.
+    /// Creates none, nor a hardlink to one, and counts each as
+    /// `nodes_skipped`, for a process in a user namespace, where `mknod` of
+    /// a device needs `CAP_MKNOD` in the initial one (ADR-0106). FIFOs and
+    /// whiteouts are still made.
     Skip,
 }
 
@@ -187,9 +188,9 @@ pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -
 /// layers' size. The lower layers are only read.
 ///
 /// `devices` tells whether block and character device nodes are made or
-/// left out ([`DeviceNodes::Skip`], ADR-0106). One as the layer's root is
-/// refused either way, so a layer extracts in a user namespace only if it
-/// would as root.
+/// left out ([`DeviceNodes::Skip`], ADR-0106), as if the tar did not hold
+/// them, apart from a hardlink to one, left out with it. One as the layer's
+/// root is refused either way.
 ///
 /// Returns what the caller cannot see on disk afterwards: whether the layer
 /// set the root's metadata (an entry `./`). Without one, the root of an
@@ -300,6 +301,7 @@ fn extract_with(
         created: Created::default(),
         copied: HashMap::new(),
         copy_names: BTreeMap::new(),
+        devices_skipped: BTreeSet::new(),
         stats: Stats::default(),
         first_skipped: None,
     };
@@ -386,6 +388,9 @@ struct Extractor<'r> {
     /// The same copies by name: a copy the layer removes or replaces is
     /// forgotten ([`Extractor::forget_copies`]).
     copy_names: BTreeMap<PathBuf, LowerInode>,
+    /// [`DeviceNodes::Skip`]: the names of the devices left out, and of the
+    /// hardlinks to them, until the layer puts something else there.
+    devices_skipped: BTreeSet<PathBuf>,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
     /// mtime and a read-only directory is still writable while it fills.
@@ -703,6 +708,9 @@ impl Extractor<'_> {
         };
         if skipped {
             self.stats.nodes_skipped += 1;
+            if self.live.is_none() {
+                self.devices_skipped.insert(path);
+            }
             return Ok(());
         }
         if let Some(live) = &self.live
@@ -736,6 +744,19 @@ impl Extractor<'_> {
                 }
             };
         }
+        // As root this links the device: nothing at its name now, such as a
+        // lower layer's file, is what it names.
+        if let Kind::Hardlink(t) = &kind
+            && self.devices_skipped.contains(t)
+        {
+            self.stats.nodes_skipped += 1;
+            self.devices_skipped.insert(path);
+            return Ok(());
+        }
+        // By the cleaned name, as recorded: the entry takes the place of any
+        // device left out there, and of those below it unless it is a
+        // directory, merged.
+        self.forget_skipped(&path, !matches!(kind, Kind::Dir));
         let (parent, name) = path::entry(&path)?;
         let name = name.to_owned();
         // In a live root, `path` becomes where the entry lands on disk.
@@ -813,6 +834,24 @@ impl Extractor<'_> {
         }
         self.mark_created(&path);
         Ok(())
+    }
+
+    /// Forgets the devices left out at `path`, and below it when `below`:
+    /// the layer puts something else there.
+    fn forget_skipped(&mut self, path: &Path, below: bool) {
+        if !below {
+            self.devices_skipped.remove(path);
+            return;
+        }
+        let gone: Vec<PathBuf> = self
+            .devices_skipped
+            .range::<Path, _>((Bound::Included(path), Bound::Unbounded))
+            .take_while(|p| p.starts_with(path))
+            .cloned()
+            .collect();
+        for p in gone {
+            self.devices_skipped.remove(&p);
+        }
     }
 
     /// The hardlink `name` in `pfd` (at `path`) to `target`: linked within
@@ -1185,6 +1224,7 @@ impl Extractor<'_> {
                     .mkdir_all(&dir, PARENT_MODE, Mounts::Stay)
                     .map_err(|e| on_mount(e, raw))?;
                 self.make_room(&target, pfd.as_fd(), hidden, false, raw)?;
+                self.forget_skipped(&target, true);
                 rustix::fs::mknodat(
                     &pfd,
                     hidden,

@@ -1167,6 +1167,50 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     );
     assert_eq!(fs::read(f.host("kept")).unwrap(), b"ok");
 
+    // A hardlink to a device left out, or to such a link, is left out too:
+    // never copied from a lower layer's file at the device's name. Once the
+    // layer puts something else at that name, a link links it.
+    let lower = Fixture::new();
+    fs::write(lower.host("sda"), b"lower").unwrap();
+    fs::write(lower.host("tty"), b"lower").unwrap();
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.node("sda", EntryType::Block, 8, 0)
+        .hardlink("sda-link", "sda")
+        .hardlink("sda-link2", "sda-link")
+        .node("tty", EntryType::Char, 5, 0)
+        .file("tty", 0o644, b"file")
+        .hardlink("tty-link", "tty");
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Skip,
+    )
+    .unwrap();
+    for name in ["sda", "sda-link", "sda-link2"] {
+        assert!(fs::symlink_metadata(f.host(name)).is_err(), "{name}");
+    }
+    assert_eq!(fs::read(f.host("tty-link")).unwrap(), b"file");
+    assert_eq!(
+        fs::metadata(f.host("tty")).unwrap().ino(),
+        fs::metadata(f.host("tty-link")).unwrap().ino()
+    );
+    // A device the layer whites out is gone, as when they are made.
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.node("sda", EntryType::Block, 8, 0)
+        .file(".wh.sda", 0o644, b"")
+        .hardlink("sda-link", "sda");
+    let e = extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Skip,
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("whited out"), "{e}");
+
     // A device as the layer's root is refused, as when they are made.
     for devices in [DeviceNodes::Skip, DeviceNodes::Create] {
         let f = Fixture::new();

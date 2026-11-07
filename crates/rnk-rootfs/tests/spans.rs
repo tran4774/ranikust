@@ -181,10 +181,18 @@ fn an_extraction_without_devices_counts_the_skipped_nodes() {
     add("null", tar::EntryType::Char, 1, 3);
     add("loop0", tar::EntryType::Block, 7, 0);
     add("fifo", tar::EntryType::Fifo, 0, 0);
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(tar::EntryType::Link);
+    h.set_mode(0o644);
+    h.set_uid(0);
+    h.set_gid(0);
+    h.set_mtime(0);
+    h.set_size(0);
+    b.append_link(&mut h, "null-link", "null").unwrap();
     let tar = b.into_inner().unwrap();
     capture.run(|| extract_overlay(&root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap());
     let report = capture.report();
     let x = &report["phases"]["rnk_rootfs.extract"];
-    assert_eq!(x["entries"], 3);
-    assert_eq!(x["nodes_skipped"], 2);
+    assert_eq!(x["entries"], 4);
+    assert_eq!(x["nodes_skipped"], 3);
 }
