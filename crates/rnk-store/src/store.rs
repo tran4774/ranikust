@@ -1281,18 +1281,14 @@ impl Store {
     /// store holds it shared for its life, so nothing a running build uses
     /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
     /// Before removing anything it refuses this process's own `/`, by
-    /// device and inode as `rnk_rootfs::prune` does; as [`Store::open`]
-    /// does, a non-empty directory without a regular [`STATE_MARKER`] and
-    /// one holding [`BUILDING_MARKER`]; one whose top level holds a name
-    /// neither the store nor a build makes there (the markers, the store's
-    /// directories, [`SANDBOX_DIR`], an anonymous store's names); and a
-    /// [`PRUNING_MARKER`] that is not a regular file ([`Store::check_prune`]
-    /// runs these checks alone). It takes one holding the regular
-    /// [`PRUNING_MARKER`] a prune that did not finish leaves, which `open`
-    /// refuses, and makes nothing in an empty directory, not even the
-    /// marker. Then it renames [`STATE_MARKER`] to [`PRUNING_MARKER`], or
-    /// takes over the one an earlier prune left, and syncs the directory
-    /// before deleting: entries are emptied in place, and a prune cut short or failed leaves a
+    /// device and inode as `rnk_rootfs::prune` does, then, under the lock,
+    /// what [`Store::check_prune`] refuses, in the order given there. It
+    /// takes one holding the regular [`PRUNING_MARKER`] a prune that did
+    /// not finish leaves, which `open` refuses, and makes nothing in an
+    /// empty directory, not even the marker. Then it renames
+    /// [`STATE_MARKER`] to [`PRUNING_MARKER`], or takes over the one an
+    /// earlier prune left, and syncs the directory before deleting: entries
+    /// are emptied in place, and a prune cut short or failed leaves a
     /// directory no store opens and the next prune accepts. A failed sync
     /// renames back only a marker this call renamed: one an earlier prune
     /// left stays, since that prune may have removed entries. Deletes
@@ -1399,21 +1395,37 @@ impl Store {
     }
 
     /// [`Store::prune_all`]'s checks of the state directory `state`, run
-    /// without its lock and changing nothing: `false` when it is empty,
-    /// `true` when `prune_all` would empty it, else the error `prune_all`
-    /// would return for it. For a caller that checks the directory before
-    /// entering the user namespace `prune_all` runs in; `prune_all` checks
-    /// again under its lock, since a build may change the directory
-    /// meanwhile. The caller has checked `state` as [`Store::prune_all`]
-    /// says.
+    /// without its lock and changing nothing, with the directory's
+    /// identity, for a caller that checks it before entering the user
+    /// namespace `prune_all` runs in, or prints commands that act on it;
+    /// `prune_all` checks again under its lock, since a build may change
+    /// the directory meanwhile. `state` is opened as given, with no symlink
+    /// followed anywhere on it (`RootPath::open`), not resolved first. In
+    /// order, it refuses this process's own `/`; [`BUILDING_MARKER`] in any
+    /// form ([`Error::UsedOnSlash`]); then, unless the directory is empty,
+    /// a [`PRUNING_MARKER`] that is not a regular file, a directory with
+    /// neither it nor a regular [`STATE_MARKER`], and a top-level name
+    /// neither the store nor a build makes there (the markers, the store's
+    /// directories, [`SANDBOX_DIR`], an anonymous store's names), each
+    /// [`Error::NotAStateDir`]. The caller has checked `state` as
+    /// [`Store::prune_all`] says.
     ///
     /// # Errors
     ///
     /// As [`Store::prune_all`], but for [`Error::InUse`], [`Error::NoFlock`]
-    /// and what deleting returns.
-    pub fn check_prune(state: &Path) -> Result<bool> {
-        let (state_path, root) = open_to_prune(state)?;
-        Ok(prune_check(&root, &state_path)? != Prunable::Empty)
+    /// and what deleting returns; [`Error::Rootfs`] when `state` holds a
+    /// symlink.
+    pub fn check_prune(state: &Path) -> Result<PruneCheck> {
+        let root = RootPath::open(state)?;
+        rnk_rootfs::refuse_own_root(&root, state)?;
+        let found = prune_check(&root, state)?;
+        let st = root.statx("")?;
+        Ok(PruneCheck {
+            entries: found != Prunable::Empty,
+            dev: rustix::fs::makedev(st.dev_major, st.dev_minor),
+            ino: st.ino,
+            uid: st.uid,
+        })
     }
 
     /// Removes the `tmp/` and `builds/` directories of every build that no
@@ -1883,6 +1895,21 @@ fn open_to_prune(state: &Path) -> Result<(PathBuf, RootPath)> {
     Ok((state_path, root))
 }
 
+/// A state directory [`Store::check_prune`] accepts: whether it holds
+/// anything, and which directory it is, as stat(2) and `stat -c
+/// %d:%i:%u` give it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PruneCheck {
+    /// It holds something for [`Store::prune_all`] to empty.
+    pub entries: bool,
+    /// Its `st_dev`.
+    pub dev: u64,
+    /// Its inode number.
+    pub ino: u64,
+    /// Its owner, as this process's user namespace maps it.
+    pub uid: u32,
+}
+
 /// What [`prune_check`] found in a state directory it accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Prunable {
@@ -1895,11 +1922,8 @@ enum Prunable {
 }
 
 /// [`Store::prune_all`]'s checks of the state directory `root`, which
-/// change nothing, in one place for it and [`Store::check_prune`]: it
-/// refuses [`BUILDING`] in any form, a [`PRUNING`] that is not a regular
-/// file, a non-empty directory with neither [`PRUNING`] nor a regular
-/// [`MARKER`], and a top-level name neither the store nor a build makes
-/// there.
+/// change nothing, in one place for it and [`Store::check_prune`], whose
+/// documentation lists them.
 fn prune_check(root: &RootPath, state_path: &Path) -> Result<Prunable> {
     refuse_used_on_slash(root, state_path)?;
     let names = list(root, Path::new("."))?;

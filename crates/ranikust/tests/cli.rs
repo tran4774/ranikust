@@ -1011,8 +1011,8 @@ fn prune_without_all_is_a_usage_error_naming_phase_5() {
     }
 }
 
-/// As root, a container's root included, `prune --all` is refused before
-/// it looks at the state directory, naming Phase 5's `prune`; as a user,
+/// As root, a container's root included, `prune --all` is refused with
+/// nothing changed, naming Phase 5's `prune`; as a user,
 /// a state directory that does not exist, the default one included, is
 /// left so.
 #[test]
@@ -1095,7 +1095,15 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
             let err = stderr(&out);
             assert!(err.contains("no user namespace for the build: "), "{err}");
             // The commands enter the state directory (quoted when a shell
-            // needs it) once, then work under the builds' lock on it.
+            // needs it) once, check that it is the one ranikust checked,
+            // then work under the builds' lock on it.
+            let pin = {
+                use std::os::unix::fs::MetadataExt as _;
+                let m = fs::metadata(&state).expect("state");
+                format!("{}:{}:{}", m.dev(), m.ino(), m.uid())
+            };
+            let check = format!(r#" && test "$(stat -c %d:%i:%u .)" = {pin} && exec flock -xn . "#);
+            assert!(err.contains(&check), "{err}");
             assert!(err.contains(" && exec flock -xn . sh -c '"), "{err}");
             assert!(err.contains(&*state.to_string_lossy()), "{err}");
             let plain = state.to_str().is_some_and(|s| {
@@ -1103,10 +1111,7 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
                     .all(|b| b.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&b))
             });
             if plain {
-                let lock = format!(
-                    "( CDPATH= cd -P -- {} && exec flock -xn . sh -c '",
-                    state.display()
-                );
+                let lock = format!("( CDPATH= cd -P -- {}{check}", state.display());
                 assert!(err.contains(&lock), "{err}");
             }
             assert!(err.contains("find . -xdev"), "{err}");

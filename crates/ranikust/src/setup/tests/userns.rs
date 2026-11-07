@@ -807,7 +807,9 @@ fn prune_all_empties_in_the_user_namespace_or_changes_nothing() {
                     reason.starts_with("no user namespace for the build: "),
                     "{out}"
                 );
-                assert_eq!(guidance, crate::prune::no_user_namespace(&state), "{out}");
+                let pin = crate::prune::pin(&state).map(|(pin, _)| pin);
+                let want = crate::prune::no_user_namespace(&state, pin);
+                assert_eq!(guidance, want, "{out}");
             }
             assert_eq!(tree(&state), before, "{out}");
         }
@@ -854,8 +856,8 @@ fn prune_all_empties_a_state_directory_of_other_ids() {
 }
 
 /// T1, as root of a rootless Podman container: euid 0 in a user namespace
-/// is root all the same, so `prune --all` refuses it before it looks at
-/// the state directory, naming Phase 5's `prune` (ADR-0105).
+/// is root all the same, so `prune --all` refuses it with nothing changed,
+/// naming Phase 5's `prune` (ADR-0105).
 #[test]
 #[ignore = "T1: default: root of a rootless Podman container is refused"]
 fn prune_all_refuses_root_of_a_rootless_container() {
@@ -964,7 +966,8 @@ fn a_regular_user_s_prune_all_empties_a_state_directory_of_subordinate_ids() {
             out.starts_with("refused\tno user namespace for the build: "),
             "{out}"
         );
-        let guidance = crate::prune::no_user_namespace(&state);
+        let pin = crate::prune::pin(&state).map(|(pin, _)| pin);
+        let guidance = crate::prune::no_user_namespace(&state, pin);
         assert!(
             out.ends_with(&format!("\t{guidance}\tOther\tnone")),
             "{out}"

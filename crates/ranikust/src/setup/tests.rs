@@ -622,8 +622,8 @@ fn a_store_refusal_names_its_state_directory_once() {
 
 /// A build refused by a `prune --all` that did not finish is shown the
 /// next step, for the directory the store names: a user runs `prune --all`
-/// again, root, which it refuses, empties the directory itself; other
-/// refusals get no guidance.
+/// again, root, which it refuses, empties the directory itself where
+/// ranikust can check it; other refusals get no guidance.
 #[test]
 fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     use rnk_store::Error;
@@ -644,12 +644,31 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
             .ends_with(&format!("\n  {}", refusal.guidance)),
         "{refusal}"
     );
+    // Root gets commands for a directory ranikust checks, none where it
+    // cannot.
     let root = store_refusal(&cut_short(), given, 0);
     assert!(
         root.guidance
-            .contains("( CDPATH= cd -P -- '/home/u/my state' && exec flock -xn . sh -c '"),
+            .starts_with("ranikust gives no commands for '/home/u/my state', which it cannot "),
         "{root}"
     );
+    assert!(!root.guidance.contains("cd -P"), "{root}");
+    let tmp = tempfile::tempdir().unwrap();
+    let left = tmp.path().join("my state");
+    std::fs::create_dir_all(left.join("blobs")).unwrap();
+    std::fs::write(left.join(rnk_store::PRUNING_MARKER), b"").unwrap();
+    let e = Error::PruneCutShort { path: left.clone() };
+    let root = store_refusal(&e, &left, 0);
+    let (dev, ino, uid) = {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = std::fs::metadata(&left).unwrap();
+        (m.dev(), m.ino(), m.uid())
+    };
+    let commands = format!(
+        r#"( CDPATH= cd -P -- '{}' && test "$(stat -c %d:%i:%u .)" = {dev}:{ino}:{uid} && exec flock -xn . sh -c '"#,
+        left.display()
+    );
+    assert!(root.guidance.contains(&commands), "{root}");
     // Only the reason's account of the prune: nothing sends root to it.
     assert_eq!(root.to_string().matches("prune --all").count(), 1, "{root}");
     for e in [

@@ -92,14 +92,58 @@ fn prune_without_all_is_refused_naming_phase_5() {
     assert!(!state.exists());
 }
 
+/// The [`Pin`] of the directory at `dir`, from the standard library's
+/// stat(2), whatever is there.
+fn pin_of(dir: &Path) -> Pin {
+    use std::os::unix::fs::MetadataExt as _;
+    let m = fs::symlink_metadata(dir).unwrap();
+    Pin {
+        dev: m.dev(),
+        ino: m.ino(),
+        uid: m.uid(),
+    }
+}
+
+/// `command` run by bash from `cwd`, with `bin` first on `PATH` (the
+/// machine's own as `REAL_PATH`) when given.
+fn run_command(command: &str, cwd: &Path, bin: Option<&Path>) -> std::process::ExitStatus {
+    let mut run = std::process::Command::new("bash");
+    run.args(["-c", command]).current_dir(cwd);
+    if let Some(bin) = bin {
+        let path = std::env::var_os("PATH").expect("PATH");
+        let mut first = bin.as_os_str().to_owned();
+        first.push(":");
+        first.push(&path);
+        run.env("PATH", first).env("REAL_PATH", path);
+    }
+    run.status().unwrap()
+}
+
+/// A `podman` that runs `podman unshare`'s command as it is, in no user
+/// namespace, in a new `bin` below `at`.
+fn podman_shim(at: &Path) -> PathBuf {
+    let bin = at.join("podman-bin");
+    fs::create_dir(&bin).unwrap();
+    let shim = bin.join("podman");
+    fs::write(
+        &shim,
+        "#!/bin/sh\ntest \"$1\" = unshare || exit\nshift\nexec \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
 #[test]
 fn root_is_refused_naming_phase_5_before_anything() {
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
     marked_state(&state);
     let before = listing(&state);
+    let empty_dir = tmp.path().join("empty");
+    fs::create_dir(&empty_dir).unwrap();
     let missing = tmp.path().join("missing");
-    for dir in [&state, &missing] {
+    for dir in [&state, &empty_dir, &missing] {
         let refusal = prune_all(0, dir).unwrap_err();
         assert!(refusal.reason.contains("refuses root"), "{refusal}");
         assert!(
@@ -107,28 +151,205 @@ fn root_is_refused_naming_phase_5_before_anything() {
             "{refusal}"
         );
         assert!(refusal.guidance.contains("Phase 5"), "{refusal}");
-        // In the directory entered once, under the lock builds take, the
-        // marker first: what an interrupted removal leaves is unmarked, and
-        // a directory without one stays.
-        let d = shell_word(dir.as_os_str());
-        let script = "'{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'";
-        let want =
-            format!("( CDPATH= cd -P -- {d} && exec flock -xn . sh -c {script} ), then rmdir {d}");
-        assert!(refusal.guidance.contains(&want), "{refusal}");
-        assert!(refusal.guidance.contains("nothing is mounted below it"));
         assert_eq!(refusal.kind, Kind::Other);
     }
-    assert_eq!(listing(&state), before);
-    assert!(!missing.exists());
-    // The path the user gave, quoted.
-    let odd = Path::new("/srv/the 'state'");
-    let refusal = prune_all(0, odd).unwrap_err();
+    // In the directory entered once and checked to be the one ranikust
+    // checked, under the lock builds take, the marker first: what an
+    // interrupted removal leaves is unmarked, and a directory without one
+    // stays.
+    let refusal = prune_all(0, &state).unwrap_err();
+    let Pin { dev, ino, uid } = pin_of(&state);
+    let (d, p) = (
+        shell_word(state.as_os_str()),
+        shell_word(tmp.path().as_os_str()),
+    );
+    let script = "'{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete'";
+    let want = format!(
+        r#"( CDPATH= cd -P -- {d} && test "$(stat -c %d:%i:%u .)" = {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && test "$(stat -c %d:%i:%u ./state)" = {dev}:{ino}:{uid} && rmdir -- ./state )"#
+    );
+    assert!(refusal.guidance.contains(&want), "{refusal}");
+    assert!(refusal.guidance.contains("nothing is mounted below it"));
+    // An empty directory is only removed.
+    let refusal = prune_all(0, &empty_dir).unwrap_err();
+    let Pin { dev, ino, uid } = pin_of(&empty_dir);
+    let want = format!(
+        r#"root removes the empty state directory with ( CDPATH= cd -P -- {p} && test "$(stat -c %d:%i:%u ./empty)" = {dev}:{ino}:{uid} && rmdir -- ./empty )"#
+    );
+    assert!(refusal.guidance.contains(&want), "{refusal}");
+    // No command for a path it cannot check, the path the user gave
+    // quoted.
+    let refusal = prune_all(0, &missing).unwrap_err();
+    let none = format!(
+        "ranikust gives no commands for {}, which it cannot check (",
+        shell_word(missing.as_os_str())
+    );
+    assert!(refusal.guidance.contains(&none), "{refusal}");
     assert!(
         refusal
             .guidance
-            .contains(r"( CDPATH= cd -P -- '/srv/the '\''state'\''' && exec flock -xn . "),
+            .contains("run ranikust prune --all as the directory's owner, or fix the path"),
         "{refusal}"
     );
+    assert!(!refusal.guidance.contains("cd -P"), "{refusal}");
+    let refusal = prune_all(0, Path::new("/srv/the 'state'")).unwrap_err();
+    assert!(
+        refusal
+            .guidance
+            .contains(r"ranikust gives no commands for '/srv/the '\''state'\''', which "),
+        "{refusal}"
+    );
+    assert_eq!(listing(&state), before);
+    assert_eq!(listing(&empty_dir), Vec::new());
+    assert!(!missing.exists());
+}
+
+/// Root's path with a symlink on it, to a directory holding a regular
+/// marker, gets no commands, as one whose check fails; nothing is removed
+/// there.
+#[test]
+fn root_gets_no_commands_for_a_path_through_a_symlink() {
+    let tmp = private_tempdir();
+    let real = tmp.path().join("real");
+    marked_state(&real.join("state"));
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let before = listing(tmp.path());
+    let typed = link.join("state");
+    let refusal = prune_all(0, &typed).unwrap_err();
+    let cut = cut_short(&typed, 0);
+    for guidance in [&*refusal.guidance, &cut] {
+        assert!(!guidance.contains("cd -P"), "{guidance}");
+        assert!(
+            guidance.contains(&format!(
+                "ranikust gives no commands for {}, which it cannot check (",
+                shell_word(typed.as_os_str())
+            )),
+            "{guidance}"
+        );
+        assert!(guidance.contains("as the directory's owner"), "{guidance}");
+    }
+    assert_eq!(listing(tmp.path()), before);
+}
+
+/// The pin ranikust takes is what `stat -c %d:%i:%u` prints for the
+/// directory, so each printed command runs with it: root's emptying and
+/// `rmdir`, the user's, and the move aside.
+#[test]
+fn the_printed_commands_run_on_the_directory_ranikust_checked() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("my 'state' $x");
+    marked_state(&state);
+    let (taken, entries) = pin(&state).unwrap();
+    assert!(entries);
+    assert_eq!(taken, pin_of(&state));
+    let out = std::process::Command::new("stat")
+        .args(["-c", "%d:%i:%u"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let Pin { dev, ino, uid } = taken;
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!("{dev}:{ino}:{uid}\n")
+    );
+    for script in [ROOT_SCRIPT, USER_SCRIPT] {
+        if script == USER_SCRIPT {
+            marked_state(&state);
+        }
+        let (taken, _) = pin(&state).unwrap();
+        let command = format!(
+            "{} && {}",
+            in_dir(&state, taken, script),
+            remove_dir(&state, taken)
+        );
+        assert!(
+            run_command(&command, tmp.path(), None).success(),
+            "{command}"
+        );
+        assert!(!state.exists(), "{command}");
+    }
+    marked_state(&state);
+    let (taken, _) = pin(&state).unwrap();
+    let bin = podman_shim(tmp.path());
+    let command = move_aside(&state, taken);
+    assert!(
+        run_command(&command, tmp.path(), Some(&bin)).success(),
+        "{command}"
+    );
+    assert!(!state.exists(), "{command}");
+    assert!(!tmp.path().join("my 'state' $x.old").exists(), "{command}");
+}
+
+/// Each printed command checks, right after entering a directory, that it
+/// is the one ranikust checked: with any part of the pin wrong, or with a
+/// parent swapped for a symlink after the commands were printed, to a
+/// directory holding that name, each fails before it changes anything.
+#[test]
+fn the_printed_commands_change_nothing_in_another_directory() {
+    let tmp = private_tempdir();
+    let bin = podman_shim(tmp.path());
+    let parent = tmp.path().join("parent");
+    let state = parent.join("state");
+    let other = tmp.path().join("other");
+    type Printed = fn(&Path, Pin) -> String;
+    let commands: [(&str, Printed); 4] = [
+        ("root", |d, p| in_dir(d, p, ROOT_SCRIPT)),
+        ("user", |d, p| in_dir(d, p, USER_SCRIPT)),
+        ("rmdir", remove_dir),
+        ("move aside", move_aside),
+    ];
+    for (name, command) in commands {
+        // `rmdir` only removes an empty directory.
+        let make = |dir: &Path| {
+            if name == "rmdir" {
+                fs::create_dir_all(dir).unwrap();
+            } else {
+                marked_state(dir);
+            }
+        };
+        make(&state);
+        let right = pin_of(&state);
+        let wrong = [
+            Pin {
+                dev: right.dev + 1,
+                ..right
+            },
+            Pin {
+                ino: right.ino + 1,
+                ..right
+            },
+            Pin {
+                uid: right.uid + 1,
+                ..right
+            },
+        ];
+        let before = listing(tmp.path());
+        for pin in wrong {
+            let command = command(&state, pin);
+            assert!(
+                !run_command(&command, tmp.path(), Some(&bin)).success(),
+                "{name}: {command}"
+            );
+            assert_eq!(listing(tmp.path()), before, "{name}: {command}");
+        }
+        // The commands printed for the parent, which is then moved away
+        // and replaced by a symlink to another directory holding a
+        // `state` of its own.
+        let printed = command(&state, right);
+        make(&other.join("state"));
+        let moved = tmp.path().join("parent.moved");
+        fs::rename(&parent, &moved).unwrap();
+        std::os::unix::fs::symlink(&other, &parent).unwrap();
+        let before = listing(tmp.path());
+        assert!(
+            !run_command(&printed, tmp.path(), Some(&bin)).success(),
+            "{name}: {printed}"
+        );
+        assert_eq!(listing(tmp.path()), before, "{name}: {printed}");
+        fs::remove_file(&parent).unwrap();
+        fs::remove_dir_all(&moved).unwrap();
+        fs::remove_dir_all(&other).unwrap();
+    }
 }
 
 #[test]
@@ -136,9 +357,16 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     // Builds refuse the directory meanwhile; its marker goes once nothing
     // else is left, or a later prune finishes it.
     let dir = Path::new("/home/u/my state");
-    let guidance = no_user_namespace(dir);
+    let pin = Pin {
+        dev: 1,
+        ino: 2,
+        uid: 3,
+    };
+    let guidance = no_user_namespace(dir, Ok(pin));
     assert!(
-        guidance.contains("( CDPATH= cd -P -- '/home/u/my state' && exec flock -xn . sh -c '{ "),
+        guidance.contains(
+            r#"( CDPATH= cd -P -- '/home/u/my state' && test "$(stat -c %d:%i:%u .)" = 1:2:3 && exec flock -xn . sh -c '{ "#
+        ),
         "{guidance}"
     );
     assert!(guidance.contains("' ) renames its marker"), "{guidance}");
@@ -157,6 +385,16 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     );
     assert!(guidance.contains("nothing is mounted below the state directory"));
     assert!(guidance.contains("subordinate ids stay"));
+    // No command for a directory ranikust could not pin.
+    let guidance = no_user_namespace(dir, Err("why".to_owned()));
+    assert!(
+        guidance.contains(
+            "without it, ranikust gives no commands for '/home/u/my state', which it cannot \
+             check (why): run ranikust prune --all as the directory's owner"
+        ),
+        "{guidance}"
+    );
+    assert!(!guidance.contains("cd -P"), "{guidance}");
 }
 
 /// `script` on the state directory `state` as the guidance gives it, run
@@ -171,7 +409,7 @@ fn run_script_with(
 ) -> std::process::ExitStatus {
     let mut command = std::process::Command::new("bash");
     command
-        .args(["-c", &pinned(state, script)])
+        .args(["-c", &in_dir(state, pin_of(state), script)])
         .current_dir(cwd)
         .envs(env.iter().copied());
     if let Some(bin) = bin {
@@ -311,7 +549,7 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
     fs::write(
         bin.join("mv"),
         "#!/bin/sh\nPATH=$REAL_PATH mkdir .ranikust-pruning || exit\nPATH=$REAL_PATH mv \"$@\"\n\
-         s=$?\n: > ../mv-ran\nexit $s\n",
+         s=$?\necho $s > ../mv-ran\nexit $s\n",
     )
     .unwrap();
     let mv_ran = tmp.path().join("mv-ran");
@@ -337,8 +575,25 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
             "made by mv: {made_by_mv}"
         );
         assert!(state.join("blobs").is_dir(), "made by mv: {made_by_mv}");
-        // The machine's `mv` ran after the shim's `mkdir`.
-        assert_eq!(mv_ran.exists(), made_by_mv);
+        // The machine's `mv` ran after the shim's `mkdir`, and failed.
+        let status = fs::read_to_string(&mv_ran).ok();
+        let want = made_by_mv.then(|| "1\n".to_owned());
+        assert_eq!(status, want, "made by mv: {made_by_mv}: mv's status");
+        let _ = fs::remove_file(&mv_ran);
+        fs::remove_dir_all(&state).unwrap();
+    }
+    // Nor beside a symlink of that name, to a regular file or to nothing.
+    for target in [outside.join("keep"), tmp.path().join("nothing")] {
+        fill(&state);
+        let link = state.join(".ranikust-pruning");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let ran = run_script(USER_SCRIPT, tmp.path(), &state).success();
+        let to = target.display();
+        assert!(!ran, "to {to}");
+        assert!(link.is_symlink(), "to {to}");
+        assert!(state.join(".ranikust-state").is_file(), "to {to}");
+        assert!(state.join("blobs").is_dir(), "to {to}");
+        assert!(outside.join("keep").is_file(), "to {to}");
         fs::remove_dir_all(&state).unwrap();
     }
     // What the user may not remove stays, and the marker with it, whether
@@ -417,7 +672,7 @@ fn the_suggested_commands_wait_for_no_build() {
     let state = tmp.path().join("my 'state'");
     marked_state(&state);
     let ran = state.join("ran");
-    let command = pinned(&state, "touch ran");
+    let command = in_dir(&state, pin_of(&state), "touch ran");
     let run = || {
         std::process::Command::new("bash")
             .args(["-c", &command])
@@ -435,7 +690,7 @@ fn the_suggested_commands_wait_for_no_build() {
     open.close().unwrap();
     // Nothing is made at a missing path, where `flock` would make a file.
     let missing = tmp.path().join("missing");
-    let command = pinned(&missing, "true");
+    let command = in_dir(&missing, pin_of(&state), "true");
     let status = std::process::Command::new("bash")
         .args(["-c", &command])
         .status()
@@ -449,21 +704,36 @@ fn the_suggested_commands_wait_for_no_build() {
 #[test]
 fn a_prune_that_could_not_finish_names_the_ways_out() {
     let dir = Path::new("/home/u/my state");
-    let ways = unfinished(dir);
+    let pin = Pin {
+        dev: 1,
+        ino: 2,
+        uid: 3,
+    };
+    let ways = unfinished(dir, Ok(pin));
     for want in [
         "on another mount",
         "subordinate ids",
         "unmount anything below '/home/u/my state'",
         "with newuidmap installed and ranges for this user in /etc/subuid and /etc/subgid",
-        "( CDPATH= cd -P -- /home/u && mv -T -- 'my state' 'my state.old' && podman unshare rm \
-         -rf --one-file-system -- 'my state.old' ), or the same as root",
+        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && test "$(stat -c %d:%i:%u './my state')" = 1:2:3 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, ( CDPATH= cd -P -- '/home/u/my state' && test "$(stat -c %d:%i:%u .)" = 1:2:3 && exec flock -xn . sh -c '{ test -f .ranikust-state "#,
+        r#"), then ( CDPATH= cd -P -- /home/u && test "$(stat -c %d:%i:%u './my state')" = 1:2:3 && rmdir -- './my state' )"#,
     ] {
         assert!(ways.contains(want), "{want}: {ways}");
     }
-    let refusal = store_refusal(&rnk_store::Error::NotPruned {
+    // No command for a directory ranikust could not pin.
+    let none = unfinished(dir, Err("why".to_owned()));
+    assert!(
+        none.ends_with(
+            "/etc/subgid; ranikust gives no commands for '/home/u/my state', which it cannot \
+             check (why): run ranikust prune --all as the directory's owner, or fix the path"
+        ),
+        "{none}"
+    );
+    let not_pruned = rnk_store::Error::NotPruned {
         path: dir.to_owned(),
         left: "\"x\"".to_owned(),
-    });
+    };
+    let refusal = store_refusal(&not_pruned, dir, Ok(pin));
     assert_eq!(refusal.guidance, ways);
     assert_eq!(refusal.kind, Kind::Broken);
     assert!(
@@ -478,7 +748,7 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
             path: dir.to_owned(),
         },
     ] {
-        assert_eq!(store_refusal(&e).guidance, "", "{e}");
+        assert_eq!(store_refusal(&e, dir, Ok(pin)).guidance, "", "{e}");
     }
 }
 
@@ -512,7 +782,7 @@ fn an_empty_state_directory_is_left_as_it_is() {
     marked_state(&dir);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     let before = listing(tmp.path());
-    assert_eq!(statedir::check(&dir).unwrap(), Found::Entries);
+    assert!(matches!(statedir::check(&dir).unwrap(), Found::Entries(_)));
     assert_eq!(listing(tmp.path()), before, "modes included");
 }
 
@@ -589,7 +859,7 @@ fn a_name_the_store_does_not_make_is_refused_before_the_namespace() {
     fs::remove_dir(dir.join(".ranikust-pruning")).unwrap();
     // Every name the store makes is taken.
     fs::create_dir_all(dir.join(rnk_store::SANDBOX_DIR).join("runs")).unwrap();
-    assert_eq!(statedir::check(&dir).unwrap(), Found::Entries);
+    assert!(matches!(statedir::check(&dir).unwrap(), Found::Entries(_)));
 }
 
 #[test]

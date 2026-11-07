@@ -99,8 +99,9 @@ pub(crate) enum Found {
     Missing,
     /// An empty directory.
     Empty,
-    /// A directory [`rnk_store::Store::prune_all`] empties.
-    Entries,
+    /// A directory [`rnk_store::Store::prune_all`] empties, as
+    /// [`rnk_store::Store::check_prune`] found it.
+    Entries(rnk_store::PruneCheck),
 }
 
 /// [`prepare`]'s checks on a state directory that is not created and
@@ -132,8 +133,8 @@ pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
     refuse_slash(&fd, state_dir, euid)?;
     check_chain(&walk(&fd, state_dir)?, euid, true)?;
     match rnk_store::Store::check_prune(state_dir) {
-        Ok(false) => Ok(Found::Empty),
-        Ok(true) => Ok(Found::Entries),
+        Ok(found) if found.entries => Ok(Found::Entries(found)),
+        Ok(_) => Ok(Found::Empty),
         Err(e) => Err(Refused(e.to_string())),
     }
 }
