@@ -59,7 +59,8 @@ As a user other than root, `prune --all` empties the state directory, files a
 build's user namespace left under the user's subordinate ids included, which
 the user cannot remove otherwise; `rmdir` then removes the directory. It
 removes nothing while a build uses the directory, refuses a directory
-ranikust did not make (one without `.ranikust-state`), leaves a missing one
+ranikust did not make (one without its `.ranikust-state` marker, or the
+`.ranikust-pruning` an interrupted prune leaves), leaves a missing one
 missing, and prints what it did. If it is interrupted or cannot remove
 everything, builds refuse the directory until `prune --all` runs to the end.
 Root is refused, a container's root included: it removes its state directory
@@ -67,7 +68,7 @@ with ordinary tools while no build uses it, the marker first, so that no
 build takes what an interrupted removal leaves ([ADR-0105]):
 
 ```sh
-rm /var/lib/ranikust/.ranikust-state
+rm -f /var/lib/ranikust/.ranikust-state
 rm -rf --one-file-system /var/lib/ranikust
 ```
 

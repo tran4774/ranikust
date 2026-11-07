@@ -49,16 +49,16 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
 /// What root does instead (ADR-0105).
 const ROOT_GUIDANCE: &str = "root removes its state directory with ordinary tools while no \
      build uses it, its marker first so that no build takes what an interrupted removal leaves \
-     (rm /var/lib/ranikust/.ranikust-state, then rm -rf --one-file-system /var/lib/ranikust, or \
-     the --state-dir it built with); Phase 5's ranikust prune will serve root too";
+     (rm -f /var/lib/ranikust/.ranikust-state, then rm -rf --one-file-system /var/lib/ranikust, \
+     or the --state-dir it built with); Phase 5's ranikust prune will serve root too";
 
 /// What a user does where it gets no user namespace: the build's guidance
 /// ends in "run ranikust as root", which `prune --all` refuses.
 pub(crate) const NO_USER_NAMESPACE: &str = "a user other than root gets a user namespace of its \
      own only where kernel.apparmor_restrict_unprivileged_userns is 0, or an AppArmor profile \
      allows ranikust one (Ubuntu 23.10 and later); without it, the user's own files in the state \
-     directory go while no build uses it, its .ranikust-state first and then the rest with rm -rf \
-     --one-file-system, and files of subordinate ids stay";
+     directory go while no build uses it, its .ranikust-state first (rm -f) and then the rest \
+     with rm -rf --one-file-system, and files of subordinate ids stay";
 
 /// Runs `prune` with `args`: the state directory it looked at, and what it
 /// found there.

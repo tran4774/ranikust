@@ -557,17 +557,53 @@ fn a_second_build_on_slash_is_refused_by_the_lock() {
 
 #[test]
 fn a_store_refusal_names_its_state_directory_once() {
+    use rnk_store::Error;
     let dir = Path::new("/home/u/state");
-    let path = dir.to_owned();
+    let path = || dir.to_owned();
+    let source = || io::Error::from_raw_os_error(95);
+    let (left, found, why) = (String::from("x"), String::from("x"), String::from("x"));
     for e in [
-        rnk_store::Error::Busy { path: path.clone() },
-        rnk_store::Error::UsedOnSlash { path: path.clone() },
-        rnk_store::Error::PruneCutShort { path },
+        Error::NotAStateDir { path: path() },
+        Error::NoFlock {
+            path: path(),
+            source: source(),
+        },
+        Error::Busy { path: path() },
+        Error::InUse { path: path() },
+        Error::NotPruned {
+            path: path(),
+            left: left.clone(),
+        },
+        Error::PruneCutShort { path: path() },
+        Error::StateNotEmpty {
+            path: path(),
+            found,
+        },
+        Error::NotEmptied { path: path(), left },
+        Error::Unmarked {
+            path: path(),
+            emptied: false,
+            held: false,
+            why: why.clone(),
+        },
+        Error::UsedOnSlash { path: path() },
+        Error::AnonymousFile {
+            path: path(),
+            source: source(),
+        },
+        Error::NameOutlivesUnlink { path: path(), why },
     ] {
         let refusal = store_refusal(&e, dir);
         assert_eq!(refusal.reason.matches("/home/u/state").count(), 1, "{e}");
         assert_eq!(refusal.kind, Kind::Other, "{e}");
     }
+    // What failed below it says where the store is too.
+    let e = Error::Cancelled;
+    let refusal = store_refusal(&e, dir);
+    assert_eq!(
+        refusal.reason,
+        format!("cannot open the store in /home/u/state: {e}")
+    );
 }
 
 #[test]

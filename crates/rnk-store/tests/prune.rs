@@ -223,15 +223,18 @@ fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
     assert_eq!(tree(&state), Vec::<PathBuf>::new());
     // Killed after the last entry, before its marker: the next one ends.
     fs::write(&marker, b"").unwrap();
-    assert!(Store::open(&BuildPaths::new(&state, &state)).is_err());
+    let Err(e) = Store::open(&BuildPaths::new(&state, &state)) else {
+        panic!("a store opened on a prune cut short")
+    };
+    assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
     assert!(Store::prune_all(&state).unwrap());
     assert_eq!(tree(&state), Vec::<PathBuf>::new());
     open(&state).close().unwrap();
 }
 
 /// The marker becomes the journal by a rename, before anything is removed:
-/// a prune killed at any point after leaves a directory no build opens,
-/// and none needs a new inode, which a full disk or quota would refuse.
+/// a prune killed at any point after leaves a directory no build opens.
+/// No file is created on the way.
 #[test]
 fn the_marker_is_renamed_before_anything_is_removed() {
     use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};

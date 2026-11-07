@@ -1271,15 +1271,15 @@ impl Store {
     /// store holds it shared for its life, so nothing a running build uses
     /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
     /// Before removing anything it refuses, as [`Store::open`] does, a
-    /// non-empty directory without a regular [`STATE_MARKER`] and one
-    /// holding [`BUILDING_MARKER`]; it makes nothing in an empty directory,
-    /// not even the marker. Then it renames [`STATE_MARKER`] to
+    /// non-empty directory without its regular marker ([`STATE_MARKER`],
+    /// or the [`PRUNING_MARKER`] a prune that did not finish leaves) and
+    /// one holding [`BUILDING_MARKER`]; it makes nothing in an empty
+    /// directory, not even the marker. Then it renames [`STATE_MARKER`] to
     /// [`PRUNING_MARKER`] and syncs the directory before deleting: entries
     /// are emptied in place, and a prune cut short or failed leaves a
-    /// directory no store opens and the next prune accepts. The rename
-    /// needs no new inode, which a full disk or quota would refuse. Deletes
-    /// through `rnk-rootfs` by descriptor: no symlink followed, no mount
-    /// crossed or emptied.
+    /// directory no store opens and the next prune accepts. Deletes through
+    /// `rnk-rootfs` by descriptor: no symlink followed, no mount crossed or
+    /// emptied.
     ///
     /// Files of ids the process may not remove (a rootless build's, of
     /// subordinate ids) need the caller in the build's user namespace,
@@ -1331,9 +1331,9 @@ impl Store {
                 Err(e) => Err(e.into()),
             }
         };
-        match regular(PRUNING)? {
+        let renamed = match regular(PRUNING)? {
             // A prune cut short: this one finishes it.
-            Some(true) => {}
+            Some(true) => false,
             Some(false) => {
                 return Err(not_pruned(format!(
                     "{PRUNING:?}, which is not a regular file and which it does not remove: \
@@ -1344,26 +1344,29 @@ impl Store {
                 if regular(MARKER)? != Some(true) {
                     return Err(Error::NotAStateDir { path: state_path });
                 }
+                // No new inode, which a full disk or quota would refuse;
+                // not RENAME_NOREPLACE, which NFS refuses (the flock is ours).
                 root.rename(MARKER, PRUNING)?;
-                // On disk before any entry is emptied in place.
-                if let Err(e) = rustix::fs::fsync(&lock) {
-                    // Nothing removed yet: builds may have the directory back.
-                    if let Err(back) = root.rename(PRUNING, MARKER) {
-                        tracing::warn!(
-                            target: "rnk_store",
-                            "state directory {}: {PRUNING} cannot be renamed back to {MARKER} \
-                             ({back}); builds refuse the directory until ranikust prune --all \
-                             empties it",
-                            state_path.display()
-                        );
-                    }
-                    return Err(Error::Io {
-                        op: "sync",
-                        path: state_path,
-                        source: e.into(),
-                    });
-                }
+                true
             }
+        };
+        // On disk before any entry is emptied in place, even when an
+        // earlier prune renamed it and was killed before its sync.
+        if let Err(e) = rustix::fs::fsync(&lock) {
+            // Nothing removed yet: builds may have the directory back.
+            if renamed && let Err(back) = root.rename(PRUNING, MARKER) {
+                tracing::warn!(
+                    target: "rnk_store",
+                    "state directory {}: {PRUNING} cannot be renamed back to {MARKER} \
+                     ({back}); builds refuse the directory until ranikust prune --all empties it",
+                    state_path.display()
+                );
+            }
+            return Err(Error::Io {
+                op: "sync",
+                path: state_path,
+                source: e.into(),
+            });
         }
         let mut keep = IgnoreList::new();
         keep.insert(PRUNING)?;

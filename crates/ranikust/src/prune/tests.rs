@@ -108,6 +108,15 @@ fn root_is_refused_naming_phase_5_before_anything() {
             "{refusal}"
         );
         assert!(refusal.guidance.contains("Phase 5"), "{refusal}");
+        // The marker first: what an interrupted removal leaves is unmarked.
+        let marker = refusal
+            .guidance
+            .find("rm -f /var/lib/ranikust/.ranikust-state");
+        let rest = refusal.guidance.find("rm -rf --one-file-system");
+        assert!(
+            matches!((marker, rest), (Some(m), Some(r)) if m < r),
+            "{refusal}"
+        );
         assert_eq!(refusal.kind, Kind::Other);
     }
     assert_eq!(listing(&state), before);

@@ -160,17 +160,19 @@ directory's `flock` exclusive without waiting, as an anonymous store does,
 and holds it to the end: every build holds it shared for its life, so
 `prune --all` removes nothing while any build runs there (it says so and
 exits 1), and a build that starts meanwhile is refused. It refuses a
-non-empty directory without a regular `.ranikust-state` file and creates
-nothing in an empty one. Before deleting it renames `.ranikust-state` to
-`.ranikust-pruning` and syncs the directory: entries are emptied in place,
-under their published names, so a prune killed or failed part-way leaves a
-layer a build would reuse with files missing, and `Store::open` refuses any
+non-empty directory without its regular marker (`.ranikust-state`, or the
+`.ranikust-pruning` a prune that did not finish leaves) and creates nothing
+in an empty one. Before deleting it renames `.ranikust-state` to
+`.ranikust-pruning` and syncs the directory, and syncs it again when it
+finishes a prune that did not: entries are emptied in place, under their
+published names, so a prune killed or failed part-way leaves a layer a
+build would reuse with files missing, and `Store::open` refuses any
 directory holding that name until a `prune --all` finishes (a ranikust that
 predates it finds the directory unmarked, and refuses it too). The rename
 makes no inode, which a full disk or quota, the usual reason to prune,
-would refuse. It deletes by descriptor (no symlink followed, no mount
-crossed), names what it could not remove, and removes `.ranikust-pruning`
-last.
+would refuse; a sync that fails before any deletion renames the marker
+back. It deletes by descriptor (no symlink followed, no mount crossed),
+names what it could not remove, and removes `.ranikust-pruning` last.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

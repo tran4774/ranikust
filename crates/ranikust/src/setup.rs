@@ -384,18 +384,30 @@ fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
     Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| store_refusal(&e, state_dir))
 }
 
-/// A store that cannot be opened in `state_dir`, as a [`Refusal`]. A state
-/// directory another build holds, one kaniko mode on `/` may not share
-/// with persistent builds (ADR-0077), or one a `prune --all` did not finish
-/// emptying, says so itself.
+/// A store that cannot be opened in `state_dir`, as a [`Refusal`]. An
+/// error that names the state directory itself says so alone.
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
     use rnk_store::Error;
     let reason = match e {
-        Error::Busy { .. }
+        Error::NotAStateDir { .. }
+        | Error::NoFlock { .. }
+        | Error::Busy { .. }
+        | Error::InUse { .. }
+        | Error::NotPruned { .. }
+        | Error::PruneCutShort { .. }
         | Error::StateNotEmpty { .. }
+        | Error::NotEmptied { .. }
+        | Error::Unmarked { .. }
         | Error::UsedOnSlash { .. }
-        | Error::PruneCutShort { .. } => e.to_string(),
-        _ => format!("cannot open the store in {}: {e}", state_dir.display()),
+        | Error::AnonymousFile { .. }
+        | Error::NameOutlivesUnlink { .. } => e.to_string(),
+        Error::Io { .. }
+        | Error::BadEntry { .. }
+        | Error::Cancelled
+        | Error::Anonymous { .. }
+        | Error::Random(_)
+        | Error::Rootfs(_)
+        | Error::Fill { .. } => format!("cannot open the store in {}: {e}", state_dir.display()),
     };
     Refusal {
         kind: Kind::Other,

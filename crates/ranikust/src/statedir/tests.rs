@@ -248,9 +248,12 @@ fn a_directory_that_is_not_a_state_directory_keeps_its_mode() {
     symlink("/etc/hostname", &marker).unwrap();
     let why = prepare(&pruning).unwrap_err().0;
     assert!(why.contains("not a state directory"), "{why}");
+    let mode = |dir: &Path| fs::metadata(dir).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&pruning), 0o755);
     fs::remove_file(&marker).unwrap();
     fs::write(&marker, b"").unwrap();
     prepare(&pruning).unwrap();
+    assert_eq!(mode(&pruning), 0o700);
 }
 
 #[test]
