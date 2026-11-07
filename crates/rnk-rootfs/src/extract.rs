@@ -253,7 +253,7 @@ pub struct Extracted {
 /// path or symlink target over `PATH_MAX` less its NUL, and on a
 /// directory, file or symlink an xattr whose name is empty, over
 /// `XATTR_NAME_MAX` or holds a NUL byte, whose value is over
-/// `XATTR_SIZE_MAX` or a file capability the kernel takes in no form, or
+/// `XATTR_SIZE_MAX` or a file capability the kernel never sets, or
 /// a `user.*` one on a symlink; also where the root would have the entry
 /// skipped (an ignored path, a whiteout whose directory is missing), which
 /// a header does not show.
@@ -748,7 +748,7 @@ fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr) -> Option<String> {
 /// Why the kernel refuses one of `xattrs` (as they are set, escaped in the
 /// overlay form) on any filesystem: a name empty, over [`XATTR_NAME_MAX`]
 /// or holding a NUL byte, a value over [`meta::XATTR_MAX`]
-/// (`XATTR_SIZE_MAX`), a file capability it takes in no form, or a
+/// (`XATTR_SIZE_MAX`), a file capability it never sets, or a
 /// `user.*` name on an entry that is neither a regular file nor a
 /// directory, unless `user`. Which names a filesystem takes is its own: a
 /// FUSE or Ceph one may take any.
@@ -776,7 +776,7 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
         }
         if n == CAPABILITY_XATTR && !value.is_empty() && !is_file_capability(value) {
             return Some(format!(
-                "the xattr {shown} is a file capability the kernel takes in no form"
+                "the xattr {shown} is no file capability the kernel sets (revision 2 in 20 bytes, or 3 in 24 with a root id other than -1)"
             ));
         }
         if !user && n.starts_with(USER_XATTR) {

@@ -2389,7 +2389,9 @@ fn gen_record_targets() -> Vec<Vec<u8>> {
 /// and 256 bytes or holding a NUL byte, a value over 64 KiB, a `trusted.*`
 /// one (never set), a `user.overlay.*` one that only its escaped form puts
 /// over 255 bytes, names of a namespace or none a filesystem may not take,
-/// and a file capability of no form.
+/// and a file capability of no form. Not a name that is only a namespace
+/// (`user.`): the filesystem refuses it with an `EINVAL` that
+/// [`is_kernel_refusal`] cannot tell from the kernel's.
 fn gen_xattr(i: usize) -> (String, Vec<u8>) {
     let v = b"v".to_vec();
     let xattrs = [
@@ -2415,35 +2417,38 @@ fn gen_xattr(i: usize) -> (String, Vec<u8>) {
 /// past the limits itself, not one looked up through a long symlink), an
 /// xattr it refuses by its name or size, a file capability's form, or a
 /// `user.*` one on a symlink (`EPERM`, unless the entry has a `security.*`
-/// xattr, which a test without privilege is refused with `EPERM` too). Not
-/// a name the filesystem does not take (`EOPNOTSUPP`), nor where a live
-/// root's directory lies, read through `/proc/self/fd`, which depends on
-/// where the root is.
+/// xattr, which a test without privilege is refused with `EPERM` too; in a
+/// live root, the entry by its name in the layer). Not a name the
+/// filesystem does not take (`EOPNOTSUPP`), nor where a live root's
+/// directory lies, read through `/proc/self/fd`, which depends on where
+/// the root is.
 fn is_kernel_refusal(e: &Error, tar: &[u8]) -> bool {
     let Error::Io { op, path, .. } = e else {
         return false;
     };
     match (*op, errno(e)) {
         ("readlink /proc/self/fd", _) => false,
-        ("setxattr", Some(Errno::PERM)) => !security_xattr_paths(tar).contains(&normal(path)),
+        ("setxattr", Some(Errno::PERM)) => !security_xattr_paths(tar).contains(&cleaned(path)),
         ("setxattr", Some(Errno::RANGE | Errno::TOOBIG)) | (_, Some(Errno::INVAL)) => true,
         ("symlink" | "link", Some(Errno::NAMETOOLONG)) => true,
         (_, Some(Errno::NAMETOOLONG)) => {
-            let path = normal(path);
+            let path = cleaned(path);
+            // An entry's directory, or its target's, is opened by its path.
+            let dir = if *op == "open" {
+                Some(path.as_path())
+            } else {
+                path.parent()
+            };
             path.iter().any(|c| c.len() > NAME_MAX)
-                || path
-                    .parent()
-                    .is_some_and(|d| d.as_os_str().len() > PATH_MAX)
+                || dir.is_some_and(|d| d.as_os_str().len() > PATH_MAX)
         }
         _ => false,
     }
 }
 
-/// `path`'s normal components: a name as the extraction reports it.
-fn normal(path: &Path) -> PathBuf {
-    path.components()
-        .filter(|c| matches!(c, std::path::Component::Normal(_)))
-        .collect()
+/// `path` as the extraction names an entry ([`path::clean`]).
+fn cleaned(path: &Path) -> PathBuf {
+    crate::path::clean(path).unwrap_or_default()
 }
 
 /// The names of the entries of `tar` with a `security.*` xattr, as far as
@@ -2458,7 +2463,7 @@ fn security_xattr_paths(tar: &[u8]) -> BTreeSet<PathBuf> {
         let Ok(mut entry) = entry else {
             break;
         };
-        let path = normal(Path::new(OsStr::from_bytes(&entry.path_bytes())));
+        let path = cleaned(Path::new(OsStr::from_bytes(&entry.path_bytes())));
         if let Ok(Some(pax)) = entry.pax_extensions()
             && pax
                 .flatten()

@@ -1177,7 +1177,7 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
             false,
         ),
         (
-            "a file capability the kernel takes in no form",
+            "a file capability the kernel never sets",
             pax(&[("SCHILY.xattr.security.capability", &[b'x'; 20])], |t| {
                 t.file("x", b"")
             }),
