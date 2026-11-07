@@ -62,13 +62,14 @@ const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), o
      container: kaniko mode, or overlay mode when it is started with --privileged";
 
 /// The test hook's `no-userns` (`env`, the hook's variable): rootless
-/// overlay mode refused before its probe, the process unchanged.
-pub(crate) fn refused_by_hook(env: &str) -> NotHere {
+/// overlay mode refused before its probe, the process unchanged, with the
+/// guidance for the effective uid `euid`.
+pub(crate) fn refused_by_hook(env: &str, euid: u32) -> NotHere {
     NotHere {
         refusal: Refusal {
             kind: Kind::Other,
             reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
-            guidance: guidance("hook", false, rustix::process::geteuid().as_raw()),
+            guidance: guidance("hook", false, euid),
         },
         probed: false,
     }
@@ -318,7 +319,7 @@ mod tests {
     fn the_probe_writes_only_in_a_state_directory() {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().unwrap();
-        // A container's own root refuses first, for another reason.
+        // The probe refuses overlayfs before the store check this test is about.
         if crate::statedir::on_overlayfs(tmp.path()) {
             eprintln!("skipped: the temporary directory is on overlayfs");
             return;

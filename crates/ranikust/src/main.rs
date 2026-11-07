@@ -752,7 +752,8 @@ fn rootless(
 ) -> Rootless {
     let plan = match span.in_scope(|| {
         if no_userns {
-            return Err(setup::rootless::refused_by_hook(DEBUG_FAULT_ENV));
+            let euid = rustix::process::geteuid().as_raw();
+            return Err(setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, euid));
         }
         setup::rootless::plan(&config.state_dir, config.allow_proc_rbind)
     }) {
@@ -2009,10 +2010,12 @@ mod tests {
     }
 
     /// The test hook's refusal leaves the process unchanged and points a
-    /// user at root.
+    /// user other than root at root, root at nothing more.
     #[test]
     fn the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe() {
-        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV);
+        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0);
+        assert_eq!(as_root.refusal.guidance, "");
+        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000);
         assert!(!not_here.probed);
         assert_eq!(not_here.refusal.kind, setup::Kind::Other);
         assert!(
