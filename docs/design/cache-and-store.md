@@ -185,6 +185,15 @@ which rootless overlay mode runs before its probe, keeps the state
 directory's shared lock until the store opens. In overlay mode an upper
 directory written under `volatile` is never trusted after a crash.
 
+A rootless set-up that fails before its build, where root's `--mode=auto`
+falls back to kaniko mode on `/`, which takes only an empty state
+directory, ends with `Store::abandon`
+([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)):
+the store closes, and where its open wrote the marker, the directory is
+emptied as `prune --all` empties it, under the lock turned exclusive
+without waiting, so never while another build holds it. A directory that
+held a store before is kept, and kaniko mode refuses it.
+
 ## Prune
 
 `ranikust prune --all` (Phase 3,

@@ -270,12 +270,14 @@ cannot leave the namespace once it is in:
    gets (the child ignores those two itself), and ends as the child ends.
    Where the child's `set_up` fails, the child empties the state directory
    its store's open made a store (`Store::abandon`; not one it found, or one
-   another build holds) and sends the reason, and the parent, with no stop
-   received, logs `<reason>; kaniko mode instead, before anything was built
-   (ADR-0136)` and builds in kaniko mode as below. A user other than root
-   and `--mode=overlay` get the error.
+   another build holds; a forwarded stop is ignored until it is done) and
+   sends the reason, and the parent, with no stop received, warns
+   `<reason>; kaniko mode instead, before anything was built (ADR-0136)`
+   and builds in kaniko mode as below. A user other than root and
+   `--mode=overlay` get the error.
 
-The mode line says what the build got: `overlay mode, rootless, in the
+The mode line, logged once the set-up can no longer fail, so a fallback
+logs kaniko mode's alone, says what the build got: `overlay mode, rootless, in the
 build's user namespace, RUN enters its root with pivot_root, proc: a new
 instance, sysfs: a read-only rbind (a new instance for a RUN with
 --network=none where it mounts), overlay mounts with fsconfig(lowerdir+)`;

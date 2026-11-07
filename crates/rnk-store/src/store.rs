@@ -1355,10 +1355,10 @@ impl Store {
     /// directory. The store's shared `flock` is turned exclusive without
     /// waiting, on the same descriptor (`flock(2)` drops the shared lock
     /// first, and a refused attempt leaves none): while another build
-    /// holds the directory, nothing is emptied. A build that opened the store and
-    /// ended meanwhile loses what it left, a cache. `false` when nothing
-    /// was emptied: a store this one did not make, an anonymous one, or one
-    /// another build holds.
+    /// holds the directory, nothing is emptied. A build that opened the
+    /// store and ended meanwhile loses what it left, a cache. `false` when
+    /// nothing was emptied: a store this one did not make, an anonymous
+    /// one, or one another build holds.
     ///
     /// # Errors
     ///

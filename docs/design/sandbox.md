@@ -695,6 +695,9 @@ field `layout`):
   ([threat model, section 6](../security/threat-model.md#6-accepted-risks)).
 - **Single** otherwise: each `RUN` gets `D/run-<pid>-<n>`, with no
   controller, and one leaf, `command`; the init stays in `D` with ranikust.
+  So it is under root's `--mode=auto` in rootless overlay mode, whose
+  waiting parent stays in `D`
+  ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)).
 
 A process that joins `D` between its read and `+cpu` makes the kernel refuse
 `+cpu` (`EBUSY`): the probe fails, as below, and no `RUN` gets a cgroup.

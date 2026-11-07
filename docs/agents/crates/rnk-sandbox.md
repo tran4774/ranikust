@@ -161,8 +161,8 @@ impl Sandbox {
 }
 pub struct SeccompProfile;  // compiled for this architecture, kernel and Docker's 14 capabilities: docker_default(), from_json(&[u8]); Error::SeccompProfile (ADR-0109)
 pub fn fork_to_wait() -> io::Result<Forked>; // ADR-0136, single-threaded, before enter_build_user_namespace: Forked::Child(Supervised) enters; Forked::Parent(Box<Waiting>) waits outside; Err: the process as before
-pub struct Supervised;   // proceed(self) -> io::Result<()>: before the build, the fallback no longer possible (Err: parent gone); fall_back(self, reason: &str) -> !: exits 1 with the reason (at most 4000 bytes) for the parent
-pub struct Waiting;      // wait(self: Box<Self>) -> String: returns the reason only where the child fell back and no SIGINT/SIGTERM came, mask and SIGCHLD as before the fork; else ends the process as the child ended (exit code, or the signal: the stop for FORWARDED_STOP; 128 + n where the default action does not end it)
+pub struct Supervised;   // proceed(self) -> io::Result<()>: before the build, the fallback no longer possible (Err: parent gone); undoing(&self) -> io::Result<()>: FORWARDED_STOP ignored from here, while the set-up is undone; fall_back(self, reason: &str) -> !: exits 1 with the reason (at most 4000 bytes) for the parent (logged here where it cannot be sent)
+pub struct Waiting;      // wait(self: Box<Self>) -> String: returns the reason only where the child fell back and no SIGINT/SIGTERM came, mask and SIGCHLD as before the fork; else ends the process as the child ended (exit code, or the signal: the stop for FORWARDED_STOP; 128 + n where the default action does not end it; a status lost: the stop, else exit 1)
 pub const FORWARDED_STOP: i32; // SIGUSR1: what the child's build takes as SIGINT/SIGTERM
 pub fn block_stop_signals() -> io::Result<StopSignals>; // kaniko mode on / (ADR-0077): SIGINT/SIGTERM blocked while single-threaded, read from a signalfd
 pub struct StopSignals;  // wait() -> io::Result<StopSignal>, blocking
@@ -395,11 +395,11 @@ What a change here must keep, with where it lives:
   `enter_build_user_namespace` records first whether ranikust's effective
   uid is the owner `/proc/sys/kernel/ostype` shows, a sysctl uid 0 of the
   initial user namespace owns, seen through every level (`root_shown_as`,
-  a regular file of a procfs that reads `Linux`), else whether
-  `/proc/self/uid_map` maps it to 0, `maps_to_root`; since rootless
-  overlay mode reads the marks as root of the build's user namespace,
-  where `trusted.*` reads as absent) or is the root of its cgroup namespace, on a read-write
-  cgroupfs with
+  a regular file of a procfs, mode 0444, that reads `Linux`), else
+  whether `/proc/self/uid_map` maps it to 0, `maps_to_root`; since
+  rootless overlay mode reads the marks as root of the build's user
+  namespace, where `trusted.*` reads as absent) or is the root of its
+  cgroup namespace, on a read-write cgroupfs with
   `cgroup.kill`; an unreadable mark, or an unreadable file of a marked or
   namespace-root `D`, is a `warn`. The probe runs every step once, and a
   failure leaves the build as without cgroups.
@@ -490,7 +490,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   delegation marks and which a root or other ranikust trusts, whether
   ranikust is the initial user namespace's root by the owner a
   root-owned sysctl shows, else by the map, the sysctl taken only as a
-  procfs file that reads `Linux`
+  procfs file of mode 0444 that reads `Linux`
   (`root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner`), the single
   layout's reason, a taken `run-` name, a `RUN`'s cgroup that cannot be
   made (its step, its path, nothing left), the limits written, the removal

@@ -61,8 +61,10 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`Store::abandon`) and sends the reason, and the parent, which never
   entered the namespace, returns `Rootless::FellBack` and builds in kaniko
   mode; once set up, `Supervised::proceed` closes that way back and the
-  build stops on the forwarded `SIGUSR1` (`build::Stops::Forwarded`). The
-  probe's
+  build stops on the forwarded `SIGUSR1` (`build::Stops::Forwarded`); a
+  forwarded stop that comes while the store is abandoned is ignored
+  (`Supervised::undoing`) until it is empty, and the parent then ends by
+  it. Only the mode that builds is logged as the outcome. The probe's
   directory takes the process's gid and no setgid bit, as the store's own
   directories do (ADR-0099), so a setgid state directory does not stop its
   `chown`.

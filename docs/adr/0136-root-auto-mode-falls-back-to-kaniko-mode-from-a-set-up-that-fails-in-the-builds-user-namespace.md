@@ -75,8 +75,11 @@ its properties, stood for this.
   A stop wins over a fallback. The child gets `SIGKILL` when the parent dies
   (`PR_SET_PDEATHSIG`, armed again before the build). The parent reaps any
   other child it gets, as PID 1.
-- **The state directory** is the only place the child writes before the
-  build. Probe directories are removed by the probe, by the store's open,
+- **The state directory** is where the child writes before the build,
+  apart from its own user namespace's maps and the probe of `RUN` cgroups,
+  which removes the cgroup it makes
+  ([ADR-0110](0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
+  Probe directories are removed by the probe, by the store's open,
   and by `Store::abandon`. A directory that already held a persistent store
   (an earlier rootless overlay build) is kept, and kaniko mode on `/`
   refuses it, as it did before this decision.
@@ -94,6 +97,10 @@ its properties, stood for this.
 - Bad, because a fallback needs the state directory empty again: where it
   held a persistent store, or another build holds it, kaniko mode on `/`
   refuses it after the fallback, with its usual error.
+- Bad, because the parent stays in ranikust's cgroup, so ranikust is not
+  alone there: in a delegated tree a `RUN`'s cgroups take the single
+  layout, never nested with `+cpu`
+  ([ADR-0110](0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
 
 ## Evidence
 
@@ -111,9 +118,10 @@ its properties, stood for this.
   `abandon_empties_only_a_store_its_open_made_and_no_build_holds`; T1 smoke
   case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken` builds
   in kaniko mode with the note and leaves the state directory empty;
-  `--mode=overlay` gets the error; `SIGKILL`, `SIGINT` and `SIGINT` to the
-  group through the waiting parent leave no process); VM smoke's user leg (a
-  user other than root gets the error).
+  `--mode=overlay` gets the error; `SIGKILL`, `SIGINT`, `SIGTERM` and
+  `SIGINT` to the group through the waiting parent leave no process, and
+  ranikust exits 137 for `SIGKILL`, else 1, as a build that never forks);
+  VM smoke's user leg (a user other than root gets the error).
 
 ## More Information
 
