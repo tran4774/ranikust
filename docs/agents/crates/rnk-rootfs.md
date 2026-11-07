@@ -238,7 +238,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   refusing 4095, which `extract` and `extract_overlay` take, and refuses
   one a symlink puts past it before a directory it lacks is made, and an
   entry, whiteout or hardlink target in a directory already past it, by
-  name;
+  name; each such value judged alike by the check and every extraction
+  whatever its encoding (`red_team_each_encoding_of_a_value_at_the_kernels_limits_is_judged_alike`:
+  ustar, PAX, GNU long names and links, a PAX record after a GNU long name
+  and two of one key, a NUL at a value's end, UTF-8 cut at 255 bytes), and
+  a directory path padded with `./` and `//` held to its cleaned bytes
+  (`red_team_a_padded_directory_path_is_held_to_its_limit_by_its_cleaned_bytes`);
+  `tests/memory.rs`: 43,648 xattrs in one header checked and extracted, and
+  values just over 64 KiB refused, with a few MiB of heap;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
   GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
   and xattr records, with values at and past the kernel's limits, included):
@@ -280,7 +287,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of itself or of the outside) is never reopened through `..`, nothing on
   the mount deleted; a 192-level chain with a bind and a tmpfs at depth
   keeps both and every level above them (`delete_contents`), and `prune`
-  refuses it.
+  refuses it. As root of the container, on its tmpfs (`default`), the
+  kernel sets no form of `security.capability` the check refuses
+  (`red_team_root_of_a_user_namespace_sets_the_file_capabilities_the_check_takes`,
+  a `measured:` line per form).
 - **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
   and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
   directory on the same filesystem and a tmpfs inside a root, with links to
@@ -294,6 +304,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and with the upper on a tmpfs (`xino` off, then on): each ancestor
   reopened through `..` after its copy-up must still be the one left; a
   `measured:` line per configuration, with the kernel.
+  `red_team_the_kernel_sets_the_file_capabilities_the_check_takes`: as root
+  the kernel sets exactly the forms of `security.capability` the check
+  takes; in a user namespace it refuses every form the check refuses, and
+  a revision 3 whose root id the namespace does not map; a `measured:` line
+  per form.
 - **To do:** `cargo fuzz` on `extract` (Phase 6).
 
 ## Metrics
