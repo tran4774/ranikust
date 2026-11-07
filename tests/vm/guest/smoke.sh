@@ -458,10 +458,10 @@ fi
 # #79: the ranikust binary as this user builds the rootless smoke case's
 # `content` stage (a mapped owner, a setgid directory, a symlink, a
 # whiteout) in rootless overlay mode, with a fresh proc, and the
-# --reproducible digest root's build of it gets; where AppArmor restricts
-# the user namespace, it refuses, naming the switch. Not tests/smoke/e2e:
-# its `RUN --network=none` reads /sys/class/net, which the rbind of /sys a
-# user gets shows as the host's.
+# --reproducible digest root's build of it gets, then tests/smoke/e2e,
+# whose `RUN --network=none` reads /sys/class/net: a new sysfs for the
+# network namespace the build owns, not the rbind of /sys; where AppArmor
+# restricts the user namespace, it refuses, naming the switch.
 ud="$dir/rootless" rc=0
 # The user's umask may leave a new directory group-writable, which a state
 # directory and every directory above it may not be (ADR-0050).
@@ -488,6 +488,22 @@ else
   [ "$got" = "$root_digest" ] ||
     { echo "error: user: --reproducible digest $got, root's $root_digest" >&2; exit 1; }
   echo "user: ranikust builds in rootless overlay mode, with root's --reproducible digest $got"
+  ue="$ud/e2e" rc=0
+  mkdir -m 700 -p "$ue/w" "$ue/out"
+  printf %s "$SMOKE_E2E_SECRET" >"$ue/token"
+  smoke_e2e_args "$CTX" "$ue/w" "$ue/out" "$ue/token"
+  e2e_args+=(--build-arg "BASE=$E2E_BASE")
+  log="$("$RNK" "${e2e_args[@]}" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-e2e.log"
+  [ "$rc" = 0 ] || { echo "error: user: tests/smoke/e2e failed ($rc):" >&2; echo "$log" >&2; exit 1; }
+  smoke_check_no_stub_leak "$ue/out/oci"
+  smoke_check_no_secret "$ue/out/oci" "$SMOKE_E2E_SECRET"
+  loaded="$(sudo docker load -i "$ue/out/image.tar" | sed -nE 's/^Loaded image( ID)?: //p' | tail -1)"
+  got="$(sudo docker run --rm "$loaded")"
+  [ "$got" = "$SMOKE_E2E_OUTPUT" ] ||
+    { echo "error: user: the e2e image printed: $got" >&2; exit 1; }
+  sudo docker rmi -f "$loaded" >/dev/null
+  echo "user: ranikust builds tests/smoke/e2e in rootless overlay mode; RUN --network=none sees lo alone"
 fi
 echo "user: ok"
 

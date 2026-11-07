@@ -351,9 +351,12 @@ The steps, in order:
       the sandbox's probe chooses once with no request, only where the
       user-namespace probe met the same refusal
       ([#74](https://github.com/tran4774/ranikust/issues/74)). A
-      `--network=none` `RUN` then sees the outer network devices in
-      `/sys/class/net`. Otherwise a refused `sysfs` mount
-      fails the `RUN` (`Step::MountSys`).
+      `--network=none` `RUN`, whose network namespace the build's user
+      namespace owns, still tries a new one first, so that
+      `/sys/class/net` shows its own devices and `/sys/fs/cgroup` is empty,
+      as for root; only `EPERM` (such as below an outer runtime's masks of
+      `/sys`) gives it the rbind. Otherwise a refused `sysfs` mount fails
+      the `RUN` (`Step::MountSys`).
    4. A `nodev` tmpfs on `/dev`, with `null`, `zero`, `full`, `random`,
       `urandom` and `tty` bind-mounted from the outer `/dev` (`mknod` needs
       `CAP_MKNOD` in the initial user namespace). Each bind is its own mount

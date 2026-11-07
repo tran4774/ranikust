@@ -14,14 +14,15 @@
 //! crate: namespaces, the uid map, `proc`, `pivot_root` or `MS_MOVE`, and
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
-//! user namespace would need, and only reports them: nothing routes on it
-//! yet. [`enter_build_user_namespace`] moves the process into the build's
-//! user namespace, each id map tried in a forked child first; no build of
-//! the binary calls it yet. There, [`probe_with_fallbacks`] lets a `RUN`
-//! get a read-only rbind of `/sys` where the user-namespace probe found a
-//! new `sysfs` refused ([`UsernsReport::fallbacks`]), and a read-only
-//! rbind of `/proc` only at the operator's request
-//! ([`Fallbacks::allow_proc_rbind`], ADR-0126, ADR-0132).
+//! user namespace would need: root only reports it, rootless overlay mode
+//! routes on it. [`enter_build_user_namespace`] moves the process into the
+//! build's user namespace, each id map tried in a forked child first.
+//! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
+//! `/sys` where the user-namespace probe found a new `sysfs` refused
+//! ([`UsernsReport::fallbacks`]), a `RUN` with a network namespace of its
+//! own still trying a new one first, and a read-only rbind of `/proc` only
+//! at the operator's request ([`Fallbacks::allow_proc_rbind`], ADR-0126,
+//! ADR-0132).
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused

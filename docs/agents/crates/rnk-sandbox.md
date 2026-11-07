@@ -655,10 +655,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (a search that finds the `RUN`'s own, the control); profile
   `privileged`, `runs_with_a_new_proc_run_side_by_side`: with a new
   `proc` they overlap;
-  `a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build`
-  (`default`) and
+  `a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build`,
+  `a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_in_another_user_namespace`
+  (`default`, each file refused with `EACCES`) and
   `a_run_with_a_new_proc_opens_nothing_of_a_process_outside_the_build`
-  (`privileged`): a `RUN` opens nothing of a process outside the build.
+  (`privileged`, none found): a `RUN` opens nothing of a process outside
+  the build.
   Their red team (`src/userns/build/run_tests/red_team.rs`,
   profile `default`, Perl attacks that open for writing and never write):
   `red_team_a_run_writes_nothing_under_an_rbind_of_proc` (under
@@ -704,7 +706,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/userns/build/run_tests.rs`: the T1 `RUN`s as that user; refused
   where AppArmor restricts, elsewhere, with no request, a new `proc`, PID 2
   under `ranikust-init`, where the `RUN` writes its own `oom_score_adj`,
-  and an rbind of `/sys`);
+  and an rbind of `/sys`, but a new `sysfs` showing `lo` alone for a
+  `--network=none` `RUN`);
   `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
   T1 mount red team as real root, whose map is every id);
   `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
