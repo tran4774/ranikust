@@ -834,7 +834,15 @@ fn only_a_probe_directory_a_store_would_remove_is_held() {
     assert!(held.is_some());
     assert!(!lock(&name), "held");
     drop(held);
-    assert!(lock(&name), "released");
+    // A test alongside that forks meanwhile gives its child a copy of the
+    // descriptor, which holds the lock until that child execs or exits.
+    let released = (0..500).any(|_| {
+        lock(&name) || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        }
+    });
+    assert!(released, "released");
     let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe").unwrap();
     assert!(held.is_none());
     assert!(lock("userns-probe"));
