@@ -196,9 +196,13 @@ remove it in `podman unshare`, or, as root, empty it in place.
 The commands a refusal prints (those ways out, root's, and a user's
 without a user namespace) act only on the directory ranikust checked: the
 process that prints them opens the path as given, made absolute, with no
-symlink followed on it, runs `Store::check_prune` on it and takes its
-device, inode and owner. Each command checks, right after its one
-`cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u`
+symlink followed on it, runs `Store::check_prune` on it, then the
+build's own rule with the directory's owner as the user, and refuses one
+of the system directories (`statedir::check_for_commands`): commands
+only for a directory a build would accept, none for one another user
+may write, or below one. It takes its device, inode, owner and mode.
+Each command checks, right after its one
+`cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u:%a`
 piped to `grep -qxF`, a hardening: no quoted command substitution for an
 interactive shell's history expansion or quoting to touch):
 `.` for the emptying, `./name` in the parent it entered for `rmdir` and
@@ -218,6 +222,9 @@ marker is a state directory. Both emptying scripts first check that
 `find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, the
 walk they rely on, and otherwise stop before changing anything, saying
 so (Alpine: `apk add findutils`); the behaviour below is that `find`'s.
+Root's emptying stops, saying so, before changing anything where no
+regular marker is found, and each script counts a listing that fails as
+entries left.
 Root's emptying of a directory another user owns deletes only that
 user's entries and those of its subordinate ids: its uid and its first
 `/etc/subuid` range (`subids::lookup`), the only uids its builds' user
@@ -231,8 +238,9 @@ check and the deletion act on it whatever is put at its path meanwhile;
 it takes the same exclusive `flock` (`flock -xn .`), so it fails while a
 build runs there, takes a marker only as a regular file, and enters no
 other filesystem (`find -xdev`); a bind mount of the same filesystem is
-not told apart, so the commands say to run only while nothing is mounted
-below.
+not told apart, its contents deleted with the rest, so the commands say
+to run only while nothing is mounted below (ranikust's own deletion
+compares mount IDs instead).
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

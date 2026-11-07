@@ -49,8 +49,11 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`prune::no_user_namespace`; the build's sends the user to root); in it,
   `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
   guidance gives enter the state directory once, shell-quoted, check that
-  it is the one ranikust checked (`prune::Pin`: device, inode and owner
-  from `Store::check_prune` on the path as given, outside any namespace),
+  it is the one ranikust checked (`prune::Pin`: device, inode, owner and
+  mode from `Store::check_prune` on the path as given, outside any
+  namespace, then `statedir::check_for_commands`: the build's rule with
+  its owner as the user, no system directory, so commands only for a
+  directory a build would accept),
   then name only `.`, under `flock -xn .`, so they act on that directory
   and fail while a build holds it; the emptying scripts first check that
   `find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, and
@@ -98,7 +101,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace`, `unfinished`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
 | `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
-| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
+| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
@@ -158,6 +161,9 @@ Modules of `crates/ranikust/src/` (all crate-private):
   `statedir::check(state_dir)`: the same rules on an existing directory,
   and only names the store makes, `Found { Missing, Empty,
   Entries(PruneCheck) }`, nothing made or chmodded.
+  `statedir::check_for_commands(dir, check)`: the directory `check`
+  names, reopened, with the build's rule for its owner and not one of
+  `SYSTEM_DIRS`, or no commands are printed for it.
   Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
 
 ### Set-up order
@@ -377,7 +383,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the user's marker kept while anything it may not remove is left, even
   by a `find` that does not fail then, and nothing outside the directory
   removed when its path is swapped for a symlink while they run; the pin
-  what `stat -c %d:%i:%u` prints, each command failing with nothing
+  what `stat -c %d:%i:%u:%a` prints, each command failing with nothing
   changed when the pin is wrong or a parent is swapped for a symlink
   after printing, root given none for a path through a symlink (with the
   advice to give one without, which no other refusal gets), a path
@@ -389,7 +395,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   or the uid alone without a range or with one holding root's uid,
   emptying it of the owner's files and, with them just outside the
   range, removing only the marker and stopping before `rmdir`, saying
-  so; the ways
+  so; root given no commands, the reason instead, for a marked directory
+  a build would refuse (`0o1777`, `0o777`, `0o770`, or below a parent at
+  `0o770`), the pin carrying the mode, the commands failing with nothing
+  changed once it differs; root's scripts stopping without a marker,
+  saying so, and each script counting a listing that fails as entries
+  left; the ways
   out only in `prune`'s refusal of a prune that could not finish; its red
   team, `prune/tests/red_team.rs`: root's commands for paths with quotes,
   a leading `-`, a line feed, bytes that are not UTF-8 and a terminal
@@ -409,7 +420,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   below `$HOME` passes, a group-writable home is refused with that user's
   advice, a `$HOME` reached through a `/proc` link is refused with nothing
   made; a regular `.ranikust-pruning` counts as the marker, for the store
-  to refuse), `subids` (ranges by name or uid, the first well-formed one,
+  to refuse; `check_for_commands` returning the mode of a directory a
+  build accepts and refusing one writable by group or others, one changed
+  since its check, and a system directory reached by another name),
+  `subids` (ranges by name or uid, the first well-formed one,
   malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
   not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
   no name, an end past
