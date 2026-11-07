@@ -157,9 +157,9 @@ namespace, each id map tried in a forked child first (no build uses it yet,
 [#75](https://github.com/tran4774/ranikust/issues/75)); the subordinate ids
 come from `ranikust`. Where its `RUN`s get an rbind of `/proc`, they take
 turns, whatever `--jobs` allows
-([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)). A bare `chroot` is never used when mounting is possible;
-the bare-`chroot` path for `--parallel-stages` is held back, as the flag is
-refused
+([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
+A bare `chroot` is never used when mounting is possible; the bare-`chroot`
+path for `--parallel-stages` is held back, as the flag is refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).
 **Must not** snapshot or diff a root, mount or probe overlays
 (`rnk-snapshot`; the seal only reads whether `/` is one, ADR-0101), look up

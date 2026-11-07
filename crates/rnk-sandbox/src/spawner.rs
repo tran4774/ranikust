@@ -5289,31 +5289,37 @@ mod tests {
     /// first has dropped its own; with a new `proc` both run at once.
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
-        // `None` takes no lock, so a second `take` cannot block here.
+        // No lock at all: callers never wait for one another.
         let side_by_side = Turns::for_proc(KernelFs::Fresh);
         let first = side_by_side.take();
         assert!(first.is_none() && side_by_side.0.is_none());
 
         let turns = Turns::for_proc(KernelFs::Rbind);
         let held = |turns: &Turns| turns.0.as_ref().map(|m| m.try_lock().is_err());
-        let first = turns.take();
-        assert!(first.is_some());
-        assert_eq!(
-            held(&turns),
-            Some(true),
-            "a second turn while the first is held"
-        );
-        drop(first);
-        assert_eq!(held(&turns), Some(false));
+        let released = std::sync::atomic::AtomicBool::new(false);
         let (entered, second) = mpsc::channel();
         std::thread::scope(|s| {
+            let first = turns.take();
+            assert!(first.is_some());
+            assert_eq!(
+                held(&turns),
+                Some(true),
+                "a second turn while the first is held"
+            );
             s.spawn(|| {
-                let _turn = turns.take();
-                entered.send(()).unwrap();
+                let turn = turns.take();
+                let after = released.load(Ordering::SeqCst);
+                entered.send((turn.is_some(), after)).unwrap();
             });
-            second
-                .recv_timeout(std::time::Duration::from_secs(60))
-                .expect("the turn once released");
+            // A `take` that did not wait returns before this store.
+            released.store(true, Ordering::SeqCst);
+            drop(first);
+            assert_eq!(
+                second.recv_timeout(std::time::Duration::from_secs(60)),
+                Ok((true, true)),
+                "the second turn, only after the first's release"
+            );
         });
+        assert_eq!(held(&turns), Some(false));
     }
 }

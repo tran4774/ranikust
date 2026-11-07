@@ -282,9 +282,9 @@ The steps, in order:
       started ranikust; ranikust itself, not dumpable
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
       stays closed. So that no `RUN` reaches another's processes, the
-      `RUN`s of such a build run one at a time: `Sandbox::run` holds a lock from before the
-      clone until the `RUN`'s init is reaped, the processes of its PID
-      namespace gone with it; stages still schedule in parallel
+      `RUN`s of such a build run one at a time: `Sandbox::run` holds a lock
+      from before the clone until the `RUN`'s init is reaped, the processes
+      of its PID namespace gone with it; stages still schedule in parallel
       ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
       The rest is an accepted residual
       ([threat model, section 6](../security/threat-model.md#6-accepted-risks)):
@@ -293,12 +293,11 @@ The steps, in order:
       running, and ask for the rbind only with trusted base images. The
       rbind's masks come along, every mount of it made `nosuid`, `nodev`
       and `noexec` with `mount_setattr(AT_RECURSIVE)` (without it the `RUN`
-      fails); the
-      sandbox's probe chooses it once and logs it once per build. Unasked,
-      the probe fails at `Step::MountProc` and warns how to get a new `proc`:
-      build as a regular user on a host that allows user namespaces, where
-      a new `proc` mounts, or in a container where ranikust may mount
-      (overlay mode as root), both in
+      fails); the sandbox's probe chooses it once and logs it once per
+      build. Unasked, the probe fails at `Step::MountProc` and warns how to
+      get a new `proc`: build as a regular user on a host that allows user
+      namespaces, where a new `proc` mounts, or in a container where
+      ranikust may mount (overlay mode as root), both in
       [where environments land](modes-and-detection.md#where-environments-land);
       or ask for the rbind. So a `RUN` never sees the container's `/proc`
       unasked, and always gets a new `proc` where one mounts. Wherever the

@@ -91,8 +91,9 @@ impl Fallbacks {
     /// (ADR-0051), stays closed to it. [`crate::Sandbox`] then runs its
     /// `RUN`s one at a time, so that none reaches another's processes
     /// (ADR-0127). The rest is an accepted residual: start ranikust as the
-    /// container's PID 1 with its secrets in its environment, and ask for
-    /// this only where the base images are trusted.
+    /// container's PID 1 with its secrets in its environment, not on its
+    /// command line or in a shell left running, and ask for this only where
+    /// the base images are trusted.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -499,7 +500,13 @@ mod tests {
         assert!(guidance.contains("allows user namespaces"), "{guidance}");
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
         assert!(guidance.contains("processes"), "{guidance}");
-        for advice in ["trusted base images", "PID 1", "command line"] {
+        for advice in [
+            "trusted base images",
+            "PID 1",
+            "secrets in its environment",
+            "not on its command line",
+            "shell left running",
+        ] {
             assert!(guidance.contains(advice), "{guidance}");
         }
         assert_eq!(proc_guidance(&proc_eperm, asked), None);
