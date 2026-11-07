@@ -791,22 +791,7 @@ pub(crate) fn probe_in_dir(
     subordinate: Option<rnk_sandbox::SubordinateIds>,
 ) -> Result<Probed, String> {
     let root = RootPath::open(parent).map_err(|e| e.to_string())?;
-    let scratch = root
-        .create_sub_root(name, 0o700)
-        .map_err(|e| e.to_string())?;
-    let held = if name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
-        match hold_dir(&scratch) {
-            Ok(held) => Some(held),
-            Err(e) => {
-                // The lock's error is the one to report; an empty directory
-                // left is one the store removes.
-                let _ = root.remove_dir(name);
-                return Err(format!("cannot lock {}: {e}", parent.join(name).display()));
-            }
-        }
-    } else {
-        None
-    };
+    let (scratch, held) = make_probe_dir(&root, parent, name)?;
     let (r, left) = match own_group(&root, name) {
         Ok(_) => probe_in_scratch(&scratch, &parent.join(name), subordinate),
         Err(e) => (Err(e.to_string()), false),
@@ -826,6 +811,32 @@ pub(crate) fn probe_in_dir(
         );
     }
     r
+}
+
+/// Makes the directory `name` in `root` (at `parent`) for the probe, and
+/// holds it where the store would take it for a leftover: one named
+/// [`rnk_store::USERNS_PROBE_PREFIX`]. Others (in a build's directory) are
+/// never held.
+fn make_probe_dir(
+    root: &RootPath,
+    parent: &Path,
+    name: &str,
+) -> Result<(RootPath, Option<OwnedFd>), String> {
+    let scratch = root
+        .create_sub_root(name, 0o700)
+        .map_err(|e| e.to_string())?;
+    if !name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
+        return Ok((scratch, None));
+    }
+    match hold_dir(&scratch) {
+        Ok(held) => Ok((scratch, Some(held))),
+        Err(e) => {
+            // The lock's error is the one to report; an empty directory
+            // left is one the store removes.
+            let _ = root.remove_dir(name);
+            Err(format!("cannot lock {}: {e}", parent.join(name).display()))
+        }
+    }
 }
 
 /// A descriptor of the directory `dir` holding its exclusive `flock`, taken

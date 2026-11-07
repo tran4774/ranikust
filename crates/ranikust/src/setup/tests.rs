@@ -817,3 +817,25 @@ fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
 }
 
 mod userns;
+
+/// Only a probe directory named as the store's leftovers is held while the
+/// probe runs: a store removes those it can lock. One in a build's
+/// directory (kaniko mode's report) is never a leftover, and never held.
+#[test]
+fn only_a_probe_directory_a_store_would_remove_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    let lock = |name: &str| {
+        let fd = fs::File::open(dir.path().join(name)).unwrap();
+        rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).is_ok()
+    };
+    let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let (_, held) = make_probe_dir(&root, dir.path(), &name).unwrap();
+    assert!(held.is_some());
+    assert!(!lock(&name), "held");
+    drop(held);
+    assert!(lock(&name), "released");
+    let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe").unwrap();
+    assert!(held.is_none());
+    assert!(lock("userns-probe"));
+}
