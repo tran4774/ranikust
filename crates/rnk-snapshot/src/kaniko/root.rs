@@ -1024,11 +1024,11 @@ impl Spooled {
     /// them once, which nothing else sees: to check the tar headers as the
     /// extraction frames them and refuses them from a header alone, the
     /// `tar-header` limit and the kernel's limits included
-    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The body is read to its end, even after a bad
-    /// header, where its source checks the size and the compressed digest.
-    /// The first failure of the body or of its decompression is reported as
-    /// such, before a bad header or a wrong diff ID. A blob already on disk
-    /// is kept as it is.
+    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The
+    /// body is read to its end, even after a bad header, where its source
+    /// checks the size and the compressed digest. The first failure of the
+    /// body or of its decompression is reported as such, before a bad
+    /// header or a wrong diff ID. A blob already on disk is kept as it is.
     fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
             return Ok(Self(SpooledBlob::Blob(layer.clone())));

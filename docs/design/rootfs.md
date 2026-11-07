@@ -142,27 +142,34 @@ never called.
   calls it on the bytes it already decompresses, so a header it refuses
   fails the layer before `/` changes
   ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123).
-- **The kernel's limits.** `read_header` refuses what the kernel would
-  refuse whatever the root holds, so the entry fails before anything of it
-  is written, in every extraction and the check alike
+- **The kernel's limits.** `read_header` refuses values the kernel refuses
+  on every filesystem, so the entry fails before anything of it is
+  written, in every extraction and the check alike
   ([#179](https://github.com/tran4774/ranikust/issues/179)): a NUL byte in
   a name or link target; a component over 255 bytes (`NAME_MAX`); a
   directory path over 4095 bytes (`PATH_MAX` counts the NUL), the entry's
   name aside, since the kernel gets the directory, then the name; a symlink
   target over 4095 bytes. On a directory, file or symlink it refuses an
   xattr, as it is set (escaped in the overlay form), whose name is empty,
-  over 255 bytes (`XATTR_NAME_MAX`), holds a NUL byte or is not a namespace
-  of `xattr(7)` and more, whose value is over 64 KiB (`XATTR_SIZE_MAX`),
-  and `user.*` on the symlink. A device node or FIFO's name and xattrs are
-  refused by the extraction that makes it, before it or its parents are
-  made: a live root makes none, a user namespace no device. What the kernel
-  never gets is taken: the `.wh.` prefix of a whiteout (the name it hides
-  is checked), AUFS metadata, a hardlink's xattrs and `trusted.*` ones.
-  An entry at an ignored path, or a hardlink to a device left out, is
-  refused all the same: whether it is skipped depends on the root or on an
-  earlier entry, which a header does not show. What depends on
-  the filesystem (a `system.*` name it does not know, a value too big for
-  its blocks) still fails at write time.
+  over 255 bytes (`XATTR_NAME_MAX`), holds a NUL byte or is not one of the
+  kernel's namespaces and more (`include/uapi/linux/xattr.h`: `btrfs.`,
+  `gnu.`, `os2.`, `osx.`, `security.`, `system.`, `trusted.`, `user.`),
+  whose value is over 64 KiB (`XATTR_SIZE_MAX`), a `security.capability`
+  that is not 20 bytes of revision 2 or 24 of revision 3 (`validheader` in
+  `security/commoncap.c`), and `user.*` on a symlink. A device node or
+  FIFO's name and xattrs are refused by the extraction that makes it,
+  before it or its parents are made: a live root makes none, a user
+  namespace no device. What the kernel never gets is taken: the `.wh.`
+  prefix of a whiteout (the name it hides is checked), AUFS metadata, a
+  hardlink's xattrs and `trusted.*` ones. An entry at an ignored path, a
+  whiteout whose directory is missing and a hardlink to a device left out
+  are refused all the same: whether they are skipped depends on the root
+  or on an earlier entry, which a header does not show. What depends on
+  the filesystem, the namespace or the root still fails at write time: a
+  namespace or `system.*` name the filesystem does not take, a POSIX ACL
+  it refuses, a value too big for its blocks, `security.*` in a user
+  namespace, and in a live root a directory whose path, with the root's
+  own, is past `PATH_MAX`.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

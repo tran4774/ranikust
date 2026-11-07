@@ -21,7 +21,7 @@ use crate::delete::{self, Counts, Keep};
 use crate::error::{Error, Result, io_err};
 use crate::ignore::IgnoreList;
 use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
-use crate::path;
+use crate::path::{self, PATH_MAX};
 use crate::root::{self, Mounts, RootPath};
 
 mod created;
@@ -94,16 +94,24 @@ const SKIPPED_NAME_COST: usize = 64;
 const PARENT_MODE: u32 = 0o755;
 /// The kernel's `NAME_MAX`: the longest name in a directory.
 const NAME_MAX: usize = 255;
-/// The kernel's `PATH_MAX`: the longest path it copies in, its NUL
-/// included.
-const PATH_MAX: usize = 4096;
-/// The kernel's `XATTR_NAME_MAX` and `XATTR_SIZE_MAX` (`setxattr(2)`).
+/// The kernel's `XATTR_NAME_MAX`: the longest xattr name.
 const XATTR_NAME_MAX: usize = 255;
-const XATTR_SIZE_MAX: usize = 1 << 16;
-/// The xattr namespaces of `xattr(7)`; a name is one of them and more.
-const XATTR_NAMESPACES: &[&[u8]] = &[b"security.", b"system.", b"trusted.", b"user."];
+/// The xattr namespaces of the kernel (`include/uapi/linux/xattr.h`); a
+/// name is one of them and more. Which ones a filesystem takes is its own.
+const XATTR_NAMESPACES: &[&[u8]] = &[
+    b"btrfs.",
+    b"gnu.",
+    b"os2.",
+    b"osx.",
+    b"security.",
+    b"system.",
+    b"trusted.",
+    b"user.",
+];
 /// The namespace only regular files and directories take (`xattr(7)`).
 const USER_XATTR: &[u8] = b"user.";
+/// A file capability, whose value the kernel checks before it is set.
+const CAPABILITY_XATTR: &[u8] = b"security.capability";
 
 /// Extracts the plain tar stream `tar` into `dst`.
 ///
@@ -252,12 +260,15 @@ pub struct Extracted {
 /// root, a link with an empty target, a GNU sparse or unknown entry type,
 /// a whiteout that names nothing, a file or symlink as the layer's root,
 /// ids, modes, device numbers and times that do not parse or are out of
-/// range, and what the kernel would refuse whatever the root holds: a name
-/// or link target with a NUL byte, a component over `NAME_MAX`, a
-/// directory path or symlink target that does not fit `PATH_MAX` with its
-/// NUL, and on a directory, file or symlink an xattr whose name is empty,
-/// over `XATTR_NAME_MAX`, holds a NUL byte or is no namespace and more,
-/// whose value is over `XATTR_SIZE_MAX`, or a `user.*` one on the symlink.
+/// range, and values the kernel refuses on every filesystem: a name or
+/// link target with a NUL byte, a component over `NAME_MAX`, a directory
+/// path or symlink target over `PATH_MAX` less its NUL, and on a
+/// directory, file or symlink an xattr whose name is empty, over
+/// `XATTR_NAME_MAX`, holds a NUL byte or is not a kernel namespace and
+/// more, whose value is over `XATTR_SIZE_MAX` or a file capability of no
+/// form the kernel takes, or a `user.*` one on a symlink; also where the
+/// root would have the entry skipped (an ignored path, a whiteout whose
+/// directory is missing), which a header does not show.
 /// It refuses nothing such an extraction takes: what depends on the root
 /// or the ignore list (where an entry lands, a hardlink's target, a
 /// hardlink or device node as the layer's root) is left to the extraction,
@@ -498,7 +509,7 @@ fn for_each_entry<R: Read>(
 /// long link), a whiteout that names nothing, an unknown entry type, a
 /// file or symlink as the layer's root, ids, modes, device numbers and
 /// times that do not parse or are out of range, and the values the kernel
-/// refuses whatever the root holds ([`kernel_refuses_name`],
+/// refuses on every filesystem ([`kernel_refuses_name`],
 /// [`kernel_refuses_xattrs`]), for every name the extraction hands it but
 /// a node's, every link target, and the xattrs of a directory, file or
 /// symlink (a node's are checked where it is made). The first step
@@ -581,10 +592,9 @@ fn read_header<R: Read>(
                 if target.contains(&0) {
                     return Err(refuse("the symlink target holds a NUL byte"));
                 }
-                if target.len() >= PATH_MAX {
+                if target.len() > PATH_MAX {
                     return Err(refuse(&format!(
-                        "the symlink target is over {} bytes (PATH_MAX with its NUL)",
-                        PATH_MAX - 1
+                        "the symlink target is over {PATH_MAX} bytes (PATH_MAX less its NUL)"
                     )));
                 }
                 Kind::Symlink(link)
@@ -725,10 +735,10 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
 }
 
 /// Why the kernel refuses the name `name` in the directory `dir` (both
-/// cleaned), whatever the root holds, `what` naming it in the reason: a
-/// NUL byte, a component of either over [`NAME_MAX`], or a `dir` that does not fit
-/// [`PATH_MAX`] with its NUL. An extraction hands the kernel `dir` whole,
-/// then `name` relative to it, so the whole path may be longer.
+/// cleaned) on every filesystem, `what` naming it in the reason: a
+/// NUL byte, a component of either over [`NAME_MAX`], or a `dir` over
+/// [`PATH_MAX`]. An extraction hands the kernel `dir` whole, then `name`
+/// relative to it, so the whole path may be longer.
 fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr) -> Option<String> {
     let path = dir.as_os_str().as_bytes();
     if path.contains(&0) || name.as_bytes().contains(&0) {
@@ -739,10 +749,9 @@ fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr) -> Option<String> {
             "{what} has a component over {NAME_MAX} bytes (NAME_MAX)"
         ));
     }
-    if path.len() >= PATH_MAX {
+    if path.len() > PATH_MAX {
         return Some(format!(
-            "{what} lies in a directory whose path is over {} bytes (PATH_MAX with its NUL)",
-            PATH_MAX - 1
+            "{what} lies in a directory whose path is over {PATH_MAX} bytes (PATH_MAX less its NUL)"
         ));
     }
     None
@@ -750,9 +759,10 @@ fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr) -> Option<String> {
 
 /// Why the kernel refuses one of `xattrs` (as they are set, escaped in the
 /// overlay form) on any filesystem: a name empty, over [`XATTR_NAME_MAX`],
-/// holding a NUL byte or in no namespace of `xattr(7)`, a value over
-/// [`XATTR_SIZE_MAX`], or a `user.*` name on an entry that is neither a
-/// regular file nor a directory, unless `user`.
+/// holding a NUL byte or none of [`XATTR_NAMESPACES`] and more, a value
+/// over [`meta::XATTR_MAX`] (`XATTR_SIZE_MAX`), a file capability of no
+/// form it takes, or a `user.*` name on an entry that is neither a regular
+/// file nor a directory, unless `user`.
 fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<String> {
     for (name, value) in xattrs {
         let n = name.as_bytes();
@@ -774,12 +784,18 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
             .any(|ns| n.len() > ns.len() && n.starts_with(ns))
         {
             return Some(format!(
-                "the xattr {shown} needs a namespace (security., system., trusted. or user.) and a name after it"
+                "the xattr {shown} is not a namespace of the kernel and a name after it"
             ));
         }
-        if value.len() > XATTR_SIZE_MAX {
+        if value.len() > meta::XATTR_MAX {
             return Some(format!(
-                "the value of the xattr {shown} is over {XATTR_SIZE_MAX} bytes (XATTR_SIZE_MAX)"
+                "the value of the xattr {shown} is over {} bytes (XATTR_SIZE_MAX)",
+                meta::XATTR_MAX
+            ));
+        }
+        if n == CAPABILITY_XATTR && !value.is_empty() && !is_file_capability(value) {
+            return Some(format!(
+                "the xattr {shown} is no file capability the kernel takes (revision 2 or 3)"
             ));
         }
         if !user && n.starts_with(USER_XATTR) {
@@ -789,6 +805,22 @@ fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<S
         }
     }
     None
+}
+
+/// Whether `value` has the form of a file capability the kernel sets
+/// (`validheader` in `security/commoncap.c`): 20 bytes of revision 2 or 24
+/// of revision 3, its magic little-endian, the effective flag aside.
+fn is_file_capability(value: &[u8]) -> bool {
+    const REVISION_2: u32 = 0x0200_0000;
+    const REVISION_3: u32 = 0x0300_0000;
+    const EFFECTIVE: u32 = 0x0000_0001;
+    let Some(magic) = value.first_chunk::<4>() else {
+        return false;
+    };
+    matches!(
+        (value.len(), u32::from_le_bytes(*magic) & !EFFECTIVE),
+        (20, REVISION_2) | (24, REVISION_3)
+    )
 }
 
 /// What a whiteout's name (`.wh.` and more) stands for.

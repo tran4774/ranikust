@@ -322,7 +322,7 @@ pub(crate) const LAYER_SKIPPED_XATTR: &[u8] = b"trusted.";
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
 /// `XATTR_SIZE_MAX`).
-const XATTR_MAX: usize = 64 << 10;
+pub(crate) const XATTR_MAX: usize = 64 << 10;
 
 /// The extended attributes of the pinned entry `fd` of type `file_type`.
 ///
