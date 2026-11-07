@@ -11,6 +11,11 @@ use serde_json::Value;
 /// Runs the binary in `cwd` with `args` and a clean environment for the
 /// variables it reads.
 fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    command(cwd, args, env).output().expect("run ranikust")
+}
+
+/// The command [`ranikust`] runs.
+fn command(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ranikust"));
     cmd.args(args)
         .current_dir(cwd)
@@ -34,7 +39,7 @@ fn ranikust(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     for (key, value) in env {
         cmd.env(key, value);
     }
-    cmd.output().expect("run ranikust")
+    cmd
 }
 
 fn stderr(out: &Output) -> String {
@@ -1146,6 +1151,93 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
             }
             assert!(err.contains("find . -xdev"), "{err}");
             assert_eq!(names(&state), before);
+        }
+        other => panic!("{other:?}: {}", stderr(&out)),
+    }
+}
+
+/// As a user, `prune --all` empties a state directory whose cache holds a
+/// tree far deeper than the descriptors it may open (a hard
+/// `RLIMIT_NOFILE` of 256, which it cannot raise), as a `RUN` with a cache
+/// mount can leave; a store then opens the directory again, as the next
+/// build would. Where the machine gives the user no user namespace, it
+/// changes nothing.
+#[test]
+fn prune_all_empties_a_cache_deeper_than_its_descriptor_limit() {
+    use rustix::fs::{Mode, OFlags};
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::process::CommandExt as _;
+    const DEPTH: usize = 3000;
+    const NOFILE: u64 = 256;
+    if skip_as_root() {
+        return;
+    }
+    /// Empties a temp dir on drop, a failed test included: the temp dir's
+    /// own removal recurses with a descriptor per level.
+    struct Emptied(std::path::PathBuf);
+    impl Drop for Emptied {
+        fn drop(&mut self) {
+            let r = fs::canonicalize(&self.0)
+                .map_err(|e| e.to_string())
+                .and_then(|p| rnk_rootfs::RootPath::open(&p).map_err(|e| e.to_string()))
+                .and_then(|root| {
+                    rnk_rootfs::delete_contents(&root, &rnk_rootfs::IgnoreList::new())
+                        .map_err(|e| e.to_string())
+                });
+            // A drop cannot fail the test; a tree left behind is at least shown.
+            if let Err(e) = r {
+                eprintln!("left behind in {}: {e}", self.0.display());
+            }
+        }
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let _emptied = Emptied(tmp.path().to_owned());
+    // The state directory's checks refuse a parent others may write.
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).expect("chmod");
+    let state = tmp.path().join("state");
+    let paths = rnk_store::BuildPaths::new(&state, &state);
+    let store = rnk_store::Store::open(&paths).expect("a state directory");
+    let cache = store.cache_dir("deep").expect("a cache directory");
+    store.close().expect("close");
+    let dir = OFlags::PATH | OFlags::DIRECTORY;
+    let mut cur = rustix::fs::open(&cache, dir, Mode::empty()).expect("cache");
+    for _ in 0..DEPTH {
+        rustix::fs::mkdirat(&cur, "d", Mode::from_raw_mode(0o755)).expect("mkdir");
+        cur = rustix::fs::openat(&cur, "d", dir, Mode::empty()).expect("open");
+    }
+    drop(rustix::fs::openat(
+        &cur,
+        "f",
+        OFlags::WRONLY | OFlags::CREATE,
+        Mode::from_raw_mode(0o644),
+    ));
+    drop(cur);
+
+    let mut cmd = command(tmp.path(), &["prune", "--all", "--state-dir=state"], &[]);
+    // SAFETY: `setrlimit` is async-signal-safe and touches no memory the
+    // parent shares.
+    unsafe {
+        cmd.pre_exec(|| {
+            let limit = rustix::process::Rlimit {
+                current: Some(NOFILE),
+                maximum: Some(NOFILE),
+            };
+            rustix::process::setrlimit(rustix::process::Resource::Nofile, limit)
+                .map_err(std::io::Error::from)
+        });
+    }
+    let out = cmd.output().expect("run ranikust");
+    match out.status.code() {
+        Some(0) => {
+            assert_eq!(stdout(&out), format!("emptied {}\n", state.display()));
+            assert_eq!(names(&state), Vec::<std::path::PathBuf>::new());
+            rnk_store::Store::open(&paths)
+                .and_then(rnk_store::Store::close)
+                .expect("a store in the emptied directory");
+        }
+        Some(1) => {
+            let err = stderr(&out);
+            assert!(err.contains("no user namespace for the build: "), "{err}");
         }
         other => panic!("{other:?}: {}", stderr(&out)),
     }
