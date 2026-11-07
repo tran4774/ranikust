@@ -73,13 +73,15 @@ In a user namespace other than the initial one (a rootless or `--userns`
 build, or ranikust started in a rootless container), an extracted layer's key
 is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
 uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
-one copy per map, and no such key is a chain ID
+one copy per map, and the tag keeps the keys apart from chain IDs
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
 #77). The maps are relative to the parent namespace, so nested namespaces
 with the same maps under parents with different ones share a key, and a build
-in one sees the owners of a layer the other extracted as the overflow id: for
-example a namespace ranikust makes in a rootless Podman container, its state
-directory on a volume, after the user's ranges in `/etc/subuid` change.
+in one sees the owners of a layer the other extracted through its own maps:
+the overflow id for ids it does not map, other owners where the ranges
+overlap. For example a namespace ranikust makes in a rootless Podman
+container, its state directory on a volume, after the user's ranges in
+`/etc/subuid` change.
 `rnk-snapshot` makes the key and the store takes it as it takes a chain ID,
 an opaque digest; how
 [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep

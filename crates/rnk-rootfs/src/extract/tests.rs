@@ -1211,6 +1211,44 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     .unwrap_err();
     assert!(e.to_string().contains("whited out"), "{e}");
 
+    // The names remembered are bounded: past about 1 MiB of them, a link
+    // to a device is extracted as if the device were not in the tar.
+    // Long paths of names a filesystem takes.
+    let long = format!("{}/", "n".repeat(250)).repeat(16);
+    let header = |t| {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(t);
+        h.set_mode(0o644);
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_mtime(0);
+        h.set_size(0);
+        h
+    };
+    let devices = |link_to: usize| {
+        let mut b = tar::Builder::new(Vec::new());
+        for i in 0..300 {
+            let mut h = header(EntryType::Char);
+            h.set_device_major(1).unwrap();
+            h.set_device_minor(3).unwrap();
+            b.append_data(&mut h, format!("{long}{i}"), &b""[..])
+                .unwrap();
+        }
+        b.append_link(
+            &mut header(EntryType::Link),
+            "link",
+            format!("{long}{link_to}"),
+        )
+        .unwrap();
+        b.into_inner().unwrap()
+    };
+    let f = Fixture::new();
+    extract_overlay(&f.root, devices(0).as_slice(), &[], DeviceNodes::Skip).unwrap();
+    assert!(fs::symlink_metadata(f.host("link")).is_err());
+    let f = Fixture::new();
+    let e = extract_overlay(&f.root, devices(299).as_slice(), &[], DeviceNodes::Skip).unwrap_err();
+    assert!(e.to_string().contains("neither"), "{e}");
+
     // A device as the layer's root is refused, as when they are made.
     for devices in [DeviceNodes::Skip, DeviceNodes::Create] {
         let f = Fixture::new();

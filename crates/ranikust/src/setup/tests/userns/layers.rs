@@ -585,13 +585,13 @@ const UNMAPPED_GID: u32 = 4242;
 
 /// T2: the same layers as real root, with no user namespace, give the
 /// device nodes too and the chain IDs as names, and publish the layer of
-/// an owner no map holds. As the user who ran sudo,
-/// with the user's subordinate ids and a setgid state directory of a gid
-/// no map holds: where AppArmor restricts unprivileged user namespaces
-/// (Ubuntu 24.04) the set-up is refused; elsewhere (22.04) the layers come
-/// out as root's, devices aside and that layer refused, owned outside by
-/// the subordinate ids, and the user outside the namespace cannot move
-/// them.
+/// an owner no map holds. As the user who ran sudo, with the user's
+/// subordinate ids and a setgid state directory of a gid no map holds:
+/// where AppArmor restricts unprivileged user namespaces (Ubuntu 24.04) the
+/// set-up is refused; elsewhere (22.04) the layers come out as root's,
+/// devices aside and that layer refused, owned outside by the user (the
+/// namespace's root) and by subordinate ids (the others), and the user
+/// outside the namespace cannot move a `0555` root of a subordinate id.
 #[test]
 #[ignore = "T2: extracts layers as real root and as the sudo user in the build's user namespace"]
 fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {

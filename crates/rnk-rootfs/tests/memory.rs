@@ -131,8 +131,8 @@ fn extraction_forgets_what_the_same_layer_deleted() {
 }
 
 /// Device nodes a user namespace leaves out take no room on disk, so what
-/// extraction keeps of their names is bounded on its own: long names,
-/// thousands of them, cost a bounded heap.
+/// extraction keeps of their names, and of hardlinks to them, is bounded on
+/// its own: long names, thousands of each, cost a bounded heap.
 #[test]
 fn devices_left_out_cost_a_bounded_heap_whatever_their_names() {
     let _one = one_at_a_time();
@@ -140,11 +140,20 @@ fn devices_left_out_cost_a_bounded_heap_whatever_their_names() {
     let mut b = tar::Builder::new(Vec::new());
     let long = "n".repeat(4000);
     for i in 0..4000 {
-        let name = format!("{long}{i}");
+        let name = if i == 0 {
+            "dev".to_owned()
+        } else {
+            format!("{long}{i}")
+        };
         let mut h = header(tar::EntryType::Char);
         h.set_device_major(1).unwrap();
         h.set_device_minor(3).unwrap();
         b.append_data(&mut h, &name, &b""[..]).unwrap();
+    }
+    for i in 0..4000 {
+        let name = format!("{long}-link{i}");
+        b.append_link(&mut header(tar::EntryType::Link), &name, "dev")
+            .unwrap();
     }
     let tar = b.into_inner().unwrap();
     let peak = peak_of(|| {

@@ -52,8 +52,10 @@ fn open_creates_the_layout_and_the_marker() {
 
 /// ADR-0099: a setgid state directory, as a shared directory makes it,
 /// gives its gid and the bit to no directory of the store, so what the
-/// store makes has the gid of the process that makes it. The gid is a
-/// group of this user's other than the effective one when there is one.
+/// store makes has the gid of the process that makes it; nor does a store
+/// directory of another gid keep it. The gid is another group of this
+/// user's, or any other for root; for a user of one group only the bit is
+/// checked.
 #[test]
 fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -108,7 +110,7 @@ fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     // A store directory of another gid without the bit, as a `grpid`
     // mount gives one, takes the effective gid at the next open.
     if group == egid {
-        eprintln!("skipped: a store directory of another gid (the user has one group)");
+        eprintln!("skipped: the gid checks (the user has one group)");
         return;
     }
     drop(store);

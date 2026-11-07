@@ -175,7 +175,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `src/store/tests.rs`, a directory swapped for a symlink or another
   directory between `statx` and open. A setgid state directory of another
   group passes neither its gid nor the bit to a directory of the store,
-  and a store directory of another group takes the process's gid.
+  and a store directory of another group takes the process's gid (the gid
+  checks skipped for a user of one group).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).

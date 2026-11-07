@@ -103,9 +103,10 @@ pub(crate) fn chain_id(diff_id: &Digest, below: &[LayerDir]) -> Digest {
 /// is copied from `below` (Q-055), so what is extracted depends on the
 /// stack. In a user namespace (`userns`), the key also holds the
 /// namespace's id map (ADR-0104), and device nodes are left out (ADR-0106):
-/// such a layer is never a lower outside that map. The store's per-digest
-/// lock keeps two builds from extracting one layer twice. The uncompressed
-/// tar must hash to `diff_id`, or nothing is published.
+/// such a layer is never a lower outside that map, relative to the parent
+/// namespace as `/proc/self` shows it. The store's per-digest lock keeps
+/// two builds from extracting one layer twice. The uncompressed tar must
+/// hash to `diff_id`, or nothing is published.
 ///
 /// # Errors
 ///

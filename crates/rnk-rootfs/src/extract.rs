@@ -398,7 +398,8 @@ struct Extractor<'r> {
     /// [`DeviceNodes::Skip`]: the names of the devices left out, and of the
     /// hardlinks to them, until the layer puts something else there.
     devices_skipped: BTreeSet<PathBuf>,
-    /// The bytes spent on `devices_skipped` so far, freed or not.
+    /// The bytes spent on `devices_skipped` so far, freed or not: a budget
+    /// per layer, never refunded, so its accounting stays one sum.
     skipped_bytes: usize,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's
@@ -846,16 +847,23 @@ impl Extractor<'_> {
     }
 
     /// Remembers `path` as a device left out, within [`SKIPPED_NAMES_MAX`]
-    /// bytes a layer: past them, a link to one is extracted as if the
-    /// device were not in the tar, so that memory never grows with names
-    /// the layer puts nowhere.
+    /// bytes a layer, counted from the names alone so that what is
+    /// remembered depends on the layer only: past them, a link to one is
+    /// extracted as if the device were not in the tar, with one warning, so
+    /// that memory never grows with names the layer puts nowhere.
     fn remember_skipped(&mut self, mut path: PathBuf) {
-        path.shrink_to_fit();
-        let cost = path.capacity().saturating_add(SKIPPED_NAME_COST);
+        let cost = path.as_os_str().len().saturating_add(SKIPPED_NAME_COST);
         let total = self.skipped_bytes.saturating_add(cost);
         if total <= SKIPPED_NAMES_MAX {
             self.skipped_bytes = total;
+            path.shrink_to_fit();
             self.devices_skipped.insert(path);
+        } else if self.skipped_bytes <= SKIPPED_NAMES_MAX {
+            self.skipped_bytes = total;
+            tracing::warn!(
+                "the layer's names of device nodes left out pass {SKIPPED_NAMES_MAX} bytes: \
+                 a hardlink to one past them is extracted as if the node were not in the layer"
+            );
         }
     }
 

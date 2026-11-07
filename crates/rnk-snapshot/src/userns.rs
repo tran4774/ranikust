@@ -25,10 +25,10 @@ const NSFS_MAGIC: FsWord = 0x6e73_6673;
 /// Read no more of a map: the kernel writes at most 340 lines.
 const MAP_MAX: u64 = 64 * 1024;
 
-/// Puts a mapped layer's key in a space of its own: no chain ID of several
-/// layers (`<digest> <digest>` hashed) starts with these bytes, and a chain
-/// ID of one layer equal to a key would need a layer whose tar is exactly
-/// the key's input, fixed by the chain and the maps.
+/// Puts a mapped layer's key in a space of its own: the input of no chain
+/// ID of several layers (`<digest> <digest>`) starts with these bytes, and
+/// a chain ID of one layer equal to a key would need a layer whose tar is
+/// exactly the key's input, fixed by the chain and the maps.
 const KEY_DOMAIN: &[u8] = b"ranikust layer extracted in a user namespace, v1\0";
 
 /// A user namespace other than the initial one, with its maps as this
@@ -205,8 +205,8 @@ mod tests {
         assert_ne!(key, gid.layer_key(&chain));
         assert_ne!(key, uid.layer_key(&chain));
         assert_ne!(gid.layer_key(&chain), uid.layer_key(&chain));
-        // One id each way, the identity map included: no namespace shares
-        // the initial one's chain IDs.
+        // One id each way, the identity map included: the key differs from
+        // the chain ID.
         let identity = ns("0 0 4294967295\n", "0 0 4294967295\n");
         assert_ne!(identity.layer_key(&chain), chain);
     }

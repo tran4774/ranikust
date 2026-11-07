@@ -109,7 +109,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   names whose path is past `PATH_MAX` is refused before it is copied
   (`a_hardlinked_file_past_path_max_is_refused_by_the_copy`). The names of
   devices `DeviceNodes::Skip` leaves out, which take no room on disk, are
-  remembered within 1 MiB a layer
+  remembered within about 1 MiB a layer
   (`devices_left_out_cost_a_bounded_heap_whatever_their_names`).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
   from `statx` with the opened fd to catch a swap, `unlinkat` symlinks

@@ -464,8 +464,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and `a_regular_user_s_killed_extraction_publishes_nothing` (the same
   layers as real root, then as the sudo user from a setgid state directory
   of a gid no map holds: refused on 24.04; on 22.04 as root makes them,
-  devices aside, owned outside by subordinate ids, and a layer of an owner
-  outside the map, which real root publishes, refused; a `SIGKILL`ed
+  devices aside, owned outside by the user and by subordinate ids, a `0555`
+  root of a subordinate id the user cannot move outside, and a layer of an
+  owner outside the map, which real root publishes, refused; a `SIGKILL`ed
   extraction publishes nothing).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
