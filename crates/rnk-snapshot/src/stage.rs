@@ -259,7 +259,8 @@ impl Overlay {
     ///
     /// [`Error::UnsafePath`] when the state directory's path holds overlay
     /// option syntax; [`Error::Rootfs`] when it cannot be opened;
-    /// [`Error::Io`] when `/proc/self` cannot tell the user namespace.
+    /// [`Error::Store`] or [`Error::Io`] when `/proc/self` cannot tell the
+    /// user namespace or its map.
     pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self> {
         mount::check_path(store.state_dir())?;
         let state = Arc::new(RootPath::open(store.state_dir())?);

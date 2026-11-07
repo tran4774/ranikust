@@ -38,6 +38,7 @@ mod fence;
 mod key;
 mod lock;
 mod store;
+mod userns;
 
 pub use anon::PREFIX as ANON_PREFIX;
 pub use error::{Error, Result};
@@ -47,3 +48,4 @@ pub use store::{
     BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper, STATE_MARKER,
     Store, TmpEntry,
 };
+pub use userns::in_user_namespace;

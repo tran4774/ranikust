@@ -55,7 +55,7 @@ fn open_creates_the_layout_and_the_marker() {
 /// store makes has the gid of the process that makes it; nor does a store
 /// directory of another gid keep it. The gid is another group of this
 /// user's, or any other for root; for a user of one group only the bit is
-/// checked.
+/// checked. One already the process's is left unchanged.
 #[test]
 fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -106,6 +106,17 @@ fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     // The state directory itself is left as it is.
     let m = fs::metadata(&state).unwrap();
     assert_eq!((m.gid(), m.mode() & 0o7777), (group, 0o2700));
+    // A store directory already the process's is not changed again: its
+    // ctime stays, past a tick of the kernel's coarse clock.
+    drop(store);
+    let ctime = || {
+        let m = fs::metadata(state.join("layers")).unwrap();
+        (m.ctime(), m.ctime_nsec())
+    };
+    let before = ctime();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let store = Store::open(&paths(dir.path())).unwrap();
+    assert_eq!(ctime(), before);
 
     // A store directory of another gid without the bit, as a `grpid`
     // mount gives one, takes the effective gid at the next open.

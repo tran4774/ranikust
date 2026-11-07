@@ -895,6 +895,51 @@ impl RootPath {
         }
     }
 
+    /// [`RootPath::set_meta`] with what `decide` returns for the entry's
+    /// `statx`, `Ok(false)` when it returns `None`: the entry is pinned
+    /// (`O_PATH | O_NOFOLLOW`) before it is read, and changed through that
+    /// descriptor, so a swap of its name cannot redirect the change to
+    /// another inode than the one decided on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] when `p` cannot be reached or a change fails; earlier
+    /// changes stay applied.
+    pub fn set_meta_if(
+        &self,
+        p: impl AsRef<Path>,
+        decide: impl FnOnce(&Stat) -> Option<Meta>,
+    ) -> Result<bool> {
+        let p = p.as_ref();
+        let (pfd, name, fd) = match path::target(p)? {
+            Target::Root => (None, None, None),
+            Target::Entry { parent, name } => {
+                let pfd = self.resolve_dir(&parent)?;
+                let fd = open_name(
+                    pfd.as_fd(),
+                    name,
+                    OFlags::PATH | OFlags::NOFOLLOW,
+                    0,
+                    false,
+                    p,
+                )?;
+                (Some(pfd), Some(name), Some(fd))
+            }
+        };
+        let fd = fd.as_ref().map_or(self.fd(), AsFd::as_fd);
+        let st = meta::statx_at(fd, OsStr::new(""), p)?;
+        let Some(m) = decide(&st) else {
+            return Ok(false);
+        };
+        let h = Handle::Path {
+            fd,
+            file_type: st.file_type(),
+            parent: pfd.as_ref().map(AsFd::as_fd).zip(name),
+        };
+        meta::apply(&h, &m, p)?;
+        Ok(true)
+    }
+
     /// [`RootPath::set_meta`] only if `p` is a directory, checked on the
     /// pinned entry itself; `Ok(false)` when it is something else. For the
     /// extraction, which never writes across a mount: the parent is resolved

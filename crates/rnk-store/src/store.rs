@@ -1755,21 +1755,46 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
 /// bit, or a `grpid` mount its parent's gid: entries below then get the gid of
 /// the process that makes them, which a user namespace maps (ADR-0099),
 /// and never a gid and setgid bit from the host in an extracted layer.
+/// Read and changed through one pinned descriptor, and only when it needs
+/// it. Refused outside a user namespace, it is a warning, as the store
+/// opened there before it did this; in one, an error.
 fn own_group(state: &RootPath, d: &str) -> Result<()> {
-    let st = state.statx(d)?;
+    let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
-    if st.uid != rustix::process::geteuid().as_raw() || (st.mode & SETGID == 0 && st.gid == egid) {
-        return Ok(());
-    }
-    state.set_meta(
-        d,
-        &rnk_rootfs::Meta {
+    let changed = state.set_meta_if(d, |st| {
+        let needed = st.file_type() == FileType::Directory
+            && st.uid == euid
+            && (st.mode & SETGID != 0 || st.gid != egid);
+        needed.then(|| rnk_rootfs::Meta {
             gid: Some(egid),
             mode: Some(st.permissions() & !SETGID),
             ..rnk_rootfs::Meta::default()
-        },
-    )?;
-    Ok(())
+        })
+    });
+    match changed {
+        Ok(_) => Ok(()),
+        Err(e) => refused_group(e, d, crate::userns::in_user_namespace),
+    }
+}
+
+/// What [`own_group`] does when the change of `d` fails with `e`: an error
+/// in a user namespace, or where `in_user_namespace` cannot tell; else a
+/// warning.
+fn refused_group(
+    e: rnk_rootfs::Error,
+    d: &str,
+    in_user_namespace: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    match in_user_namespace() {
+        Ok(false) => {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory: {d} keeps its group and setgid bit: {e}"
+            );
+            Ok(())
+        }
+        Ok(true) | Err(_) => Err(e.into()),
+    }
 }
 
 /// Warns when the state directory or one of the store's directories is
