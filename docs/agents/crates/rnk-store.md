@@ -149,15 +149,14 @@ Design: [locks](../../design/cache-and-store.md#locks),
   while any build runs (`Error::InUse`) and a store opened meanwhile is
   `Error::Busy`. Its checks, which change nothing, are one function
   `check_prune` runs too, so a caller checking first refuses what it
-  would: like `open` a directory an anonymous store used and a non-empty
-  one without a regular `.ranikust-state`, then a `.ranikust-pruning` that
-  is not a regular file and one whose top level holds a name neither the
-  store nor a build makes there (`NotAStateDir` naming it), all before any
-  rename; it takes one holding the regular `.ranikust-pruning` an earlier
-  prune left, which `open` refuses, and makes nothing in an empty
-  directory. It refuses this
-  process's own `/` itself (`rnk_rootfs::refuse_own_root`), whatever its
-  caller checked. It empties entries in place, under their published
+  would, all before any rename: like `open` a directory an anonymous store
+  used, then a `.ranikust-pruning` that is not a regular file, a non-empty
+  directory with neither it nor a regular `.ranikust-state`, and one whose
+  top level holds a name neither the store nor a build makes there
+  (`NotAStateDir` naming it); it takes one holding the regular
+  `.ranikust-pruning` an earlier prune left, which `open` refuses, and
+  makes nothing in an empty directory. It refuses this process's own `/`
+  itself (`rnk_rootfs::refuse_own_root`), whatever its caller checked. It empties entries in place, under their published
   names, so it first renames the marker `.ranikust-pruning`
   (`PRUNING_MARKER`) and syncs the directory, and `open` refuses a
   directory holding that name (`Error::PruneCutShort`) until a prune

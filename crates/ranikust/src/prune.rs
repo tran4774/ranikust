@@ -54,17 +54,19 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
 /// Root's emptying of the state directory it runs in, for [`pinned`]: its
 /// regular marker first, `.ranikust-state` or else the `.ranikust-pruning`
 /// a prune that did not finish left, so that what an interrupted removal
-/// leaves is unmarked, and nothing where there is neither; then everything, with no top-level entry an
-/// operand and `find -xdev` entering no other filesystem, so a mount point
-/// is left (GNU `find` then fails).
+/// leaves is unmarked, and nothing where there is neither; then
+/// everything, with no top-level entry an operand and `find -xdev`
+/// entering no other filesystem, so a mount point is left (GNU `find` then
+/// fails).
 const ROOT_SCRIPT: &str = "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete";
 
 /// A user's emptying of the state directory it runs in without a user
-/// namespace, for [`pinned`]: the regular marker renamed `.ranikust-pruning`
-/// first, where no such name is and never into a directory (or the regular
-/// one an earlier run renamed kept), which keeps builds out; then all but it, as [`ROOT_SCRIPT`]
-/// does; it last, once a listing shows nothing else left, since not every
-/// `find` fails when a removal does.
+/// namespace, for [`pinned`]: first the regular marker renamed
+/// `.ranikust-pruning` (`mv -T`, never into a directory) where nothing has
+/// that name, or kept as the regular one an earlier run left, which keeps
+/// builds out; then all but it, as [`ROOT_SCRIPT`] does; it last, once a
+/// listing shows nothing else left, since not every `find` fails when a
+/// removal does.
 const USER_SCRIPT: &str = r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#;
 
 /// How root empties the state directory `dir` with ordinary tools.
@@ -131,7 +133,8 @@ pub(crate) fn cut_short(dir: &Path, euid: u32) -> String {
         return root_empties(dir);
     }
     format!(
-        "ranikust prune --all --state-dir {} finishes emptying it",
+        "run ranikust prune --all --state-dir {}, which finishes emptying it or says what stops \
+         it",
         shell_word(dir.as_os_str())
     )
 }

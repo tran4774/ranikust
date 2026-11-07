@@ -635,7 +635,8 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_how_to_finish_it() {
     let refusal = store_refusal(&cut_short(), given, 1000);
     assert_eq!(
         refusal.guidance,
-        "ranikust prune --all --state-dir '/home/u/my state' finishes emptying it"
+        "run ranikust prune --all --state-dir '/home/u/my state', which finishes emptying it or \
+         says what stops it"
     );
     assert!(
         refusal

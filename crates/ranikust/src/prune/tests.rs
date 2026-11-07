@@ -304,14 +304,33 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
         }
     }
     // The user's marker is never moved into a `.ranikust-pruning` that is
-    // not a regular file.
+    // not a regular file, there before the run or made just before `mv`.
     let state = tmp.path().join("state");
-    fill(&state);
-    fs::create_dir(state.join(".ranikust-pruning")).unwrap();
-    assert!(!run_script(USER_SCRIPT, tmp.path(), &state).success());
-    assert!(state.join(".ranikust-state").is_file());
-    assert!(state.join("blobs").is_dir());
-    fs::remove_dir_all(&state).unwrap();
+    let bin = tmp.path().join("mkdir-bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        bin.join("mv"),
+        "#!/bin/sh
+PATH=$REAL_PATH mkdir .ranikust-pruning && PATH=$REAL_PATH mv \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("mv"), fs::Permissions::from_mode(0o755)).unwrap();
+    for made_by_mv in [false, true] {
+        fill(&state);
+        if !made_by_mv {
+            fs::create_dir(state.join(".ranikust-pruning")).unwrap();
+        }
+        let shim = made_by_mv.then_some(bin.as_path());
+        let ran = run_script_with(USER_SCRIPT, tmp.path(), &state, shim, &[]).success();
+        assert!(!ran, "made by mv: {made_by_mv}");
+        assert!(
+            state.join(".ranikust-state").is_file(),
+            "made by mv: {made_by_mv}"
+        );
+        assert!(listing(&state.join(".ranikust-pruning")).is_empty());
+        assert!(state.join("blobs").is_dir(), "made by mv: {made_by_mv}");
+        fs::remove_dir_all(&state).unwrap();
+    }
     // What the user may not remove stays, and the marker with it, whether
     // or not `find` fails when a removal does; root may remove it.
     if rustix::process::geteuid().as_raw() == 0 {
@@ -381,7 +400,7 @@ fn a_path_is_quoted_for_a_shell() {
 }
 
 /// The commands the guidance gives run under the `flock` a build holds
-/// shared: refused while a store is open, run once it is closed.
+/// shared: run while no store is open, refused while one is.
 #[test]
 fn the_suggested_commands_wait_for_no_build() {
     let tmp = private_tempdir();
@@ -395,12 +414,15 @@ fn the_suggested_commands_wait_for_no_build() {
             .status()
             .unwrap()
     };
+    assert!(run().success(), "{command}");
+    assert!(ran.exists());
+    fs::remove_file(&ran).unwrap();
+    // A closed store's lock outlives it in a child another test spawns
+    // meanwhile, so nothing runs after one here.
     let open = Store::open(&rnk_store::BuildPaths::new(&state, &state)).unwrap();
     assert!(!run().success(), "{command}");
     assert!(!ran.exists());
     open.close().unwrap();
-    assert!(run().success(), "{command}");
-    assert!(ran.exists());
     // Nothing is made at a missing path, where `flock` would make a file.
     let missing = tmp.path().join("missing");
     let command = pinned(&missing, "true");
