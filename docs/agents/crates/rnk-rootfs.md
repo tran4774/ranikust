@@ -78,7 +78,7 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  //
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped; a link to one the same layer left out past a 1 MiB budget for the names remembered (one warning, ADR-0128), or that a lower layer left out (ADR-0131), is linked to what the layer has at that name, else copied from the nearest lower layer that shows it (ADR-0012), else refused; FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
-pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, with their errors, except values only the kernel refuses (#179); what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
+pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
@@ -225,13 +225,21 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   root, bad PAX times, ids out of range, a bad checksum, a cut stream, a long
   name over the limit) refused with the extraction's very error; a missing
   hardlink target, a hardlink or device node as the layer's root, and ignored
-  paths left to the extraction;
+  paths left to the extraction; each value over the kernel's limits (#179: a
+  NUL byte, a component over `NAME_MAX`, a directory path or symlink target
+  past `PATH_MAX`, an empty PAX or GNU link target, an xattr name or value
+  the kernel refuses, `user.*` on a symlink) refused by the check and every
+  extraction with the same error before anything of it is written, values at
+  the limits or that the kernel never gets taken, and a node's xattrs refused
+  only where it is made;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
-  GNU long names and links and PAX `path`, `linkpath`, `size`, `uid` and
-  `mtime` records included): it refuses no generated layer that an extraction
-  takes, and passes none whose framing an extraction refuses;
+  GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
+  and xattr records, with values at and past the kernel's limits, included):
+  it refuses no generated layer that an extraction takes, and passes none
+  whose framing or values an extraction refuses;
   `red_team_check_headers_agrees_with_every_extraction_on_mutated_headers`
-  (proptest) holds the same on a layer of every header kind with one to four
+  (proptest) holds the same on a layer of every header kind, half the time
+  with a member at or past the kernel's limits spliced in, with one to four
   bytes changed, in a header's fields or anywhere. `tests/header_check.rs`:
   `check_headers` refuses a 64 MiB GNU long name, long link or PAX set with
   under 2 MiB held, holds one entry at a time (16 entries each with a long

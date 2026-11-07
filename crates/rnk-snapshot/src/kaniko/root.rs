@@ -1023,9 +1023,8 @@ impl Spooled {
     /// compressed bytes into an anonymous file of `store` and decompresses
     /// them once, which nothing else sees: to check the tar headers as the
     /// extraction frames them and refuses them from a header alone, the
-    /// `tar-header` limit included ([`rnk_rootfs::check_headers`]; values
-    /// only the kernel refuses still fail at write time, #179), and to
-    /// compute the diff ID. The body is read to its end, even after a bad
+    /// `tar-header` limit and the kernel's limits included
+    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The body is read to its end, even after a bad
     /// header, where its source checks the size and the compressed digest.
     /// The first failure of the body or of its decompression is reported as
     /// such, before a bad header or a wrong diff ID. A blob already on disk

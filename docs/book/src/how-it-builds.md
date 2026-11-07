@@ -21,6 +21,13 @@ directory to fill and empty ([ADR-0050]). The directory is private: owned by
 the user running ranikust, mode `0700`, below directories only root or that
 user may write, because the image's setuid programs land there.
 
+Base layers are unpacked entry by entry. An entry whose name leaves the root,
+or that holds what the kernel refuses (a NUL byte, a name over 255 bytes, a
+directory path or symlink target over 4095, an xattr name or value out of its
+bounds), fails the build, naming the entry, before any of it is written. On a
+container's `/`, a layer streamed from a registry is checked whole first, so
+such a layer leaves `/` as it was.
+
 ## Overlay mode
 
 Used where ranikust may mount filesystems: as root on a host or VM, or in a

@@ -134,16 +134,31 @@ never called.
   applies whiteouts does, through the same code (`for_each_entry`,
   `read_header`), and writes nothing: the framing, the `tar-header` limit and
   every refusal a header shows on its own (names and hardlink targets out of
-  the root, sparse and unknown types, whiteouts naming nothing, a file or
-  symlink as the layer's root, ids and times that do not parse), with the
-  extraction's errors, except values only the kernel refuses (a NUL byte or an
-  over-long name, an xattr it does not take), which still fail at write time
-  ([#179](https://github.com/tran4774/ranikust/issues/179)).
-  It refuses nothing such an extraction takes; what the root or the ignore
-  list decides is the extraction's. Kaniko mode's spool pass on `/` calls it
-  on the bytes it already decompresses, so a header it refuses fails the
-  layer before `/` changes ([cache hit](kaniko-mode.md#a-cache-hit),
-  ADR-0123).
+  the root, sparse and unknown types, whiteouts naming nothing, a link with
+  an empty target, a file or symlink as the layer's root, ids and times that
+  do not parse, and the kernel's limits below), with the extraction's
+  errors. It refuses nothing such an extraction takes; what the root or the
+  ignore list decides is the extraction's. Kaniko mode's spool pass on `/`
+  calls it on the bytes it already decompresses, so a header it refuses
+  fails the layer before `/` changes
+  ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123).
+- **The kernel's limits.** `read_header` refuses what the kernel would
+  refuse whatever the root holds, so the entry fails before anything of it
+  is written, in every extraction and the check alike
+  ([#179](https://github.com/tran4774/ranikust/issues/179)): a NUL byte in
+  a name or link target; a component over 255 bytes (`NAME_MAX`); a
+  directory path over 4095 bytes (`PATH_MAX` counts the NUL), the entry's
+  name aside, since the kernel gets the directory, then the name; a symlink
+  target over 4095 bytes. On a directory, file or symlink it refuses an
+  xattr, as it is set (escaped in the overlay form), whose name is empty,
+  over 255 bytes (`XATTR_NAME_MAX`), holds a NUL byte or is not a namespace
+  of `xattr(7)` and more, whose value is over 64 KiB (`XATTR_SIZE_MAX`),
+  and `user.*` on the symlink. A device node or FIFO's xattrs are refused by
+  the extraction that makes it, before it is made: a live root makes none.
+  What the kernel never gets is taken: the `.wh.` prefix of a whiteout
+  (the name it hides is checked), AUFS metadata, a hardlink's xattrs and
+  `trusted.*` ones. What depends on the filesystem (a `system.*` name it
+  does not know, a value too big for its blocks) still fails at write time.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

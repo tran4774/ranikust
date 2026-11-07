@@ -117,6 +117,23 @@ impl Tar {
         self.entry(name, kind, "", b"", 0o666, dev)
     }
 
+    /// A PAX header of `records` for the next entry.
+    fn pax(&mut self, records: &[(&str, &[u8])]) -> &mut Self {
+        let mut data = Vec::new();
+        for (k, v) in records {
+            // The record's length counts its own digits.
+            let body = k.len() + v.len() + 3;
+            let mut len = body + 1;
+            while len != body + len.to_string().len() {
+                len = body + len.to_string().len();
+            }
+            data.extend_from_slice(format!("{len} {k}=").as_bytes());
+            data.extend_from_slice(v);
+            data.push(b'\n');
+        }
+        self.entry("pax", EntryType::XHeader, "", &data, 0o644, (0, 0))
+    }
+
     /// The tar stream, its end included.
     fn bytes(&self) -> Vec<u8> {
         let mut out = self.out.clone();
@@ -1119,8 +1136,9 @@ fn a_layer_that_fails_before_its_first_entry_leaves_the_root_usable() {
 }
 
 /// Layers whose digest and diff ID are right but whose tar has, after a good
-/// first entry, a header every extraction refuses on its own, and whether it
-/// is the `tar-header` limit (`--limit`) that refuses it.
+/// first entry, a header every extraction refuses on its own (a value the
+/// kernel would refuse among them, #179), and whether it is the
+/// `tar-header` limit (`--limit`) that refuses it.
 fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
     let first = || {
         let mut t = Tar::new();
@@ -1133,10 +1151,43 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
             .file("after", b"2")
             .bytes()
     };
+    let pax = |records: &[(&str, &[u8])], then: fn(&mut Tar) -> &mut Tar| {
+        let mut t = first();
+        then(t.pax(records));
+        t.bytes()
+    };
+    let long = "n".repeat(256);
     let mut summed = first().file("summed", b"").bytes();
     // A name byte of the second header: its checksum no longer matches.
     summed[1024] ^= 1;
     vec![
+        (
+            "a NUL byte in a PAX path",
+            pax(&[("path", b"d/a\0b")], |t| t.file("x", b"")),
+            false,
+        ),
+        (
+            "a name over NAME_MAX",
+            pax(&[("path", long.as_bytes())], |t| t.file("x", b"")),
+            false,
+        ),
+        (
+            "a symlink target over PATH_MAX - 1",
+            pax(&[("linkpath", &[b't'; 4096])], |t| t.symlink("s", "x")),
+            false,
+        ),
+        (
+            "an xattr in no namespace",
+            pax(&[("SCHILY.xattr.com.apple.x", b"v")], |t| t.file("x", b"")),
+            false,
+        ),
+        (
+            "a user.* xattr on a symlink",
+            pax(&[("SCHILY.xattr.user.a", b"v")], |t| {
+                t.symlink("s", "first")
+            }),
+            false,
+        ),
         (
             "a name out of the root",
             first().file("../out", b"x").bytes(),
