@@ -504,6 +504,17 @@ else
     { echo "error: user: the e2e image printed: $got" >&2; exit 1; }
   sudo docker rmi -f "$loaded" >/dev/null
   echo "user: ranikust builds tests/smoke/e2e in rootless overlay mode; RUN --network=none sees lo alone"
+  # A set-up failing in the build's user namespace never falls back to
+  # kaniko mode for a user other than root (ADR-0136).
+  rc=0
+  log="$(RANIKUST_DEBUG_FAULT=rootless-broken "$RNK" "${rl_args[@]}" --state-dir "$ud/w" 2>&1)" ||
+    rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-broken.log"
+  [ "$rc" = 1 ] &&
+    grep -q 'rootless overlay mode: refused by RANIKUST_DEBUG_FAULT=rootless-broken' <<<"$log" &&
+    ! grep -q 'kaniko mode' <<<"$log" ||
+    { echo "error: user: expected the set-up's error, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: a set-up failing in the build's user namespace is an error, with no fallback"
 fi
 echo "user: ok"
 

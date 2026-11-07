@@ -6,8 +6,10 @@
 # digest equals overlay mode as root's (--privileged), also at --jobs 1; a
 # file capability a RUN sets is exported; ranikust killed during a RUN
 # (SIGKILL, SIGINT, SIGINT to its group) leaves no process, and the next
-# build removes the killed builds' directories. Each mode has a persistent
-# state directory of its own: the leg's may be kaniko mode's.
+# build removes the killed builds' directories. In the kaniko leg, a set-up
+# that fails in the build's user namespace falls back to kaniko mode
+# (ADR-0136). Each mode has a persistent state directory of its own: the
+# leg's may be kaniko mode's.
 
 # state NAME: a state directory of this case's, kept for the next run.
 state() {
@@ -68,6 +70,39 @@ case_run() {
   local left
   left="$(find "$WORK/builds" "$WORK/tmp" -mindepth 1 -maxdepth 1 2>/dev/null)"
   [ -z "$left" ] || fail "left in the state directory after the next build: $left"
+  falls_back
+}
+
+# falls_back: T1 kaniko leg only, where kaniko mode on / finds the binary
+# and the context under /ranikust. A set-up failing in the build's user
+# namespace (RANIKUST_DEBUG_FAULT=rootless-broken, once the store is open)
+# falls back to kaniko mode for root's --mode=auto, the state directory it
+# made a store left empty; --mode=overlay gets the error (ADR-0136).
+falls_back() {
+  [ "${RANIKUST_CASE_MODE:-}" = kaniko ] || return 0
+  state fallback
+  rm -rf "$WORK" && mkdir -p "$WORK" && chmod 700 "$WORK"
+  PODMAN_ARGS=(-e RANIKUST_DEBUG_FAULT=rootless-broken)
+  build fallback --target content --allow proc.rbind >/dev/null
+  local log
+  log="$(cat "$(out fallback)/build.log")"
+  grep -q 'refused by RANIKUST_DEBUG_FAULT=rootless-broken; kaniko mode instead, before anything was built (ADR-0136)' <<<"$log" &&
+    grep -q 'ranikust: kaniko mode on /, RUN directly' <<<"$log" ||
+    fail "the hook: no fallback to kaniko mode on /: $log"
+  expect "$(run fallback sh -c 'stat -c "%u:%g %a" /home/u/f /d && readlink /home/u/l')" \
+    "$(printf '1234:1234 644\n0:0 2750\nf')" "the image kaniko mode built after the fallback"
+  [ -z "$(ls -A "$WORK")" ] || fail "left in the state directory: $(ls -A "$WORK")"
+  local o rc=0
+  o="$(out overlay-broken)"
+  rm -rf "$o" && mkdir -p "$o"
+  log="$(rnk_run "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --mode=overlay \
+    --target content --allow proc.rbind 2>&1)" || rc=$?
+  PODMAN_ARGS=()
+  printf '%s\n' "$log" >"$o/build.log"
+  expect "$rc" 1 "--mode=overlay with the hook"
+  grep -q 'rootless overlay mode: refused by RANIKUST_DEBUG_FAULT=rootless-broken' <<<"$log" &&
+    ! grep -q 'kaniko mode' <<<"$log" || fail "--mode=overlay with the hook: $log"
+  [ ! -e "$o/image.tar" ] || fail "--mode=overlay with the hook: an image was written"
 }
 
 # killed_mid_run HOW: ranikust is sent SIGKILL (KILL), SIGINT (INT) or

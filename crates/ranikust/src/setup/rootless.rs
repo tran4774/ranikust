@@ -1,7 +1,9 @@
 //! Rootless overlay mode (ADR-0104, ADR-0107): the user namespace probe
 //! routes before the build's user namespace is entered ([`plan`]), the
 //! process unchanged; the build is then set up in that namespace
-//! ([`set_up`]), from which no other mode may follow.
+//! ([`set_up`]), from which no other mode may follow in that process: root's
+//! `--mode=auto` sets up in a child, to fall back to kaniko mode in the
+//! parent (ADR-0136).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -210,6 +212,19 @@ fn unique() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
+/// What [`set_up`] does besides its steps.
+pub(crate) struct Then {
+    /// A `RUN` with `--network=none` may get a network namespace of its own
+    /// (`--allow network.none-userns`), as for [`super::set_up`].
+    pub(crate) userns_network: bool,
+    /// A failure once the store is open abandons it
+    /// ([`rnk_store::Store::abandon`]): kaniko mode follows (ADR-0136).
+    pub(crate) abandon: bool,
+    /// The test hook's variable where its `rootless-broken` fails the
+    /// set-up once the store is open.
+    pub(crate) broken_by: Option<&'static str>,
+}
+
 /// Enters the build's user namespace as `plan` says
 /// ([`rnk_sandbox::enter_build_user_namespace`], which also enters the
 /// build's mount namespace) and sets rootless overlay mode up in it: the
@@ -218,7 +233,7 @@ fn unique() -> String {
 /// ([`rnk_sandbox::probe_with_fallbacks`]); the overlay probe in the
 /// build's directory; the outcome; then the spawner thread. `scanned` says
 /// the peer scan passed (ADR-0129): a sandbox that binds `/proc` without it
-/// is refused. `userns_network` and `seccomp` as for [`super::set_up`]. Call
+/// is refused. `seccomp` as for [`super::set_up`], `then` as it says. Call
 /// while single-threaded.
 ///
 /// # Errors
@@ -230,8 +245,8 @@ pub(crate) fn set_up(
     state_dir: &Path,
     plan: Plan,
     scanned: bool,
-    userns_network: bool,
     seccomp: &Seccomp,
+    then: &Then,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     let Plan {
@@ -246,6 +261,35 @@ pub(crate) fn set_up(
     let store = super::open_store(state_dir, state_dir, euid).map_err(super::inside_userns)?;
     // The store holds the directory now.
     drop(held);
+    match in_store(state_dir, &store, fallbacks, scanned, seccomp, then) {
+        Ok((outcome, sandbox)) => Ok(Setup {
+            outcome,
+            state_dir: state_dir.to_path_buf(),
+            store: Arc::new(store),
+            sandbox,
+        }),
+        Err(refusal) => {
+            if then.abandon {
+                abandon(store);
+            }
+            Err(refusal)
+        }
+    }
+}
+
+/// [`set_up`]'s steps once the store is open: the outcome and the
+/// sandbox.
+fn in_store(
+    state_dir: &Path,
+    store: &rnk_store::Store,
+    fallbacks: Fallbacks,
+    scanned: bool,
+    seccomp: &Seccomp,
+    then: &Then,
+) -> Result<(Outcome, Sandbox), Refusal> {
+    if let Some(env) = then.broken_by {
+        return Err(broken(format!("refused by {env}=rootless-broken")));
+    }
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
@@ -268,19 +312,33 @@ pub(crate) fn set_up(
     };
     tracing::info!("ranikust: {outcome}");
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| broken(e.to_string()))?;
-    if userns_network {
+    if then.userns_network {
         sandbox.allow_userns_network();
     }
     seccomp.apply(&mut sandbox);
-    Ok(Setup {
-        outcome,
-        state_dir: state_dir.to_path_buf(),
-        store: Arc::new(store),
-        sandbox,
-    })
+    Ok((outcome, sandbox))
 }
 
-/// A failure in the build's user namespace: no other mode may follow.
+/// Closes the store of a set-up that failed, and empties the state
+/// directory where its open made it a store, so that kaniko mode on `/`
+/// takes it (ADR-0136); else kaniko mode refuses it, as it would have.
+fn abandon(store: rnk_store::Store) {
+    let state = store.state_dir().to_path_buf();
+    match store.abandon() {
+        Ok(true) => tracing::debug!(
+            "the store this set-up made in {} is removed",
+            state.display()
+        ),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(
+            "the store this set-up made in {} is not removed: {e}",
+            state.display()
+        ),
+    }
+}
+
+/// A failure in the build's user namespace: no other mode may follow in
+/// this process.
 fn broken(reason: String) -> Refusal {
     Refusal {
         kind: Kind::Broken,

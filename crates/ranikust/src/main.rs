@@ -80,7 +80,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// failed probe check, which routes as NFS's refused mount does
 /// ([`setup::set_up`]); `no-userns` refuses rootless overlay mode before
 /// its probe, so that a test of the binary as a user other than root makes
-/// no user namespace ([`rootless`]). It lets the tests run the real binary
+/// no user namespace ([`rootless`]); `rootless-broken` fails rootless
+/// overlay mode's set-up in the build's user namespace once its store is
+/// open, where `--mode=auto` falls back to kaniko mode for root
+/// (ADR-0136). It lets the tests run the real binary
 /// through these paths, including a release build, where
 /// `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
@@ -493,7 +496,6 @@ fn build(
     fault: Option<&str>,
 ) -> Result<(), Failure> {
     let refuse_overlay = fault == Some("overlay-refused");
-    let no_userns = fault == Some("no-userns");
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
     let seccomp = config::read_seccomp(config.seccomp.as_ref())
         .map_err(|invalid| Failure::usage(invalid.0))?;
@@ -548,14 +550,11 @@ fn build(
             overlay_flags(args)?;
             // One span for the whole set-up: the namespace, then the rest.
             let span = tracing::debug_span!("ranikust.setup");
-            let how = "--mode=overlay";
             // A user other than root builds in a user namespace of its own.
             if !rustix::process::geteuid().is_root() {
                 let started_in = started_in.as_ref().map_err(|&e| e);
-                return match rootless(&config, &seccomp, &span, started_in, how, None, no_userns) {
-                    Rootless::Built(built) => built,
-                    Rootless::NotHere(not_here) => Err(Failure::refused(not_here.refusal)),
-                };
+                return rootless(&config, &seccomp, &span, started_in, Via::Overlay, fault)
+                    .refused();
             }
             let refusal = match span.in_scope(setup::enter_namespace) {
                 Ok(()) => {
@@ -575,9 +574,11 @@ fn build(
                 Some(off) => off,
                 None => {
                     let started_in = started_in.as_ref().map_err(|&e| e);
-                    match rootless(&config, &seccomp, &span, started_in, how, None, no_userns) {
+                    match rootless(&config, &seccomp, &span, started_in, Via::Overlay, fault) {
                         Rootless::Built(built) => return built,
                         Rootless::NotHere(not_here) => not_here.refusal.to_string(),
+                        // Never: only `--mode=auto` falls back.
+                        Rootless::FellBack(reason) => reason,
                     }
                 }
             };
@@ -590,22 +591,18 @@ fn build(
         // (ADR-0040).
         config::Mode::Auto => {
             let span = tracing::debug_span!("ranikust.setup");
-            let how = "--mode=auto";
             // A user other than root builds in a user namespace of its own.
             if !rustix::process::geteuid().is_root() {
                 let started_in = started_in.as_ref().map_err(|&e| e);
-                return match rootless(
+                return rootless(
                     &config,
                     &seccomp,
                     &span,
                     started_in,
-                    how,
-                    Some(args),
-                    no_userns,
-                ) {
-                    Rootless::Built(built) => built,
-                    Rootless::NotHere(not_here) => Err(Failure::refused(not_here.refusal)),
-                };
+                    Via::AutoUser(args),
+                    fault,
+                )
+                .refused();
             }
             match span.in_scope(setup::enter_namespace) {
                 Ok(()) => {
@@ -642,7 +639,7 @@ fn build(
                             for warning in warnings {
                                 tracing::warn!("{warning}");
                             }
-                            return overlay_built(&config, setup);
+                            return overlay_built(&config, setup, build::Stops::Own);
                         }
                         Err(refusal) => refusal,
                     };
@@ -694,15 +691,8 @@ fn build(
                         }
                         None => {
                             let started_in = started_in.as_ref().map_err(|&e| e);
-                            match rootless(
-                                &config,
-                                &seccomp,
-                                &span,
-                                started_in,
-                                how,
-                                Some(args),
-                                no_userns,
-                            ) {
+                            let via = Via::AutoRoot(args);
+                            match rootless(&config, &seccomp, &span, started_in, via, fault) {
                                 Rootless::Built(built) => return built,
                                 Rootless::NotHere(not_here) => {
                                     tracing::info!("ranikust: {}", not_here.refusal);
@@ -712,6 +702,13 @@ fn build(
                                     } else {
                                         KanikoBy::Auto
                                     }
+                                }
+                                Rootless::FellBack(reason) => {
+                                    tracing::info!(
+                                        "ranikust: {reason}; kaniko mode instead, before \
+                                         anything was built (ADR-0136)"
+                                    );
+                                    KanikoBy::AutoProbed
                                 }
                             }
                         }
@@ -743,6 +740,55 @@ enum Rootless {
     Built(Result<(), Failure>),
     /// Rootless overlay mode cannot run here; the process is unchanged.
     NotHere(setup::rootless::NotHere),
+    /// [`Via::AutoRoot`]: the set-up failed in the build's user namespace,
+    /// in the child that entered it, for this reason; what it made in the
+    /// state directory is undone, and this process is as it was before
+    /// rootless overlay mode, its probe line logged (ADR-0136).
+    FellBack(String),
+}
+
+impl Rootless {
+    /// The run's result where nothing may follow rootless overlay mode: a
+    /// user other than root.
+    fn refused(self) -> Result<(), Failure> {
+        match self {
+            Self::Built(built) => built,
+            Self::NotHere(not_here) => Err(Failure::refused(not_here.refusal)),
+            // Never: only root falls back.
+            Self::FellBack(reason) => Err(Failure::error(reason)),
+        }
+    }
+}
+
+/// How [`rootless`] was reached.
+#[derive(Clone, Copy)]
+enum Via<'a> {
+    /// `--mode=overlay`, whose flags were checked first.
+    Overlay,
+    /// `--mode=auto` as a user other than root, with its flags.
+    AutoUser(&'a BuildArgs),
+    /// `--mode=auto` as root that may not mount, with its flags: kaniko
+    /// mode follows where the set-up fails in the build's user namespace
+    /// (ADR-0136).
+    AutoRoot(&'a BuildArgs),
+}
+
+impl Via<'_> {
+    /// The flag, for messages.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Overlay => "--mode=overlay",
+            Self::AutoUser(_) | Self::AutoRoot(_) => "--mode=auto",
+        }
+    }
+
+    /// Whether a set-up that fails in the build's user namespace falls
+    /// back to kaniko mode: root's `--mode=auto` only, which had kaniko
+    /// mode before rootless overlay mode; never a user other than root,
+    /// whom kaniko mode refuses, nor `--mode=overlay` (ADR-0136).
+    fn falls_back(self) -> bool {
+        matches!(self, Self::AutoRoot(_))
+    }
 }
 
 /// Why `--mode=auto`, as root that may not mount, does not try rootless
@@ -784,20 +830,24 @@ fn rootless_kept_off() -> Option<String> {
 /// rbind exposes, all before the build's user namespace, where ranikust
 /// could no longer open the other processes; then overlay mode's flags, where
 /// `flags` gives them (`--mode=auto`; `--mode=overlay` checked them
-/// first); then the set-up in the namespace and the build. `how` names the
-/// flag; `started_in` as for [`kaniko`]; `no_userns` is the test hook's
-/// `no-userns`.
+/// first); then the set-up in the namespace and the build. Where `via`
+/// falls back ([`Via::falls_back`]), a child enters the namespace, sets up
+/// and builds, and this process waits outside it
+/// ([`rnk_sandbox::fork_to_wait`]): it returns only where the child's
+/// set-up failed ([`Rootless::FellBack`]), else ends as the child did.
+/// `started_in` as for [`kaniko`]; `fault` is the test hook's value
+/// ([`DEBUG_FAULT_ENV`]: `no-userns`, `rootless-broken`).
 fn rootless(
     config: &BuildConfig,
     seccomp: &Seccomp,
     span: &tracing::Span,
     started_in: rustix::io::Result<&exposure::MountNamespace>,
-    how: &str,
-    flags: Option<&BuildArgs>,
-    no_userns: bool,
+    via: Via<'_>,
+    fault: Option<&str>,
 ) -> Rootless {
+    let how = via.flag();
     let plan = match span.in_scope(|| {
-        if no_userns {
+        if fault == Some("no-userns") {
             let euid = rustix::process::geteuid().as_raw();
             return Err(setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, euid));
         }
@@ -818,26 +868,58 @@ fn rootless(
         }
         exposure::warn_build_args(&config.build_args, exposure::Reach::ProcRbind);
     }
-    if let Some(args) = flags
+    if let Via::AutoUser(args) | Via::AutoRoot(args) = via
         && let Err(failure) = overlay_flags(args)
     {
         return Rootless::Built(Err(failure));
     }
-    let setup = span.in_scope(|| {
-        setup::rootless::set_up(
-            &config.state_dir,
-            plan,
-            scanned,
-            config.allow_network_none_userns,
-            seccomp,
-        )
-    });
-    match setup {
-        Ok(setup) => Rootless::Built(overlay_built(config, setup)),
-        Err(refusal) if refusal.kind == setup::Kind::Broken => {
+    let child = if via.falls_back() {
+        match span.in_scope(rnk_sandbox::fork_to_wait) {
+            Ok(rnk_sandbox::Forked::Child(child)) => Some(child),
+            Ok(rnk_sandbox::Forked::Parent(waiting)) => {
+                // The child holds the state directory until its store is
+                // open; a copy held here would keep it from undoing it.
+                drop(plan);
+                return Rootless::FellBack(waiting.wait());
+            }
+            Err(e) => {
+                return Rootless::NotHere(setup::rootless::NotHere {
+                    refusal: setup::Refusal {
+                        kind: setup::Kind::Other,
+                        reason: format!(
+                            "rootless overlay mode is not tried: the process that would wait \
+                             outside the build's user namespace cannot be forked: {e}"
+                        ),
+                        guidance: "".into(),
+                    },
+                    probed: true,
+                });
+            }
+        }
+    } else {
+        None
+    };
+    let then = setup::rootless::Then {
+        userns_network: config.allow_network_none_userns,
+        abandon: child.is_some(),
+        broken_by: (fault == Some("rootless-broken")).then_some(DEBUG_FAULT_ENV),
+    };
+    let setup =
+        span.in_scope(|| setup::rootless::set_up(&config.state_dir, plan, scanned, seccomp, &then));
+    match (setup, child) {
+        (Ok(setup), Some(child)) => match child.proceed() {
+            Ok(()) => Rootless::Built(overlay_built(config, setup, build::Stops::Forwarded)),
+            Err(e) => {
+                close_store(setup.store);
+                Rootless::Built(Err(Failure::error(format!("rootless overlay mode: {e}"))))
+            }
+        },
+        (Ok(setup), None) => Rootless::Built(overlay_built(config, setup, build::Stops::Own)),
+        (Err(refusal), Some(child)) => child.fall_back(&refusal.reason),
+        (Err(refusal), None) if refusal.kind == setup::Kind::Broken => {
             Rootless::Built(Err(Failure::refused(refusal)))
         }
-        Err(refusal) => Rootless::NotHere(setup::rootless::NotHere {
+        (Err(refusal), None) => Rootless::NotHere(setup::rootless::NotHere {
             refusal,
             probed: true,
         }),
@@ -894,7 +976,7 @@ fn overlay(
             )
         })
         .map_err(Failure::refused)?;
-    overlay_built(config, setup)
+    overlay_built(config, setup, build::Stops::Own)
 }
 
 /// Closes a store this run will not build with: its build directory goes
@@ -908,8 +990,12 @@ fn close_store(store: std::sync::Arc<rnk_store::Store>) {
     }
 }
 
-/// Overlay mode's build, once set up.
-fn overlay_built(config: &BuildConfig, setup: setup::Setup) -> Result<(), Failure> {
+/// Overlay mode's build, once set up, stopped by `stops`.
+fn overlay_built(
+    config: &BuildConfig,
+    setup: setup::Setup,
+    stops: build::Stops,
+) -> Result<(), Failure> {
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
     tracing::info!("set up for {}", setup.outcome);
     let (setup::Outcome::OverlayRoot { overlay, .. }
@@ -918,7 +1004,7 @@ fn overlay_built(config: &BuildConfig, setup: setup::Setup) -> Result<(), Failur
         config,
         setup.store,
         setup.sandbox,
-        build::Snapshots::Overlay(overlay),
+        build::Snapshots::Overlay(overlay, stops),
     )
     .map_err(Failure::error)?;
     report_built(&built)
@@ -2222,6 +2308,23 @@ mod tests {
                 "{flags:?}"
             );
         }
+    }
+
+    /// Only root's `--mode=auto`, which built in kaniko mode before
+    /// rootless overlay mode, falls back to it from the build's user
+    /// namespace; a user other than root and `--mode=overlay` get the error
+    /// (ADR-0136).
+    #[test]
+    fn only_roots_auto_mode_falls_back_to_kaniko_mode() {
+        let argv = ["ranikust", "--no-push"];
+        let Command::Build(args) = cli::parse(argv).unwrap().cli.into_command() else {
+            panic!("expected build");
+        };
+        assert!(Via::AutoRoot(&args).falls_back());
+        assert!(!Via::AutoUser(&args).falls_back());
+        assert!(!Via::Overlay.falls_back());
+        assert_eq!(Via::AutoRoot(&args).flag(), "--mode=auto");
+        assert_eq!(Via::Overlay.flag(), "--mode=overlay");
     }
 
     /// `--snapshot-mode` and `--snapshot-workers` reach the walk with their

@@ -113,7 +113,8 @@ pub(crate) enum Kind {
     SandboxBlocked,
     /// The process may be in the build's user namespace (it is not known to
     /// be unchanged), and its set-up or a later step failed: it must end,
-    /// so no mode may follow.
+    /// so no mode may follow in this process (ADR-0136: in a child, kaniko
+    /// mode may in the parent).
     Broken,
 }
 
