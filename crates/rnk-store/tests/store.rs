@@ -58,11 +58,13 @@ fn open_creates_the_layout_and_the_marker() {
 fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let egid = rustix::process::getegid().as_raw();
+    // Another group the user is in; root may take any.
     let group = rustix::process::getgroups()
         .unwrap()
         .into_iter()
         .map(rustix::process::Gid::as_raw)
         .find(|&g| g != egid)
+        .or_else(|| rustix::process::geteuid().is_root().then_some(egid ^ 1))
         .unwrap_or(egid);
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join(".ranikust");
@@ -105,6 +107,10 @@ fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
 
     // A store directory of another gid without the bit, as a `grpid`
     // mount gives one, takes the effective gid at the next open.
+    if group == egid {
+        eprintln!("skipped: a store directory of another gid (the user has one group)");
+        return;
+    }
     drop(store);
     let tmp = state.join("tmp");
     std::os::unix::fs::chown(&tmp, None, Some(group)).unwrap();

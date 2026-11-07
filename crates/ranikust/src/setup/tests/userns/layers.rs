@@ -519,7 +519,8 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 }
 
 /// T1, as root of a rootless Podman container: base layers extracted as
-/// root of the build's user namespace keep the owners, modes, xattrs,
+/// root of the build's user namespace keep the owners, modes (setuid,
+/// setgid and sticky included), xattrs, symlinks, hardlinks, mtimes,
 /// whiteouts and opaque directories their tars give, as overlay as root
 /// extracts them; a `0555` root, root's or a user's, is published by the
 /// rename; device nodes are left out and counted; a diff ID the tar does not
@@ -583,12 +584,14 @@ fn sudo_user() -> ((u32, u32), bool) {
 const UNMAPPED_GID: u32 = 4242;
 
 /// T2: the same layers as real root, with no user namespace, give the
-/// device nodes too and the chain IDs as names. As the user who ran sudo,
+/// device nodes too and the chain IDs as names, and publish the layer of
+/// an owner no map holds. As the user who ran sudo,
 /// with the user's subordinate ids and a setgid state directory of a gid
 /// no map holds: where AppArmor restricts unprivileged user namespaces
 /// (Ubuntu 24.04) the set-up is refused; elsewhere (22.04) the layers come
-/// out as root's, devices aside, owned outside by the subordinate ids, and
-/// the user outside the namespace cannot move them.
+/// out as root's, devices aside and that layer refused, owned outside by
+/// the subordinate ids, and the user outside the namespace cannot move
+/// them.
 #[test]
 #[ignore = "T2: extracts layers as real root and as the sudo user in the build's user namespace"]
 fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {

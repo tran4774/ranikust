@@ -1751,8 +1751,8 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
 }
 
 /// Gives `d`, one of [`DIRS`] and this user's, the effective gid and no
-/// setgid bit, which a setgid state directory, or one on a `grpid` mount,
-/// gives its new directories otherwise: entries below then get the gid of
+/// setgid bit, where a setgid state directory gave it its own gid and the
+/// bit, or a `grpid` mount its parent's gid: entries below then get the gid of
 /// the process that makes them, which a user namespace maps (ADR-0099),
 /// and never a gid and setgid bit from the host in an extracted layer.
 fn own_group(state: &RootPath, d: &str) -> Result<()> {

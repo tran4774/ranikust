@@ -25,9 +25,10 @@ const NSFS_MAGIC: FsWord = 0x6e73_6673;
 /// Read no more of a map: the kernel writes at most 340 lines.
 const MAP_MAX: u64 = 64 * 1024;
 
-/// Puts a mapped layer's key in a space of its own: no chain ID's input
-/// (`<digest> <digest>`) or tar starts with these bytes, so a mapped key is
-/// never a chain ID.
+/// Puts a mapped layer's key in a space of its own: no chain ID of several
+/// layers (`<digest> <digest>` hashed) starts with these bytes, and a chain
+/// ID of one layer equal to a key would need a layer whose tar is exactly
+/// the key's input, fixed by the chain and the maps.
 const KEY_DOMAIN: &[u8] = b"ranikust layer extracted in a user namespace, v1\0";
 
 /// A user namespace other than the initial one, with its maps as this

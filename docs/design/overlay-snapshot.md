@@ -55,9 +55,7 @@ operator removes them. In a user namespace other than the initial one (a
 rootless or `--userns` build, or ranikust started in a rootless container) the
 key also holds the namespace's id map (ADR-0104,
 [cache-and-store](cache-and-store.md#store-layout)): a layer extracted with one
-map is never a lower under another. The map is the one `/proc/self` shows,
-relative to the parent namespace, so two nested namespaces with the same map
-under parents with different ones share a key.
+map is never a lower under another.
 
 ## One layer per instruction
 
