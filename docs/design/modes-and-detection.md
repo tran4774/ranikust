@@ -121,9 +121,11 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
    a directory made for them and removed after:
    - for rootless overlay mode (`setup::rootless::plan`), in the state
-     directory, named as the leftovers an anonymous store removes
+     directory, once the store's check, which writes nothing, takes it as one
+     (Q-111, (a)), named as the leftovers an anonymous store removes
      (`.ranikust-anon-userns-probe-<pid>-<nanos>`), so that a build cut short
-     there leaves nothing the next start counts as foreign; it takes the
+     there leaves nothing the next start counts as foreign; a persistent
+     store keeps such a name, an anonymous one removes it; it takes the
      process's gid and no setgid bit, as the store's own directories do
      ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
    - where it only reports (`report_user_namespace`, root only: it checks the
@@ -132,9 +134,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      anonymous).
 
    If a child could not be reaped, which may still work in it, the directory
-   stays: until the build directory is removed (or the state directory
-   emptied) at the end of the run, at once when `--mode=auto` falls back to
-   kaniko mode, else at the next start (a refused set-up, a run cut short).
+   stays: the report's until the build directory is removed (or the state
+   directory emptied) at the end of the run, at once when `--mode=auto`
+   falls back to kaniko mode, else at the next start (a refused set-up, a
+   run cut short); rootless overlay mode's as a leftover above.
    - `unshare(CLONE_NEWUSER)`, then write `uid_map` and `gid_map`. Root
      writes a map of every id it has, each to itself; inside a container
      that is several ranges (each must fit inside one range of the parent

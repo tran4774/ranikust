@@ -157,6 +157,41 @@ fn open_refuses_a_non_empty_directory_without_the_marker() {
     assert_eq!(names(dir.path()), ["precious"]);
 }
 
+/// The check before a write in the state directory decides as `open` does,
+/// and writes nothing.
+#[test]
+fn check_state_dir_decides_as_open_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = format!("{}userns-probe-1-2", rnk_store::ANON_PREFIX);
+    let case = |name: &str| {
+        let d = dir.path().join(name);
+        fs::create_dir(&d).unwrap();
+        d
+    };
+    let empty = case("empty");
+    Store::check_state_dir(&empty).unwrap();
+    assert!(names(&empty).is_empty());
+    let leftovers = case("leftovers");
+    fs::create_dir(leftovers.join(&left)).unwrap();
+    Store::check_state_dir(&leftovers).unwrap();
+    assert_eq!(names(&leftovers), [left.as_str()]);
+    let marked = case("marked");
+    fs::write(marked.join(rnk_store::STATE_MARKER), "").unwrap();
+    fs::write(marked.join("kept"), "x").unwrap();
+    Store::check_state_dir(&marked).unwrap();
+    let foreign = case("foreign");
+    fs::write(foreign.join("precious"), "x").unwrap();
+    let err = Store::check_state_dir(&foreign).unwrap_err();
+    assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
+    assert_eq!(names(&foreign), ["precious"]);
+    let slash = case("slash");
+    fs::write(slash.join(rnk_store::BUILDING_MARKER), "").unwrap();
+    let err = Store::check_state_dir(&slash).unwrap_err();
+    assert!(matches!(err, Error::UsedOnSlash { .. }), "{err}");
+    let err = Store::check_state_dir(&dir.path().join("missing")).unwrap_err();
+    assert!(matches!(err, Error::Io { .. }), "{err}");
+}
+
 /// A probe directory of a build cut short before its store opened is
 /// ranikust's own: the directory is still a new store, the name stays.
 #[test]

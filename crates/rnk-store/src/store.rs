@@ -319,7 +319,9 @@ impl Store {
     ///
     /// The state directory is created (mode 0700) if missing and
     /// canonicalized; a new or empty directory gets the [`STATE_MARKER`]
-    /// marker, and a non-empty one without it is refused. A state directory
+    /// marker, and a non-empty one without it is refused, unless it holds
+    /// only names ranikust makes there ([`crate::ANON_PREFIX`]), which
+    /// stay. A state directory
     /// owned by another user or writable by others is used with a warning.
     /// The store's own directories take the process's gid and no setgid
     /// bit, whatever a setgid state directory or a `grpid` mount gave them,
@@ -392,6 +394,28 @@ impl Store {
         };
         store.cleanup()?;
         Ok(store)
+    }
+
+    /// Checks, writing nothing, that [`Store::open`] would take the
+    /// existing directory `state` as a state directory: it holds
+    /// [`STATE_MARKER`] or only names ranikust makes there, and no
+    /// [`BUILDING_MARKER`]. For a step that writes there before the store
+    /// opens (Q-111, (a)).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotAStateDir`] and [`Error::UsedOnSlash`] as
+    /// [`Store::open`], [`Error::Io`] when `state` cannot be resolved or
+    /// read, [`Error::Rootfs`] when it cannot be opened.
+    pub fn check_state_dir(state: &Path) -> Result<()> {
+        let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
+            op: "resolve",
+            path: state.to_owned(),
+            source,
+        })?;
+        let root = RootPath::open(&state_path)?;
+        refuse_used_on_slash(&root, &state_path)?;
+        needs_marker(&root, &state_path).map(drop)
     }
 
     /// Opens a store that keeps nothing in the state directory `state`
@@ -1722,38 +1746,54 @@ fn shown_names(names: &[OsString]) -> String {
 /// namespace probe's directory of a build cut short before its store) does
 /// not count, and stays.
 fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
-    let refuse = || Error::NotAStateDir {
-        path: state_path.to_owned(),
-    };
-    let marked = |state: &RootPath| -> Result<Option<bool>> {
-        match state.statx(MARKER) {
-            Ok(st) => Ok(Some(st.file_type() == FileType::Regular)),
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    };
-    match marked(state)? {
-        Some(true) => return Ok(()),
-        Some(false) => return Err(refuse()),
-        None => {}
-    }
-    if !list(state, Path::new("."))?
-        .iter()
-        .all(|n| anon::is_leftover(n))
-    {
-        // A build creating the store concurrently writes the marker first.
-        return match marked(state)? {
-            Some(true) => Ok(()),
-            _ => Err(refuse()),
-        };
+    if !needs_marker(state, state_path)? {
+        return Ok(());
     }
     match state.open_at(MARKER, &OpenHow::write().create_new(0o644)) {
         Ok(_) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => match marked(state)? {
+        Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => match marker(state)? {
             Some(true) => Ok(()),
-            _ => Err(refuse()),
+            _ => Err(not_a_state_dir(state_path)),
         },
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Whether `state` still needs its marker, as [`check_marker`] decides,
+/// writing nothing: `false` where it has one, `true` where it holds only
+/// names ranikust makes; any other name refuses it.
+fn needs_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
+    match marker(state)? {
+        Some(true) => return Ok(false),
+        Some(false) => return Err(not_a_state_dir(state_path)),
+        None => {}
+    }
+    if list(state, Path::new("."))?
+        .iter()
+        .all(|n| anon::is_leftover(n))
+    {
+        return Ok(true);
+    }
+    // A build creating the store concurrently writes the marker first.
+    match marker(state)? {
+        Some(true) => Ok(false),
+        _ => Err(not_a_state_dir(state_path)),
+    }
+}
+
+/// The state directory's marker: `Some(true)` for a regular file, `None`
+/// where there is none.
+fn marker(state: &RootPath) -> Result<Option<bool>> {
+    match state.statx(MARKER) {
+        Ok(st) => Ok(Some(st.file_type() == FileType::Regular)),
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn not_a_state_dir(state_path: &Path) -> Error {
+    Error::NotAStateDir {
+        path: state_path.to_owned(),
     }
 }
 

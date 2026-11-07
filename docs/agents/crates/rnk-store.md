@@ -55,6 +55,7 @@ impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
+    pub fn check_state_dir(state: &Path) -> Result<()>; // open's marker and BUILDING checks, writing nothing: before rootless overlay mode's probe (Q-111, (a))
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)

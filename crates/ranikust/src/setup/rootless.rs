@@ -51,9 +51,10 @@ const PROC_RBIND: &str = "a RUN needs a new proc, which this user namespace may 
      container whose /proc has masked paths): build as a regular user on a host that allows \
      user namespaces, or in a container where ranikust may mount, or pass --allow proc.rbind, \
      through which every RUN sees each process of this PID namespace and reads its command \
-     line, status and mount table, ranikust's included, and RUNs run one at a time; keep no \
-     secrets in other processes' command lines and give the build container a PID namespace \
-     of its own (ADR-0126, ADR-0130)";
+     line, status, mount table and network tables, ranikust's included, and RUNs run one at \
+     a time; keep no secrets in other processes' command lines and give the build container \
+     a PID namespace of its own, not one shared with the host or other containers, which is \
+     refused (ADR-0126, ADR-0130)";
 
 /// Guidance where another step of the user namespace fails.
 const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), or in a \
@@ -73,14 +74,13 @@ pub(crate) fn refused_by_hook(env: &str) -> NotHere {
 }
 
 /// The user namespace probe for rootless overlay mode, before the build's
-/// user namespace: the state directory's check (refused on overlayfs, as
-/// overlay mode as root is), the subordinate ids of this user
-/// ([`crate::subids`]), then the steps and the overlay mount in a user
-/// namespace, in a directory made for them in the state directory, named
-/// as the leftovers an anonymous store removes, and removed after. Logs
-/// the probe's line, whose verdict counts an rbind of `/proc` only with
-/// `proc_rbind` (`--allow proc.rbind`, ADR-0126). Call while
-/// single-threaded.
+/// user namespace: the state directory's check ([`state_dir_for_probe`]),
+/// the subordinate ids of this user ([`crate::subids`]), then the steps and
+/// the overlay mount in a user namespace, in a directory made for them in
+/// the state directory, named as the leftovers an anonymous store removes,
+/// and removed after. Logs the probe's line, whose verdict counts an rbind
+/// of `/proc` only with `proc_rbind` (`--allow proc.rbind`, ADR-0126). Call
+/// while single-threaded.
 ///
 /// # Errors
 ///
@@ -92,18 +92,7 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         refusal,
         probed: false,
     };
-    super::prepare_state_dir(state_dir).map_err(unprobed)?;
-    if crate::statedir::on_overlayfs(state_dir) {
-        return Err(unprobed(Refusal {
-            kind: Kind::Other,
-            reason: format!(
-                "rootless overlay mode cannot run here: the state directory {} is on overlayfs, \
-                 a container's own root, where it cannot keep its upper directories",
-                state_dir.display()
-            ),
-            guidance: ON_OVERLAYFS,
-        }));
-    }
+    state_dir_for_probe(state_dir).map_err(unprobed)?;
     let subordinate = crate::subids::lookup(euid).map_err(|e| {
         unprobed(Refusal {
             kind: Kind::Other,
@@ -151,7 +140,7 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
     if let Some(e) = probed.overlay_error() {
         return Err(not_here(
             format!("an overlay mount in the user namespace: {e}"),
-            UNUSABLE,
+            guidance("overlay", false, euid),
         ));
     }
     let bind_proc = proc_rbind && matches!(report.proc, MountResult::Rbind { .. });
@@ -167,14 +156,37 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
     })
 }
 
-/// What to do where the user namespace probe stops at `step` for the
-/// effective uid `euid`; `rbind` says an rbind of `/proc` worked there. A
-/// user namespace without capabilities (Ubuntu's AppArmor switch) stops a
-/// user other than root at the map, the `chown` or the mount namespace.
+/// The state directory the probe may write in, made if missing: private
+/// (ADR-0050), not on overlayfs, as for overlay mode as root, and one the
+/// store would take, checked without writing (Q-111, (a)).
+fn state_dir_for_probe(state_dir: &Path) -> Result<(), Refusal> {
+    super::prepare_state_dir(state_dir)?;
+    if crate::statedir::on_overlayfs(state_dir) {
+        return Err(Refusal {
+            kind: Kind::Other,
+            reason: format!(
+                "rootless overlay mode cannot run here: the state directory {} is on overlayfs, \
+                 a container's own root, where it cannot keep its upper directories",
+                state_dir.display()
+            ),
+            guidance: ON_OVERLAYFS,
+        });
+    }
+    rnk_store::Store::check_state_dir(state_dir).map_err(|e| super::store_refusal(&e, state_dir))
+}
+
+/// What to do where the user namespace probe stops at `step` (`overlay`
+/// for its overlay mount) for the effective uid `euid`; `rbind` says an
+/// rbind of `/proc` worked there. A user namespace without capabilities
+/// (Ubuntu's AppArmor switch) stops a user other than root at the map, the
+/// `chown` or the mount namespace.
 fn guidance(step: &str, rbind: bool, euid: u32) -> &'static str {
     match step {
         "proc" if rbind => PROC_RBIND,
-        "unshare" | "map" | "chown" | "mount namespace" if euid != 0 => super::NO_USER_NAMESPACE,
+        // Root gets here only where it may not mount: its own refusal, or
+        // kaniko mode, says what to do.
+        _ if euid == 0 => "",
+        "unshare" | "map" | "chown" | "mount namespace" => super::NO_USER_NAMESPACE,
         _ => UNUSABLE,
     }
 }
@@ -265,7 +277,8 @@ mod tests {
 
     /// A user other than root whose user namespace has no capabilities
     /// (Ubuntu 24.04 stops it at the `chown`) is pointed at the AppArmor
-    /// switch; root, and a step past the namespace, at running as root; a
+    /// switch, and a step past the namespace at running as root; root, whose
+    /// own refusal or kaniko mode says what to do, at nothing more; a
     /// refused new `proc` with a working rbind, at `--allow proc.rbind`.
     #[test]
     fn each_stop_of_the_probe_gets_its_guidance() {
@@ -275,13 +288,58 @@ mod tests {
                 super::super::NO_USER_NAMESPACE,
                 "{step}"
             );
-            assert_eq!(guidance(step, false, 0), UNUSABLE, "{step}");
+        }
+        for step in [
+            "unshare",
+            "map",
+            "chown",
+            "mount namespace",
+            "proc",
+            "sysfs",
+            "overlay",
+        ] {
+            assert_eq!(guidance(step, false, 0), "", "{step}");
         }
         assert_eq!(guidance("proc", true, 1000), PROC_RBIND);
         assert_eq!(guidance("proc", true, 0), PROC_RBIND);
-        assert_eq!(guidance("proc", false, 1000), UNUSABLE);
-        assert_eq!(guidance("sysfs", false, 1000), UNUSABLE);
+        for step in ["proc", "sysfs", "overlay"] {
+            assert_eq!(guidance(step, false, 1000), UNUSABLE, "{step}");
+        }
         assert!(super::super::NO_USER_NAMESPACE.contains("apparmor_restrict_unprivileged_userns"));
         assert!(PROC_RBIND.contains("--allow proc.rbind"));
+    }
+
+    /// The probe writes nothing in a directory the store would refuse, and
+    /// leaves a new one unmarked.
+    #[test]
+    fn the_probe_writes_only_in_a_state_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let private = |p: &Path| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        private(tmp.path());
+        let names = |p: &Path| -> Vec<_> {
+            std::fs::read_dir(p)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect()
+        };
+        let foreign = tmp.path().join("foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        private(&foreign);
+        std::fs::write(foreign.join("precious"), "x").unwrap();
+        let refusal = state_dir_for_probe(&foreign).unwrap_err();
+        assert!(
+            refusal
+                .reason
+                .contains("has no regular file .ranikust-state"),
+            "{}",
+            refusal.reason
+        );
+        assert_eq!(names(&foreign), ["precious"]);
+        let new = tmp.path().join("new");
+        state_dir_for_probe(&new).unwrap();
+        assert!(names(&new).is_empty());
     }
 }

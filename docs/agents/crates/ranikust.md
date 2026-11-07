@@ -194,6 +194,8 @@ Each step before the next; design in
    overlay probe as a failed probe check, which routes as NFS's refused
    mount does.
    **Rootless overlay mode** (`main.rs`'s `rootless`): `setup::rootless::plan`
+   (its probe writes in the state directory only once
+   `Store::check_state_dir`, which writes nothing, takes it, Q-111 (a))
    → with an rbind of `/proc`, `exposure::scan_peers` through
    `refuse_reachable_peers` (`Reach::ProcRbind`, ADR-0129) and
    `exposure::warn_build_args` → `overlay_flags` (`--mode=auto`;
