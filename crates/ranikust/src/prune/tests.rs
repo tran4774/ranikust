@@ -111,9 +111,11 @@ fn root_is_refused_naming_phase_5_before_anything() {
         // Under the lock builds take, the marker first: what an interrupted
         // removal leaves is unmarked, and a directory without it stays.
         let d = shell_word(dir.as_os_str());
-        let script = r#"'rm "$1/.ranikust-state" && rm -rf --one-file-system "$1"'"#;
-        let want = format!("test -d {d} && flock -xn {d} sh -c {script} sh {d}");
+        let script =
+            r#"'rm "$1/.ranikust-state" && cd "${1:?}" && find . -xdev -mindepth 1 -delete'"#;
+        let want = format!("test -d {d} && flock -xn {d} sh -c {script} sh {d}, then rmdir {d}");
         assert!(refusal.guidance.contains(&want), "{refusal}");
+        assert!(refusal.guidance.contains("nothing is mounted below it"));
         assert_eq!(refusal.kind, Kind::Other);
     }
     assert_eq!(listing(&state), before);
@@ -136,24 +138,79 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     let dir = Path::new("/home/u/my state");
     let guidance = no_user_namespace(dir);
     assert!(
-        guidance.contains("test -d '/home/u/my state' && flock -xn '/home/u/my state' sh -c 'mv "),
+        guidance.contains("test -d '/home/u/my state' && flock -xn '/home/u/my state' sh -c '{ "),
         "{guidance}"
     );
     assert!(
-        guidance.contains("' sh '/home/u/my state' renames the marker"),
+        guidance.contains("' sh '/home/u/my state' renames its marker"),
         "{guidance}"
     );
     let at = |what: &str| guidance.find(what);
-    let renamed = at(r#"mv "$1/.ranikust-state" "$1/.ranikust-pruning" && "#);
-    let removed = at(
-        r#"find "$1" -mindepth 1 -maxdepth 1 ! -name .ranikust-pruning -exec rm -rf --one-file-system {} + && "#,
-    );
-    let marker = at(r#"rm "$1/.ranikust-pruning"'"#);
+    let renamed = at(r#"mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && "#);
+    let removed = at(r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && "#);
+    let marker = at(r#"rm .ranikust-pruning'"#);
     assert!(
         matches!((renamed, removed, marker), (Some(m), Some(r), Some(l)) if m < r && r < l),
         "{guidance}"
     );
+    assert!(guidance.contains("nothing is mounted below the state directory"));
     assert!(guidance.contains("subordinate ids stay"));
+}
+
+/// `script` on the state directory `state` as the guidance gives it, from
+/// `cwd`.
+fn run_script(script: &str, cwd: &Path, state: &Path) -> std::process::ExitStatus {
+    std::process::Command::new("bash")
+        .args(["-c", &locked(state, script)])
+        .current_dir(cwd)
+        .status()
+        .unwrap()
+}
+
+/// The scripts the guidance gives, run as they are on a path a shell must
+/// quote: each empties a marked state directory, not following a symlink,
+/// the user's its marker last and again after a run cut short; neither
+/// removes anything from a directory without the marker.
+#[test]
+fn the_suggested_scripts_empty_only_a_marked_state_directory() {
+    let tmp = private_tempdir();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"x").unwrap();
+    let fill = |state: &Path| {
+        marked_state(state);
+        fs::create_dir_all(state.join("builds/b/deep/er")).unwrap();
+        fs::write(state.join("builds/b/deep/er/f"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, state.join("builds/b/link")).unwrap();
+    };
+    for (script, renamed_before) in [
+        (ROOT_SCRIPT, false),
+        (USER_SCRIPT, false),
+        (USER_SCRIPT, true),
+    ] {
+        let state = tmp.path().join("my 'state' $x");
+        fill(&state);
+        if renamed_before {
+            fs::rename(
+                state.join(".ranikust-state"),
+                state.join(".ranikust-pruning"),
+            )
+            .unwrap();
+        }
+        assert!(run_script(script, tmp.path(), &state).success(), "{script}");
+        assert_eq!(listing(&state), Vec::new(), "{script}");
+        assert!(outside.join("keep").is_file(), "{script}");
+        fs::remove_dir(&state).unwrap();
+        // Unmarked: refused before anything goes.
+        fs::create_dir(&state).unwrap();
+        fs::write(state.join("keep"), b"x").unwrap();
+        assert!(
+            !run_script(script, tmp.path(), &state).success(),
+            "{script}"
+        );
+        assert!(state.join("keep").is_file(), "{script}");
+        fs::remove_dir_all(&state).unwrap();
+    }
 }
 
 /// A state directory's path, as one word bash reads back byte for byte;
@@ -233,7 +290,7 @@ fn a_prune_that_did_not_finish_names_the_ways_out() {
         "on another mount",
         "subordinate ids",
         "unmount anything below '/home/u/my state'",
-        "install newuidmap and give this user ranges in /etc/subuid and /etc/subgid",
+        "with newuidmap installed and ranges for this user in /etc/subuid and /etc/subgid",
         "mv -T '/home/u/my state' '/home/u/my state.old'",
         "podman unshare rm -rf --one-file-system '/home/u/my state.old', or as root",
     ] {

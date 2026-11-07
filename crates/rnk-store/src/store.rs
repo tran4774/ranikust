@@ -76,8 +76,12 @@ const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// state directory, beside the store's own; the caller makes it, and
 /// [`Store::prune_all`] counts it as the store's.
 pub const SANDBOX_DIR: &str = "sandbox";
-/// Why [`Error::NotAStateDir`] refuses a directory without the marker.
-const UNMARKED: &str = "is not empty and has no regular file .ranikust-state";
+/// Why [`Store::open`] refuses a directory without the marker, and what to
+/// do.
+const UNMARKED: &str = "is not empty and has no regular file .ranikust-state; refusing to use \
+                        it as the state directory (pass an empty or new --state-dir; a state \
+                        directory of an earlier ranikust, marked .ranikust-root, is not reused: \
+                        delete it first)";
 /// Mode of the state directory and the store's own directories: image
 /// content stays away from other users of the host.
 const DIR_MODE: u32 = 0o700;
@@ -1284,15 +1288,16 @@ impl Store {
     /// store's directories, [`SANDBOX_DIR`], an anonymous store's names).
     /// It takes one holding the regular [`PRUNING_MARKER`] a prune that did
     /// not finish leaves, which `open` refuses, and makes nothing in an
-    /// empty directory, not even the marker. Then it renames [`STATE_MARKER`] to [`PRUNING_MARKER`], or
-    /// takes over the one an earlier prune left, and syncs the directory
-    /// before deleting: entries are emptied in place, and a prune cut short
-    /// or failed leaves a directory no store opens and the next prune
-    /// accepts. A failed sync renames back only a marker this call renamed:
-    /// one an earlier prune left stays, since that prune may have removed
-    /// entries. Deletes through `rnk-rootfs` by descriptor: no symlink
-    /// followed, no mount crossed or emptied; the filesystem is synced
-    /// before [`PRUNING_MARKER`] goes, which a failed sync keeps.
+    /// empty directory, not even the marker. Then it renames
+    /// [`STATE_MARKER`] to [`PRUNING_MARKER`], or takes over the one an
+    /// earlier prune left, and syncs the directory before deleting: entries
+    /// are emptied in place, and a prune cut short or failed leaves a
+    /// directory no store opens and the next prune accepts. A failed sync
+    /// renames back only a marker this call renamed: one an earlier prune
+    /// left stays, since that prune may have removed entries. Deletes
+    /// through `rnk-rootfs` by descriptor: no symlink followed, no mount
+    /// crossed or emptied; the filesystem is synced before
+    /// [`PRUNING_MARKER`] goes, which a failed sync keeps.
     ///
     /// The caller has checked `state` as a build's state directory: no
     /// other user may write it or a directory above it (`ranikust`'s
@@ -1308,12 +1313,11 @@ impl Store {
     /// [`Error::NotAStateDir`] for a name the store does not make, else as
     /// [`Store::open`], as are [`Error::UsedOnSlash`] and
     /// [`Error::NoFlock`]; [`Error::Rootfs`] for this process's own `/`;
-    /// [`Error::NotPruned`] naming
-    /// what is left when anything but [`PRUNING_MARKER`] stays (an entry on
-    /// another mount, one this process may not remove), or when
-    /// [`PRUNING_MARKER`] is not a regular file; [`Error::Io`] or
-    /// [`Error::Rootfs`] when the directory cannot be resolved, opened or
-    /// synced, or the marker renamed.
+    /// [`Error::NotPruned`] naming what is left when anything but
+    /// [`PRUNING_MARKER`] stays (an entry on another mount, one this process
+    /// may not remove), or when [`PRUNING_MARKER`] is not a regular file;
+    /// [`Error::Io`] or [`Error::Rootfs`] when the directory cannot be
+    /// resolved, opened or synced, or the marker renamed.
     pub fn prune_all(state: &Path) -> Result<bool> {
         let span = tracing::info_span!("rnk_store.prune");
         let _entered = span.enter();
@@ -1345,7 +1349,8 @@ impl Store {
             return Err(Error::NotAStateDir {
                 path: state_path,
                 why: format!(
-                    "holds {}, which ranikust does not make there",
+                    "holds {}, which ranikust does not make there, so ranikust prune --all \
+                     removes nothing: move them out of it, then run ranikust prune --all again",
                     shown_names(&foreign)
                 ),
             });
@@ -1374,7 +1379,10 @@ impl Store {
                 if regular(MARKER)? != Some(true) {
                     return Err(Error::NotAStateDir {
                         path: state_path,
-                        why: UNMARKED.to_owned(),
+                        why: "is not empty and has no regular file .ranikust-state, so ranikust \
+                              prune --all removes nothing: it empties only a state directory \
+                              ranikust made"
+                            .to_owned(),
                     });
                 }
                 // No new inode, which a full disk or quota would refuse;

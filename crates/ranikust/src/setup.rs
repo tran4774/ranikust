@@ -415,16 +415,11 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
         | Error::Rootfs(_)
         | Error::Fill { .. } => format!("cannot open the store in {}: {e}", state_dir.display()),
     };
-    let guidance = match e {
-        Error::PruneCutShort { path } | Error::NotPruned { path, .. } => {
-            crate::prune::unfinished(path).into()
-        }
-        _ => "".into(),
-    };
     Refusal {
         kind: Kind::Other,
         reason,
-        guidance,
+        guidance: crate::prune::left_unfinished(e)
+            .map_or_else(|| "".into(), |dir| crate::prune::unfinished(dir).into()),
     }
 }
 

@@ -14,17 +14,11 @@ pub enum Error {
     /// [`crate::Store::prune_all`], holds a name the store does not make:
     /// it may be a directory the user cares about, which clean-up would
     /// delete from.
-    #[error(
-        "{} {why}; \
-         refusing to use it as the state directory (pass an empty or new --state-dir; \
-         a state directory of an earlier ranikust, marked .ranikust-root, is not reused: \
-         delete it first)",
-        path.display()
-    )]
+    #[error("{} {why}", path.display())]
     NotAStateDir {
         /// The state directory.
         path: PathBuf,
-        /// What it holds or lacks, with any name quoted.
+        /// What it holds or lacks, with any name quoted, and what to do.
         why: String,
     },
 

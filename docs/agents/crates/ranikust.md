@@ -344,8 +344,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   left missing, an empty one left as it is, one without the marker
   refused before the namespace, modes unchanged; the guidance's commands:
   paths quoted so bash reads them back byte for byte, the `flock` failing
-  while a store is open, nothing made at a missing path; the ways out of
-  a prune that did not finish, in `prune`'s refusal and a build's),
+  while a store is open, nothing made at a missing path, the scripts run
+  as given emptying a marked directory, the user's again after a run cut
+  short, and leaving an unmarked one; the ways out of a prune that did not
+  finish, in `prune`'s refusal and a build's),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default

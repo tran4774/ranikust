@@ -51,16 +51,29 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
      (ADR-0032); for now it takes --all, which empties the state directory of a user other than \
      root (ADR-0105)";
 
+/// Root's emptying of the state directory `$1`, for [`locked`]: the
+/// marker first, so that what an interrupted removal leaves is unmarked,
+/// and nothing where there is none; no top-level entry is an operand, so a
+/// mount point there stops it instead of being emptied, and `find -xdev`
+/// enters no other filesystem.
+const ROOT_SCRIPT: &str =
+    r#"rm "$1/.ranikust-state" && cd "${1:?}" && find . -xdev -mindepth 1 -delete"#;
+
+/// A user's emptying of the state directory `$1` without a user namespace,
+/// for [`locked`]: the marker renamed `.ranikust-pruning` first (or the one
+/// an earlier run renamed kept), which keeps builds out; then all but it,
+/// as [`ROOT_SCRIPT`] does; it last, once nothing else is left.
+const USER_SCRIPT: &str = r#"{ test -f "$1/.ranikust-pruning" || mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && cd "${1:?}" && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && rm .ranikust-pruning"#;
+
 /// What root does instead with the state directory `dir` (ADR-0105).
 fn root_guidance(dir: &Path) -> String {
-    let rm = locked(
-        dir,
-        r#"rm "$1/.ranikust-state" && rm -rf --one-file-system "$1""#,
-    );
+    let rm = locked(dir, ROOT_SCRIPT);
+    let d = shell_word(dir.as_os_str());
     format!(
-        "root removes its state directory with ordinary tools while no build uses it, its marker \
-         first so that no build takes what an interrupted removal leaves, and nothing in a \
-         directory without one: {rm}; Phase 5's ranikust prune will serve root too"
+        "root empties its state directory with ordinary tools while no build uses it and \
+         nothing is mounted below it, its marker first so that no build takes what an \
+         interrupted removal leaves, and nothing in a directory without one: {rm}, then rmdir \
+         {d}; Phase 5's ranikust prune will serve root too"
     )
 }
 
@@ -68,17 +81,15 @@ fn root_guidance(dir: &Path) -> String {
 /// namespace: the build's guidance ends in "run ranikust as root", which
 /// `prune --all` refuses.
 pub(crate) fn no_user_namespace(dir: &Path) -> String {
-    let rm = locked(
-        dir,
-        r#"mv "$1/.ranikust-state" "$1/.ranikust-pruning" && find "$1" -mindepth 1 -maxdepth 1 ! -name .ranikust-pruning -exec rm -rf --one-file-system {} + && rm "$1/.ranikust-pruning""#,
-    );
+    let rm = locked(dir, USER_SCRIPT);
     format!(
         "a user other than root gets a user namespace of its own only where \
          kernel.apparmor_restrict_unprivileged_userns is 0, or an AppArmor profile allows \
-         ranikust one (Ubuntu 23.10 and later); without it, {rm} renames the marker, which keeps \
-         builds out, removes the user's own files, then the marker once nothing else is left; \
-         files of subordinate ids stay, and the marker with them, for a ranikust prune --all \
-         where a user namespace is allowed to finish"
+         ranikust one (Ubuntu 23.10 and later); without it, while nothing is mounted below the \
+         state directory, {rm} renames its marker, which keeps builds out, removes the user's \
+         own files, then the marker once nothing else is left; files of subordinate ids stay, \
+         and the marker with them, for a ranikust prune --all where a user namespace is allowed \
+         to finish"
     )
 }
 
@@ -92,11 +103,37 @@ pub(crate) fn unfinished(dir: &Path) -> String {
     format!(
         "ranikust prune --all leaves what is on another mount, and files of ids it cannot remove \
          (a rootless build's subordinate ids, where no user namespace maps them): unmount \
-         anything below {d}; install newuidmap and give this user ranges in /etc/subuid and \
-         /etc/subgid, then run ranikust prune --all again; or move the directory aside, mv -T \
-         {d} {aside}, and remove that with podman unshare rm -rf --one-file-system {aside}, or \
-         as root"
+         anything below {d} first; then run ranikust prune --all again, with newuidmap \
+         installed and ranges for this user in /etc/subuid and /etc/subgid; or move the \
+         directory aside, mv -T {d} {aside}, and remove that with podman unshare rm -rf \
+         --one-file-system {aside}, or as root"
     )
+}
+
+/// The state directory a store error `e` names when a `prune --all` did
+/// not finish emptying it: the ways out ([`unfinished`]) are for it.
+pub(crate) fn left_unfinished(e: &rnk_store::Error) -> Option<&Path> {
+    use rnk_store::Error;
+    match e {
+        Error::NotPruned { path, .. } | Error::PruneCutShort { path } => Some(path),
+        Error::NotAStateDir { .. }
+        | Error::NoFlock { .. }
+        | Error::Busy { .. }
+        | Error::InUse { .. }
+        | Error::StateNotEmpty { .. }
+        | Error::UsedOnSlash { .. }
+        | Error::NotEmptied { .. }
+        | Error::Unmarked { .. }
+        | Error::Io { .. }
+        | Error::BadEntry { .. }
+        | Error::Cancelled
+        | Error::Anonymous { .. }
+        | Error::Random(_)
+        | Error::AnonymousFile { .. }
+        | Error::NameOutlivesUnlink { .. }
+        | Error::Rootfs(_)
+        | Error::Fill { .. } => None,
+    }
 }
 
 /// `script` run by `sh` with the state directory `dir` as `$1`, under the
@@ -226,10 +263,7 @@ fn store_refusal(e: &rnk_store::Error) -> Refusal {
     setup::inside_userns(Refusal {
         kind: Kind::Other,
         reason: e.to_string(),
-        guidance: match e {
-            rnk_store::Error::NotPruned { path, .. } => unfinished(path).into(),
-            _ => "".into(),
-        },
+        guidance: left_unfinished(e).map_or_else(|| "".into(), |dir| unfinished(dir).into()),
     })
 }
 

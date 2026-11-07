@@ -60,21 +60,22 @@ build's user namespace left under the user's subordinate ids included, which
 the user cannot remove otherwise; `rmdir` then removes the directory. It
 removes nothing while a build uses the directory, refuses a directory
 ranikust did not make (one without its `.ranikust-state` marker, or the
-`.ranikust-pruning` an interrupted prune leaves, or holding anything else
+`.ranikust-pruning` an interrupted prune leaves, or holding anything other
 than what ranikust puts there), leaves a missing or empty one as it is,
 and prints what it did. If it is interrupted or cannot remove everything,
 builds refuse the directory until `prune --all` runs to the end; where it
 cannot (a mount below the directory, no subordinate ids for the user), its
 error says how to get out, naming the directory.
-Root is refused, a container's root included: it removes its state directory
-with ordinary tools while no build uses it, the marker first, so that no
-build takes what an interrupted removal leaves ([ADR-0105]). `flock` takes
-the lock builds hold, so the commands fail while one runs; the error names
-the real directory:
+Root is refused, a container's root included: it empties its state directory
+with ordinary tools while no build uses it and nothing is mounted below it,
+the marker first, so that no build takes what an interrupted removal leaves
+([ADR-0105]), then removes it with `rmdir`. `flock` takes the lock builds
+hold, so the commands fail while one runs; the error gives them with the
+real directory in place of `'DIR'`:
 
 ```sh
-test -d '/var/lib/ranikust' && flock -xn '/var/lib/ranikust' \
-  sh -c 'rm "$1/.ranikust-state" && rm -rf --one-file-system "$1"' sh '/var/lib/ranikust'
+test -d 'DIR' && flock -xn 'DIR' \
+  sh -c 'rm "$1/.ranikust-state" && cd "${1:?}" && find . -xdev -mindepth 1 -delete' sh 'DIR'
 ```
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in

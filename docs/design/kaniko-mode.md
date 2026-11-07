@@ -502,6 +502,12 @@ per stage made for the build (ADR-0059). Before anything is written,
 4. On `/`, the store then refuses a marked directory too, and anything but its
    own marker and leftovers (ADR-0077; [locks](cache-and-store.md#locks)).
 
+`ranikust prune --all` checks an existing state directory by these rules
+through `statedir::check`, which makes nothing and sets no mode: its chain
+as step 2 checks it again, never `/`, and its contents as step 3; not the
+system directories, since it empties only a marked directory
+([prune](cache-and-store.md#prune)).
+
 `ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/` for
 the whole build, and refuses kaniko mode outside a container where root may
 not mount; `rnk-rootfs` provides the primitives.

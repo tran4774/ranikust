@@ -24,7 +24,9 @@ from that.
 ### Rules
 
 - T0 tests need no privileges and no network, and write only below a fresh
-  temporary directory, which they remove on failure too.
+  temporary directory, which they remove on failure too. Beyond the Rust
+  toolchain they run `bash`, `sh`, `flock` (util-linux) and GNU `find`,
+  which check the shell commands `prune --all` suggests.
 - A test that needs more is marked `#[ignore = "T1: <profile>: <reason>"]`,
   `#[ignore = "T2c: <profile>: <reason>"]` or `#[ignore = "T2: <reason>"]`.
   Its harness runs it with `cargo test -- --ignored` in the right

@@ -16,7 +16,8 @@
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
 //! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
-//! └── builds/<build-id>/, <build-id>.lock      one per running build
+//! ├── builds/<build-id>/, <build-id>.lock      one per running build
+//! └── sandbox/                       the RUN sandbox's own files (made by the caller)
 //! ```
 //!
 //! A build is alive while it holds the `flock` on `builds/<build-id>.lock`;

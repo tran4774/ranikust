@@ -18,7 +18,9 @@ extract the same digest at once.
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the per-build
   `builds/<id>/` areas, the `.ranikust-state` marker (`STATE_MARKER`;
   ADR-0050 renamed it from `.ranikust-root`), which `prune_all` renames
-  `.ranikust-pruning` (`PRUNING_MARKER`) while it empties the directory.
+  `.ranikust-pruning` (`PRUNING_MARKER`) while it empties the directory;
+  the name `sandbox/` (`SANDBOX_DIR`), which `ranikust` makes for the
+  `RUN` sandbox and `prune_all` empties with the rest.
 - The anonymous store of kaniko mode on `/` (ADR-0051, ADR-0056, ADR-0066,
   ADR-0077): see Invariants.
 - Per-digest `flock` locks; publication of a filled temporary entry by atomic

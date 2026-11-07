@@ -158,8 +158,9 @@ is refused (euid 0 in any user namespace, a container's root included),
 naming Phase 5's `prune`; then a build's checks of the state directory,
 outside, which neither make it nor change its mode: one that does not
 exist, or is empty, is left so; then the build's user namespace; in it,
-`Store::prune_all`, which refuses the process's own `/` itself. That takes the state
-directory's `flock` exclusive without waiting, as an anonymous store does,
+`Store::prune_all`, which refuses the process's own `/` itself. That takes
+the state directory's `flock` exclusive without waiting, as an anonymous
+store does,
 and holds it to the end: every build holds it shared for its life, so
 `prune --all` removes nothing while any build runs there (it says so and
 exits 1), and a build that starts meanwhile is refused. It refuses a
@@ -167,8 +168,8 @@ non-empty directory without its regular marker (`.ranikust-state`, or the
 `.ranikust-pruning` a prune that did not finish leaves), and, before any
 rename, one whose top level holds a name neither the store nor a build
 makes there (the markers, its directories, `sandbox/`, an anonymous
-store's names); it creates nothing in an empty one. Before deleting it syncs the directory with
-`.ranikust-pruning` in it, whether it renamed `.ranikust-state` itself or
+store's names); it creates nothing in an empty one. Before deleting it
+syncs the directory with `.ranikust-pruning` in it, whether it renamed `.ranikust-state` itself or
 found one an earlier prune left: entries are emptied in place, under their
 published names, so a prune killed or failed part-way leaves a layer a
 build would reuse with files missing, and `Store::open` refuses any
@@ -186,7 +187,9 @@ build's name the ways out with the directory's real path: unmount, set up
 the user's subordinate ids, or move the directory aside and remove it in
 `podman unshare` or as root. The commands its other refusals give (root's,
 and a user's without a user namespace) take the same exclusive `flock`
-(`flock -xn`), so they fail while a build runs there.
+(`flock -xn`), so they fail while a build runs there, and cross no mount
+(`find -xdev`); a bind mount of the same filesystem is not told apart, so
+they say to run only while nothing is mounted below.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the
