@@ -767,12 +767,17 @@ layer is.
   under [its rules](#ignore-list), and its diff ID is checked at the end. On
   `/` a streamed layer is spooled and verified before its first entry
   reaches `/` ([streaming](streaming.md#credentials-and-failures)), so a
-  blob whose digest or diff ID is wrong is a miss. The same pass will also check
-  the tar headers and `--limit`, by a call into `rnk-rootfs`
-  ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
-  planned in [#174](https://github.com/tran4774/ranikust/issues/174)); per stage
-  a layer is extracted as it arrives (ADR-0055). The scan ADR-0098 plans for base
-  layers in a user namespace (Phase 3) must cover cached layers too.
+  blob whose digest or diff ID is wrong is a miss. The same pass, in the same
+  decompression, checks the tar headers and `--limit` as the extraction will,
+  by `rnk_rootfs::check_headers` ([rootfs](rootfs.md#extraction),
+  [ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md)),
+  so a hit with a header every extraction refuses from the header alone, or
+  one over the limit, is a miss too (values only the kernel refuses still fail
+  while writing,
+  [#179](https://github.com/tran4774/ranikust/issues/179));
+  per stage a layer is extracted as it arrives (ADR-0055). The scan ADR-0098
+  plans for base layers in a user namespace (Phase 3) must cover cached layers
+  too.
 - **The walk catches up lazily.** Applying a layer marks the walk's record
   of the root stale; the next `begin_layer` of a stage whose layers are
   needed takes a new baseline (`forget`, then a full walk), so the next diff
@@ -790,8 +795,9 @@ layer is.
   the builder runs the stage again from its base
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
   On `/` it does the same, for a failure found while writing only (an entry
-  refused under the base-layer rules, or any failure while extracting a blob
-  already in the store, which is never spooled): the new base empties `/`, as
+  refused under the base-layer rules, a full disk or another I/O error, or
+  any failure while extracting a blob already in the store, which is never
+  spooled): the new base empties `/`, as
   between stages, and the root is usable again then. The restart
   happens at most once, with no cache at all, and always rebuilds its base from
   the layers of its chain
@@ -806,7 +812,8 @@ layer is.
 - **Refused, nothing changed:** a layer open, a root not held (shared root)
   or handed over (per stage).
 - Span `rnk_snapshot.apply`, the extraction's `rnk_layer.decode` and
-  `rnk_rootfs.extract` inside.
+  `rnk_rootfs.extract` inside; on `/` a streamed layer's spool pass adds one
+  `rnk_layer.decode`, which the header check reads through.
 
 ## Lazy snapshots
 

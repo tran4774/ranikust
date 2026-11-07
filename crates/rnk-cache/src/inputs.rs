@@ -22,12 +22,13 @@ use crate::key::{CacheKey, Encoding, TimePolicy};
 /// [`heredoc`](Self::heredoc) calls does, as the instruction's does.
 ///
 /// The `rnk_cache.key` span runs from [`KeyInputs::new`] to
-/// [`CacheKey::next`]: create the inputs before hashing the files they hold.
+/// [`CacheKey::next`] or [`CacheKey::next_entry`]: create the inputs before
+/// hashing the files they hold.
 /// `Debug` shows the names of build arguments and variables, never their
 /// values.
 pub struct KeyInputs {
     span: Span,
-    times: TimePolicy,
+    encoding: Encoding,
     args: Vec<(String, Option<String>)>,
     env: Vec<(String, String)>,
     user: String,
@@ -42,9 +43,9 @@ pub struct KeyInputs {
 
 impl KeyInputs {
     /// Empty inputs of a step whose layer is encoded as `encoding`, the
-    /// one its tag names: its time policy decides whether a file adds its
-    /// [`mtime`](File::mtime). No argument, environment, mount or file,
-    /// and `USER`, `WORKDIR` and `SHELL` empty.
+    /// one its [`EntryId`](crate::EntryId) names: its time policy decides
+    /// whether a file adds its [`mtime`](File::mtime). No argument,
+    /// environment, mount or file, and `USER`, `WORKDIR` and `SHELL` empty.
     #[must_use]
     pub fn new(encoding: &Encoding) -> Self {
         Self {
@@ -53,7 +54,7 @@ impl KeyInputs {
                 files_hashed = tracing::field::Empty,
                 bytes_hashed = tracing::field::Empty,
             ),
-            times: encoding.times,
+            encoding: *encoding,
             args: Vec::new(),
             env: Vec::new(),
             user: String::new(),
@@ -135,12 +136,17 @@ impl KeyInputs {
         self
     }
 
+    /// The encoding the inputs were made for.
+    pub(crate) fn encoding(&self) -> Encoding {
+        self.encoding
+    }
+
     /// Feeds the inputs to `c` in their canonical form, and closes the span
     /// with what was hashed.
     pub(crate) fn feed(self, c: &mut Canonical) {
         let Self {
             span,
-            times,
+            encoding,
             mut args,
             mut env,
             user,
@@ -152,7 +158,7 @@ impl KeyInputs {
             mut files,
             heredocs,
         } = self;
-        let epoch = match times {
+        let epoch = match encoding.times {
             TimePolicy::Kept => None,
             TimePolicy::Clamped { epoch } => Some(epoch),
         };
@@ -224,7 +230,7 @@ impl fmt::Debug for KeyInputs {
             pairs.iter().map(|(name, _)| name.as_str()).collect()
         }
         f.debug_struct("KeyInputs")
-            .field("times", &self.times)
+            .field("encoding", &self.encoding)
             .field("args", &names(&self.args))
             .field("env", &names(&self.env))
             .field("user", &self.user)

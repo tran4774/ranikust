@@ -1,7 +1,8 @@
 # Cache and store
 
 **TL;DR:** how ranikust keeps downloaded and extracted content between
-builds, shares it between concurrent builds, and keys its layer cache.
+builds, shares it between concurrent builds, and keys and stores its layer
+cache.
 
 Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 [ADR-0006](../adr/0006-persistent-store.md),
@@ -31,7 +32,8 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
   - A hit is hostile image content, checked and extracted as a base layer
     is, and every cache document read is bounded by `--limit`. A bad
     entry, or a lookup or push that fails, is a miss or a warning: the
-    exit status and the image do not change (T26).
+    exit status and the image do not change, apart from ADR-0123's open
+    cases [open: #171] [open: #172] (T26).
   - A layer is pushed under a key only if its step read what the key names
     (T28).
   - The cache never changes the output: with `--reproducible`, a cold, a
@@ -178,8 +180,10 @@ BuildKit's):
 key(k) = H(version, key(k-1), instruction, inputs(k))
 ```
 
-- **version:** `KEY_VERSION`, bumped whenever the algorithm changes; old
-  entries are simply never matched again.
+- **version:** `KEY_VERSION`, bumped whenever the algorithm changes, or
+  the [entry form](#cache-entries) a lookup checks; old entries are simply
+  never matched again (without the bump, each would be refused with a
+  warning).
 - **chain root:** the base image's platform manifest digest (none for
   `FROM scratch`) and the platform; for `FROM <stage>`, that stage's final
   key. Every step is looked up even after a miss, so the chain alone does
@@ -244,12 +248,60 @@ with another encoding share no entries
 ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)).
 The cold, warm and partial cache scenarios of workload W2 test the keys.
 
+Because keys ignore the mode, a layer cached by one mode can be used by the
+other and carry that mode's accepted differences
+([ADR-0012](../adr/0012-accept-divergence-between-modes.md)).
+
+## Cache entries
+
 Cached layers live in a registry repository (`--cache-repo`) or an OCI
-layout. A cache hit adds the layer to the lower stack (overlay mode) or
+layout. The registry cache is built (`rnk-cache`'s `RegistryCache`), but no
+build uses it yet (Phase 4 tasks 7 and 8); the layout cache is planned
+(task 11). A cache hit adds the layer to the lower stack (overlay mode) or
 extracts it into the root (kaniko mode). One compressed blob serves both the
 image and the cache, and cache pushes run asynchronously.
 
-A bad cache entry costs a miss and a restart, not a failed build
+An entry, under its tag
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)):
+
+- an OCI image manifest, with no `artifactType` or `subject`, holding one
+  layer of the OCI media type of the entry's compression;
+- three annotations: `io.github.tran4774.ranikust.cache.key` (the key's
+  SHA-256 in lower-case hex), `io.github.tran4774.ranikust.cache.version`
+  (`KEY_VERSION`, decimal) and `io.github.tran4774.ranikust.cache.encoding`
+  (`gzip;level=6;times=kept`, `zstd;level=3;times=clamped;epoch=0`,
+  `uncompressed;times=kept`);
+- an OCI config holding the push time as `created` (RFC 3339, UTC), the
+  layer's diff ID, and the `architecture` and `os` of the platform the
+  stage is built for, with its `variant` when it has one. OCI requires the
+  first two, which kaniko's entries leave empty
+  (`kaniko@44aa7ddc0 pkg/executor/push.go:447`, `pushLayerToCache`), and
+  the platform is no secret. A lookup does not check them: the key, whose
+  root holds the platform, keeps an entry to one.
+
+A lookup reads the manifest under the tag and then the config, each bounded
+by its `--limit` limit (ADR-0079):
+
+- a 404 is a miss, never retried, and needs no warning;
+- any other failure (a 5xx after the client's retries, a stall past
+  `registry-idle`, bad credentials, a document over its limit) is a miss
+  with a warning;
+- an entry not of the form above, or naming another key, version or
+  encoding, is a miss with a warning: a hostile repository costs misses,
+  never a failed build;
+- an entry whose `created` plus `--cache-ttl` is past is a miss without a
+  warning; a hit does not refresh `created`, and a `created` ahead of the
+  clock never expires, as kaniko compares it.
+
+A hit returns the layer's descriptor and diff ID, which prove nothing: the
+caller checks the blob against both as it checks a base layer's, and
+extracts it under the same rules; in kaniko mode,
+[a cache hit](kaniko-mode.md#a-cache-hit) says when a blob found bad leaves
+the root broken.
+
+A blob found bad costs a miss with a warning, as a refused entry does
+([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
+and, once its extraction began, a restart; not a failed build
 ([ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
 decided and planned in [#130](https://github.com/tran4774/ranikust/issues/130)
 and [#132](https://github.com/tran4774/ranikust/issues/132), not built yet).
@@ -259,9 +311,8 @@ registry is not decided [open: #171], nor are five more cases of the restart
 
 - In kaniko mode with a directory per stage a hit streams into the stage root; on
   `/` it is spooled and verified before extraction. A hit found bad before its
-  extraction began (the source refused it; on `/`, the spool pass, which will also
-  check the tar headers and `--limit`,
-  [#174](https://github.com/tran4774/ranikust/issues/174)) is a plain miss. One
+  extraction began (the source refused it; on `/`, the spool pass, which also
+  checks the tar headers and `--limit`) is a miss and starts nothing again. One
   found bad after extraction began (on `/`, only a failure while writing) makes
   the stage start again from its base
   ([ADR-0113](../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md)),
@@ -273,19 +324,30 @@ registry is not decided [open: #171], nor are five more cases of the restart
   the parent's directory is still there.
 - A connection dropped after the first byte of a hit is re-requested from the
   offset with a Range request, about 3 attempts without progress, and the answer
-  must be a 206 starting at the offset; then the entry is a miss and the stage
-  starts again. On `/`, a resume that still fails during the spool is a plain
-  miss. That count does not bound a connection that drops every few bytes; the
-  overall pull deadline is [#28](https://github.com/tran4774/ranikust/issues/28).
+  must be a 206 starting at the offset; then the entry is a miss with a
+  warning and the stage starts again. On `/`, a resume that still fails during
+  the spool is a miss with a warning before `/` changes, and starts nothing
+  again. That count does not bound a connection that drops every few bytes;
+  the overall pull deadline is
+  [#28](https://github.com/tran4774/ranikust/issues/28).
 - A bad blob found while pushing the layers of a skipped, fully cached stage
   makes it stop being skipped: it is built with no cache, its layers pushed as
   above. A blob mounted across repositories
   ([ADR-0055](../adr/0055-stream-layers-keep-nothing-proportional-to-the-image.md))
   is not read: it is trusted by its digest and its entry's diff ID.
 
-Because keys ignore the mode, a layer cached by one mode can be used by the
-other and carry that mode's accepted differences
-([ADR-0012](../adr/0012-accept-divergence-between-modes.md)).
+A push refuses a layer of another compression than its entry's, then sends
+the layer blob (skipped when the repository holds it, mounted from a
+destination of the same registry, uploaded otherwise), the config, and the
+manifest last, so a tag never names an entry whose blobs are missing. Its
+failure is a warning; the build's exit status and image do not change.
+
+The cache repository is treated as a destination: the build's registry
+client, with its trust and limits; credentials over plain HTTP only to a
+registry the operator named, and only over verified TLS in kaniko mode on
+`/` (ADR-0051,
+[ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+Only the operator names it, never the Dockerfile.
 
 ## Ownership
 

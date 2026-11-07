@@ -76,6 +76,14 @@ pub enum Error {
     /// A value that has no canonical JSON form.
     #[error("not canonical JSON: {0}")]
     NotCanonical(&'static str),
+    /// A timestamp that is not an RFC 3339 date-time.
+    #[error("invalid timestamp {input:?}: {reason}")]
+    InvalidTimestamp {
+        /// The start of the rejected input.
+        input: String,
+        /// Why it was rejected.
+        reason: &'static str,
+    },
 }
 
 /// Longest excerpt of an untrusted input kept in an error, in characters.

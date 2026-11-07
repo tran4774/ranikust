@@ -40,7 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use rnk_cache::{
-    CacheKey, Content, ContentHasher, CopyFrom, Encoding, File, FileKind, KeyInputs,
+    CacheKey, Content, ContentHasher, CopyFrom, Encoding, EntryId, File, FileKind, KeyInputs,
     Mount as KeyMount, Network as KeyNetwork, Sharing as KeySharing,
 };
 use rnk_context::Context;
@@ -93,7 +93,8 @@ pub struct PlanInput<'a> {
     /// `--allow network.host`: whether a `RUN --network=host` may lift
     /// `--network=none`.
     pub allow_network_host: bool,
-    /// The layers' encoding, which tells whether mtimes are keyed.
+    /// The layers' encoding, which tells whether mtimes are keyed and
+    /// which every step's entry names.
     pub encoding: &'a Encoding,
     /// Threads hashing the context's files; the keys never depend on it.
     pub threads: NonZeroUsize,
@@ -102,8 +103,9 @@ pub struct PlanInput<'a> {
 /// One step's key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepKey {
-    /// The key.
-    pub key: CacheKey,
+    /// The step's cache entry: its key, with the encoding the plan was
+    /// given.
+    pub entry: EntryId,
     /// The stage a `COPY --from=<stage>` reads, whose final key is the
     /// step's input: the step is a miss when that stage runs in this build
     /// (ADR-0114).
@@ -151,7 +153,7 @@ impl StageKeys {
     pub fn final_key(&self) -> Option<CacheKey> {
         match self.steps.last() {
             None => Some(self.root),
-            Some(step) => step.map(|s| s.key),
+            Some(step) => step.map(|s| *s.entry.key()),
         }
     }
 }
@@ -244,7 +246,7 @@ impl KeyPlan {
             };
             match step.key(instruction, &mut scope, &mut config, prev) {
                 Ok(key) => {
-                    prev = key.key;
+                    prev = *key.entry.key();
                     steps.push(Some(key));
                 }
                 Err(e) => {
@@ -414,7 +416,7 @@ impl Step<'_, '_> {
             | Instruction::Maintainer(_) => {}
         }
         Ok(StepKey {
-            key: prev.next(&text, inputs),
+            entry: prev.next_entry(&text, inputs),
             reads_stage,
         })
     }

@@ -5,8 +5,9 @@
 //! image references, normalized as docker/distribution does; and the
 //! canonical JSON ([`to_canonical_json`]) of everything ranikust writes, so
 //! that the same value always has the same digest; the config edits of the
-//! metadata instructions ([`ConfigEdit`]); and the index files of a
-//! docker-save tarball and an OCI layout.
+//! metadata instructions ([`ConfigEdit`]); the RFC 3339 times of a config
+//! ([`Timestamp`]); and the index files of a docker-save tarball and an OCI
+//! layout.
 //!
 //! The types are owned here rather than taken from `oci-spec`: `oci-spec`
 //! 0.10 keeps maps in `HashMap`s and drops the Docker-only config fields.
@@ -32,6 +33,7 @@ mod manifest;
 mod media_type;
 mod reference;
 mod serde_util;
+mod time;
 
 pub use canonical::to_canonical_json;
 pub use config::{ContainerConfig, HealthConfig, History, ImageConfig, RootFs};
@@ -43,6 +45,7 @@ pub use layout::{DockerTarImage, OciLayout};
 pub use manifest::{ImageIndex, ImageManifest};
 pub use media_type::{Compression, ImageFormat, MediaType};
 pub use reference::Reference;
+pub use time::Timestamp;
 
 // The image-assembly types live here as pure data (Q-007, answered in
 // `docs/open-questions.md`):
