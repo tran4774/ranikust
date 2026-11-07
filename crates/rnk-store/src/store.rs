@@ -1290,10 +1290,9 @@ impl Store {
     /// runs these checks alone). It takes one holding the regular
     /// [`PRUNING_MARKER`] a prune that did not finish leaves, which `open`
     /// refuses, and makes nothing in an empty directory, not even the
-    /// marker. Then it renames
-    /// [`STATE_MARKER`] to [`PRUNING_MARKER`], or takes over the one an
-    /// earlier prune left, and syncs the directory before deleting: entries
-    /// are emptied in place, and a prune cut short or failed leaves a
+    /// marker. Then it renames [`STATE_MARKER`] to [`PRUNING_MARKER`], or
+    /// takes over the one an earlier prune left, and syncs the directory
+    /// before deleting: entries are emptied in place, and a prune cut short or failed leaves a
     /// directory no store opens and the next prune accepts. A failed sync
     /// renames back only a marker this call renamed: one an earlier prune
     /// left stays, since that prune may have removed entries. Deletes

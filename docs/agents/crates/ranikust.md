@@ -51,7 +51,7 @@ writer) before `unshare`, the probes and the state directory's checks.
   name only `.`, under `flock -xn .`, so they act on the directory they
   locked and fail while a build holds it. A prune that could not finish
   (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
-  by one cut short (`PruneCutShort`) is told how to finish it
+  by one cut short (`PruneCutShort`) is told the next step
   (`prune::cut_short`: `prune --all` for a user, root's commands for
   root). Prints one line on stdout; a refusal exits 1, `prune` without
   `--all` 2.
@@ -340,8 +340,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   probe's line, which never reads as a mode line, the probe's directory
   kept when a child of the steps or of the overlay probe was left, and
   only then, a store refusal naming its state directory once, and a
-  build's refusal of a prune cut short telling a user and root how to
-  finish it; `setup/tests/userns.rs`: the store opened inside the build's
+  build's refusal of a prune cut short giving a user and root the next
+  step; `setup/tests/userns.rs`: the store opened inside the build's
   user namespace, as root of it, or the set-up refused before the store,
   whatever the machine allows; `prune --all` emptying a state directory
   there, or refused before it with the directory unchanged, no process or
@@ -355,7 +355,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   guidance's commands: paths quoted so bash reads them back byte for byte,
   the `flock` failing while a store is open, nothing made at a missing
   path, the scripts run as given emptying a marked directory, the user's
-  again after a run cut short, and leaving an unmarked one, the user's
+  again after a run cut short, never moving its marker into a
+  `.ranikust-pruning` directory, there before or made just before the
+  rename, and leaving an unmarked one, the user's
   marker kept while anything it may not remove is left, even by a `find`
   that does not fail then, and nothing outside the directory removed when
   its path is swapped for a symlink while they run; the ways out only in

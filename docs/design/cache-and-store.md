@@ -159,11 +159,11 @@ naming Phase 5's `prune`; then, outside any namespace, a build's checks of
 the state directory, which neither make it nor change its mode, and one
 that does not exist, or is empty, is left so; then `Store::check_prune`,
 the same read-only check `Store::prune_all` runs, so `prune --all` refuses
-there whatever `prune_all` would refuse in the directory: `.ranikust-building`
-in any form, a non-empty directory without a regular marker
+there whatever `prune_all` would refuse in the directory, in this order:
+`.ranikust-building` in any form, a `.ranikust-pruning` that is not a
+regular file, a non-empty directory without a regular marker
 (`.ranikust-state`, or the `.ranikust-pruning` a prune that did not finish
-leaves), a `.ranikust-pruning` that is not a regular file, and a top-level
-name neither the store nor a build makes there (the markers, its
+leaves), and a top-level name neither the store nor a build makes there (the markers, its
 directories, `sandbox/`, an anonymous store's names); then the build's user
 namespace; in it, `Store::prune_all`, which refuses the process's own `/`
 itself. That takes the state directory's `flock` exclusive without waiting,
@@ -178,7 +178,7 @@ entries are emptied in place, under their published names, so a prune
 killed or failed part-way leaves a layer a build would reuse with files
 missing, and `Store::open` refuses any directory holding that name until a
 `prune --all` finishes (a ranikust that predates it finds the directory
-unmarked, and refuses it too); such a build's refusal says how to finish:
+unmarked, and refuses it too); such a build's refusal gives the next step:
 `ranikust prune --all` for a user, root's commands for root. The rename
 makes no inode, which a full disk or quota, the usual reason to prune,
 would refuse. A failed sync renames back only a marker this prune renamed:

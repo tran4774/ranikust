@@ -310,10 +310,11 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
     fs::create_dir(&bin).unwrap();
     fs::write(
         bin.join("mv"),
-        "#!/bin/sh
-PATH=$REAL_PATH mkdir .ranikust-pruning && PATH=$REAL_PATH mv \"$@\"\n",
+        "#!/bin/sh\nPATH=$REAL_PATH mkdir .ranikust-pruning || exit\nPATH=$REAL_PATH mv \"$@\"\n\
+         s=$?\n: > ../mv-ran\nexit $s\n",
     )
     .unwrap();
+    let mv_ran = tmp.path().join("mv-ran");
     fs::set_permissions(bin.join("mv"), fs::Permissions::from_mode(0o755)).unwrap();
     for made_by_mv in [false, true] {
         fill(&state);
@@ -327,8 +328,17 @@ PATH=$REAL_PATH mkdir .ranikust-pruning && PATH=$REAL_PATH mv \"$@\"\n",
             state.join(".ranikust-state").is_file(),
             "made by mv: {made_by_mv}"
         );
-        assert!(listing(&state.join(".ranikust-pruning")).is_empty());
+        assert!(
+            state.join(".ranikust-pruning").is_dir(),
+            "made by mv: {made_by_mv}"
+        );
+        assert!(
+            listing(&state.join(".ranikust-pruning")).is_empty(),
+            "made by mv: {made_by_mv}"
+        );
         assert!(state.join("blobs").is_dir(), "made by mv: {made_by_mv}");
+        // The machine's `mv` ran after the shim's `mkdir`.
+        assert_eq!(mv_ran.exists(), made_by_mv);
         fs::remove_dir_all(&state).unwrap();
     }
     // What the user may not remove stays, and the marker with it, whether
@@ -418,7 +428,7 @@ fn the_suggested_commands_wait_for_no_build() {
     assert!(ran.exists());
     fs::remove_file(&ran).unwrap();
     // A closed store's lock outlives it in a child another test spawns
-    // meanwhile, so nothing runs after one here.
+    // meanwhile, so nothing that needs the lock runs after it.
     let open = Store::open(&rnk_store::BuildPaths::new(&state, &state)).unwrap();
     assert!(!run().success(), "{command}");
     assert!(!ran.exists());

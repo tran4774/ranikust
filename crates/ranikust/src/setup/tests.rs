@@ -620,12 +620,12 @@ fn a_store_refusal_names_its_state_directory_once() {
     );
 }
 
-/// A build refused by a `prune --all` that did not finish is shown how to
-/// finish it, for the directory the store names: a user runs `prune --all`
+/// A build refused by a `prune --all` that did not finish is shown the
+/// next step, for the directory the store names: a user runs `prune --all`
 /// again, root, which it refuses, empties the directory itself; other
 /// refusals get no guidance.
 #[test]
-fn a_build_refused_by_an_unfinished_prune_is_shown_how_to_finish_it() {
+fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     use rnk_store::Error;
     let given = Path::new("/home/u/link");
     let real = Path::new("/home/u/my state");
@@ -635,8 +635,8 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_how_to_finish_it() {
     let refusal = store_refusal(&cut_short(), given, 1000);
     assert_eq!(
         refusal.guidance,
-        "run ranikust prune --all --state-dir '/home/u/my state', which finishes emptying it or \
-         says what stops it"
+        "ranikust prune --all finishes emptying it or says what stops it: run ranikust prune \
+         --all --state-dir '/home/u/my state'"
     );
     assert!(
         refusal

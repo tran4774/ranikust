@@ -61,10 +61,10 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
 const ROOT_SCRIPT: &str = "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete";
 
 /// A user's emptying of the state directory it runs in without a user
-/// namespace, for [`pinned`]: first the regular marker renamed
-/// `.ranikust-pruning` (`mv -T`, never into a directory) where nothing has
-/// that name, or kept as the regular one an earlier run left, which keeps
-/// builds out; then all but it, as [`ROOT_SCRIPT`] does; it last, once a
+/// namespace, for [`pinned`]: first a regular `.ranikust-pruning` an
+/// earlier run left is kept, or else, where nothing has that name, the
+/// regular marker is renamed to it (`mv -T`, never into a directory),
+/// which keeps builds out; then all but it, as [`ROOT_SCRIPT`] does; it last, once a
 /// listing shows nothing else left, since not every `find` fails when a
 /// removal does.
 const USER_SCRIPT: &str = r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#;
@@ -133,8 +133,8 @@ pub(crate) fn cut_short(dir: &Path, euid: u32) -> String {
         return root_empties(dir);
     }
     format!(
-        "run ranikust prune --all --state-dir {}, which finishes emptying it or says what stops \
-         it",
+        "ranikust prune --all finishes emptying it or says what stops it: run ranikust prune \
+         --all --state-dir {}",
         shell_word(dir.as_os_str())
     )
 }
