@@ -345,7 +345,7 @@ fn extract_layers(store: Store, skip_selinux: bool) -> String {
             .finish(),
         "chown",
     );
-    let sel = if skip_selinux {
+    let selinux_outcome = if skip_selinux {
         SELINUX_SKIPPED.to_owned()
     } else {
         outcome(
@@ -359,10 +359,10 @@ fn extract_layers(store: Store, skip_selinux: bool) -> String {
     };
     // The refusing call counts, not its errno, which a security module may
     // change.
-    let sel = if sel.starts_with("refused: setxattr ./sel: ") {
+    let selinux_outcome = if selinux_outcome.starts_with("refused: setxattr ./sel: ") {
         "refused: setxattr ./sel".to_owned()
     } else {
-        sel
+        selinux_outcome
     };
     let published = fs::read_dir(lower.path().parent().unwrap())
         .unwrap()
@@ -371,7 +371,7 @@ fn extract_layers(store: Store, skip_selinux: bool) -> String {
     let tmp_left = fs::read_dir(tmp).unwrap().count();
     let report = format!(
         "nodes_skipped {skipped}\nnamed by diff ID {}\nmismatch refused {}\nfar owner {far}\n\
-         security.selinux {sel}\npublished {published}\ntmp {tmp_left}\n-- bottom\n{}\n\
+         security.selinux {selinux_outcome}\npublished {published}\ntmp {tmp_left}\n-- bottom\n{}\n\
          -- top\n{}\n-- paths\n{}\n{}",
         lower.path().ends_with(b_id.encoded()),
         mismatch.contains("the uncompressed tar has diff ID"),

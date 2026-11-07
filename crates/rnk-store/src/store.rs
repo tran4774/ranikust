@@ -1778,7 +1778,7 @@ fn own_group(state: &RootPath, d: &str) -> Result<()> {
 }
 
 /// What [`own_group`] does when the change of `d` fails with `e`: a
-/// warning for a refused change (`EPERM` from `chown` or `chmod` itself)
+/// warning for a refused group change (`EPERM` from the `chown` itself)
 /// outside a user namespace; an error for any other failure, in one, or
 /// where `in_user_namespace` cannot tell.
 fn refused_group(
@@ -1786,13 +1786,10 @@ fn refused_group(
     d: &str,
     in_user_namespace: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
-    let refused = matches!(
-        &e,
-        rnk_rootfs::Error::Io {
-            op: "chown" | "chmod",
-            ..
-        }
-    ) && e.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error());
+    // A refused chmod is not a filesystem without groups: the chown before
+    // it needs the same ownership and passed.
+    let refused = matches!(&e, rnk_rootfs::Error::Io { op: "chown", .. })
+        && e.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error());
     if !refused {
         return Err(e.into());
     }

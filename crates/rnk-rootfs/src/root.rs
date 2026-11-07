@@ -904,7 +904,8 @@ impl RootPath {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] when `p` cannot be reached or a change fails; earlier
+    /// [`Error::Io`] when `p` cannot be reached or a change fails, of op
+    /// `chown` for the owner or group and `chmod` for the mode; earlier
     /// changes stay applied.
     pub fn set_meta_if(
         &self,

@@ -753,11 +753,27 @@ fn set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then() {
 #[test]
 fn a_refused_group_change_is_a_chown_error_with_eperm() {
     let groups = rustix::process::getgroups().unwrap();
+    let chown_cap = rustix::thread::capabilities(None)
+        .unwrap()
+        .effective
+        .contains(rustix::thread::CapabilitySet::CHOWN);
     if rustix::process::geteuid().is_root()
         || rustix::process::getegid().is_root()
         || groups.iter().any(|g| g.is_root())
+        || chown_cap
     {
         eprintln!("skipped: the process may take group 0");
+        return;
+    }
+    // Where no map holds gid 0, the chown fails with EINVAL before any
+    // permission check.
+    let gid_map = fs::read_to_string("/proc/self/gid_map").unwrap();
+    let maps_root = gid_map.lines().any(|l| {
+        let f: Vec<u64> = l.split_whitespace().map(|n| n.parse().unwrap()).collect();
+        f[0] == 0 && f[2] > 0
+    });
+    if !maps_root {
+        eprintln!("skipped: gid 0 is not mapped here");
         return;
     }
     let f = Fixture::new();

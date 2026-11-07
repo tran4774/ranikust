@@ -392,51 +392,25 @@ fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
 /// A store directory whose group cannot be made the process's: a warning
 /// outside a user namespace, where no map needs the gid; an error in one,
 /// or where the namespace cannot be told. Any other failure, another errno
-/// of the change or `EPERM` from a step before it, is an error everywhere.
+/// of the `chown`, a refused `chmod` or `EPERM` from a step before them, is
+/// an error everywhere.
 #[test]
 fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
-    let refused = || rnk_rootfs::Error::Io {
-        op: "chown",
+    let io = |op, errno: Errno| rnk_rootfs::Error::Io {
+        op,
         path: PathBuf::from("tmp"),
-        source: io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
+        source: io::Error::from_raw_os_error(errno.raw_os_error()),
     };
-    assert!(refused_group(refused(), "tmp", || Ok(false)).is_ok());
-    let e = refused_group(refused(), "tmp", || Ok(true)).unwrap_err();
+    let outside = || Ok(false);
+    assert!(refused_group(io("chown", Errno::PERM), "tmp", outside).is_ok());
+    let e = refused_group(io("chown", Errno::PERM), "tmp", || Ok(true)).unwrap_err();
     assert!(matches!(e, Error::Rootfs(_)), "{e}");
     let unknown = || Err(Error::Random(io::Error::other("no procfs")));
-    let e = refused_group(refused(), "tmp", unknown).unwrap_err();
+    let e = refused_group(io("chown", Errno::PERM), "tmp", unknown).unwrap_err();
     assert!(matches!(e, Error::Rootfs(_)), "{e}");
-    let missing = rnk_rootfs::Error::Io {
-        op: "open",
-        path: PathBuf::from("tmp"),
-        source: io::Error::from_raw_os_error(Errno::NOENT.raw_os_error()),
-    };
-    assert!(refused_group(missing, "tmp", || Ok(false)).is_err());
-    let chmod = rnk_rootfs::Error::Io {
-        op: "chmod",
-        path: PathBuf::from("tmp"),
-        source: io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
-    };
-    assert!(refused_group(chmod, "tmp", || Ok(false)).is_ok());
-    let chmod = rnk_rootfs::Error::Io {
-        op: "chmod",
-        path: PathBuf::from("tmp"),
-        source: io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
-    };
-    assert!(refused_group(chmod, "tmp", || Ok(true)).is_err());
-    let read_only = rnk_rootfs::Error::Io {
-        op: "chown",
-        path: PathBuf::from("tmp"),
-        source: io::Error::from_raw_os_error(Errno::ROFS.raw_os_error()),
-    };
-    assert!(refused_group(read_only, "tmp", || Ok(false)).is_err());
-    // EPERM from a step before the change is not a refused change.
-    let open = rnk_rootfs::Error::Io {
-        op: "open",
-        path: PathBuf::from("tmp"),
-        source: io::Error::from_raw_os_error(Errno::PERM.raw_os_error()),
-    };
-    assert!(refused_group(open, "tmp", || Ok(false)).is_err());
+    assert!(refused_group(io("chown", Errno::ROFS), "tmp", outside).is_err());
+    assert!(refused_group(io("chmod", Errno::PERM), "tmp", outside).is_err());
+    assert!(refused_group(io("open", Errno::PERM), "tmp", outside).is_err());
 }
 
 /// A symlink of another group planted at a store directory's name keeps

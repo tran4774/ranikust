@@ -116,9 +116,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (ADR-0099). Each is pinned once and read and changed through that
   descriptor (`RootPath::set_meta_if`), only when it needs it. Outside a
   user namespace no map needs the gid, so a filesystem that refuses the
-  `chown` or `chmod` itself (`EPERM`) does not stop the store: a warning;
-  in one, or where the namespace cannot be told, an error, as is any other
-  failure.
+  `chown` itself (`EPERM`) does not stop the store: a warning; in one, or
+  where the namespace cannot be told, an error, as is any other failure, a
+  refused `chmod` included (the `chown` before it needs the same
+  ownership).
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
@@ -187,8 +188,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   checks skipped for a user of one group), while one already the
   process's keeps its ctime; a refused change is a warning only outside a
   user namespace, and the refusal itself is the error in one or where the
-  namespace cannot be told, while another errno of the change, or `EPERM`
-  from a step before it, is an error everywhere
+  namespace cannot be told, while another errno of the `chown`, a refused
+  `chmod`, or `EPERM` from a step before them, is an error everywhere
   (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
   symlink of another group at a store directory's name keeps its group and
   the open fails on it
