@@ -41,10 +41,10 @@ writer) before `unshare`, the probes and the state directory's checks.
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; then
   `statedir::check` (a build's checks, outside, with nothing made and no
-  mode changed, and no name the store does not make,
-  `rnk_store::is_store_name`): a missing or empty state directory left so;
-  then
-  `setup::enter_build_userns` (the namespace, no store opened), with its
+  mode changed; no name the store does not make, `rnk_store::foreign_names`,
+  and no `.ranikust-pruning` but a regular file): a missing or empty state
+  directory left so; then `setup::enter_build_userns` (the namespace, no
+  store opened), with its
   own guidance where the user gets no namespace
   (`prune::no_user_namespace`; the build's sends the user to root); in it,
   `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
@@ -350,7 +350,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   paths quoted so bash reads them back byte for byte, the `flock` failing
   while a store is open, nothing made at a missing path, the scripts run
   as given emptying a marked directory, the user's again after a run cut
-  short, and leaving an unmarked one; the ways out of a prune that did not
+  short, and leaving an unmarked one, the user's marker kept while
+  anything it may not remove is left, even by a `find` that does not fail
+  then; the ways out of a prune that did not
   finish, in `prune`'s refusal and a build's),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable

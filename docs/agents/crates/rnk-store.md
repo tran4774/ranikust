@@ -84,7 +84,7 @@ impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer); path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, ADR-0032) [open: #1]; digest() -> &Digest
 pub const SANDBOX_DIR: &str = "sandbox";  // the RUN sandbox's directory at the top, made by ranikust; a name prune_all takes
-pub fn is_store_name(name: &OsStr) -> bool;  // a top-level name the store or a build makes; prune_all refuses any other, ranikust's prune checks it outside first
+pub fn foreign_names<'a>(names: impl IntoIterator<Item = &'a OsStr>) -> Option<String>;  // the NotAStateDir why for top-level names the store does not make; prune_all refuses them, ranikust's prune checks outside first with it
 pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 ```
 

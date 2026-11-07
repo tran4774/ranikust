@@ -147,7 +147,9 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     let at = |what: &str| guidance.find(what);
     let renamed = at(r#"mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && "#);
     let removed = at(r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && "#);
-    let marker = at(r#"test "$(ls -A)" = .ranikust-pruning && rm .ranikust-pruning'"#);
+    let marker = at(
+        r#"test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning'"#,
+    );
     assert!(
         matches!((renamed, removed, marker), (Some(m), Some(r), Some(l)) if m < r && r < l),
         "{guidance}"
@@ -157,13 +159,42 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
 }
 
 /// `script` on the state directory `state` as the guidance gives it, from
-/// `cwd`.
-fn run_script(script: &str, cwd: &Path, state: &Path) -> std::process::ExitStatus {
-    std::process::Command::new("bash")
+/// `cwd`, with `bin` first on `PATH` when given.
+fn run_script_with(
+    script: &str,
+    cwd: &Path,
+    state: &Path,
+    bin: Option<&Path>,
+) -> std::process::ExitStatus {
+    let mut command = std::process::Command::new("bash");
+    command
         .args(["-c", &locked(state, script)])
-        .current_dir(cwd)
-        .status()
-        .unwrap()
+        .current_dir(cwd);
+    if let Some(bin) = bin {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut first = bin.as_os_str().to_owned();
+        first.push(":");
+        first.push(&path);
+        command.env("PATH", first).env("REAL_PATH", path);
+    }
+    command.status().unwrap()
+}
+
+/// [`run_script_with`] on the machine's tools.
+fn run_script(script: &str, cwd: &Path, state: &Path) -> std::process::ExitStatus {
+    run_script_with(script, cwd, state, None)
+}
+
+/// Gives a directory made read-only back its mode, even when the test
+/// fails, so the temp dir can be removed.
+struct Writable<'a>(&'a Path);
+
+impl Drop for Writable<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755)) {
+            eprintln!("restoring the mode of {}: {e}", self.0.display());
+        }
+    }
 }
 
 /// The scripts the guidance gives, run as they are on a path a shell must
@@ -210,20 +241,36 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
         assert!(state.join("keep").is_file(), "{script}");
         fs::remove_dir_all(&state).unwrap();
     }
-    // What the user may not remove stays, and the marker with it; root may
-    // remove it.
+    // What the user may not remove stays, and the marker with it, whether
+    // or not `find` fails when a removal does; root may remove it.
     if rustix::process::geteuid().as_raw() == 0 {
         return;
     }
-    let state = tmp.path().join("my 'state' $x");
-    fill(&state);
-    let kept = state.join("builds/b/deep");
-    fs::set_permissions(&kept, fs::Permissions::from_mode(0o555)).unwrap();
-    let ran = run_script(USER_SCRIPT, tmp.path(), &state).success();
-    fs::set_permissions(&kept, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(!ran);
-    assert!(kept.join("er").is_dir());
-    assert!(state.join(".ranikust-pruning").is_file());
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        bin.join("find"),
+        "#!/bin/sh\nPATH=$REAL_PATH find \"$@\"\nexit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("find"), fs::Permissions::from_mode(0o755)).unwrap();
+    for find_fails in [true, false] {
+        let state = tmp.path().join("my 'state' $x");
+        fill(&state);
+        let kept = state.join("builds/b/deep");
+        let writable = Writable(&kept);
+        fs::set_permissions(&kept, fs::Permissions::from_mode(0o555)).unwrap();
+        let shim = (!find_fails).then_some(bin.as_path());
+        let ran = run_script_with(USER_SCRIPT, tmp.path(), &state, shim).success();
+        drop(writable);
+        assert!(!ran, "find fails: {find_fails}");
+        assert!(kept.join("er").is_dir(), "find fails: {find_fails}");
+        assert!(
+            state.join(".ranikust-pruning").is_file(),
+            "find fails: {find_fails}"
+        );
+        fs::remove_dir_all(&state).unwrap();
+    }
 }
 
 /// A state directory's path, as one word bash reads back byte for byte;
@@ -413,8 +460,21 @@ fn a_name_the_store_does_not_make_is_refused_before_the_namespace() {
     assert_eq!(refusal.guidance, "");
     assert_eq!(listing(tmp.path()), before);
     assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
-    // Every name the store makes is taken.
+    // Nor a `.ranikust-pruning` that is not a regular file, beside a marker
+    // that is.
     fs::remove_file(dir.join("notes")).unwrap();
+    fs::create_dir(dir.join(".ranikust-pruning")).unwrap();
+    let before = listing(tmp.path());
+    let refusal = empty(&dir).unwrap_err();
+    assert!(
+        refusal
+            .reason
+            .contains(".ranikust-pruning, which is not a regular file"),
+        "{refusal}"
+    );
+    assert_eq!(listing(tmp.path()), before);
+    fs::remove_dir(dir.join(".ranikust-pruning")).unwrap();
+    // Every name the store makes is taken.
     fs::create_dir_all(dir.join(rnk_store::SANDBOX_DIR).join("runs")).unwrap();
     assert_eq!(statedir::check(&dir).unwrap(), Found::Entries);
 }

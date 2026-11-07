@@ -53,9 +53,10 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
 
 /// Root's emptying of the state directory `$1`, for [`locked`]: the
 /// marker first, so that what an interrupted removal leaves is unmarked,
-/// and nothing where there is none; then from inside it (`CDPATH` unset),
-/// with no top-level entry an operand and `find -xdev` entering no other
-/// filesystem: a mount point is left, and the command fails.
+/// and nothing where there is none; then from inside it, with no top-level
+/// entry an operand and `find -xdev` entering no other filesystem, so a
+/// mount point is left (GNU `find` then fails). `CDPATH=`, for a relative
+/// path typed from the book.
 const ROOT_SCRIPT: &str =
     r#"rm "$1/.ranikust-state" && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 -delete"#;
 
@@ -64,7 +65,7 @@ const ROOT_SCRIPT: &str =
 /// an earlier run renamed kept), which keeps builds out; then all but it,
 /// as [`ROOT_SCRIPT`] does; it last, once a listing shows nothing else
 /// left, since not every `find` fails when a removal does.
-const USER_SCRIPT: &str = r#"{ test -f "$1/.ranikust-pruning" || mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(ls -A)" = .ranikust-pruning && rm .ranikust-pruning"#;
+const USER_SCRIPT: &str = r#"{ test -f "$1/.ranikust-pruning" || mv "$1/.ranikust-state" "$1/.ranikust-pruning"; } && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#;
 
 /// What root does instead with the state directory `dir` (ADR-0105).
 fn root_guidance(dir: &Path) -> String {

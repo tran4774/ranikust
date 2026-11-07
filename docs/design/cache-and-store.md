@@ -168,7 +168,7 @@ a non-empty directory without its regular marker (`.ranikust-state`, or
 the `.ranikust-pruning` a prune that did not finish leaves), and, before
 any rename, one whose top level holds a name neither the store nor a build
 makes there (the markers, its directories, `sandbox/`, an anonymous
-store's names: `rnk_store::is_store_name`); it creates nothing in an empty
+store's names: `rnk_store::foreign_names`); it creates nothing in an empty
 one. Before deleting it syncs the directory with `.ranikust-pruning` in
 it, whether it renamed `.ranikust-state` itself or
 found one an earlier prune left: entries are emptied in place, under their

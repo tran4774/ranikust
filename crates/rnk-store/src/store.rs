@@ -1344,16 +1344,10 @@ impl Store {
         if names.is_empty() {
             return Ok(false);
         }
-        let foreign: Vec<OsString> = names.into_iter().filter(|n| !is_store_name(n)).collect();
-        if !foreign.is_empty() {
+        if let Some(why) = foreign_names(names.iter().map(OsString::as_os_str)) {
             return Err(Error::NotAStateDir {
                 path: state_path,
-                why: format!(
-                    "holds {}, which ranikust does not make there, so ranikust prune --all \
-                     removes nothing: move what ranikust did not make out of it, then run \
-                     ranikust prune --all again",
-                    shown_names(&foreign)
-                ),
+                why,
             });
         }
         let not_pruned = |left: String| Error::NotPruned {
@@ -1895,11 +1889,31 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
+/// Why [`Store::prune_all`] refuses a state directory whose top-level
+/// `names` include one neither the store nor a build makes there (the
+/// markers, the store's directories, [`SANDBOX_DIR`], an anonymous store's
+/// names): the `why` of [`Error::NotAStateDir`], naming the first few.
+/// `None` when the store makes them all. For a caller that checks a
+/// directory before `prune_all`, with the same rule and words.
+pub fn foreign_names<'a>(names: impl IntoIterator<Item = &'a OsStr>) -> Option<String> {
+    let foreign: Vec<OsString> = names
+        .into_iter()
+        .filter(|n| !is_store_name(n))
+        .map(OsStr::to_owned)
+        .collect();
+    (!foreign.is_empty()).then(|| {
+        format!(
+            "holds {}, which ranikust does not make there, so ranikust prune --all removes \
+             nothing: move what ranikust did not make out of it, then run ranikust prune --all \
+             again",
+            shown_names(&foreign)
+        )
+    })
+}
+
 /// Whether `name`, at the top of a state directory, is one the store or a
-/// build makes there: the markers, the store's directories, [`SANDBOX_DIR`],
-/// and an anonymous store's names. [`Store::prune_all`] refuses a directory
-/// holding any other.
-pub fn is_store_name(name: &OsStr) -> bool {
+/// build makes there.
+fn is_store_name(name: &OsStr) -> bool {
     let name = name.as_encoded_bytes();
     [MARKER, PRUNING, BUILDING, SANDBOX_DIR]
         .iter()
