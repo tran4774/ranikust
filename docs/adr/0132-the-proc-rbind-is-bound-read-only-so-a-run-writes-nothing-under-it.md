@@ -53,8 +53,8 @@ outside the build, at the cost that a `RUN` cannot write `/proc/self/*`.
   - `attr/*` (`runcon`, `aa-exec`);
   - `task/<tid>/comm` of another thread;
   - `uid_map`, `gid_map` and `setgroups` of a nested user namespace, which matters
-    only under `--seccomp=unconfined`, since the default filter refuses new user
-    namespaces.
+    only where the seccomp profile allows one (`--seccomp=unconfined`, or a
+    profile file), since the default filter refuses new user namespaces.
 - **What does not change.**
   - `/proc/sys` was already read-only.
   - Writes through magic links (`/dev/stderr`, `/proc/self/fd/N`) work as before:
@@ -81,7 +81,7 @@ outside the build, at the cost that a `RUN` cannot write `/proc/self/*`.
 - Good, because no advisory is needed: the rbind has not shipped in a release, and
   the flags are fixed in the pull request that builds it.
 - Bad, because a `RUN` in a build with `--allow proc.rbind` cannot write
-  `/proc/self/*`: a tool that lowers its own `oom_score_adj`, sets an LSM context
+  `/proc/self/*`: a tool that changes its own `oom_score_adj`, sets an LSM context
   through `attr/*`, or maps ids in a nested user namespace fails with `EROFS`
   where it works in Docker, so the flag's help and the book must say so.
 - Neutral, because a new `proc` is unchanged, and so is any build that does not
@@ -120,13 +120,12 @@ Refines [ADR-0126](0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only
 holds for writes too). Neither is rewritten, and both stay `accepted`.
 
 Answers a question put to the maintainer in the question window; it has no
-`question` issue, so this pull request closes nothing. The code and the docs
-that say what an rbind `RUN` can do (the threat model's rootless row, section 6
-entry and T17 evidence, `docs/design/sandbox.md`, the `rnk-sandbox` card, the
-book's row for rootless Podman, the doc comment of `Fallbacks::allow_proc_rbind`
-and the sandbox's guidance and warning) change in the pull request of
-[#78](https://github.com/tran4774/ranikust/issues/78), which this branch is merged
-into; the flag's help, with the `## Changelog` entry, comes with the pull request
-that builds the flag
-([#79](https://github.com/tran4774/ranikust/issues/79)). Revisit only if a measurement shows that a build
-needs a write under `/proc/self`.
+`question` issue. The code and the docs that say what an rbind `RUN` can do (the
+threat model's rootless row, section 6 entry and T17 evidence,
+`docs/design/sandbox.md`, the `rnk-sandbox` card, the book's row for rootless
+Podman, the doc comment of `Fallbacks::allow_proc_rbind` and the sandbox's
+guidance and warning) land with
+[#78](https://github.com/tran4774/ranikust/issues/78); the flag's help, with the
+`## Changelog` entry, with
+[#79](https://github.com/tran4774/ranikust/issues/79). Revisit only if a
+measurement shows that a build needs a write under `/proc/self`.

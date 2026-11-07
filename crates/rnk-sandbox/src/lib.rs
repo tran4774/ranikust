@@ -21,7 +21,7 @@
 //! get a read-only rbind of `/sys` where the user-namespace probe found a
 //! new `sysfs` refused ([`UsernsReport::fallbacks`]), and a read-only
 //! rbind of `/proc` only at the operator's request
-//! ([`Fallbacks::allow_proc_rbind`], ADR-0126).
+//! ([`Fallbacks::allow_proc_rbind`], ADR-0126, ADR-0132).
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused

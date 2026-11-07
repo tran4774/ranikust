@@ -62,20 +62,20 @@ pub enum KernelFs {
     /// A new instance; for `proc`, that of the `RUN`'s own PID namespace.
     Fresh,
     /// A recursive bind of the one ranikust sees, each of its mounts made
-    /// `nosuid`, `nodev` and `noexec` (and read-only for `sysfs`), where a
-    /// user namespace may not mount a new one. For `proc`, only with
-    /// [`Fallbacks::allow_proc_rbind`].
+    /// read-only, `nosuid`, `nodev` and `noexec` (ADR-0132 for `proc`),
+    /// where a user namespace may not mount a new one. For `proc`, only
+    /// with [`Fallbacks::allow_proc_rbind`].
     Rbind,
 }
 
 /// The kernel filesystems [`probe_with_fallbacks`] may bind where a new
 /// instance is refused. [`crate::UsernsReport::fallbacks`] allows the
-/// read-only rbind of `/sys` the user-namespace probe needed; an rbind of
-/// `/proc` only [`Fallbacks::allow_proc_rbind`] allows (ADR-0126). The
-/// default allows none.
+/// read-only rbind of `/sys` the user-namespace probe needed; a read-only
+/// rbind of `/proc` only [`Fallbacks::allow_proc_rbind`] allows (ADR-0126,
+/// ADR-0132). The default allows none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Fallbacks {
-    /// An rbind of `/proc`.
+    /// A read-only rbind of `/proc`.
     pub(crate) proc: bool,
     /// A read-only rbind of `/sys`.
     pub(crate) sysfs: bool,
@@ -98,14 +98,13 @@ impl Fallbacks {
     /// ranikust, not dumpable (ADR-0051), and the other `RUN`s, which
     /// [`crate::Sandbox`] then runs one at a time (ADR-0127), each with the
     /// namespaces made during it (the `--network=none` helper's, its own
-    /// under `--seccomp=unconfined`). The rest is an accepted residual;
-    /// against it, keep no secrets in other processes' command lines,
-    /// ranikust's included, and give the build container a PID namespace of
-    /// its own.
-    /// The `ranikust` binary has no flag for it before #79. This crate does
-    /// not scan for a PID namespace shared with a process of another mount
-    /// namespace: its caller runs ADR-0101's peer scan (ADR-0129), as the
-    /// binary will with #79.
+    /// where the seccomp profile allows one). The rest is an accepted
+    /// residual; against it, keep no secrets in other processes' command
+    /// lines, ranikust's included, and give the build container a PID
+    /// namespace of its own. The `ranikust` binary has no flag for it
+    /// before #79. This crate does not scan for a PID namespace shared with
+    /// a process of another mount namespace: its caller runs ADR-0101's
+    /// peer scan (ADR-0129), as the binary will with #79.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }

@@ -1235,7 +1235,7 @@ fn mount_one(
             root,
             target,
             c"/proc",
-            // Its `/proc/<pid>` files include processes outside the `RUN`'s.
+            // Its `/proc/<pid>` files include processes outside the build (ADR-0132).
             MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
             PROC_SUPER_MAGIC,
         )),

@@ -290,8 +290,8 @@ The steps, in order:
       end). In those are ranikust, not dumpable
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
       and the build's other `RUN`s, each with the namespaces made during
-      it (the `--network=none` helper's, its own under
-      `--seccomp=unconfined`). So that no `RUN` reaches another's
+      it (the `--network=none` helper's, its own where the seccomp profile
+      allows one). So that no `RUN` reaches another's
       processes, the `RUN`s of such a build run one at a time:
       `Sandbox::run` holds a lock, one for the whole process, alone, from
       before the clone until the `RUN`'s init is reaped, the processes of
@@ -316,8 +316,8 @@ The steps, in order:
       its own `oom_score_adj` as a new `proc` lets it, nor a file of a
       process outside it
       ([ADR-0132](../adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md));
-      writes through a link of it, such as `/dev/stderr`, reach their
-      target as before. The sandbox's probe chooses it once and logs it once
+      writes through its magic links (`/proc/self/fd/N`, which
+      `/dev/stderr` points to) reach their target as before. The sandbox's probe chooses it once and logs it once
       per build. Unasked, the probe fails at `Step::MountProc` and warns how
       to get a new `proc`: build as a regular user on a host that allows
       user namespaces, where a new `proc` mounts, or in a container where
