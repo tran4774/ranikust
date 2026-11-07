@@ -1756,8 +1756,8 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
 /// the process that makes them, which a user namespace maps (ADR-0099),
 /// and never a gid and setgid bit from the host in an extracted layer.
 /// Read and changed through one pinned descriptor, and only when it needs
-/// it. Refused outside a user namespace, it is a warning, as the store
-/// opened there before it did this; in one, an error.
+/// it. Outside a user namespace no map needs the gid, so a filesystem that
+/// refuses the change does not stop the store: a warning; in one, an error.
 fn own_group(state: &RootPath, d: &str) -> Result<()> {
     let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
@@ -1797,7 +1797,14 @@ fn refused_group(
             );
             Ok(())
         }
-        Ok(true) | Err(_) => Err(e.into()),
+        Ok(true) => Err(e.into()),
+        Err(ns) => {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory: {d}: the user namespace cannot be told: {ns}"
+            );
+            Err(e.into())
+        }
     }
 }
 

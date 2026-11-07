@@ -10,7 +10,7 @@ use std::io::{self, Read as _};
 use std::path::Path;
 
 use rnk_oci::Digest;
-use rustix::fs::{CWD, Mode, OFlags, PROC_SUPER_MAGIC};
+use rustix::fs::{Mode, OFlags};
 use sha2::{Digest as _, Sha256};
 
 use crate::error::{Error, Result};
@@ -40,32 +40,18 @@ impl UserNamespace {
     ///
     /// # Errors
     ///
-    /// [`Error::Store`] when the namespace cannot be told; [`Error::Io`]
-    /// when `/proc/self` is not procfs or a map cannot be read or parsed.
+    /// [`Error::Store`] when `/proc/self` is not procfs or the namespace
+    /// cannot be told; [`Error::Io`] when a map cannot be read or parsed.
     pub(crate) fn current() -> Result<Option<Self>> {
-        if !rnk_store::in_user_namespace()? {
+        let Some(dir) = rnk_store::user_namespace_proc()? else {
             return Ok(None);
-        }
+        };
         let proc = Path::new("/proc/self");
         let io = |path: &str, source: io::Error| Error::Io {
             op: "read",
             path: proc.join(path),
             source,
         };
-        let dir = rustix::fs::openat(
-            CWD,
-            proc,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|e| io("", e.into()))?;
-        if rustix::fs::fstatfs(&dir)
-            .map_err(|e| io("", e.into()))?
-            .f_type
-            != PROC_SUPER_MAGIC
-        {
-            return Err(io("", io::Error::other("not procfs")));
-        }
         let map = |name: &'static str| -> Result<String> {
             let fd =
                 rustix::fs::openat(&dir, name, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
@@ -184,14 +170,12 @@ mod tests {
         assert_ne!(identity.layer_key(&chain), chain);
     }
 
-    /// Whatever namespace the tests run in: `None` exactly in the initial
-    /// one, which `/proc/self/ns/user` names by its inode.
+    /// Whatever namespace the tests run in: one exactly where
+    /// `rnk_store::in_user_namespace` says so, with this process's maps.
     #[test]
-    fn the_current_namespace_is_told_by_its_inode() {
-        let link = std::fs::read_link("/proc/self/ns/user").unwrap();
-        let initial = link.as_os_str() == "user:[4026531837]";
+    fn the_current_namespace_has_this_process_s_maps() {
         let current = UserNamespace::current().unwrap();
-        assert_eq!(current.is_none(), initial, "{link:?}: {current:?}");
+        assert_eq!(current.is_some(), rnk_store::in_user_namespace().unwrap());
         if let Some(ns) = current {
             let own = |name: &str| canonical(&std::fs::read_to_string(name).unwrap()).unwrap();
             assert_eq!(ns.uid_map, own("/proc/self/uid_map"));

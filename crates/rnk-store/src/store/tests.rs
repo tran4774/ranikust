@@ -390,9 +390,9 @@ fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
 }
 
 /// A store directory whose group cannot be made the process's: a warning
-/// outside a user namespace, where the store opened before it fixed
-/// groups; an error in one, or where the namespace cannot be told. Any
-/// other failure is an error everywhere.
+/// outside a user namespace, where no map needs the gid; an error in one,
+/// or where the namespace cannot be told. Any other failure is an error
+/// everywhere.
 #[test]
 fn a_refused_group_change_fails_only_in_a_user_namespace() {
     let refused = || rnk_rootfs::Error::Io {

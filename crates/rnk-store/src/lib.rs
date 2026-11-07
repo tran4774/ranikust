@@ -4,7 +4,10 @@
 //! extracted layers (`layers/`), `RUN --mount=type=cache` directories
 //! (`caches/`) and entries being written (`tmp/`). Provides per-digest locks,
 //! publication by atomic rename, start-up clean-up and `prune`, and defines
-//! `BuildPaths`, the paths handed down to every crate.
+//! `BuildPaths`, the paths handed down to every crate. Tells whether the
+//! process runs in a user namespace other than the initial one (by the
+//! inode of `/proc/self/ns/user`), for the group of its own directories and
+//! for `rnk-snapshot`'s layer keys.
 //!
 //! ```text
 //! <state-dir>/
@@ -48,4 +51,4 @@ pub use store::{
     BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper, STATE_MARKER,
     Store, TmpEntry,
 };
-pub use userns::in_user_namespace;
+pub use userns::{in_user_namespace, user_namespace_proc};

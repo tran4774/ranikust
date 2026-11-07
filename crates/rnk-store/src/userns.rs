@@ -3,6 +3,7 @@
 //! `rnk-snapshot` keys the layers it extracts there by the map (ADR-0104).
 
 use std::io;
+use std::os::fd::OwnedFd;
 use std::path::Path;
 
 use rustix::fs::{CWD, FsWord, Mode, OFlags, PROC_SUPER_MAGIC};
@@ -23,8 +24,21 @@ const NSFS_MAGIC: FsWord = 0x6e73_6673;
 ///
 /// # Errors
 ///
-/// [`Error::Io`] when `/proc/self` is not procfs or its `ns/user` not nsfs.
+/// As [`user_namespace_proc`].
 pub fn in_user_namespace() -> Result<bool> {
+    Ok(user_namespace_proc()?.is_some())
+}
+
+/// `/proc/self`, checked to be procfs, as an `O_PATH` descriptor when this
+/// process runs in a user namespace other than the initial one (as
+/// [`in_user_namespace`] tells), for reading that namespace's maps; `None`
+/// in the initial one.
+///
+/// # Errors
+///
+/// [`Error::Io`] when `/proc/self` cannot be opened or is not procfs, or its
+/// `ns/user` cannot be opened, is not nsfs or cannot be read.
+pub fn user_namespace_proc() -> Result<Option<OwnedFd>> {
     let proc = Path::new("/proc/self");
     let io = |path: &str, source: io::Error| Error::Io {
         op: "read",
@@ -59,10 +73,11 @@ pub fn in_user_namespace() -> Result<bool> {
     {
         return Err(io("ns/user", io::Error::other("not nsfs")));
     }
-    Ok(rustix::fs::fstat(&ns)
+    let initial = rustix::fs::fstat(&ns)
         .map_err(|e| io("ns/user", e.into()))?
         .st_ino
-        != INIT_USER_NS_INO)
+        == INIT_USER_NS_INO;
+    Ok((!initial).then_some(dir))
 }
 
 #[cfg(test)]
@@ -76,5 +91,8 @@ mod tests {
         let link = std::fs::read_link("/proc/self/ns/user").unwrap();
         let initial = link.as_os_str() == "user:[4026531837]";
         assert_eq!(in_user_namespace().unwrap(), !initial, "{link:?}");
+        if let Some(proc) = user_namespace_proc().unwrap() {
+            assert_eq!(rustix::fs::fstatfs(&proc).unwrap().f_type, PROC_SUPER_MAGIC);
+        }
     }
 }
