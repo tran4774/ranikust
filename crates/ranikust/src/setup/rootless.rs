@@ -20,6 +20,9 @@ pub(crate) struct Plan {
     fallbacks: Fallbacks,
     /// Whether the build binds `/proc`.
     proc_rbind: bool,
+    /// The state directory's shared lock, from its check until the store
+    /// has taken its own ([`set_up`]).
+    held: rnk_store::StateDirHold,
 }
 
 impl Plan {
@@ -94,7 +97,7 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         refusal,
         probed: false,
     };
-    state_dir_for_probe(state_dir, euid).map_err(unprobed)?;
+    let held = state_dir_for_probe(state_dir, euid).map_err(unprobed)?;
     let subordinate = crate::subids::lookup(euid).map_err(|e| {
         unprobed(Refusal {
             kind: Kind::Other,
@@ -104,7 +107,7 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
     })?;
     let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
     let _entered = span.enter();
-    let name = format!("{}userns-probe-{}", rnk_store::ANON_PREFIX, unique());
+    let name = format!("{}{}", rnk_store::USERNS_PROBE_PREFIX, unique());
     let probed = super::probe_in_dir(state_dir, &name, subordinate).map_err(|e| {
         tracing::warn!("ranikust: user namespace probe could not run: {e}");
         NotHere {
@@ -155,13 +158,15 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         subordinate,
         fallbacks,
         proc_rbind: bind_proc,
+        held,
     })
 }
 
 /// The state directory the probe may write in, made if missing: private
 /// (ADR-0050), not on overlayfs, as for overlay mode as root, and one the
-/// store would take, checked without writing (Q-111, (a)).
-fn state_dir_for_probe(state_dir: &Path, euid: u32) -> Result<(), Refusal> {
+/// store would take, checked without writing (Q-111, (a)); its shared lock
+/// held from then on, `euid` naming what to do with a prune cut short.
+fn state_dir_for_probe(state_dir: &Path, euid: u32) -> Result<rnk_store::StateDirHold, Refusal> {
     super::prepare_state_dir(state_dir)?;
     if crate::statedir::on_overlayfs(state_dir) {
         return Err(Refusal {
@@ -228,15 +233,23 @@ pub(crate) fn set_up(
     seccomp: &Seccomp,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    let userns = rnk_sandbox::enter_build_user_namespace(plan.subordinate)
+    let Plan {
+        subordinate,
+        fallbacks,
+        held,
+        ..
+    } = plan;
+    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
         .map_err(|e| super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into()))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let store = super::open_store(state_dir, state_dir, euid).map_err(super::inside_userns)?;
+    // The store holds the directory now.
+    drop(held);
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
-        let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, plan.fallbacks)
+        let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, fallbacks)
             .map_err(|e| broken(format!("the RUN sandbox cannot run here: {e}")))?;
         span.record("steps", 1_u64);
         if caps.proc() == KernelFs::Rbind && !scanned {
@@ -315,7 +328,7 @@ mod tests {
     }
 
     /// The probe writes nothing in a directory the store would refuse, and
-    /// leaves a new one unmarked.
+    /// leaves a new one unmarked, held until the store opens.
     #[test]
     fn the_probe_writes_only_in_a_state_directory() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -349,7 +362,14 @@ mod tests {
         );
         assert_eq!(names(&foreign), ["precious"]);
         let new = tmp.path().join("new");
-        state_dir_for_probe(&new, 1000).unwrap();
+        let held = state_dir_for_probe(&new, 1000).unwrap();
         assert!(names(&new).is_empty());
+        // Held until the store opens: no prune empties it meanwhile.
+        let pruned = rnk_store::Store::prune_all(&new);
+        assert!(
+            matches!(pruned, Err(rnk_store::Error::InUse { .. })),
+            "{pruned:?}"
+        );
+        drop(held);
     }
 }

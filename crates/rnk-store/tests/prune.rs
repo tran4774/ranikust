@@ -219,17 +219,29 @@ fn check_prune_tells_a_symlink_on_the_path_apart() {
 }
 
 /// Every name the store and a build make at the top is taken: the store's
-/// directories, the sandbox's and an anonymous store's names.
+/// directories, the sandbox's and an anonymous store's names, the user
+/// namespace probe's among them; one on a symlink is removed, not
+/// followed.
 #[test]
 fn prune_all_takes_every_name_the_store_makes() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
+    let outside = dir.path().join("outside");
+    fs::create_dir_all(outside.join("sub")).unwrap();
+    fs::write(outside.join("sub/f"), b"keep").unwrap();
     used_store(&state);
     fs::create_dir(state.join(rnk_store::SANDBOX_DIR)).unwrap();
     fs::write(state.join(rnk_store::SANDBOX_DIR).join("runs"), b"").unwrap();
     fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    let probe = state.join(format!("{}1-1", rnk_store::USERNS_PROBE_PREFIX));
+    fs::create_dir(&probe).unwrap();
+    std::os::unix::fs::symlink(outside.join("sub"), probe.join("out")).unwrap();
+    let link = state.join(format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX));
+    std::os::unix::fs::symlink(outside.join("sub"), link).unwrap();
+    let before = tree(&outside);
     assert!(Store::prune_all(&state).unwrap());
     assert_eq!(tree(&state), Vec::<PathBuf>::new());
+    assert_eq!(tree(&outside), before);
 }
 
 /// This process's own `/` is refused before anything is locked or looked

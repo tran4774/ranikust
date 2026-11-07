@@ -162,23 +162,23 @@ fn open_refuses_a_non_empty_directory_without_the_marker() {
 #[test]
 fn check_state_dir_decides_as_open_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let left = format!("{}userns-probe-1-2", rnk_store::ANON_PREFIX);
+    let left = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
     let case = |name: &str| {
         let d = dir.path().join(name);
         fs::create_dir(&d).unwrap();
         d
     };
     let empty = case("empty");
-    Store::check_state_dir(&empty).unwrap();
+    drop(Store::check_state_dir(&empty).unwrap());
     assert!(names(&empty).is_empty());
     let leftovers = case("leftovers");
     fs::create_dir(leftovers.join(&left)).unwrap();
-    Store::check_state_dir(&leftovers).unwrap();
+    drop(Store::check_state_dir(&leftovers).unwrap());
     assert_eq!(names(&leftovers), [left.as_str()]);
     let marked = case("marked");
     fs::write(marked.join(rnk_store::STATE_MARKER), "").unwrap();
     fs::write(marked.join("kept"), "x").unwrap();
-    Store::check_state_dir(&marked).unwrap();
+    drop(Store::check_state_dir(&marked).unwrap());
     assert_eq!(names(&marked), [rnk_store::STATE_MARKER, "kept"]);
     let foreign = case("foreign");
     fs::write(foreign.join("precious"), "x").unwrap();
@@ -204,23 +204,109 @@ fn check_state_dir_decides_as_open_and_writes_nothing() {
     assert!(matches!(err, Error::Io { .. }), "{err}");
 }
 
+/// What `check_state_dir` returns holds the directory until it is dropped:
+/// a store opens beside it, and nothing that needs the directory alone (a
+/// prune, an anonymous store) runs until then.
+#[test]
+fn check_state_dir_holds_the_directory_until_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path();
+    let hold = Store::check_state_dir(state).unwrap();
+    let err = Store::prune_all(state).unwrap_err();
+    assert!(matches!(err, Error::InUse { .. }), "{err}");
+    let err = Store::open_anonymous(state).unwrap_err();
+    assert!(matches!(err, Error::Busy { .. }), "{err}");
+    let store = Store::open(&BuildPaths::new(state, state)).unwrap();
+    drop(hold);
+    let err = Store::prune_all(state).unwrap_err();
+    assert!(matches!(err, Error::InUse { .. }), "{err}");
+    store.close().unwrap();
+    assert!(Store::prune_all(state).unwrap());
+}
+
 /// A probe directory of a build cut short before its store opened is
-/// ranikust's own: the directory is still a new store, the name stays.
+/// ranikust's own: the directory is still a new store, and the store
+/// removes it once open.
 #[test]
 fn open_marks_a_directory_holding_only_ranikusts_leftovers() {
     let dir = tempfile::tempdir().unwrap();
     let at = |d: &Path| BuildPaths::new(d, d);
-    let left = format!("{}userns-probe-1-2", rnk_store::ANON_PREFIX);
-    fs::create_dir(dir.path().join(&left)).unwrap();
+    let left = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    fs::create_dir_all(dir.path().join(&left).join("overlay")).unwrap();
+    fs::write(dir.path().join(&left).join("overlay/f"), "x").unwrap();
     Store::open(&at(dir.path())).unwrap().close().unwrap();
     assert!(dir.path().join(rnk_store::STATE_MARKER).is_file());
-    assert!(dir.path().join(&left).is_dir());
+    assert!(!dir.path().join(&left).exists());
     // Anything else still makes it foreign.
     let other = tempfile::tempdir().unwrap();
     fs::create_dir(other.path().join(&left)).unwrap();
     fs::write(other.path().join("precious"), "x").unwrap();
     let err = Store::open(&at(other.path())).unwrap_err();
     assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
+}
+
+/// Only directories by the probe's name stand in for the marker: another
+/// name of ranikust's, or the probe's name on a file or on a symlink to a
+/// directory, makes a directory without the marker foreign, with nothing
+/// written there or where the symlink points.
+#[test]
+fn only_the_probes_own_directories_stand_in_for_the_marker() {
+    use std::os::unix::fs::symlink;
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("f"), "x").unwrap();
+    let probe = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let other = format!("{}00ff", rnk_store::ANON_PREFIX);
+    for what in ["another name", "a file", "a symlink"] {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        match what {
+            "another name" => fs::create_dir(d.join(&other)).unwrap(),
+            "a file" => fs::write(d.join(&probe), "x").unwrap(),
+            _ => symlink(outside.path(), d.join(&probe)).unwrap(),
+        }
+        let before = names(d);
+        let err = Store::check_state_dir(d).unwrap_err();
+        assert!(matches!(err, Error::NotAStateDir { .. }), "{what}: {err}");
+        let err = Store::open(&BuildPaths::new(d, d)).unwrap_err();
+        assert!(matches!(err, Error::NotAStateDir { .. }), "{what}: {err}");
+        assert_eq!(names(d), before, "{what}");
+    }
+    assert_eq!(names(outside.path()), ["f"]);
+}
+
+/// A store removes a probe directory only where it takes the directory's
+/// lock, which a probe holds while it uses it; in a marked directory, the
+/// probe's name on a symlink is left, and what it points to untouched.
+#[test]
+fn open_removes_only_the_probe_directories_no_probe_holds() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let outside = dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("f"), "x").unwrap();
+    let at = BuildPaths::new(&state, &state);
+    Store::open(&at).unwrap().close().unwrap();
+    let name = |n: &str| format!("{}{n}", rnk_store::USERNS_PROBE_PREFIX);
+    let (used, left, link) = (name("1-1"), name("1-2"), name("1-3"));
+    fs::create_dir(state.join(&used)).unwrap();
+    fs::create_dir(state.join(&left)).unwrap();
+    symlink("../../outside/f", state.join(&left).join("out")).unwrap();
+    symlink(&outside, state.join(&link)).unwrap();
+    let held = fs::File::open(state.join(&used)).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let store = Store::open(&at).unwrap();
+    assert!(state.join(&used).is_dir(), "a probe's directory in use");
+    assert!(
+        !state.join(&left).exists(),
+        "a probe's directory no probe holds"
+    );
+    assert!(state.join(&link).is_symlink());
+    assert_eq!(names(&outside), ["f"]);
+    store.close().unwrap();
+    drop(held);
+    Store::open(&at).unwrap().close().unwrap();
+    assert!(!state.join(&used).exists(), "let go");
 }
 
 #[test]

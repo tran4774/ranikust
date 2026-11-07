@@ -54,6 +54,7 @@ pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
 pub use store::{
     BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper,
-    PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, Store, TmpEntry,
+    PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, StateDirHold, Store, TmpEntry,
+    USERNS_PROBE_PREFIX,
 };
 pub use userns::user_namespace_proc;

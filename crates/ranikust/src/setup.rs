@@ -777,7 +777,10 @@ fn probe_user_namespace(store: &Store) -> Result<Probed, String> {
 
 /// The probes, for the subordinate ids `subordinate`, in `parent/name`,
 /// made for them and removed after, unless a child of the probe was left
-/// there.
+/// there. The directory is held by its exclusive `flock` while the probes
+/// use it, and for this process's life when a child was left: a store
+/// removes a probe's directory only where it takes that lock
+/// ([`rnk_store::USERNS_PROBE_PREFIX`]).
 pub(crate) fn probe_in_dir(
     parent: &Path,
     name: &str,
@@ -787,12 +790,21 @@ pub(crate) fn probe_in_dir(
     let scratch = root
         .create_sub_root(name, 0o700)
         .map_err(|e| e.to_string())?;
+    let held = match hold_dir(&scratch) {
+        Ok(held) => held,
+        Err(e) => {
+            let _ = root.remove_dir(name);
+            return Err(format!("cannot lock {}: {e}", parent.join(name).display()));
+        }
+    };
     let (r, left) = match own_group(&root, name) {
         Ok(_) => probe_in_scratch(&scratch, &parent.join(name), subordinate),
         Err(e) => (Err(e.to_string()), false),
     };
     if left {
         // The child may still write there; the error in the line says so.
+        // Its lock stays held as long as this process, and that child, live.
+        std::mem::forget(held);
         return r;
     }
     let removed = rnk_rootfs::delete_contents(&scratch, &rnk_rootfs::IgnoreList::new())
@@ -804,6 +816,17 @@ pub(crate) fn probe_in_dir(
         );
     }
     r
+}
+
+/// A descriptor of the directory `dir` holding its exclusive `flock`, taken
+/// without waiting: it was just made, so only a store about to remove it
+/// as a leftover holds it.
+fn hold_dir(dir: &RootPath) -> Result<OwnedFd, String> {
+    let fd = dir
+        .open_at(".", &rnk_rootfs::OpenHow::read().directory().no_follow())
+        .map_err(|e| e.to_string())?;
+    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| e.to_string())?;
+    Ok(fd)
 }
 
 /// Gives the directory `name` in `root` the process's gid and no setgid
