@@ -118,7 +118,7 @@ pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, Ste
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE; as probe_with_fallbacks(dir, Fallbacks::default()), without its warning on a refused new proc
 pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps>; // #78: a new proc and sysfs first; an EPERM of one allowed tried again as an rbind; warns once for a proc rbind, info for sysfs; a proc EPERM not allowed: Error::Setup at Step::MountProc and a warning with how to get a new proc
-pub struct Caps { pub root_entry: RootEntry, pub proc: KernelFs, pub sysfs: KernelFs } // #[non_exhaustive]; every RUN of the Sandbox gets them
+pub struct Caps { pub root_entry: RootEntry, .. } // #[non_exhaustive]; every RUN of the Sandbox gets them; proc(), sysfs(): KernelFs, read-only, so an rbind is only the probe's choice
 pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
 impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; --allow proc.rbind with #79): a RUN then sees the container's processes and reaches those of its uid

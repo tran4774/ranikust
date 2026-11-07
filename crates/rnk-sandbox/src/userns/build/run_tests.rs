@@ -402,4 +402,5 @@ fn the_caps_line_names_each_kernel_filesystem() {
     };
     let out = format!("caps={caps:?}");
     assert_eq!(chosen(&out), (KernelFs::Rbind, KernelFs::Fresh));
+    assert_eq!((caps.proc(), caps.sysfs()), chosen(&out));
 }

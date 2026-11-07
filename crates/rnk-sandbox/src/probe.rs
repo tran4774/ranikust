@@ -21,17 +21,38 @@ use crate::journal;
 use crate::spawner::{ParentPid, Runner, clone_child};
 use crate::spec::RunSpec;
 
-/// What the probe found the sandbox can do in this environment.
+/// What the probe found the sandbox can do in this environment. How a
+/// `RUN` gets its kernel filesystems only the probe sets:
+///
+/// ```compile_fail,E0616
+/// fn ask_for_an_rbind(mut caps: rnk_sandbox::Caps) {
+///     caps.proc = rnk_sandbox::KernelFs::Rbind;
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Caps {
     /// How a `RUN` enters its root: `pivot_root`, or `MS_MOVE` where seccomp
     /// blocks it.
     pub root_entry: RootEntry,
+    // Read-only outside the crate: an rbind only as the probe chose it,
+    // `/proc`'s only on request.
+    pub(crate) proc: KernelFs,
+    pub(crate) sysfs: KernelFs,
+}
+
+impl Caps {
     /// How a `RUN` gets its `/proc`.
-    pub proc: KernelFs,
+    #[must_use]
+    pub fn proc(&self) -> KernelFs {
+        self.proc
+    }
+
     /// How a `RUN` gets its read-only `/sys`.
-    pub sysfs: KernelFs,
+    #[must_use]
+    pub fn sysfs(&self) -> KernelFs {
+        self.sysfs
+    }
 }
 
 /// How a `RUN` gets `proc` or `sysfs`.
