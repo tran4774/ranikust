@@ -5,8 +5,10 @@
 set -euo pipefail
 cd "$HOME/rnk"
 mapfile -t names <t2-tests.txt
-work="$(mktemp -d)"
+# Root's tests get a TMPDIR no other user can write, as in the T2c lane; others may only enter it.
+work="$(sudo mktemp -d)"
 trap 'sudo rm -rf "$work"' EXIT
+sudo chmod 0711 "$work"
 
 declare -A want=()
 for n in "${names[@]}"; do want[$n]=1; done
