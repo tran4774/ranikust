@@ -257,8 +257,8 @@ cannot leave the namespace once it is in:
    still open the other processes.
 2. `set_up`, in the namespace: `enter_build_user_namespace` (user and mount
    namespace), the store, the sandbox probe with the fallbacks `plan`
-   allows (step 3), the overlay probe (step 4), then the mode line and the
-   spawner. A failure here is `Kind::Broken`: no other mode follows in the
+   allows (step 3), the overlay probe (step 4), the spawner, then the mode
+   line. A failure here is `Kind::Broken`: no other mode follows in the
    process. `plan`'s probe child has already run what this repeats, each
    step a `RUN` needs and an overlay mount on the state directory's
    filesystem, so what fails here is what that child could not see: the

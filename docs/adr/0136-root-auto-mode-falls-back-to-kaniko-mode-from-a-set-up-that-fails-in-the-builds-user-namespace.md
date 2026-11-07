@@ -72,7 +72,8 @@ its properties, stood for this.
   A stop before the child handles `SIGUSR1` ends the child by its default
   action, and the parent then ends by the stop signal (`128 + n` as a
   container's PID 1, which the kernel keeps from its own default action).
-  A stop wins over a fallback. The child gets `SIGKILL` when the parent dies
+  While a failed set-up is undone, the child ignores `SIGUSR1` until it
+  exits, and the parent then ends by the stop. A stop wins over a fallback. The child gets `SIGKILL` when the parent dies
   (`PR_SET_PDEATHSIG`, armed again before the build). The parent reaps any
   other child it gets, as PID 1.
 - **The state directory** is where the child writes before the build,
@@ -116,8 +117,9 @@ its properties, stood for this.
   for each end of the child), `ranikust`
   `only_roots_auto_mode_falls_back_to_kaniko_mode`, `rnk-store`
   `abandon_empties_only_a_store_its_open_made_and_no_build_holds`; T1 smoke
-  case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken` builds
-  in kaniko mode with the note and leaves the state directory empty;
+  case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken`, the
+  set-up's last step once its sandbox started, builds in kaniko mode with
+  the note and kaniko mode's line alone and leaves the state directory empty;
   `--mode=overlay` gets the error; `SIGKILL`, `SIGINT`, `SIGTERM` and
   `SIGINT` to the group through the waiting parent leave no process, and
   ranikust exits 137 for `SIGKILL`, else 1, as a build that never forks);

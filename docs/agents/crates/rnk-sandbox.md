@@ -506,7 +506,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, what the parent outside the build's user namespace
   does once its child ended (`supervise.rs`: a stop signal wins over the
-  fallback, which needs exit status 1 and a reason, else the child's end,
+  fallback, which needs exit status 1 and a reason, else the child's end;
+  a status lost: the stop, else an error's, the reason logged,
   `the_parent_ends_as_the_child_unless_it_falls_back_unstopped`),
   the sealed copy (the order of the ways and the stop
   when the core-file limit cannot go back, one marker in the copy's

@@ -62,9 +62,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   entered the namespace, returns `Rootless::FellBack` and builds in kaniko
   mode; once set up, `Supervised::proceed` closes that way back and the
   build stops on the forwarded `SIGUSR1` (`build::Stops::Forwarded`); a
-  forwarded stop that comes while the store is abandoned is ignored
-  (`Supervised::undoing`) until it is empty, and the parent then ends by
-  it. Only the mode that builds is logged as the outcome. The probe's
+  forwarded stop that comes while a failed set-up is undone is ignored
+  (`Supervised::undoing`) until the child exits, and the parent then ends
+  by it. Only the mode that builds is logged as the outcome. The probe's
   directory takes the process's gid and no setgid bit, as the store's own
   directories do (ADR-0099), so a setgid state directory does not stop its
   `chown`.
@@ -273,8 +273,9 @@ Each step before the next; design in
    `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
    process unchanged: the T0 tests of the binary set it, so none makes a
    user namespace. Root's `--mode=auto` forks before `set_up` (ADR-0136);
-   `RANIKUST_DEBUG_FAULT=rootless-broken` fails `set_up` once the store is
-   open, so that the T1 smoke case `rootless` sees the fallback.
+   `RANIKUST_DEBUG_FAULT=rootless-broken` fails `set_up` at its last step,
+   once the sandbox started, so that the T1 smoke case `rootless` sees the
+   fallback undo the whole set-up.
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,

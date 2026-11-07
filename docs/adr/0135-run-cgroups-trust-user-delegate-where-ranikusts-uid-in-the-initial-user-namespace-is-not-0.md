@@ -62,7 +62,8 @@ nghị)" ("Fix it in #79 now (recommended)").
     level maps it to nothing.
   - The file counts only as a regular file of a procfs (`statfs`
     `PROC_SUPER_MAGIC`), mode 0444, that reads `Linux`, which excludes a
-    tmpfs or another procfs file over it.
+    tmpfs, and a procfs file of another mode or content over it, such as a
+    process's `comm`.
   - Elsewhere `/proc/self/uid_map` decides: whether it maps the uid to 0 one
     level up. A map ranikust cannot read or parse, or that maps the uid
     nowhere, counts as 0.
