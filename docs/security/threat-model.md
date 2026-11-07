@@ -296,10 +296,11 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   and also refuses a PID namespace shared with a process of another
   mount namespace, as T21
   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
-  such a build keeps the persistent store. What it reads is measured
-  outside ranikust on Linux 5.15 and 6.8, not yet through ranikust end
-  to end; that it writes nothing is measured through ranikust (T1,
-  ADR-0132; section 7).
+  such a build keeps the persistent store. What a `RUN` reads is
+  measured outside ranikust on Linux 5.15 and 6.8, not yet through
+  ranikust end to end; that every mount of the rbind is read-only and a
+  write of an `oom_score_adj` fails with `EROFS` is measured through
+  ranikust's sandbox (T1, ADR-0132; section 7).
 - Builds one after the other in one container trust one another. A later
   build empties `/` before its first base when an earlier build left its
   marker, `/ranikust/.built` (ADR-0052, D1), so files left by accident never
@@ -492,7 +493,8 @@ before 1.0:
   [ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)):
   measured outside ranikust on Linux 5.15 and 6.8, not through ranikust
   end to end, on newer kernels or under SELinux; ranikust's tests cover
-  the turns, and the rbind's read-only mounts and refused writes (T1,
+  the turns, and the rbind's read-only mounts and refused
+  `oom_score_adj` writes (T1,
   [ADR-0132](../adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md)).
 
 ## 8. Rating findings

@@ -94,8 +94,9 @@ struct Sleeper(std::process::Child);
 
 impl Sleeper {
     fn start() -> Self {
-        // coreutils' `sleep` ignores its `argv[0]`; BusyBox's would not sleep.
         let child = std::process::Command::new("sleep")
+            // GNU coreutils' `sleep` ignores `argv[0]`; a multi-call one
+            // (BusyBox, uutils) would not sleep.
             .arg0(SLEEPER)
             .arg("300")
             .stdin(std::process::Stdio::null())

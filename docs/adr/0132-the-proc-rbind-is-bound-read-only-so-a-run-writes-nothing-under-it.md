@@ -18,10 +18,9 @@ no write. A review of the rbind then found that some `/proc/<pid>` files are
 checked only by file ownership against the kernel uid, not by ptrace access, so a
 `RUN` could change owner-writable attributes of the processes of its kernel uid
 outside the build, such as the OOM score and the scheduling priority. The rbind
-has not shipped in a release, and the fix goes into the same unreleased pull
-request. The question put to the maintainer in the question window, which has no
-`question` issue: bind the rbind read-only, or keep it read-write and accept the
-residual?
+has not shipped in a release. The question put to the maintainer in the question
+window, which has no `question` issue: bind the rbind read-only, or keep it
+read-write and accept the residual?
 
 ## Considered Options
 
@@ -57,7 +56,8 @@ outside the build, at the cost that a `RUN` cannot write `/proc/self/*`.
     profile file), since the default filter refuses new user namespaces.
 - **What does not change.**
   - `/proc/sys` was already read-only.
-  - Writes through magic links (`/dev/stderr`, `/proc/self/fd/N`) work as before:
+  - Writes through magic links (`/proc/self/fd/N`, which `/dev/stderr` points to)
+    work as before:
     the check falls on the mount of the link's target, not on `/proc`.
   - The sandbox writes nothing under the rbind; its `uid_map` writes go through the
     spawner's own `/proc`.
@@ -78,8 +78,7 @@ outside the build, at the cost that a `RUN` cannot write `/proc/self/*`.
 - Good, because the rbind of `/proc` and that of `/sys` now carry the same
   read-only rule, and no per-file list of owner-writable entries has to be kept
   current as the kernel adds one.
-- Good, because no advisory is needed: the rbind has not shipped in a release, and
-  the flags are fixed in the pull request that builds it.
+- Good, because no advisory is needed: the rbind has not shipped in a release.
 - Bad, because a `RUN` in a build with `--allow proc.rbind` cannot write
   `/proc/self/*`: a tool that changes its own `oom_score_adj`, sets an LSM context
   through `attr/*`, or maps ids in a nested user namespace fails with `EROFS`
@@ -125,7 +124,7 @@ threat model's rootless row, section 6 entry and T17 evidence,
 `docs/design/sandbox.md`, the `rnk-sandbox` card, the book's row for rootless
 Podman, the doc comment of `Fallbacks::allow_proc_rbind` and the sandbox's
 guidance and warning) land with
-[#78](https://github.com/tran4774/ranikust/issues/78); the flag's help, with the
-`## Changelog` entry, with
+[#78](https://github.com/tran4774/ranikust/issues/78); the flag's help and the
+`## Changelog` entry land with
 [#79](https://github.com/tran4774/ranikust/issues/79). Revisit only if a
 measurement shows that a build needs a write under `/proc/self`.
