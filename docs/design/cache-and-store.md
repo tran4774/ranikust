@@ -197,14 +197,21 @@ without a user namespace) act only on the directory ranikust checked: the
 process that prints them opens the path as given, made absolute, with no
 symlink followed on it, runs `Store::check_prune` on it and takes its
 device, inode and owner. Each command checks, right after its one
-`cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u`):
+`cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u`
+piped to `grep -qxF`, so the check and the action name the same word):
 `.` for the emptying, `./name` in the parent it entered for `rmdir` and
 the move aside. So a path changed after the message was printed, a
 parent swapped for a symlink included, makes it fail before it changes
-anything. Where that open or check fails, no commands are printed, and
-the refusal says instead to give the path with no symbolic link on it
-and, for a user's directory, to run `ranikust prune --all` as that user
-(a user's own `prune --all` is refused before, with the check's reason).
+anything. Where that open or check fails, or the path ends in `..`, no
+commands are printed and the refusal says why: give the path with no
+symbolic link on it (or the directory's own path), and, to root only,
+for a user's directory, run `ranikust prune --all` as that user (a
+user's own `prune --all` is refused before, with the check's reason).
+Root gets no `rmdir` for an empty directory: only one that holds the
+marker is a state directory. Both emptying scripts first check that
+`find` is GNU findutils' and otherwise stop before changing anything,
+saying so (Alpine: `apk add findutils`); the behaviour below is that
+`find`'s.
 In the directory, the emptying names only `.`, so the lock, the marker's
 check and the deletion act on it whatever is put at its path meanwhile;
 it takes the same exclusive `flock` (`flock -xn .`), so it fails while a

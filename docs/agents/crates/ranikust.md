@@ -51,9 +51,12 @@ writer) before `unshare`, the probes and the state directory's checks.
   it is the one ranikust checked (`prune::Pin`: device, inode and owner
   from `Store::check_prune` on the path as given, outside any namespace),
   then name only `.`, under `flock -xn .`, so they act on that directory
-  and fail while a build holds it; where the check fails, no commands
-  (give the path with no symbolic link on it; for a user's directory,
-  `prune --all` as that user). A prune that could not finish
+  and fail while a build holds it; the emptying scripts first check that
+  `find` is GNU findutils' and otherwise stop, changing nothing. No
+  commands where the check fails (give the path with no symbolic link
+  on it; to root only: for a user's directory, `prune --all` as that
+  user), for a path ending in `..`, or, for root, for an empty directory
+  (no marker, so maybe not a state directory). A prune that could not finish
   (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
   by one cut short (`PruneCutShort`) is told the next step
   (`prune::cut_short`: `prune --all` for a user, root's commands for
@@ -368,7 +371,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   removed when its path is swapped for a symlink while they run; the pin
   what `stat -c %d:%i:%u` prints, each command failing with nothing
   changed when the pin is wrong or a parent is swapped for a symlink
-  after printing, root given none for a path through a symlink; the ways
+  after printing, root given none for a path through a symlink, a path
+  ending in `..` or an empty directory, and each script changing nothing
+  with a `find` that answers `--version` as BusyBox's does or not at
+  all; the ways
   out only in `prune`'s refusal of a prune that could not finish), `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default

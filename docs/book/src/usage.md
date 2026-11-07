@@ -70,26 +70,31 @@ user), its error says how to get out, naming the directory.
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves
-([ADR-0105]), then removes it with `rmdir`. The commands enter the
-directory once, check that it is the one ranikust checked, by its device,
-inode and owner, and work only inside it; `flock` takes the lock builds
-hold, so they fail while one runs. The error gives them with the
-directory, its parent, its name and its identity in place of `'DIR'`,
-`'PARENT'`, `'./NAME'` and `ID`:
+([ADR-0105]), then removes it with `rmdir`. The emptying needs GNU
+findutils (Alpine: `apk add findutils`): without it, it stops before
+changing anything. The commands enter the directory once, check that it
+is the one ranikust checked, by its device, inode and owner, and work
+only inside it; `flock` takes the lock builds hold, so they fail while
+one runs. The error gives them with the directory, its parent, its name
+and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
 
 ```sh
-( CDPATH= cd -P -- 'DIR' && test "$(stat -c %d:%i:%u .)" = ID &&
-  exec flock -xn . sh -c '{ test -f .ranikust-state &&
+( CDPATH= cd -P -- 'DIR' && stat -c %d:%i:%u . | grep -qxF ID &&
+  exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" ||
+  { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; };
+  { test -f .ranikust-state &&
   ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning &&
   ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } &&
   find . -xdev -mindepth 1 -delete' )
-( CDPATH= cd -P -- 'PARENT' && test "$(stat -c %d:%i:%u './NAME')" = ID &&
+( CDPATH= cd -P -- 'PARENT' && stat -c %d:%i:%u './NAME' | grep -qxF ID &&
   rmdir -- './NAME' )
 ```
 
-Where ranikust cannot check the path as given (a symlink on it, say), the
-error gives no commands: give the path with no symbolic link on it, or,
-for a user's directory, run `ranikust prune --all` as that user.
+The error gives no commands for an empty directory (ranikust removes
+only one that holds its marker), for a path that ends in `..` (give the
+directory's own path), or for a path ranikust cannot check as given (a
+symlink on it, say): give the path with no symbolic link on it, or, for
+a user's directory, run `ranikust prune --all` as that user.
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in
 Phase 5.
