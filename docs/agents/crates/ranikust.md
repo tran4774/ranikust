@@ -47,14 +47,17 @@ writer) before `unshare`, the probes and the state directory's checks.
   its own guidance where the user gets no namespace
   (`prune::no_user_namespace`; the build's sends the user to root); in it,
   `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
-  guidance gives enter the state directory once, shell-quoted, and then
-  name only `.`, under `flock -xn .`, so they act on the directory they
-  locked and fail while a build holds it. A prune that could not finish
-  (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
-  by one cut short (`PruneCutShort`) is told the next step
-  (`prune::cut_short`: `prune --all` for a user, root's commands for
-  root). Prints one line on stdout; a refusal exits 1, `prune` without
-  `--all` 2.
+  guidance gives enter the state directory once, shell-quoted, check that
+  it is the one ranikust checked (`prune::Pin`: device, inode and owner
+  from `Store::check_prune` on the path as given, outside any namespace),
+  then name only `.`, under `flock -xn .`, so they act on that directory
+  and fail while a build holds it; where the check fails, no commands
+  (run `prune --all` as the directory's owner, or fix the path). A prune
+  that could not finish (`NotPruned`) gets the ways out
+  (`prune::unfinished`); a build refused by one cut short
+  (`PruneCutShort`) is told the next step (`prune::cut_short`:
+  `prune --all` for a user, root's commands for root). Prints one line on
+  stdout; a refusal exits 1, `prune` without `--all` 2.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -141,8 +144,9 @@ Modules of `crates/ranikust/src/` (all crate-private):
   writable by group or others (root's sticky directories excepted); created
   `0700` by `mkdirat` below the checked descriptor; chain checked again.
   `statedir::check(state_dir)`: the same rules on an existing directory,
-  and only names the store makes, `Found { Missing, Empty, Entries }`,
-  nothing made or chmodded. Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
+  and only names the store makes, `Found { Missing, Empty,
+  Entries(PruneCheck) }`, nothing made or chmodded.
+  Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
 
 ### Set-up order
 
@@ -357,11 +361,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   path, the scripts run as given emptying a marked directory, the user's
   again after a run cut short, never moving its marker into a
   `.ranikust-pruning` directory, there before or made just before the
-  rename, and leaving an unmarked one, the user's
-  marker kept while anything it may not remove is left, even by a `find`
-  that does not fail then, and nothing outside the directory removed when
-  its path is swapped for a symlink while they run; the ways out only in
-  `prune`'s refusal of a prune that could not finish), `statedir`
+  rename, or beside a symlink of that name, and leaving an unmarked one,
+  the user's marker kept while anything it may not remove is left, even
+  by a `find` that does not fail then, and nothing outside the directory
+  removed when its path is swapped for a symlink while they run; the pin
+  what `stat -c %d:%i:%u` prints, each command failing with nothing
+  changed when the pin is wrong or a parent is swapped for a symlink
+  after printing, root given none for a path through a symlink; the ways
+  out only in `prune`'s refusal of a prune that could not finish),
+  `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's

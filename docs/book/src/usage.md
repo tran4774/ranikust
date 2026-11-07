@@ -71,17 +71,25 @@ Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves
 ([ADR-0105]), then removes it with `rmdir`. The commands enter the
-directory once and work only inside it; `flock` takes the lock builds
-hold, so they fail while one runs. The error gives them with the real
-directory in place of `'DIR'`:
+directory once, check that it is the one ranikust checked, by its device,
+inode and owner, and work only inside it; `flock` takes the lock builds
+hold, so they fail while one runs. The error gives them with the
+directory, its parent, its name and its identity in place of `'DIR'`,
+`'PARENT'`, `'./NAME'` and `ID`:
 
 ```sh
-( CDPATH= cd -P -- 'DIR' && exec flock -xn . sh -c '{ test -f .ranikust-state &&
+( CDPATH= cd -P -- 'DIR' && test "$(stat -c %d:%i:%u .)" = ID &&
+  exec flock -xn . sh -c '{ test -f .ranikust-state &&
   ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning &&
   ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } &&
   find . -xdev -mindepth 1 -delete' )
-rmdir 'DIR'
+( CDPATH= cd -P -- 'PARENT' && test "$(stat -c %d:%i:%u './NAME')" = ID &&
+  rmdir -- './NAME' )
 ```
+
+Where ranikust cannot check the path as given (a symlink on it, say), the
+error gives no commands: run `ranikust prune --all` as the directory's
+owner, or fix the path.
 
 Without `--all`, `prune` is a usage error: removing by size and age comes in
 Phase 5.

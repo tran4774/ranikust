@@ -160,13 +160,14 @@ the state directory, which neither make it nor change its mode, and one
 that does not exist, or is empty, is left so; then `Store::check_prune`,
 the same read-only check `Store::prune_all` runs, so `prune --all` refuses
 there whatever `prune_all` would refuse in the directory, in this order:
-`.ranikust-building` in any form, a `.ranikust-pruning` that is not a
-regular file, a non-empty directory without a regular marker
-(`.ranikust-state`, or the `.ranikust-pruning` a prune that did not finish
-leaves), and a top-level name neither the store nor a build makes there (the markers, its
-directories, `sandbox/`, an anonymous store's names); then the build's user
-namespace; in it, `Store::prune_all`, which refuses the process's own `/`
-itself. That takes the state directory's `flock` exclusive without waiting,
+this process's own `/`, `.ranikust-building` in any form, a
+`.ranikust-pruning` that is not a regular file, a non-empty directory
+without a regular marker (`.ranikust-state`, or the `.ranikust-pruning` a
+prune that did not finish leaves), and a top-level name neither the store
+nor a build makes there (the markers, its directories, `sandbox/`, an
+anonymous store's names); then the build's user namespace; in it,
+`Store::prune_all`. That takes the state directory's `flock` exclusive
+without waiting,
 as an anonymous store does, and holds it to the end: every build holds it
 shared for its life, so `prune --all` removes nothing while any build runs
 there (it says so and exits 1), and a build that starts meanwhile is
@@ -188,14 +189,23 @@ what it could not remove, then syncs the filesystem and removes
 `.ranikust-pruning` last, so the marker's removal never reaches the disk
 without the deletions; a failed sync keeps it. Where it cannot finish (a
 mount below, files of ids no user namespace maps), its refusal names the
-ways out with the directory's real path: unmount, set up the user's
-subordinate ids, or move the directory aside and remove it in
-`podman unshare` or as root. The commands its other refusals give (root's,
-and a user's without a user namespace) enter the state directory once
-(`cd -P`) and name only `.` after, so the lock, the marker's check and the
-deletion act on the directory entered, whatever is put at its path
-meanwhile; they take the same exclusive `flock` (`flock -xn .`), so they
-fail while a build runs there, take a marker only as a regular file, and
+ways out: unmount, set up the user's subordinate ids, move the directory
+aside and remove it in `podman unshare`, or, as root, empty it in place.
+The commands a refusal prints (those ways out, root's, and a user's
+without a user namespace) act only on the directory ranikust checked: the
+process that prints them opens the path as given, made absolute, with no
+symlink followed on it, runs `Store::check_prune` on it and takes its
+device, inode and owner, and each command checks, right after its one
+`cd -P`, that the directory it entered has them (`stat -c %d:%i:%u`), so
+a path changed after the message was printed, a parent swapped for a
+symlink included, makes it fail before it changes anything. Where that
+open or check fails, a refusal gives no commands: it says to run
+`ranikust prune --all` as the directory's owner, or to fix the path. In
+the directory, they name only `.`, so the lock, the marker's check and
+the deletion act on it whatever is put at its path meanwhile; `rmdir`
+and the move aside enter the parent once and check `./name` the same
+way. They take the same exclusive `flock` (`flock -xn .`), so they fail
+while a build runs there, take a marker only as a regular file, and
 enter no other filesystem (`find -xdev`); a bind mount of the same
 filesystem is not told apart, so they say to run only while nothing is
 mounted below.

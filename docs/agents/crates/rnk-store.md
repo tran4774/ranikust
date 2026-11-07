@@ -76,9 +76,10 @@ impl Store {
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
     pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), check_prune's checks, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
-    pub fn check_prune(state: &Path) -> Result<bool>;   // prune_all's checks, read-only and without its lock: false empty, true prune_all empties it, else prune_all's error; ranikust's prune runs it before the namespace
+    pub fn check_prune(state: &Path) -> Result<PruneCheck>; // prune_all's checks, read-only and without its lock, on state as given with no symlink followed: else prune_all's error; ranikust's prune runs it before the namespace and pins the commands it prints with it
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
 }
+pub struct PruneCheck { pub entries: bool, pub dev: u64, pub ino: u64, pub uid: u32 } // entries: prune_all empties it; dev, ino, uid: as stat -c %d:%i:%u prints them
 pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
 pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped
 impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
@@ -151,13 +152,14 @@ Design: [locks](../../design/cache-and-store.md#locks),
   rename, are one function `check_prune` runs too, so a caller checking
   first refuses what it would
   ([the list](../../design/cache-and-store.md#prune); each `NotAStateDir`
-  but the anonymous store's); it takes one holding the regular
+  but this process's own `/` and `.ranikust-building`'s
+  (`Error::UsedOnSlash`)); it takes a directory holding the regular
   `.ranikust-pruning` an earlier prune left, which `open` refuses, and
   makes nothing in an empty directory. It refuses this process's own `/`
   itself (`rnk_rootfs::refuse_own_root`), whatever its caller checked. It
   empties entries in place, under their published names, so it first
-  renames the marker `.ranikust-pruning`
-  (`PRUNING_MARKER`) and syncs the directory, and `open` refuses a
+  renames the marker `.ranikust-pruning` (`PRUNING_MARKER`) and syncs
+  the directory, and `open` refuses a
   directory holding that name (`Error::PruneCutShort`) until a prune
   finishes: a prune killed or failed part-way never hands a build a layer
   with files missing ([why a rename](../../design/cache-and-store.md#prune)).
