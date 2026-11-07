@@ -84,16 +84,21 @@ pub struct Fallbacks {
 impl Fallbacks {
     /// Also allows an rbind of `/proc` where a new `proc` is refused, at the
     /// operator's request only (ADR-0126). Through it a `RUN` sees every
-    /// process of the container, reads the command line and mount table of
-    /// each, ranikust's included (its build arguments, its secret paths),
-    /// and reaches the environment and files of those of its uid, such as a
-    /// shell that started ranikust; ranikust itself, not dumpable
-    /// (ADR-0051), stays closed to it. [`crate::Sandbox`] then runs its
-    /// `RUN`s one at a time, so that none reaches another's processes
-    /// (ADR-0127). The rest is an accepted residual: start ranikust as the
-    /// container's PID 1 with its secrets in its environment, not on its
-    /// command line or in a shell left running, and ask for this only where
-    /// the base images are trusted.
+    /// process of the PID namespace ranikust runs in (the container's, or
+    /// one it shares with the host or other containers), reads the command
+    /// line, mount table and network tables of each, ranikust's included
+    /// (its build arguments, its secret paths), and reaches the environment
+    /// and files of those of its kernel uid, such as a shell that started
+    /// ranikust; ranikust itself, not dumpable (ADR-0051), stays closed to
+    /// it. [`crate::Sandbox`] then runs `RUN`s one at a time, so that none
+    /// reaches another's processes directly; one that reaches another
+    /// process of its uid can still act through it, and through the files
+    /// it sees, after its turn (ADR-0127). That and the rest are an accepted
+    /// residual: give the build container a PID namespace of its own, start
+    /// ranikust as its PID 1 with no other process of its uid during the
+    /// build, keep its secrets in its environment, not on its command line
+    /// or in a shell left running, and ask for this only where the base
+    /// images are trusted.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -157,10 +162,12 @@ fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
          (a container whose /proc has masked paths): build as a regular user on a host that \
          allows user namespaces, or in a container where ranikust may mount, or, only with \
          trusted base images, allow an rbind of /proc (--allow proc.rbind), through which \
-         each RUN sees this container's processes, reads their command lines and mount \
-         tables, ranikust's included, and reaches the environment and files of those of its \
-         uid: then start ranikust as the container's PID 1, with secrets in its environment, \
-         not on its command line or in a shell left running",
+         each RUN sees every process of this PID namespace (the host's or other containers' \
+         too where the container shares one), reads their command lines, mount tables and \
+         network tables, ranikust's included, and reaches the environment and files of those \
+         of its uid: then give the container a PID namespace of its own, start ranikust as \
+         its PID 1 with no other process of its uid during the build, and keep secrets in its \
+         environment, not on its command line or in a shell left running",
     )
 }
 
@@ -249,11 +256,14 @@ fn log_rbinds(caps: Caps) {
         KernelFs::Fresh => {}
         KernelFs::Rbind => tracing::warn!(
             "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so \
-             each RUN sees this container's processes, reads their command lines and mount \
-             tables, ranikust's included, and reaches the environment and files of those of \
-             its uid; RUNs run one at a time. Start ranikust as the container's PID 1, with \
-             secrets in its environment, not on its command line or in a shell left running, \
-             and allow this only with trusted base images"
+             each RUN sees every process of this PID namespace (the host's or other \
+             containers' too where the container shares one), reads their command lines, mount \
+             tables and network tables, ranikust's included, and reaches the environment and \
+             files of those of its uid; RUNs run one at a time, but one that reaches another \
+             process of its uid can act through it after its turn. Give the container a PID \
+             namespace of its own, start ranikust as its PID 1 with no other process of its uid \
+             during the build, keep secrets in its environment, not on its command line or in \
+             a shell left running, and allow this only with trusted base images"
         ),
     }
     match caps.sysfs {
@@ -499,10 +509,13 @@ mod tests {
         let guidance = proc_guidance(&proc_eperm, report).unwrap();
         assert!(guidance.contains("allows user namespaces"), "{guidance}");
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
-        assert!(guidance.contains("processes"), "{guidance}");
         for advice in [
+            "every process of this PID namespace",
+            "network tables",
             "trusted base images",
+            "PID namespace of its own",
             "PID 1",
+            "no other process of its uid",
             "secrets in its environment",
             "not on its command line",
             "shell left running",

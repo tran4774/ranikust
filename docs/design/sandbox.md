@@ -275,22 +275,31 @@ The steps, in order:
       `--allow proc.rbind`, planned with
       [#79](https://github.com/tran4774/ranikust/issues/79)): through it a
       `RUN` keeps a PID namespace of its own, but sees every process of the
-      container, as BuildKit's `--oci-worker-no-process-sandbox` documents.
-      It reads the command line and mount table of each, ranikust's
-      included (build-argument values, secret paths), and reaches the
-      environment and files of those of its uid, such as a shell that
-      started ranikust; ranikust itself, not dumpable
+      PID namespace ranikust runs in, as BuildKit's
+      `--oci-worker-no-process-sandbox` documents: the container's, or one
+      it shares with the host or other containers (`hostPID`,
+      `shareProcessNamespace`, `--pid=host`, `--pid container:<name>`). It
+      reads the command line, mount table and network tables of each,
+      ranikust's included (build-argument values, secret paths), and
+      reaches the environment and files of those of its kernel uid, such as
+      a shell that started ranikust; ranikust itself, not dumpable
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
-      stays closed. So that no `RUN` reaches another's processes, the
-      `RUN`s of such a build run one at a time: `Sandbox::run` holds a lock
-      from before the clone until the `RUN`'s init is reaped, the processes
-      of its PID namespace gone with it; stages still schedule in parallel
+      stays closed. So that no `RUN` reaches another's processes directly,
+      the `RUN`s of such a build run one at a time: `Sandbox::run` holds a
+      lock, one for the whole process, from before the clone until the
+      `RUN`'s init is reaped, the processes of its PID namespace gone with
+      it, and refuses `Isolation::Direct`, which has no PID namespace;
+      stages still schedule in parallel
       ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
-      The rest is an accepted residual
+      A `RUN` that reaches another process of its uid (a CI shell) can
+      still act through it, and through the files it sees, after its turn.
+      That and the rest are an accepted residual
       ([threat model, section 6](../security/threat-model.md#6-accepted-risks)):
-      start ranikust as the container's PID 1, with its secrets in its
-      environment rather than on its command line or in a shell left
-      running, and ask for the rbind only with trusted base images. The
+      give the build container a PID namespace of its own, start ranikust
+      as its PID 1 with no other process of its uid during the build, keep
+      its secrets in its environment rather than on its command line or in
+      a shell left running, and ask for the rbind only with trusted base
+      images. The
       rbind's masks come along, every mount of it made `nosuid`, `nodev`
       and `noexec` with `mount_setattr(AT_RECURSIVE)` (without it the `RUN`
       fails); the sandbox's probe chooses it once and logs it once per
