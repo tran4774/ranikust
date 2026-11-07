@@ -179,8 +179,8 @@ pub(crate) struct ChildArgs {
     pub(crate) uid: Uid,
     pub(crate) gid: Gid,
     pub(crate) groups: Vec<Gid>,
-    /// Set `groups`: not in a user namespace that denies `setgroups`,
-    /// where the call would fail, as runc skips it there.
+    /// Set `groups`: not in a one-id user namespace that denies
+    /// `setgroups`, where the call would fail, as runc skips it there.
     pub(crate) set_groups: bool,
     pub(crate) workdir: CString,
     /// `Isolation::Direct` on a root other than `/`: `chroot` into

@@ -661,7 +661,9 @@ fn map_lines(map: &str) -> Option<Vec<[u32; 3]>> {
 /// skipped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OwnNamespace {
-    /// `setgroups(2)` is allowed: `/proc/self/setgroups` is not `deny`.
+    /// Call `setgroups(2)`: skipped only where it would fail in a one-id
+    /// map (ADR-0098), `/proc/self/setgroups` `deny` and the gid map one
+    /// id; with several ids it is called and fails, never skipped.
     pub(crate) setgroups: bool,
     /// gid 5 (`tty`), which `devpts` is mounted with, is mapped.
     pub(crate) tty_gid: bool,
@@ -685,8 +687,16 @@ impl OwnNamespace {
                 .iter()
                 .any(|&[inside, _, count]| TTY.checked_sub(inside).is_some_and(|d| d < count))
         });
+        let denied = setgroups.is_some_and(|s| s.trim_end() == "deny");
+        let one_gid = gid_map.and_then(map_lines).is_some_and(|lines| {
+            lines
+                .iter()
+                .map(|&[_, _, count]| u64::from(count))
+                .sum::<u64>()
+                == 1
+        });
         Self {
-            setgroups: setgroups.is_none_or(|s| s.trim_end() != "deny"),
+            setgroups: !(denied && one_gid),
             tty_gid,
         }
     }

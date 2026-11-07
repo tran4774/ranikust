@@ -202,6 +202,23 @@ fn the_own_namespace_allows_setgroups_and_maps_tty_from_its_files() {
 }
 
 #[test]
+fn setgroups_is_skipped_only_where_denied_in_a_one_id_map() {
+    let calls = |setgroups, gid_map| OwnNamespace::parse(Some(setgroups), gid_map).setgroups;
+    assert!(!calls("deny\n", Some("0 1000 1\n")));
+    assert!(!calls("deny", Some("\n         0       1000          1\n")));
+    // Denied with several ids: called, so a `USER` fails at `Step::Groups`
+    // instead of keeping ranikust's supplementary groups.
+    assert!(calls("deny\n", Some("0 1000 1\n1 100000 65536\n")));
+    assert!(calls("deny\n", Some("0 1000 2\n")));
+    assert!(calls("deny\n", Some("0 1000 1\n5 2000 1\n")));
+    // A gid map that cannot be read or parsed is not one id.
+    assert!(calls("deny\n", None));
+    assert!(calls("deny\n", Some("0 x 1\n")));
+    assert!(calls("deny\n", Some("")));
+    assert!(calls("allow\n", Some("0 1000 1\n")));
+}
+
+#[test]
 fn each_kernel_filesystem_is_new_else_an_rbind() {
     let a = assemble(&ranges(), &all_steps(&[MKNOD]), Some(Ok(())), None);
     assert_eq!(a.map, StepResult::Ok);

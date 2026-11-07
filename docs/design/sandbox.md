@@ -241,12 +241,13 @@ The steps, in order:
 2. **User namespace**: a `RUN` gets none of its own; in the build's
    ([#75](https://github.com/tran4774/ranikust/issues/75)) it keeps that
    namespace's map, the full id range available, so `setgroups` works and
-   `USER _apt` (used by apt-get) gets its groups. Where the map denies
-   `setgroups` (`/proc/self/setgroups` is `deny`: one id,
+   `USER _apt` (used by apt-get) gets its groups. Where the map gives one
+   gid and denies `setgroups` (`/proc/self/setgroups` is `deny`,
    [ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)),
    step 7 skips it, so the `RUN` keeps the build process's supplementary
-   groups, as rootless runc does. `devpts` gets no `gid=5` where gid 5 is
-   unmapped (3.4). A `USER` whose ids the map lacks fails at the first
+   groups, as rootless runc does; denied with several ids, the call is
+   made and fails the `RUN` (`Step::Groups`). `devpts` gets no `gid=5`
+   where gid 5 is unmapped (3.4). A `USER` whose ids the map lacks fails at the first
    step 7 call that names one (`Step::Groups`, `Step::Gid` or `Step::Uid`).
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
    out ([below](#hardening-planned-for-phase-3)).
@@ -463,11 +464,11 @@ The steps, in order:
    Docker's default profile around ranikust, which refuses `keyctl` whole,
    the `RUN` goes on. In `Direct` a join refused with `EPERM`, `ENOSYS`
    or `EACCES` is ignored (ADR-0109).
-7. `setgroups` (where the user namespace allows it, step 2), `setgid`,
-   `setuid` to the ids of `USER`, which `rnk-rootfs` looked up in the root's
-   `/etc/passwd` and `/etc/group` before the fork [inferred]. A numeric uid
-   with no passwd entry gets gid 0, as in Docker. A change of uid or gid
-   clears the death signal, so it is armed again: in `Direct` toward
+7. `setgroups` (but in a one-id user namespace that denies it, step 2),
+   `setgid`, `setuid` to the ids of `USER`, which `rnk-rootfs` looked up in
+   the root's `/etc/passwd` and `/etc/group` before the fork [inferred].
+   A numeric uid with no passwd entry gets gid 0, as in Docker. A change of uid
+   or gid clears the death signal, so it is armed again: in `Direct` toward
    ranikust and checked; in the full sandbox's command toward the init, only
    as a second line (the init's signal is what ends the namespace with
    ranikust, whatever the command does to its own: a set-id `execve` or
@@ -697,7 +698,7 @@ ranikust never removes them, and they go with the unit or container
 |---|---|
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root, keeping Docker's 14 capabilities: the old root stays mounted underneath, and `..` stops at the moved root only then [measured] (the `sysadmin` variant of `tests/vm/guest/smoke.sh`, kernels 5.15 and 6.8). Inside a plain `chroot` ranikust refuses before changing anything ([modes-and-detection](modes-and-detection.md#refusal-and-guidance)) |
-| Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` where the map allows it; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the first three `smoke_checks` of `tests/smoke/lib.bash` (PID 2 under `ranikust-init`, the init's capabilities, its seccomp filters) cannot pass ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. No build enters this namespace yet (#79); started inside one that something else made (rootless `podman run --privileged`), ranikust runs the sequence above as written (T1, `just smoke`) |
+| Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` but in a one-id map that denies it; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the first three `smoke_checks` of `tests/smoke/lib.bash` (PID 2 under `ranikust-init`, the init's capabilities, its seccomp filters) cannot pass ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. No build enters this namespace yet (#79); started inside one that something else made (rootless `podman run --privileged`), ranikust runs the sequence above as written (T1, `just smoke`) |
 | kaniko mode, cannot mount | `Isolation::Direct`: no sandbox, `RUN` runs on `/` like kaniko (below) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
