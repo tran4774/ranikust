@@ -104,9 +104,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   targets outside the root are refused, and the last component of a replaced
   entry is never followed (T1, T2).
 - Every fd is `O_CLOEXEC` (T7). Directories are opened by `(parent fd,
-  name)`, never by a long path, so tree depth is unlimited. A walk keeps one
-  fd per level and a single path buffer, never a path per level: memory
-  linear in the entries on the stack (`tests/memory.rs`; the copy walk too,
+  name)` or, climbing back in a deletion, through `..` of an open child;
+  never by a long path, so tree depth is unlimited. A walk keeps a
+  single path buffer, never a path per level: memory linear in the entries
+  on the stack (`tests/memory.rs`; the copy walk too,
   `copying_a_deep_chain_takes_memory_linear_in_its_depth`). A file with other
   names whose path is past `PATH_MAX` is refused before it is copied
   (`a_hardlinked_file_past_path_max_is_refused_by_the_copy`). The names of
@@ -123,6 +124,9 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   without following; keep ignore-list entries, entries with another `mnt_id`
   and `STATX_ATTR_MOUNT_ROOT` entries. Never `st_dev` alone. An unexpected
   mount, swap or permission error stops it; there is no path-based fallback.
+  At most 32 fds whatever the depth (`prune` 64): a farther ancestor is
+  reopened through `..` and checked against its `statx`
+  ([design/rootfs.md#deletion](../../design/rootfs.md#deletion)).
 - Modes are raw `st_mode` bits (sticky, setuid, setgid survive). In overlay
   form, content xattrs `user.overlay.*` become `user.overlay.overlay.*`
   (kernel 6.7 or later).
@@ -168,6 +172,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_link_to_a_device_a_lower_layer_left_out_is_refused_or_copies_a_deeper_layer`).
   `tests/model.rs`: `open_at` against a model
   resolver on 150 random trees. `tests/spans.rs`: the metrics.
+  `tests/descriptors.rs` (a binary of its own): `delete_contents` and
+  `prune` on trees 2,000 levels deep with only the 32 or 64 fds they
+  promise left free under the soft `RLIMIT_NOFILE`, `prune` keeping its
+  entries and setting every level's times back; `prune` on a chain of
+  100,000 levels within 20 times the time it took to make, and both on a
+  comb whose teeth are deeper than those fds, every other tooth kept;
+  `tests/memory.rs`: that chain pruned in memory linear in its depth. A
+  directory reopened through `..` must be the one left
+  (`a_directory_reopened_through_dotdot_must_be_the_one_left`,
+  `prune_reopens_through_dotdot_only_the_directory_it_left`: a directory
+  moved or swapped out from under a closed ancestor stops the walk with
+  `Error::Changed`, nothing outside deleted or retimed).
   `tests/limits.rs`: a 64 MiB GNU long name, long link or PAX set refused at
   its header with under 2 MiB held, a control with the limit off that holds
   the whole name, and a 2 MiB PAX set that passes once the limit is raised,
@@ -189,7 +205,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_prune_*`): equals `copy_filtered` entry for entry, never follows a
   link out, reports `linked_outside` in every walk order, a racing directory
   exchange deletes nothing outside; `move_sub_root` refuses `/` and a
-  swapped name. The glob matcher is linear
+  swapped name. Ancestors closed by a deep deletion
+  (`src/delete/tests/reopen.rs`, changed from the walk's callback at the
+  bottom of a chain): one renamed in the root or replaced by a symlink or
+  another directory stops `delete_contents` with `Error::Changed` and
+  `prune` there or in the parent it left, deleting nothing beside where it
+  went; one moved out of the root loses only the names the walk read in
+  the root; the root itself moved is still the one emptied; one no longer
+  searchable stops the walk with `EACCES`; the parent of a mount root is
+  never reopened (`EXDEV`). The glob matcher is linear
   (`the_linear_matcher_agrees_with_every_split`, proptest against the old
   matcher as oracle).
   `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
@@ -234,13 +258,25 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T1** (`just test-rootless`): extraction and live extraction never
   write below or skip-wrongly real mounts (profile `privileged`, with the
   lane's `RNK_T1_ROOT`); foreign owners and setuid kept raw in `extract`
-  (profile `default`).
+  (profile `default`). In a private mount namespace (`privileged`): a
+  closed ancestor or the root that became a mount point (a tmpfs, a bind
+  of itself or of the outside) is never reopened through `..`, nothing on
+  the mount deleted; a 192-level chain with a bind and a tmpfs at depth
+  keeps both and every level above them (`delete_contents`), and `prune`
+  refuses it.
 - **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
   and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
   directory on the same filesystem and a tmpfs inside a root, with links to
   them, in a private mount namespace), device nodes in `extract`, device
   nodes and foreign owners in `copy`, `trusted.*` xattrs, a symlink owned by
   another user in `host`.
+- **T2** (`just test-vm unit`):
+  `deep_trees_on_an_overlay_are_deleted_and_pruned_whatever_its_layers`:
+  `delete_contents` and `prune` on a 64-level tree in an overlay's lower
+  layer, through the merged directory, with every layer on one filesystem
+  and with the upper on a tmpfs (`xino` off, then on): each ancestor
+  reopened through `..` after its copy-up must still be the one left; a
+  `measured:` line per configuration, with the kernel.
 - **To do:** `cargo fuzz` on `extract` (Phase 6).
 
 ## Metrics
@@ -258,8 +294,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - `st_dev`-only deletion emptied a same-filesystem bind mount (exp-09 D2b).
 - A string check let `//` through the system-directory refusal (exp-09 D3).
 - Full-path opens fail past 4,096 bytes and drop the subtree (exp-09).
-- Deletion holds one fd per tree level and `copy` two per directory level:
-  the caller raises `RLIMIT_NOFILE` for deep trees (exp-09 §A.2).
+- `copy` holds two fds per directory level: the caller raises
+  `RLIMIT_NOFILE` for deep trees (exp-09 §A.2).
 - Joining a whole tar name writes through a final symlink, giving loops like
   `bin/sh -> dash -> dash` (`kaniko@44aa7ddc0 pkg/util/fs_util.go:406-409`).
 - Extraction without raw modes turned `/tmp` 1777 into 777 (exp-07).

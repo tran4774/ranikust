@@ -569,10 +569,11 @@ pub(crate) fn on_overlayfs(dir: &Path) -> bool {
         .is_some_and(|fs| fs.f_type == OVERLAYFS_SUPER_MAGIC)
 }
 
-/// Raises `RLIMIT_NOFILE`'s soft limit to its hard limit: the kaniko-mode
-/// walk holds a directory fd per worker and depth (`ADR-0038`), and
-/// `prune --all`'s deletion one per depth. Returns the new soft limit,
-/// `None` when unlimited.
+/// Raises `RLIMIT_NOFILE`'s soft limit to its hard limit, for kaniko mode:
+/// its walk holds a directory fd per worker and depth (`ADR-0038`), and
+/// `rnk_rootfs::copy` two per depth. Deletion and `prune --all` need no
+/// raise: they hold a fixed number. Returns the new soft limit, `None` when
+/// unlimited.
 ///
 /// # Errors
 ///

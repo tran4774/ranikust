@@ -984,23 +984,29 @@ fn the_marker_keeper_writes_a_removed_marker_where_the_store_is_never_closed() {
 #[test]
 fn a_tree_deeper_than_path_max_is_emptied_at_the_end() {
     use rustix::fs::{CWD, Mode, OFlags, mkdirat, openat};
-    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    // Any `RLIMIT_NOFILE` will do: the deletion holds a fixed number of
+    // descriptors whatever the depth.
     const DEPTH: u64 = 2100; // "d/" each: 4200 bytes, past PATH_MAX
-    let limit = getrlimit(Resource::Nofile);
-    let want = DEPTH + 64;
-    if limit.maximum.is_some_and(|max| max < want) {
-        eprintln!("skipped: RLIMIT_NOFILE's hard limit is below {want}");
-        return;
+    /// Empties a temp dir on drop, a failed test included: the temp dir's
+    /// own removal recurses with a descriptor per level.
+    struct Emptied(PathBuf);
+    impl Drop for Emptied {
+        fn drop(&mut self) {
+            let r = fs::canonicalize(&self.0)
+                .map_err(|e| e.to_string())
+                .and_then(|p| rnk_rootfs::RootPath::open(&p).map_err(|e| e.to_string()))
+                .and_then(|root| {
+                    rnk_rootfs::delete_contents(&root, &rnk_rootfs::IgnoreList::new())
+                        .map_err(|e| e.to_string())
+                });
+            // A drop cannot fail the test; a tree left behind is at least shown.
+            if let Err(e) = r {
+                eprintln!("left behind in {}: {e}", self.0.display());
+            }
+        }
     }
-    setrlimit(
-        Resource::Nofile,
-        Rlimit {
-            current: Some(want.max(limit.current.unwrap_or(0))),
-            maximum: limit.maximum,
-        },
-    )
-    .unwrap();
     let dir = tempfile::tempdir().unwrap();
+    let _emptied = Emptied(dir.path().to_owned());
     let (state, _marker) = anon_state(dir.path());
     let store = Store::open_anonymous(&state).unwrap();
     let run = store.enter_run().unwrap();

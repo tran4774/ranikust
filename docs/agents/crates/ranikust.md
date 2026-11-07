@@ -49,8 +49,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`prune::no_user_namespace`: commands that remove the user's own files,
   and root's `prune --all` for those of its subordinate ids,
   `prune::ask_root`, as in `prune::unfinished`; not the build's, whose
-  "run ranikust as root" `prune --all` refuses); in it, `RLIMIT_NOFILE`
-  raised and `rnk_store::Store::prune_all`. The commands a guidance gives
+  "run ranikust as root" `prune --all` refuses); in it,
+  `rnk_store::Store::prune_all`. The commands a guidance gives
   refuse a `PATH` with a relative or empty entry and unset the loader's
   variables that name libraries or modules by path (`prune::ENV_CHECK`),
   enter the state directory once, shell-quoted,
@@ -499,7 +499,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   0); as a user, a directory without the marker and a path ending in
   `..` refused unchanged, and a state directory emptied or, without a
   user namespace, refused with `prune`'s guidance, naming it under
-  `flock`, and unchanged.
+  `flock`, and unchanged; the same under a hard `RLIMIT_NOFILE` of 256
+  with a cache 3,000 levels deep.
   `red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed`
   (`setup/tests/userns.rs`): the T1 red team's links out as the user who
   ran sudo, with files of subordinate ids, through `newuidmap`'s map;
