@@ -125,7 +125,7 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps>; // 
 pub struct Caps { pub root_entry: RootEntry, .. } // #[non_exhaustive]; every RUN of the Sandbox gets them; proc(), sysfs(): KernelFs, read-only, so an rbind is only the probe's choice
 pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
-impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; --allow proc.rbind with #79): a RUN then sees the container's processes and reaches those of its uid
+impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; --allow proc.rbind with #79): a RUN then sees the container's processes, reads their command lines and mount tables (ranikust's too) and reaches the environment and files of those of its uid; Sandbox then runs RUNs one at a time (ADR-0127); the rest is threat model section 6
 pub enum RootEntry { PivotRoot, MoveMount }
 pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
@@ -143,7 +143,7 @@ impl Sandbox {
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
     pub fn set_seccomp(&mut self, profile: Option<SeccompProfile>); // --seccomp; None is unconfined; Full RUNs only; before the first RUN
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);  // every later RUN starts with it (ranikust's limit before its raise)
-    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;  // blocking; cloned on the spawner thread
+    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;  // blocking; cloned on the spawner thread; where Caps::proc() is Rbind, one RUN at a time, the turn held until its init is reaped (ADR-0127)
     pub fn cancel(&self);                                     // cgroup.kill and SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub struct SeccompProfile;  // compiled for this architecture, kernel and Docker's 14 capabilities: docker_default(), from_json(&[u8]); Error::SeccompProfile (ADR-0109)
@@ -627,7 +627,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
   _apt` refused at `setgid`; `an_rbind_of_proc_needs_a_request`: unasked,
   the sandbox's probe there refuses at `Step::MountProc` and no `RUN`
-  starts. `just smoke` also runs `smoke-build --userns` in a default
+  starts; `runs_take_turns_under_an_rbind_of_proc`: two `RUN`s started
+  together never overlap, and the second finds no process of the first
+  (a search that finds the `RUN`'s own, the control); profile
+  `privileged`, `runs_with_a_new_proc_run_side_by_side`: with a new
+  `proc` they overlap. `just smoke` also runs `smoke-build --userns` in a default
   `podman run`: refused at the new `proc` without `--allow proc.rbind`,
   and with it the checks of `smoke_checks` that an rbind of `/proc` and
   Podman's seccomp (no `sethostname`) leave.

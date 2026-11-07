@@ -83,9 +83,16 @@ pub struct Fallbacks {
 
 impl Fallbacks {
     /// Also allows an rbind of `/proc` where a new `proc` is refused, at the
-    /// operator's request only (ADR-0126): through it a `RUN` sees every
-    /// process of the PID namespace ranikust runs in, and reaches those of
-    /// its uid through their `/proc` entries.
+    /// operator's request only (ADR-0126). Through it a `RUN` sees every
+    /// process of the container, reads the command line and mount table of
+    /// each, ranikust's included (its build arguments, its secret paths),
+    /// and reaches the environment and files of those of its uid, such as a
+    /// shell that started ranikust; ranikust itself, not dumpable
+    /// (ADR-0051), stays closed to it. [`crate::Sandbox`] then runs its
+    /// `RUN`s one at a time, so that none reaches another (ADR-0127). The
+    /// rest is an accepted residual: start ranikust as the container's PID 1
+    /// with its secrets in its environment, and ask for this only where the
+    /// base images are trusted.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -147,9 +154,10 @@ fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
     (is_proc_refusal(e) && !allowed.proc).then_some(
         "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
          (a container whose /proc has masked paths): build as a regular user on a host that \
-         allows user namespaces, or in a container where ranikust may mount, or allow an \
-         rbind of /proc (--allow proc.rbind), through which each RUN sees this container's \
-         processes and reaches those of its uid",
+         allows user namespaces, or in a container where ranikust may mount, or, only with \
+         trusted base images, allow an rbind of /proc (--allow proc.rbind), through which \
+         each RUN sees this container's processes, reads their command lines, ranikust's \
+         included, and reaches the environment and files of those of its uid",
     )
 }
 
@@ -238,7 +246,10 @@ fn log_rbinds(caps: Caps) {
         KernelFs::Fresh => {}
         KernelFs::Rbind => tracing::warn!(
             "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so \
-             each RUN sees the processes ranikust sees and reaches those of its uid"
+             each RUN sees this container's processes, reads their command lines and mount \
+             tables, ranikust's included, and reaches the environment and files of those of \
+             its uid; RUNs run one at a time. Start ranikust as the container's PID 1, with \
+             secrets in its environment, not on its command line"
         ),
     }
     match caps.sysfs {

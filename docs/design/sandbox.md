@@ -275,8 +275,22 @@ The steps, in order:
       `--allow proc.rbind`, planned with
       [#79](https://github.com/tran4774/ranikust/issues/79)): through it a
       `RUN` keeps a PID namespace of its own, but sees every process of the
-      container and reaches those of its uid through their `/proc` entries,
-      as BuildKit's `--oci-worker-no-process-sandbox` documents. Its masks
+      container, as BuildKit's `--oci-worker-no-process-sandbox` documents.
+      It reads the command line and mount table of each, ranikust's
+      included (build-argument values, secret paths), and reaches the
+      environment and files of those of its uid, such as a shell that
+      started ranikust; ranikust itself, not dumpable
+      ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
+      stays closed. So that no `RUN` reaches another, the `RUN`s of such a
+      build run one at a time: `Sandbox::run` holds a lock from before the
+      clone until the `RUN`'s init is reaped, the processes of its PID
+      namespace gone with it; stages still schedule in parallel
+      ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
+      The rest is an accepted residual
+      ([threat model, section 6](../security/threat-model.md#6-accepted-risks)):
+      start ranikust as the container's PID 1, with its secrets in its
+      environment rather than on its command line or in a shell left
+      running, and ask for the rbind only with trusted base images. Its masks
       come along, every mount of it made `nosuid`, `nodev` and `noexec` with
       `mount_setattr(AT_RECURSIVE)` (without it the `RUN` fails); the
       sandbox's probe chooses it once and logs it once per build. Unasked,
@@ -701,7 +715,7 @@ ranikust never removes them, and they go with the unit or container
 |---|---|
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root, keeping Docker's 14 capabilities: the old root stays mounted underneath, and `..` stops at the moved root only then [measured] (the `sysadmin` variant of `tests/vm/guest/smoke.sh`, kernels 5.15 and 6.8). Inside a plain `chroot` ranikust refuses before changing anything ([modes-and-detection](modes-and-detection.md#refusal-and-guidance)) |
-| Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` except where the gid map gives one id and `setgroups` is denied; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the smoke check of PID 2 under `ranikust-init` is left out there ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. No build enters this namespace yet (#79); started inside one that something else made (rootless `podman run --privileged`), ranikust runs the sequence above as written (T1, `just smoke`) |
+| Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged, its `RUN`s one at a time ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` except where the gid map gives one id and `setgroups` is denied; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the smoke check of PID 2 under `ranikust-init` is left out there ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. No build enters this namespace yet (#79); started inside one that something else made (rootless `podman run --privileged`), ranikust runs the sequence above as written (T1, `just smoke`) |
 | kaniko mode, cannot mount | `Isolation::Direct`: no sandbox, `RUN` runs on `/` like kaniko (below) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
