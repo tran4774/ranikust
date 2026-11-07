@@ -56,9 +56,9 @@ outside the build, at the cost that a `RUN` cannot write `/proc/self/*`.
     profile file), since the default filter refuses new user namespaces.
 - **What does not change.**
   - `/proc/sys` was already read-only.
-  - Writes through magic links (`/proc/self/fd/N`, which `/dev/stderr` points to)
-    work as before:
-    the check falls on the mount of the link's target, not on `/proc`.
+  - Writes through magic links (`/proc/self/fd/N`; `/dev/stderr` is a symlink to
+    `/proc/self/fd/2`) work as before: the check falls on the mount of the link's
+    target, not on `/proc`.
   - The sandbox writes nothing under the rbind; its `uid_map` writes go through the
     spawner's own `/proc`.
   - A new `proc`, the normal case, is bound as before.

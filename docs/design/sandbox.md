@@ -316,12 +316,13 @@ The steps, in order:
       its own `oom_score_adj` as a new `proc` lets it, nor a file of a
       process outside it
       ([ADR-0132](../adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md));
-      writes through its magic links (`/proc/self/fd/N`, which
-      `/dev/stderr` points to) reach their target, as under a new `proc`.
-      The sandbox's probe chooses it once and logs it once per build. Unasked, the probe fails at `Step::MountProc` and warns how
-      to get a new `proc`: build as a regular user on a host that allows
-      user namespaces, where a new `proc` mounts, or in a container where
-      ranikust may mount (overlay mode as root), both in
+      writes through `/proc`'s magic links (`/proc/self/fd/N`;
+      `/dev/stderr` is a symlink to `/proc/self/fd/2`) reach their target,
+      as under a new `proc`. The sandbox's probe chooses the rbind once and
+      logs it once per build. Unasked, the probe fails at `Step::MountProc`
+      and warns how to get a new `proc`: build as a regular user on a host
+      that allows user namespaces, where a new `proc` mounts, or in a
+      container where ranikust may mount (overlay mode as root), both in
       [where environments land](modes-and-detection.md#where-environments-land);
       or ask for the rbind. So a `RUN` never sees the container's `/proc`
       unasked, and always gets a new `proc` where one mounts. Wherever the
