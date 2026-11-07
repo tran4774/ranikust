@@ -28,8 +28,10 @@ extract the same digest at once.
   user other than root opens the store inside the build's user namespace
   (`ranikust`'s `setup::enter_user_namespace`, #75), where the clean-up
   removes files of the user's subordinate ids as root of the namespace, and
-  where extracted layers are filled and published (#77); nothing here knows
-  which namespace it runs in.
+  where extracted layers are filled and published (#77). It tells whether
+  it runs in a user namespace other than the initial one
+  (`user_namespace_proc`), for its own directories' group and for
+  `rnk-snapshot`'s layer keys and device nodes.
 - `BuildPaths`, the paths handed down to every crate.
 
 ## Must not
@@ -47,8 +49,7 @@ Boundaries: `crates/rnk-store/src/lib.rs`. In short:
 
 ```rust
 pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
-pub fn in_user_namespace() -> Result<bool>;  // told by the inode of /proc/self/ns/user (procfs, nsfs checked), not by the map
-pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace, None in the initial one: rnk-snapshot reads the maps there
+pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace other than the initial one, told by the inode of ns/user (nsfs checked), not by the map; None in the initial one; rnk-snapshot reads the maps there
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
@@ -183,8 +184,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   group passes neither its gid nor the bit to a directory of the store,
   and a store directory of another group takes the process's gid (the gid
   checks skipped for a user of one group), while one already the
-  process's keeps its ctime; a refused change fails only in a user
-  namespace (`a_refused_group_change_fails_only_in_a_user_namespace`).
+  process's keeps its ctime; a refused change is only a warning outside a
+  user namespace
+  (`a_refused_group_change_is_only_a_warning_outside_a_user_namespace`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).

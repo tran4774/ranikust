@@ -132,8 +132,8 @@ The persistent, content-addressed store in the state directory
 publication by atomic rename, start-up clean-up, and `BuildPaths`, the paths
 handed down to every crate. It tells whether the process runs in a user
 namespace (by the inode of `/proc/self/ns/user`), for its own directories'
-group and `rnk-snapshot`'s layer keys. `prune` comes in Phase 5, a minimal `prune --all` in
-Phase 3 (ADR-0105). **Must not** decide what
+group and `rnk-snapshot`'s layer keys and device nodes. `prune` comes in
+Phase 5, a minimal `prune --all` in Phase 3 (ADR-0105). **Must not** decide what
 an entry contains (the caller fills a temporary entry, `rnk-store` publishes
 it), transfer blobs, decode layers, mount, or delete except through
 `rnk-rootfs`.
