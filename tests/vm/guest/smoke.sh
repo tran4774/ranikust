@@ -515,6 +515,40 @@ else
     ! grep -q 'kaniko mode' <<<"$log" ||
     { echo "error: user: expected the set-up's error, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: a set-up failing in the build's user namespace is an error, with no fallback"
+  # Red team (#79): a RUN's fresh proc shows no process outside it, and it
+  # writes no kernel, cgroup or sysfs file, where /sys/fs/cgroup is the
+  # host's, writable by this user; a tree deeper than PATH_MAX it leaves
+  # in a cache mount, partly a mapped user's, goes with `prune --all` as
+  # this user, and a build in the emptied directory is not refused (T15,
+  # T17, T24).
+  ur="$ud/reach" rc=0
+  mkdir -m 700 -p "$ur" "$ur/w"
+  rr=(--context "$HOME/rnk/guest/cases/rootless-reach" --no-push --build-arg "BASE=$E2E_BASE"
+    --destination localhost/rnk-reach:latest --state-dir "$ur/w")
+  log="$("$RNK" "${rr[@]}" --target writes --tar-path "$ur/writes.tar" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-reach.log"
+  [ "$rc" = 0 ] || { echo "error: user: the rootless-reach writes failed ($rc):" >&2; echo "$log" >&2; exit 1; }
+  loaded="$(sudo docker load -i "$ur/writes.tar" | sed -nE 's/^Loaded image( ID)?: //p' | tail -1)"
+  report="$(sudo docker run --rm "$loaded" cat /report)"
+  sudo docker rmi -f "$loaded" >/dev/null
+  printf '%s\n' "$report" >"$dir/rootless-reach.report"
+  ! grep -Eq '^(write [^/]*/(proc|sys)/.*|mkdir cgroup|mount proc)=done$|^reached |^seen: [0-9]+ ranikust$' \
+    <<<"$report" && [ "$(grep -c '=refused$' <<<"$report")" = 12 ] &&
+    grep -q '^control reach=done ' <<<"$report" && grep -qx 'write /tmp/control=done' <<<"$report" ||
+    { echo "error: user: a RUN wrote, saw or reached outside it:" >&2; echo "$report" >&2; exit 1; }
+  echo "user: a RUN writes no kernel, cgroup or sysfs file and sees no process outside it"
+  rc=0
+  log="$("$RNK" "${rr[@]}" --target deep-cache 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-deep.log"
+  [ "$rc" = 0 ] || { echo "error: user: the deep cache tree's build failed ($rc):" >&2; echo "$log" >&2; exit 1; }
+  rc=0
+  log="$("$RNK" prune --all --state-dir "$ur/w" 2>&1)" || rc=$?
+  [ "$rc" = 0 ] && [ -z "$(ls -A "$ur/w")" ] ||
+    { echo "error: user: prune --all after a deep cache tree ($rc): $log; left: $(ls -A "$ur/w")" >&2; exit 1; }
+  rc=0
+  log="$("$RNK" "${rr[@]}" --target userns 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || { echo "error: user: a build after prune --all ($rc):" >&2; echo "$log" >&2; exit 1; }
+  echo "user: prune --all empties a deep cache tree a RUN left; the next build runs"
 fi
 echo "user: ok"
 
