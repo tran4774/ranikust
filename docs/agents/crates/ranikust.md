@@ -1,6 +1,6 @@
 # ranikust
 
-> **Status:** in progress · **Phase:** 1-2 ·
+> **Status:** in progress · **Phase:** 1-2 (rootless overlay mode: 3) ·
 > **Depends on:** `rnk-metrics` (subscriber, report), `rnk-rootfs` (start-up
 > probe), `rnk-sched`, `rnk-sandbox` and `rnk-snapshot` (probes), `rnk-store`
 > (`prune`), the build crates ·
@@ -20,7 +20,8 @@ writer) before `unshare`, the probes and the state directory's checks.
 - Process set-up while single-threaded: a private mount namespace when
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
   of `rnk-sandbox` and `rnk-snapshot` in order, the outcome; with
-  `--mode=auto` as root, the user-namespace probe, logged and reported only
+  `--mode=auto` as root, where it routes nothing (root's overlay and kaniko
+  modes), the user-namespace probe, logged and reported only
   (`report_user_namespace`; its directory left in place when a child of the
   probe was not reaped); in kaniko mode
   the root (`/` in a container, `flock`ed; else a directory per stage,
@@ -34,9 +35,28 @@ writer) before `unshare`, the probes and the state directory's checks.
   `rnk_sandbox::enter_build_user_namespace`, then `Store::open`, whose
   clean-up removes a dead build's files of subordinate ids. A refusal
   once the process may be in the namespace is `Kind::Broken`, which never
-  routes to another mode: the process must end. No build calls it yet:
-  `prune --all` (#76) and rootless overlay mode (#79) will; a user other
-  than root is still refused before the state directory (`NEEDS_ROOT`).
+  routes to another mode: the process must end. No build calls it:
+  `prune --all` (#76) will; rootless overlay mode takes the same steps in
+  `setup::rootless`.
+- Rootless overlay mode (`setup/rootless.rs`, #79; routing and the mode
+  line: [modes-and-detection](../../design/modes-and-detection.md#probe-order---modeauto)),
+  in two phases. `plan`, before the build's user namespace and with the
+  process unchanged: the state directory's checks (refused on overlayfs),
+  the user's subordinate ids, then the user-namespace probe and an overlay
+  mount in it, in a `.ranikust-anon-userns-probe-*` directory of the state
+  directory. Its line is logged without "(reported only)", and its verdict
+  counts an rbind of `/proc` only with `--allow proc.rbind`
+  (`setup::allowed`). A stop is `NotHere`, with guidance: the AppArmor
+  switch for a user stopped at `unshare`, the map, `chown` or the mount
+  namespace; `--allow proc.rbind` where only the new `proc` fails and the
+  rbind works. With the rbind, `main.rs` then runs the peer scan and the
+  build-argument warnings, still outside the namespace, where it can open
+  the other processes. `set_up`, inside the namespace: the store, the
+  sandbox probe with the fallbacks `plan` allows, the overlay probe, the
+  spawner. A failure from the entry on is `Kind::Broken`. The probe's
+  directory takes the process's gid and no setgid bit, as the store's own
+  directories do (ADR-0099), so a setgid state directory does not stop its
+  `chown`.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -60,14 +80,14 @@ Modules of `crates/ranikust/src/` (all crate-private):
 
 | Module | What it holds |
 |---|---|
-| `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
+| `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling, `rootless` and `rootless_kept_off` (the route to rootless overlay mode) |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `volume_hint`; `setup/rootless.rs`: `plan`, `NotHere`, `set_up`, `refused_by_hook` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
-| `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
+| `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101), `Reach` (`Slash`, `ProcRbind`: the build that the peer-scan refusal and the build-argument warnings name) |
 | `limits.rs` | `--limit <name>=<value>`: bounds on what a registry or image can make ranikust hold or wait for (ADR-0079, T15) |
 | `startup.rs` | the kernel check (ADR-0028) |
 | `build.rs` | `run`: the Dockerfile, the stage graph, the context walk, `rnk-sched` over a `StageRunner`, outputs |
@@ -109,10 +129,10 @@ Modules of `crates/ranikust/src/` (all crate-private):
   kaniko mode; the mode is `--mode`. Overlay mode warns and ignores it
   (ADR-0023). In overlay mode `overlay_mode_flags` refuses kaniko flags that
   change the image and warns for the rest (ADR-0049).
-- `Outcome` has one variant, `OverlayRoot { sandbox: Caps, overlay:
-  OverlayCaps }`; kaniko mode is set up by `set_up_kaniko`
-  (`KanikoSetup`). Planned: an overlay-rootless outcome (Phase 3, #41); each
-  library receives only its own part [open: #3].
+- `Outcome` has two variants, `OverlayRoot { sandbox: Caps, overlay:
+  OverlayCaps }` and `OverlayRootless` with the same parts; kaniko mode is
+  set up by `set_up_kaniko` (`KanikoSetup`). Each library receives only its
+  own part [open: #3].
 - `Refusal { kind, reason, guidance }`: what failed, what to do.
   `Refusal::needs_kaniko_mode()` lets auto pick kaniko mode.
 - `statedir::prepare(state_dir)`: the nearest existing directory and every
@@ -151,10 +171,16 @@ Each step before the next; design in
    checks the kaniko-mode flags and its state directory, then enters the
    namespace; `--mode=auto` enters the
    namespace first and goes to kaniko mode where it is refused to root for
-   lack of privilege (`needs_kaniko_mode`), or where overlayfs cannot use the
+   lack of privilege (`needs_kaniko_mode`) and rootless overlay mode cannot
+   run, or where overlayfs cannot use the
    state directory outside a container (`setup::route` on the refusal's
    `Kind`: a failed sandbox step or a probe mount that never reached the
-   kernel never routes there; per-stage directories, `can_mount`).
+   kernel never routes there; per-stage directories, `can_mount`). A user
+   other than root, with `--mode=overlay` or `--mode=auto`, goes to rootless
+   overlay mode (step 5) before the namespace; root refused for lack of
+   privilege tries it first, except where `/proc/sys` is writable or cannot
+   be told (`rootless_kept_off`, ADR-0107), and `--mode=overlay` there is
+   refused with both reasons.
 5. **Overlay mode** (`setup::set_up`): `enter_namespace`
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
    `unshare(CLONE_NEWNS)`, `/` rslave) → `statedir::prepare`, refused on
@@ -167,6 +193,17 @@ Each step before the next; design in
    spawner thread). `RANIKUST_DEBUG_FAULT=overlay-refused` takes a passed
    overlay probe as a failed probe check, which routes as NFS's refused
    mount does.
+   **Rootless overlay mode** (`main.rs`'s `rootless`): `setup::rootless::plan`
+   → with an rbind of `/proc`, `exposure::scan_peers` through
+   `refuse_reachable_peers` (`Reach::ProcRbind`, ADR-0129) and
+   `exposure::warn_build_args` → `overlay_flags` (`--mode=auto`;
+   `--mode=overlay` checked them first) → `setup::rootless::set_up`:
+   `rnk_sandbox::enter_build_user_namespace` → `Store::open` →
+   `rnk_sandbox::probe_with_fallbacks` → `rnk_snapshot::probe` in
+   `builds/<id>/overlay-probe` → outcome → `Sandbox::start`.
+   `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
+   process unchanged: the T0 tests of the binary set it, so none makes a
+   user namespace.
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
@@ -210,8 +247,11 @@ Each step before the next; design in
    the state directory, `Store::open`, the sandbox probe and
    `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured). On `/`
    and off, `--mode=auto` runs `report_user_namespace` just before the
-   sandbox starts; off `/`, not when overlay mode's set-up ran it before it
-   was refused (`KanikoBy::AutoProbed`: one probe line per build); when
+   sandbox starts; off `/`, not when overlay mode's set-up or rootless
+   overlay mode's `plan` ran it before it was refused
+   (`KanikoBy::AutoProbed`: one probe line per build); on `/` with the state
+   directory on overlayfs, a probe whose steps pass, or would with `--allow
+   proc.rbind`, is followed by `volume_hint` (ADR-0107); when
    `set_up_kaniko` returns, `main.rs` builds `KanikoStages`
    (`stages_snapshotter`). Credentials
    go only over verified TLS (`verified_credentials_only`, `build.rs`).
@@ -249,7 +289,11 @@ Each step before the next; design in
 - `--secret` takes buildctl's and kaniko's syntax (`id=`, `type=file|env`,
   `src=`, `env=`; without a source the variable named by the id, else the
   file), ids unique; a file secret must exist and fit 500 KiB at the start.
-  `--allow network.host` is BuildKit's entitlement (ADR-0032).
+  `--allow` takes `network.host` (BuildKit's, ADR-0032), `network.none-userns`
+  (ADR-0033) and `proc.rbind` (`Entitlement::ProcRbind`,
+  `config.allow_proc_rbind`, ADR-0126): in rootless overlay mode, where a new
+  `proc` is refused, each `RUN` gets a read-only rbind of `/proc`; `--help`
+  says what that exposes.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read
   inside the context through its `RootPath`, never by a host path.
@@ -288,7 +332,7 @@ kaniko flag or an invalid combination.
 ## Refs
 
 - **Design:** [design/modes-and-detection.md](../../design/modes-and-detection.md) ([probe order](../../design/modes-and-detection.md#probe-order---modeauto), [build root and state directory](../../design/modes-and-detection.md#build-root-and-state-directory), [refusal and guidance](../../design/modes-and-detection.md#refusal-and-guidance)); [design/sandbox.md#process-set-up-once-per-build](../../design/sandbox.md#process-set-up-once-per-build); [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks)
-- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map, reading the map from `/proc/self/uid_map` and `gid_map` in the second case), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (planned, Phase 3: a minimal `prune --all`, refused when root runs it), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (planned, Phase 3: routing in a user namespace ranikust did not create)
+- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map, reading the map from `/proc/self/uid_map` and `gid_map` in the second case), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (planned, Phase 3: a minimal `prune --all`, refused when root runs it), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (rootless overlay mode's routing and the volume hint, [#79](https://github.com/tran4774/ranikust/issues/79)), [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) (`--allow proc.rbind`), [ADR-0129](../../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md) and [ADR-0130](../../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) (the peer scan before the namespace, the persistent store)
 - **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries the probe outcome), [#4](https://github.com/tran4774/ranikust/issues/4) (where the probe mounts its test overlay); tasks [#38](https://github.com/tran4774/ranikust/issues/38) (`unit_chain`); Phase 3 [#41](https://github.com/tran4774/ranikust/issues/41)
 - **Evidence:** [exp-05 Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (5.1 MB static-pie runs in an empty rootfs), [Q2](../../research/experiments/05-rust-ecosystem.md#q2-allocator) (musl 2.8 Mops/s vs 663-753 with mimalloc, 16 threads)
 - **kaniko:** `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:336-389` (build flags), `:391-410` (registry flags), `:71-119` (env, mirrors), `:177-188` and `:200-202` (output checks), `:240-245` (container check), `:595-633` (context); `cmd/executor/cmd/push.go:40-80`; `login.go:46-60`
@@ -302,7 +346,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T0, unit** (`src/*/tests.rs`): `cli` (kaniko spellings per accepted flag,
   pflag booleans, `--target` lists, every refused flag with its reason all
   at once, nothing after `--`, clap errors; `--parallel-stages` and
-  `--single-snapshot` refused whatever the spelling), `config` (kaniko's
+  `--single-snapshot` refused whatever the spelling; `--allow proc.rbind`
+  parsed, and `--help` saying what it exposes:
+  `the_help_says_what_proc_rbind_exposes`), `config` (kaniko's
   checks, contexts, build arguments, absolute paths, state-dir defaults
   as root and below `$HOME`, a `$HOME` that is missing, relative or holds
   `..` refused,
@@ -315,9 +361,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   a refusal once the process may be in the build's user namespace, no
   guidance sends a user back to the mode they used, the user-namespace
   probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
-  the overlay probe was left, and only then; `setup/tests/userns.rs`: the
+  the overlay probe was left, and only then; the probe's directory taking
+  the process's gid and losing a setgid parent's bit,
+  `the_probe_directory_drops_a_setgid_parents_bit`;
+  `setup/tests/userns.rs`: the
   store opened inside the build's user namespace, as root of it, or the
-  set-up refused before the store, whatever the machine allows), `statedir`
+  set-up refused before the store, whatever the machine allows;
+  `setup/rootless.rs`: `each_stop_of_the_probe_gets_its_guidance`, the
+  AppArmor switch for a user stopped at `unshare`, the map, `chown` or the
+  mount namespace, `--allow proc.rbind` for a refused new `proc` whose rbind
+  works, else running as root), `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
@@ -342,18 +395,28 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   reach; a denied `ns/mnt` gone only with its `ns`; the handle on a
   namespace, an open `O_PATH`, close-on-exec descriptor of its nsfs file;
   a zombie passed over as gone, its roots opening for no one; escaped
-  names, a process named by its pid alone; the credential warning's text).
+  names, a process named by its pid alone; the credential warning's text; the
+  build-argument warning's text for each `Reach`,
+  `a_build_arg_warning_names_how_a_run_reads_the_command_line`).
   `src/main.rs` tests: the order of the refusals on `/`, `--seccomp`'s
   among them; `kaniko_mode_on_slash_refuses_a_binary_on_a_writable_mount`,
   `kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace`
   and `only_a_build_that_may_be_kaniko_on_slash_walks_the_mounts`
-  (ADR-0101); `--snapshot-mode` and `--snapshot-workers` reach the
+  (ADR-0101);
+  `a_build_with_an_rbind_of_proc_refuses_a_reachable_process_of_another_mount_namespace`
+  (ADR-0129: the same refusal, naming what the rbind exposes) and
+  `the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe`;
+  `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
   and never uncovers protected paths. `build.rs`: `kaniko_units` (what each
   unit keeps; every stage another unit reads is a unit of its own; hostile
   `--from` values planned or refused, never a panic, kaniko-oss#724) and the
   bare `COPY --from` refusal.
-- **T0, the binary** (`tests/cli.rs`, `tests/metrics.rs`): exit codes of
+- **T0, the binary** (`tests/cli.rs`, `tests/metrics.rs`): `tests/cli.rs`
+  runs it with `RANIKUST_DEBUG_FAULT=no-userns`, so that no T0 test makes a
+  user namespace: a user's build stops at "rootless overlay mode cannot run
+  here" (a test that sets a fault of its own, or builds `--mode=kaniko`, stops
+  at "kaniko mode needs root"); exit codes of
   `--help`, `version`, refusals and validation; the kernel refusal, the
   seccomp message and the emulator message (Rosetta) through
   `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked|kernel-hidden`;
@@ -379,15 +442,20 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and nothing is made.
 - **T1** (`just smoke`, `RANIKUST_CASE_MODE=kaniko just smoke-case`): the
   release binary's set-up and builds in rootless podman (overlay as root in
-  a user namespace; kaniko mode on the container's `/`, `RUN` `Direct`);
+  a user namespace; rootless overlay mode with `--allow proc.rbind`; kaniko
+  mode on the container's `/`, `RUN` `Direct`);
   the checks of `smoke_checks` in `tests/smoke/lib.bash`; refused inside a
   plain `chroot`. Cases: `tests/smoke/cases/`; `kaniko-flags` tests the
   meaning of `--snapshot-mode` and `--ignore-path` (in overlay mode
   `--ignore-path` is refused and `--snapshot-mode` changes nothing) and, in
-  the kaniko leg (a default container), `--mode=auto` picking kaniko mode
-  and its user-namespace probe passing with an rbind of `/proc` (#74);
-  `userns-probe` the probe's red team (one line per build, nothing of it
-  seen by a `RUN`, `RANIKUST_DEBUG_FAULT=overlay-refused` in a container,
+  the kaniko leg (a default container), `--mode=auto` picking kaniko mode,
+  its user-namespace probe stopping at `proc` (the rbind of `/proc` works but
+  needs the flag) and the log saying why rootless overlay mode did not run
+  (#74, #79); `rootless` rootless overlay mode end to end
+  ([its steps](../../testing.md#quick-smoke-cases));
+  `userns-probe` the probe's red team (one line per build, in either form of
+  the line, nothing of it seen by a `RUN`,
+  `RANIKUST_DEBUG_FAULT=overlay-refused` in a container,
   a state directory on tmpfs, ranikust killed mid-probe);
   `seccomp` the default profile, unconfined and a file, and in the kaniko leg
   every `--seccomp` refused and a `RUN` under the container's profile;
@@ -463,7 +531,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   container is refused, with or without `/.dockerenv`). The smoke suite
   prints the user-namespace probe's line of each environment's build, which
   must pass on the VM itself and stop at `unshare` in a default Docker
-  container (#74). A `--state-dir` at
+  container (#74); its user leg runs the binary as the VM's regular user on
+  the `rootless` smoke case's `content` stage: rootless overlay mode with a
+  fresh `proc` and root's `--reproducible` digest on 22.04, refused naming
+  the AppArmor switch on 24.04 (#79). A `--state-dir` at
   `/`, below `/home/<user>` or in a directory others may write
   ([testing](../../testing.md#planned-test-suites)). `unit`: `exposure.rs`
   `a_namespace_left_but_held_keeps_its_number_from_new_ones` (ADR-0101: a

@@ -26,7 +26,8 @@ extract the same digest at once.
   gone; `prune` by total size and age (Phase 5) and a minimal `prune --all`
   (Phase 3, ADR-0105), neither built. `ranikust prune` only calls it. A
   user other than root opens the store inside the build's user namespace
-  (`ranikust`'s `setup::enter_user_namespace`, #75), where the clean-up
+  (`ranikust`'s `setup::rootless`, #79, on the steps of
+  `setup::enter_user_namespace`, #75), where the clean-up
   removes files of the user's subordinate ids as root of the namespace, and
   where extracted layers are filled and published (#77).
 - Telling whether the process runs in a user namespace other than the
@@ -108,7 +109,11 @@ Design: [locks](../../design/cache-and-store.md#locks),
   finds it published.
 - A non-empty state directory without a regular `.ranikust-state` file is
   refused, so clean-up never runs in a directory the user pointed at by
-  mistake. A new state directory is `0700`; one owned by another user or
+  mistake; names only ranikust makes there (`.ranikust-anon-*`: an anonymous
+  store's leftovers, the user-namespace probe's directory of a rootless build
+  cut short before its store opened) do not count: `check_marker` marks the
+  directory, and the names stay until an anonymous store's start removes
+  them. A new state directory is `0700`; one owned by another user or
   writable by others is used with a warning. The store's directories the
   user owns take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in
@@ -169,7 +174,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T0** (temp dirs): `tests/store.rs`: layout and marker, a foreign
   directory refused, `fill` publishes once, a failing `f` publishes nothing,
   concurrent `fill` from threads runs `f` once, leftovers of a dead build
-  removed and a running build's kept, `close`, `cache_dir`.
+  removed and a running build's kept, `close`, `cache_dir`; a directory
+  holding only ranikust's `.ranikust-anon-*` names is marked, and anything
+  else with them still refused
+  (`open_marks_a_directory_holding_only_ranikusts_leftovers`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock.
   `tests/spans.rs`. Planted symlinks as entries or build directories, a FIFO

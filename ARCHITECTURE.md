@@ -19,13 +19,17 @@ captured:
 
 - **overlay mode**: each stage root is an overlay mount; each instruction
   writes into a fresh upper directory, which *is* the layer's diff. Stages run
-  in parallel along the stage graph.
+  in parallel along the stage graph. It runs as root, or rootless, in a user
+  namespace the build makes for itself.
 - **kaniko mode**: the root is the build root (`/` in a container, else a
   directory ranikust makes in its state directory); each diff is found by
   walking and hashing it. Stages run one at a time on `/`, as in kaniko.
 
-If neither mode can work, ranikust refuses and explains how to fix it. Today
-every user but root is refused; rootless overlay mode is Phase 3.
+If neither mode can work, ranikust refuses and explains how to fix it. A user
+other than root builds in rootless overlay mode, and so does root where it may
+not mount and the state directory is not on a container's own root; where a
+container masks `/proc`, that needs `--allow proc.rbind`
+([modes and detection](docs/design/modes-and-detection.md#probe-order---modeauto)).
 
 ranikust keeps its own files, including the persistent store and every build
 root it makes, in one state directory (`--state-dir`, default
@@ -56,7 +60,9 @@ common flags (those it does not accept are refused by name) and
 `prune --all` in Phase 3, ADR-0105), `push` (an OCI layout, ADR-0052) has no
 phase yet, and there is no `login` (ADR-0049).
 Runs the set-up and the probes while
-single-threaded, picks the mode and the root, runs `rnk-sched` with its own
+single-threaded, picks the mode and the root (rootless overlay mode's
+probe runs before the build's user namespace is entered, its set-up inside
+it), runs `rnk-sched` with its own
 `StageRunner` (which drives `rnk-builder`, one thread per stage) and writes the
 outputs. **Must not** hold the rule of a single concern (Dockerfile semantics,
 scheduling, executing an instruction, snapshots, the sandbox, filesystem
@@ -155,8 +161,9 @@ its `command` cgroup
 ([ADR-0110](docs/adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
 In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). It also moves the process into the build's user
-namespace, each id map tried in a forked child first (no build uses it yet,
-[#75](https://github.com/tran4774/ranikust/issues/75)); the subordinate ids
+namespace, each id map tried in a forked child first (rootless overlay mode,
+[#75](https://github.com/tran4774/ranikust/issues/75),
+[#79](https://github.com/tran4774/ranikust/issues/79)); the subordinate ids
 come from `ranikust`. Where its `RUN`s get an rbind of `/proc`, they take
 turns, whatever `--jobs` allows
 ([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
@@ -339,7 +346,7 @@ I/O. Every step emits `tracing` spans ([metrics](docs/design/metrics.md)).
 
 | | overlay mode | kaniko mode |
 |---|---|---|
-| Needs | mount privileges (root; a usable user namespace is Phase 3) | root |
+| Needs | mount privileges: root, or a user namespace the build makes for itself | root |
 | Stage root | overlay mount in `<state>/builds/<id>/stages/<n>/rootfs` | `/` in a container; else one directory per stage, `<state>/builds/<id>/stages/<n>/rootfs` (ADR-0059), copied for a stage built `FROM` it or moved to it when it is the only reader (ADR-0061, ADR-0062), released once nobody reads it |
 | Root lock | none: builds share the state directory | `/` is `flock`ed: one build per container |
 | State directory | `/var/lib/ranikust` by default; a volume in a container | `/var/lib/ranikust` by default, on the ignore list when inside the root |

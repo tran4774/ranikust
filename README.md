@@ -59,8 +59,8 @@ available:
 ```mermaid
 flowchart LR
     build(["ranikust build"]) --> probe{"Probe what the<br/>environment allows"}
-    probe -- "may mount<br/>(root, privileged)" --> overlay["<b>overlay mode</b><br/>per-instruction overlay layers<br/>parallel stages<br/>isolated RUN"]
-    probe -- "root, may not mount<br/>(default Docker, most pods)" --> kaniko["<b>kaniko mode</b><br/>parallel walk + hash<br/>stages in sequence<br/>like kaniko"]
+    probe -- "may mount (root, privileged)<br/>or make a user namespace<br/>(a regular user)" --> overlay["<b>overlay mode</b><br/>per-instruction overlay layers<br/>parallel stages<br/>isolated RUN"]
+    probe -- "root, may not mount,<br/>no usable user namespace<br/>(default Docker, most pods)" --> kaniko["<b>kaniko mode</b><br/>parallel walk + hash<br/>stages in sequence<br/>like kaniko"]
     probe -- "neither" --> refuse["<b>refuse</b><br/>with concrete guidance"]
 ```
 
@@ -71,7 +71,7 @@ because many environments allow the first step and block a later one
 [ADR-0004](docs/adr/0004-support-every-privilege-level.md)). Which mode each
 environment gets is in the book:
 [Choosing where to run it](docs/book/src/where-to-run.md). Rootless overlay
-mode, for a regular user, is Phase 3; today every user but root is refused.
+mode, for a regular user, builds in a user namespace of its own.
 
 ## Install
 
@@ -155,8 +155,8 @@ each phase is a milestone.
 - [ ] **Phase 3, rootless and probing**
       ([#41](https://github.com/tran4774/ranikust/issues/41)): user-namespace
       overlay, a test matrix across privilege levels and `--userns`;
-      automatic mode selection, refusing with guidance and `--seccomp` are
-      already built
+      rootless overlay mode, automatic mode selection, refusing with
+      guidance and `--seccomp` are already built
 - [ ] **Phase 4, cache:** versioned cache keys, registry-backed layer cache
 - [ ] **Phase 5, feature parity:** `ADD` from URLs and git, bind mounts,
       `ONBUILD`, `COPY --link`, registry mirrors, credential helpers

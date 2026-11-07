@@ -51,7 +51,7 @@ term is defined or measured; short forms as in
 | record (metrics) | One stage, instruction or snapshot in the report, opened by its span; holds the totals of the spans nested in it | `design/metrics.md#records` |
 | `redirect_dir` | Overlay directory-rename feature; ranikust uses `nofollow` (`off` is refused in a user namespace), so lower-directory renames give `EXDEV` | `ADR-0016` |
 | `rnk-store` | Crate owning the store in the state directory, its locks, clean-up, `prune` and `BuildPaths` | [crates/rnk-store.md](crates/rnk-store.md), `ADR-0021` |
-| rootless overlay | Overlay mode inside a user namespace (`userxattr`); Phase 3, not built | `design/modes-and-detection.md#outcomes` |
+| rootless overlay | Overlay mode inside the build's user namespace (`userxattr`), for a user other than root and for root where it may not mount | `design/modes-and-detection.md#outcomes` |
 | `RootPath` | `rnk-rootfs` handle for paths in a root, resolved with `openat2(RESOLVE_IN_ROOT)` so `..` and symlinks cannot escape | [crates/rnk-rootfs.md](crates/rnk-rootfs.md) |
 | `--snapshot-mode` | kaniko's flag, same meaning: what the kaniko-mode walk compares (`full`, `redo`, `time`); ignored with a warning in overlay mode | `ADR-0023` |
 | `Snapshotter` | `rnk-snapshot` trait that yields an instruction's diff; overlay and kaniko implementations; signature in ADR-0046 | `ARCHITECTURE.md#rnk-snapshot` |

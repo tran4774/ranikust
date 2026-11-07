@@ -147,7 +147,7 @@ gets the code.
 | `ranikust.build` | | The `build` subcommand, emitted from flag validation on: kaniko's `build.total` plus `push.total`. |
 | `ranikust.setup` | | Mount namespace, the state directory's checks (ADR-0050), the kaniko-mode root, store open, probes, spawner start: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
-| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, inside `ranikust.setup`: the user-namespace probe, reported only (#74); `passes` when every step a `RUN` there needs and the overlay mount in the namespace worked; its start-up cost. |
+| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, or a user's build (#79), inside `ranikust.setup`: the user-namespace probe, reported only for root's own modes (#74), routing for rootless overlay mode; `passes` when every step a `RUN` there needs, with an rbind of `/proc` only where `--allow proc.rbind` has it, and the overlay mount in the namespace worked; its start-up cost. |
 
 ### `rnk-dockerfile`
 
