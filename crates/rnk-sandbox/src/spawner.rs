@@ -58,6 +58,8 @@ pub struct Sandbox {
     running: Running,
     requests: Option<mpsc::Sender<Request>>,
     thread: Option<JoinHandle<()>>,
+    // [`TURNS`]; a test's own, so that its failure breaks no other test's.
+    turns: &'static Turns,
 }
 
 impl Sandbox {
@@ -195,6 +197,7 @@ impl Sandbox {
             running: Running::default(),
             requests: Some(requests),
             thread: Some(thread),
+            turns: &TURNS,
         })
     }
 
@@ -217,17 +220,21 @@ impl Sandbox {
     /// when the command cannot be executed, [`Error::Privilege`] for
     /// [`Isolation::Full`] without `CAP_SYS_ADMIN` or without [`Caps`],
     /// [`Error::Cancelled`] after [`Sandbox::cancel`],
-    /// [`Error::TurnPoisoned`] once a `RUN` panicked during its turn, or a
-    /// host-side error.
+    /// [`Error::TurnPoisoned`] once a `RUN` panicked or lost the spawner
+    /// thread during its turn, or a host-side error.
     pub fn run(&self, spec: RunSpec) -> Result<ExitStatus> {
         let requests = self.requests.as_ref().ok_or(Error::SpawnerGone)?;
-        let _turn = TURNS.take(self.runner.kernel_fs.0, spec.isolation)?;
+        let turn = self.turns.take(self.runner.kernel_fs.0, spec.isolation)?;
         self.runner.run(spec, Some(&self.running), |job| {
             let (reply, answer) = mpsc::sync_channel(1);
             requests
                 .send(Request { job, reply })
                 .map_err(|_| Error::SpawnerGone)?;
-            answer.recv().map_err(|_| Error::SpawnerGone)?
+            answer.recv().map_err(|_| {
+                // The spawner may have gone after the clone, its child alive.
+                turn.break_turns();
+                Error::SpawnerGone
+            })?
         })
     }
 
@@ -862,10 +869,7 @@ impl Runner {
             // A turn under an rbind of `/proc` ends with the `RUN`'s PID
             // namespace, which `Direct` has none of (ADR-0127).
             (Isolation::Direct, _) if is_rbind(self.kernel_fs.0) => {
-                return Err(Error::InvalidSpec(
-                    "Isolation::Direct where RUNs get an rbind of /proc: use Isolation::Full"
-                        .into(),
-                ));
+                return Err(Error::InvalidSpec(DIRECT_UNDER_RBIND.into()));
             }
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
             // A bare `chroot` is never used where mounting is possible: the
@@ -1618,6 +1622,10 @@ fn is_rbind(how: KernelFs) -> bool {
     }
 }
 
+/// Why `Direct` is refused where `RUN`s get an rbind of `/proc`.
+const DIRECT_UNDER_RBIND: &str =
+    "Isolation::Direct where RUNs get an rbind of /proc: use Isolation::Full";
+
 fn child_mount(op: MountOp) -> Result<ChildMount> {
     Ok(match op {
         MountOp::Proc { target, how } => ChildMount::Proc {
@@ -1800,12 +1808,16 @@ fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
 /// The turns of the process's `RUN`s (ADR-0127). One that gets the outer
 /// `/proc` runs alone: through it `RUN`s of one user namespace could reach
 /// each other's processes, whichever [`Sandbox`] runs them. The others
-/// share theirs.
+/// share theirs. A spawner thread lost during a turn breaks them, as a
+/// panic does; neither happens today (nothing after the clone panics,
+/// and release builds abort).
 static TURNS: Turns = Turns::new();
 
+#[derive(Debug)]
 struct Turns {
     lock: RwLock<()>,
-    // Set by a panic during a turn: a shared one does not poison `lock`.
+    // Set by a panic during a turn, which a shared one does not poison
+    // `lock` with, or by a spawner thread lost during one.
     broken: AtomicBool,
 }
 
@@ -1829,10 +1841,13 @@ impl Turns {
     }
 
     /// Waits for the turn of a `RUN` run with `isolation` where `RUN`s get
-    /// `/proc` as `proc`; `None` for one [`Runner::run`] refuses there.
-    fn take(&self, proc: KernelFs, isolation: Isolation) -> Result<Option<Turn<'_>>> {
+    /// `/proc` as `proc`; a `Direct` one there is refused at once, as
+    /// [`Runner::run`] refuses it too.
+    fn take(&self, proc: KernelFs, isolation: Isolation) -> Result<Turn<'_>> {
         let held = match (isolation, is_rbind(proc)) {
-            (Isolation::Direct, true) => return Ok(None),
+            (Isolation::Direct, true) => {
+                return Err(Error::InvalidSpec(DIRECT_UNDER_RBIND.into()));
+            }
             (Isolation::Full, true) => Held::Alone {
                 _guard: self.lock.write().map_err(|_| Error::TurnPoisoned)?,
             },
@@ -1845,17 +1860,24 @@ impl Turns {
         if self.broken.load(Ordering::SeqCst) {
             return Err(Error::TurnPoisoned);
         }
-        Ok(Some(Turn {
+        Ok(Turn {
             _held: held,
             broken: &self.broken,
-        }))
+        })
+    }
+}
+
+impl Turn<'_> {
+    /// Refuses every later turn.
+    fn break_turns(&self) {
+        self.broken.store(true, Ordering::SeqCst);
     }
 }
 
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            self.broken.store(true, Ordering::SeqCst);
+            self.break_turns();
         }
     }
 }
@@ -5416,6 +5438,7 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let missing = empty.path().canonicalize().unwrap().join("missing");
         let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
+        let turns: &'static Turns = Box::leak(Box::new(Turns::new()));
         // Without `Sandbox::start`'s cgroups and profile. Kept here, so that a
         // waiting thread's only sleep is its turn, not the drop of its `Sandbox`.
         let [fresh, rbind] =
@@ -5423,15 +5446,17 @@ mod tests {
                 let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot))
                     .unwrap()
                     .with_kernel_fs(proc, KernelFs::Fresh);
-                std::sync::Arc::new(Sandbox::spawn_thread(runner).unwrap())
+                let mut sandbox = Sandbox::spawn_thread(runner).unwrap();
+                assert!(std::ptr::eq(sandbox.turns, &TURNS));
+                sandbox.turns = turns;
+                std::sync::Arc::new(sandbox)
             });
         let run = |sandbox: &std::sync::Arc<Sandbox>, spec: RunSpec| {
             let sandbox = sandbox.clone();
             detached(move || sandbox.run(spec))
         };
 
-        let shared = TURNS.take(KernelFs::Fresh, Isolation::Full).unwrap();
-        assert!(shared.is_some());
+        let shared = turns.take(KernelFs::Fresh, Isolation::Full).unwrap();
         let side_by_side = refusal(&run(&fresh, empty_argv()).1);
         assert!(side_by_side.contains("argv is empty"), "{side_by_side}");
         let alone = run(&rbind, empty_argv());
@@ -5440,8 +5465,7 @@ mod tests {
         let after = refusal(&alone.1);
         assert!(after.contains("argv is empty"), "{after}");
 
-        let held = TURNS.take(KernelFs::Rbind, Isolation::Full).unwrap();
-        assert!(held.is_some());
+        let held = turns.take(KernelFs::Rbind, Isolation::Full).unwrap();
         let direct = refusal(&run(&rbind, direct(&missing, &missing)).1);
         assert!(direct.contains("rbind of /proc"), "{direct}");
         let waiting = [run(&fresh, empty_argv()), run(&rbind, empty_argv())];
@@ -5477,6 +5501,41 @@ mod tests {
                     "{later:?} {how:?} after a panic in {proc:?} {isolation:?}"
                 );
             }
+        }
+    }
+
+    /// A spawner thread lost during a turn, which may have cloned the
+    /// `RUN`, refuses every later turn.
+    #[test]
+    fn a_spawner_lost_during_a_turn_refuses_every_later_one() {
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        let dir = tempfile::tempdir().unwrap();
+        let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot)).unwrap();
+        let (requests, received) = mpsc::channel::<Request>();
+        // Takes the job and drops it unanswered, as a spawner that died.
+        let lost = std::thread::spawn(move || drop(received.recv()));
+        let turns: &'static Turns = Box::leak(Box::new(Turns::new()));
+        let sandbox = Sandbox {
+            runner,
+            running: Running::default(),
+            requests: Some(requests),
+            thread: Some(lost),
+            turns,
+        };
+        match sandbox.run(direct(&missing, &missing)) {
+            Err(Error::SpawnerGone) => {}
+            r => panic!("a RUN whose spawner is lost: {r:?}"),
+        }
+        for (proc, isolation) in [
+            (KernelFs::Rbind, Isolation::Full),
+            (KernelFs::Fresh, Isolation::Full),
+            (KernelFs::Fresh, Isolation::Direct),
+        ] {
+            assert!(
+                matches!(turns.take(proc, isolation), Err(Error::TurnPoisoned)),
+                "{proc:?} {isolation:?}"
+            );
         }
     }
 

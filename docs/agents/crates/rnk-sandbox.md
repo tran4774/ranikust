@@ -143,7 +143,7 @@ impl Sandbox {
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
     pub fn set_seccomp(&mut self, profile: Option<SeccompProfile>); // --seccomp; None is unconfined; Full RUNs only; before the first RUN
     pub fn set_nofile_limit(&mut self, limit: NofileLimit);  // every later RUN starts with it (ranikust's limit before its raise)
-    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;  // blocking; cloned on the spawner thread; where Caps::proc() is Rbind, a RUN runs alone among those of every Sandbox of the process (the others share a turn), the turn held until its init is reaped, Isolation::Direct refused before any wait (ADR-0127); after a panic during a turn, Error::TurnPoisoned for every later RUN
+    pub fn run(&self, spec: RunSpec) -> Result<ExitStatus>;  // blocking; cloned on the spawner thread; where Caps::proc() is Rbind, a RUN runs alone among those of every Sandbox of the process (the others share a turn), the turn held until its init is reaped, Isolation::Direct refused before any wait (ADR-0127); after a panic or a lost spawner thread during a turn, Error::TurnPoisoned for every later RUN
     pub fn cancel(&self);                                     // cgroup.kill and SIGKILL every running RUN; later runs: Error::Cancelled
 }
 pub struct SeccompProfile;  // compiled for this architecture, kernel and Docker's 14 capabilities: docker_default(), from_json(&[u8]); Error::SeccompProfile (ADR-0109)
@@ -508,11 +508,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   whatever the root entry
   (`direct_is_refused_where_runs_get_an_rbind_of_proc`), the turns: under
   an rbind of `/proc` a `RUN` alone, whichever `Sandbox` runs it, the
-  others side by side (`rbind_runs_run_alone_and_the_others_side_by_side`),
-  and after a panic during a turn no later one
-  (`a_panic_during_a_turn_refuses_every_later_one`), the sealed heredoc
-  memfd, the relay (a surviving write end, a full stream, a `RUN` reading
-  its own stream back), the init's status records,
+  others side by side (`rbind_runs_run_alone_and_the_others_side_by_side`,
+  on a lock of the test's own), and after a panic or a lost spawner
+  thread during a turn no later one
+  (`a_panic_during_a_turn_refuses_every_later_one`,
+  `a_spawner_lost_during_a_turn_refuses_every_later_one`), the sealed
+  heredoc memfd, the relay (a surviving write end, a full stream, a `RUN`
+  reading its own stream back), the init's status records,
   `red_team_hostile_mount_point_names_are_matched_exactly` (the submount
   fallback where `mount_setattr` is missing, in `src/spawner.rs`), the spans
   (`tests/spans.rs`). Seccomp (`src/seccomp/`): the assembler's long jumps

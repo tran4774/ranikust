@@ -396,9 +396,13 @@ pub enum Error {
     /// The spawner thread is gone.
     #[error("the sandbox spawner thread has stopped")]
     SpawnerGone,
-    /// A `RUN` panicked during its turn (ADR-0127): its processes may have
-    /// outlived the turn, so no later `RUN` of the process runs.
-    #[error("a RUN panicked while it held the turn: no later RUN runs in this process")]
+    /// A `RUN` panicked, or lost the spawner thread, during its turn
+    /// (ADR-0127): its processes may have outlived the turn, so no later
+    /// `RUN` of the process runs.
+    #[error(
+        "a RUN panicked or lost its spawner while it held the turn: no later RUN runs in \
+         this process"
+    )]
     TurnPoisoned,
     /// [`crate::Sandbox::cancel`] was called: the `RUN` was killed, or was
     /// not started.
