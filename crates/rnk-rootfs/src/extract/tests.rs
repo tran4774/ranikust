@@ -1981,7 +1981,7 @@ impl Tar {
 }
 
 /// Layers each with, after a good first entry, a value the kernel would
-/// refuse on every filesystem (#179).
+/// refuse on every local filesystem (#179).
 fn kernel_refused(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
     let first = || {
         let mut t = Tar::new(f);
@@ -2272,6 +2272,38 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
     ] {
         xattr("security.capability", &value).unwrap_or_else(|e| panic!("{value:?}: {e}"));
     }
+}
+
+/// A symlink that puts an entry's directory past what `/proc/self/fd`
+/// shows of it in a live root: the entry is refused before a directory it
+/// lacks is made, and one a byte shorter is taken.
+#[test]
+fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
+    let f = Fixture::new();
+    let host = fs::canonicalize(&f.host).unwrap();
+    let deep = dir_of(live_dir_max(host.as_os_str().as_bytes()) - 2);
+    let mut t = Tar::new(&f);
+    t.file("first", 0o644, b"1")
+        .pax(&[("path", deep.as_bytes())])
+        .dir("d", 0o755)
+        .pax(&[("linkpath", deep.as_bytes())])
+        .symlink("s", "d")
+        // `deep/a` fits, `deep/aa` is a byte past.
+        .file("s/a/x", 0o644, b"in")
+        .file("s/aa/x", 0o644, b"past");
+    let e = extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap_err();
+    assert!(
+        matches!(&e, Error::Entry { path, reason } if path == Path::new("s/aa/x")
+            && reason.ends_with(DIR_PAST_PATH_MAX)),
+        "{e}"
+    );
+    // Below the root's fd: the host's path to them is past `PATH_MAX`.
+    let root = fs::File::open(&f.host).unwrap();
+    let at = |rel: &str| {
+        rustix::fs::statat(&root, Path::new(&deep).join(rel), AtFlags::SYMLINK_NOFOLLOW)
+    };
+    at("a/x").unwrap();
+    assert_eq!(at("aa").unwrap_err(), Errno::NOENT);
 }
 
 /// A live root reads where a directory lies through `/proc/self/fd`, whose

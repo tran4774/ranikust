@@ -163,8 +163,10 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 ///
 /// Where a directory lies is read through `/proc/self/fd`, which shows at
 /// most `PATH_MAX` bytes with the root's own path: an entry in a directory
-/// whose path is longer is refused before anything of it is written (on
-/// `/`, past 4094 bytes, as [`check_headers`] refuses it).
+/// whose path in the layer is longer is refused before anything of it is
+/// written (on `/`, past 4094 bytes, as [`check_headers`] refuses it), and
+/// so is one whose directory a symlink puts past that, before a directory
+/// it lacks is made.
 ///
 /// # Errors
 ///
@@ -260,11 +262,13 @@ pub struct Extracted {
 /// root, a link with an empty target, a GNU sparse or unknown entry type,
 /// a whiteout that names nothing, a file or symlink as the layer's root,
 /// ids, modes, device numbers and times that do not parse or are out of
-/// range, and values the kernel refuses on every filesystem: a name or
-/// link target with a NUL byte, a component over `NAME_MAX`, a symlink
-/// target over `PATH_MAX` less its NUL, and on a directory, file or
-/// symlink an xattr whose name is empty, over `XATTR_NAME_MAX` or holds a
-/// NUL byte, whose value is over `XATTR_SIZE_MAX` or a file capability the
+/// range, and values the kernel refuses on every local filesystem: a name
+/// or link target with a NUL byte, a component over `NAME_MAX` (each
+/// filesystem's own, which FUSE puts at 1024 bytes: 255 is held to all the
+/// same), a symlink target over `PATH_MAX` less its NUL, and on a
+/// directory, file or symlink an xattr whose name is empty, over
+/// `XATTR_NAME_MAX` or holds a NUL byte, whose value is over
+/// `XATTR_SIZE_MAX` or a file capability the
 /// kernel never sets, or a `user.*` one on a symlink; also where the root
 /// would have the entry skipped (an ignored path, a whiteout whose
 /// directory is missing), which a header does not show. It holds a
@@ -530,7 +534,7 @@ fn for_each_entry<R: Read>(
 /// long link), a whiteout that names nothing, an unknown entry type, a
 /// file or symlink as the layer's root, ids, modes, device numbers and
 /// times that do not parse or are out of range, and the values the kernel
-/// refuses on every filesystem ([`kernel_refuses_name`],
+/// refuses on every local filesystem ([`kernel_refuses_name`],
 /// [`kernel_refuses_xattrs`]), for every name the extraction hands it but
 /// a node's, every link target, and the xattrs of a directory, file or
 /// symlink (a node's are checked where it is made). The first step
@@ -758,8 +762,9 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
 }
 
 /// Why the kernel refuses the name `name` in the directory `dir` (both
-/// cleaned) on every filesystem, `what` naming it in the reason: a
-/// NUL byte, a component of either over [`NAME_MAX`], or a `dir` over
+/// cleaned) on every local filesystem, `what` naming it in the reason: a
+/// NUL byte, a component of either over [`NAME_MAX`] (each filesystem's
+/// own, which FUSE puts at 1024 bytes), or a `dir` over
 /// `dir_max` ([`PATH_MAX`], less a live root's own path). An extraction
 /// hands the kernel `dir` whole, then `name` relative to it, so the whole
 /// path may be longer.
@@ -1612,6 +1617,7 @@ impl Extractor<'_> {
         name: &OsStr,
         raw: &Path,
     ) -> Result<Option<(OwnedFd, PathBuf)>> {
+        let dir_max = self.dir_max;
         let Some(live) = &mut self.live else {
             let pfd = self
                 .root
@@ -1654,6 +1660,14 @@ impl Extractor<'_> {
             .collect();
         if live.keep.covers(full.join(name)) {
             return Ok(None);
+        }
+        // A symlink in `parent` may put it past what `/proc/self/fd` shows,
+        // which the names it lacks would then be made in.
+        if full.as_os_str().len() > dir_max {
+            return Err(Error::Entry {
+                path: raw.to_owned(),
+                reason: format!("the name lies in a directory whose path is {DIR_PAST_PATH_MAX}"),
+            });
         }
         let mode = Mode::from_raw_mode(PARENT_MODE);
         for n in &missing {
