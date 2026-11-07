@@ -176,16 +176,18 @@ fn next_attempt(caps: Caps, allowed: Fallbacks, e: &Error) -> Option<Caps> {
 
 /// The lines, once per probe, of the rbinds it chose.
 fn log_rbinds(caps: Caps) {
-    if caps.proc == KernelFs::Rbind {
-        tracing::warn!(
+    match caps.proc {
+        KernelFs::Fresh => {}
+        KernelFs::Rbind => tracing::warn!(
             "rnk-sandbox: a new proc is refused here, so each RUN gets an rbind of /proc \
              and sees the processes ranikust sees"
-        );
+        ),
     }
-    if caps.sysfs == KernelFs::Rbind {
-        tracing::info!(
+    match caps.sysfs {
+        KernelFs::Fresh => {}
+        KernelFs::Rbind => tracing::info!(
             "rnk-sandbox: a new sysfs is refused here, so each RUN gets a read-only rbind of /sys"
-        );
+        ),
     }
 }
 

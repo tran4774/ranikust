@@ -182,14 +182,16 @@ fn check_kernel_mounts(out: &str) {
 /// ones too and the outer PID 1.
 fn check_proc(out: &str, how: KernelFs) {
     assert_eq!(value(out, "0:pid"), "2", "{out}");
+    let levels: u32 = value(out, "0:levels").parse().expect(out);
+    let init = value(out, "0:init");
     match how {
         KernelFs::Fresh => {
-            assert_eq!(value(out, "0:levels"), "1", "{out}");
-            assert_eq!(value(out, "0:init"), "ranikust-init", "{out}");
+            assert_eq!(levels, 1, "{out}");
+            assert_eq!(init, "ranikust-init", "{out}");
         }
         KernelFs::Rbind => {
-            assert_ne!(value(out, "0:levels"), "1", "{out}");
-            assert_ne!(value(out, "0:init"), "ranikust-init", "{out}");
+            assert!(levels >= 2, "{out}");
+            assert!(!init.is_empty() && init != "ranikust-init", "{out}");
         }
     }
 }

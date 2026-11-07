@@ -387,8 +387,9 @@ fn set_attr_recursive(
         propagation: 0,
         userns_fd: 0,
     };
-    // SAFETY: `path` is NUL-terminated and borrowed, `dir` open, and `attr`
-    // lives on this stack frame for the call, its size passed.
+    // SAFETY: `path` is NUL-terminated and borrowed, `dir` borrowed (or
+    // `AT_FDCWD`), `attr` lives on this stack frame for the call, its size
+    // passed; `userns_fd` is unread: `attr_set` never holds `MOUNT_ATTR_IDMAP`.
     unsafe {
         libc::syscall(
             libc::SYS_mount_setattr,
