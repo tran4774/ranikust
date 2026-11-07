@@ -42,8 +42,11 @@ them, with any cgroup a command made below its own: in a
 of its own cgroup namespace with a writable cgroupfs, and in a systemd unit or
 scope with `Delegate=yes` whose cgroup systemd marks as delegated with
 `trusted.delegate` (Ubuntu 22.04's systemd 249 and 24.04's 255 do). In
-rootless overlay mode only the root of its own cgroup namespace counts.
-Anywhere else nothing changes. They set no resource limit, only how many
+rootless overlay mode, the root of its own cgroup namespace counts, and a
+cgroup its user owns that systemd marks `user.delegate`, such as a system
+unit with `Delegate=yes` and `User=` that user; a unit of the user's own
+systemd manager (`systemd-run --user`) carries no mark. Anywhere else
+nothing changes. They set no resource limit, only how many
 cgroups a `RUN` may make below its own, and how deep: 4095 cgroups and 32
 levels at most, past which `mkdir` fails with `EAGAIN`. ranikust logs which
 layout it uses:

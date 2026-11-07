@@ -644,12 +644,14 @@ then only on a read-write cgroupfs, with `cgroup.kill` (Linux 5.14) and
 `cgroup.type` `domain`. A root ranikust trusts systemd's `trusted.delegate`
 alone, which only `CAP_SYS_ADMIN` in the initial user namespace can set;
 `user.delegate`, which anyone who may write `D`'s inode can set, a root
-`RUN` included, counts only for a ranikust that is not root and owns `D`.
-Rootless overlay mode starts its sandbox as root of the build's user
-namespace, so `user.delegate` does not count for it, and it reads no
-`trusted.*` mark (the kernel answers `ENODATA` to a process without
-`CAP_SYS_ADMIN` in the initial user namespace): it gets `RUN` cgroups only
-where `D` is the root of its cgroup namespace. A
+`RUN` included, counts only where ranikust owns `D` and its uid in the
+initial user namespace is not 0, as `/proc/self/uid_map` gives it before
+the build's user namespace hides it
+([ADR-0135](../adr/0135-run-cgroups-trust-user-delegate-where-ranikusts-uid-in-the-initial-user-namespace-is-not-0.md)): a regular user, or root of rootless Podman. Rootless
+overlay mode reads no `trusted.*` mark (the kernel answers `ENODATA` to a
+process without `CAP_SYS_ADMIN` in the initial user namespace), and sees
+its own uid as 0, so it compares `D`'s owner as the build's user namespace
+shows it. A
 namespace's root counts whoever made it, delegated or not. A `D` with
 neither a mark nor a namespace's root, or on a read-only cgroupfs, is read
 no further. An unreadable mark, or an unreadable file of a marked or
@@ -662,7 +664,8 @@ means no `RUN` cgroups, logged with its errno at `warn`:
 | `docker run --privileged` (its own cgroup namespace, cgroupfs read-write) | Yes |
 | Another cgroup namespace's root on a read-write cgroupfs, delegated or not: root's own `unshare -C` with cgroup2 remounted; a systemd 257 unit with `ProtectControlGroups=private` **[inferred]** | Yes |
 | `Delegate=yes` under a systemd that sets no `trusted.delegate` | No |
-| Rootless overlay mode anywhere but its own cgroup namespace's root, a `Delegate=yes` unit or scope included | No |
+| Rootless overlay mode in a cgroup its user owns, marked `user.delegate` (a system unit or scope with `Delegate=yes` and `User=`; systemd 259 marks `user@<uid>.service` so **[measured]**) | Yes |
+| Rootless overlay mode in a `Delegate=yes` unit or scope of the user's own manager (`systemd-run --user`: no mark, systemd 259 **[measured]**) | No |
 | Root on a host, an ssh session's scope, a unit without `Delegate=` | No |
 | Docker's default options, most pods (cgroupfs read-only) | No |
 | A kernel before 5.14 (no `cgroup.kill`); `Direct` on `/`; the probe's own `RUN`s | No |

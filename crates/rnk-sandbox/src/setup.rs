@@ -64,6 +64,9 @@ pub fn enter_build_namespace() -> Result<()> {
 /// dumpable only while its map is written (ADR-0051). The map and
 /// `setgroups` returned are read back from `/proc/self` once inside: a map
 /// that gives one id is [`crate::IdMap::OneId`], whichever was written.
+/// Whether the process's uid in the initial user namespace is 0 is
+/// recorded first, from the map it starts under: a `RUN`'s cgroups trust
+/// `user.delegate` only where it is not (ADR-0135).
 ///
 /// Call before any thread exists, and before any credential is read: each
 /// trial's child is a copy of this process. Afterwards the effective uid is
@@ -85,6 +88,9 @@ pub fn enter_build_user_namespace(
     if crate::probe::slash_is_mount_root()? == Some(false) {
         return Err(Error::InPlainChroot);
     }
+    // Which delegation marks a `RUN`'s cgroups trust depends on the uid
+    // ranikust has here, which the new namespace's map hides (ADR-0135).
+    crate::cgroup::record_kernel_root();
     crate::userns::enter_build(subordinate)
 }
 

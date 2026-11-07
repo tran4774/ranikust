@@ -378,10 +378,13 @@ What a change here must keep, with where it lives:
 - **`RUN` cgroups** (`cgroup.rs`,
   [design](../../design/sandbox.md#run-cgroups), ADR-0110): only where
   ranikust's own cgroup `D` carries a delegation mark it trusts
-  (`trusted_marks`: root, `trusted.delegate` alone; not root, also
-  `user.delegate` on a `D` it owns) or is the root of its cgroup namespace,
-  the only case open to rootless overlay mode (root in its user namespace,
-  it reads `trusted.*` as absent), on a read-write cgroupfs with
+  (`trusted_marks`: root in the initial user namespace, `trusted.delegate`
+  alone; another uid, also `user.delegate` on a `D` it owns, ADR-0135:
+  `enter_build_user_namespace` records first whether `/proc/self/uid_map`
+  maps ranikust's uid to 0, `maps_to_root`, since rootless overlay mode
+  reads the marks as root of the build's user namespace, where `trusted.*`
+  reads as absent) or is the root of its cgroup namespace, on a read-write
+  cgroupfs with
   `cgroup.kill`; an unreadable mark, or an unreadable file of a marked or
   namespace-root `D`, is a `warn`. The probe runs every step once, and a
   failure leaves the build as without cgroups.

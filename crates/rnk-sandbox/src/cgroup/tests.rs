@@ -268,16 +268,48 @@ fn only_a_missing_file_or_mark_reads_as_absent() {
 }
 
 /// Root trusts `trusted.delegate` alone: a root `RUN` can set
-/// `user.delegate` (ADR-0110, 1).
+/// `user.delegate` (ADR-0110, 1). A ranikust whose uid in the initial user
+/// namespace is not 0 trusts `user.delegate` too on a cgroup it owns, as
+/// it sees it, as root of the build's user namespace included (ADR-0135).
 #[test]
 fn root_trusts_only_trusted_delegate_and_an_owner_user_delegate_too() {
     let trusted: &[&str] = &["trusted.delegate"];
     let both: &[&str] = &["trusted.delegate", "user.delegate"];
-    assert_eq!(trusted_marks(0, 0), trusted);
-    assert_eq!(trusted_marks(0, 1000), trusted);
-    assert_eq!(trusted_marks(1000, 0), trusted);
-    assert_eq!(trusted_marks(1000, 1001), trusted);
-    assert_eq!(trusted_marks(1000, 1000), both);
+    // Root in the initial user namespace, seen from it or from the
+    // build's user namespace.
+    assert_eq!(trusted_marks(true, 0, 0), trusted);
+    assert_eq!(trusted_marks(true, 0, 1000), trusted);
+    assert_eq!(trusted_marks(true, 1000, 1000), trusted);
+    // Another uid, outside the build's user namespace.
+    assert_eq!(trusted_marks(false, 1000, 0), trusted);
+    assert_eq!(trusted_marks(false, 1000, 1001), trusted);
+    assert_eq!(trusted_marks(false, 1000, 1000), both);
+    // Another uid, as root of the build's user namespace: its own uid
+    // shows as 0, an unmapped owner as the overflow uid.
+    assert_eq!(trusted_marks(false, 0, 0), both);
+    assert_eq!(trusted_marks(false, 0, 65534), trusted);
+    assert_eq!(trusted_marks(false, 0, 1), trusted);
+}
+
+/// Root is the uid the parent user namespace sees as 0, or a map that
+/// cannot tell.
+#[test]
+fn root_is_uid_0_in_the_parent_user_namespace() {
+    let identity = "         0          0 4294967295\n";
+    let podman = "         0       1000          1\n         1     100000      65536\n";
+    assert!(maps_to_root(0, identity));
+    assert!(!maps_to_root(1000, identity));
+    // Root of a rootless container is its user, as is a uid in it.
+    assert!(!maps_to_root(0, podman));
+    assert!(!maps_to_root(1000, podman));
+    // A uid that is root in the parent.
+    assert!(maps_to_root(1000, "      1000          0          1\n"));
+    // Unmapped, unreadable or unparsable.
+    assert!(maps_to_root(1000, "         0       1000          1\n"));
+    assert!(maps_to_root(1000, ""));
+    assert!(maps_to_root(1000, "0 0\n"));
+    assert!(maps_to_root(1000, "0 0 x\n"));
+    assert!(maps_to_root(1000, "0 0 1 2\n"));
 }
 
 /// A root ranikust reads no `user.delegate`, which anyone who may write the
@@ -293,12 +325,13 @@ fn a_root_ranikust_never_reads_user_delegate() {
         }
         r => r.unwrap(),
     }
-    assert_eq!(delegation_mark(dir.as_fd(), 0), Ok(false));
     let me = rustix::process::geteuid().as_raw();
-    if me != 0 {
-        assert_eq!(delegation_mark(dir.as_fd(), me), Ok(true));
-        assert_eq!(delegation_mark(dir.as_fd(), me + 1), Ok(false));
-    }
+    assert_eq!(delegation_mark(dir.as_fd(), true, me), Ok(false));
+    assert_eq!(delegation_mark(dir.as_fd(), false, me), Ok(true));
+    assert_eq!(
+        delegation_mark(dir.as_fd(), false, me.wrapping_add(1)),
+        Ok(false)
+    );
 }
 
 /// The walk below a `RUN`'s cgroup opens no link and enters no other
