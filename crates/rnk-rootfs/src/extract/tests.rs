@@ -1951,6 +1951,318 @@ fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
     extract_live(&f.root, bytes.as_slice(), &live_keep()).unwrap();
 }
 
+/// A cleaned directory path of `len` bytes made of names of at most 255
+/// bytes, the kernel's `NAME_MAX`.
+fn dir_of(len: usize) -> String {
+    let mut s = String::new();
+    loop {
+        let room = len - s.len();
+        // One name fills the room, or leaves a slash and a name after it.
+        let n = match room {
+            0..=255 => room,
+            256 => 254,
+            _ => 255,
+        };
+        s.push_str(&"q".repeat(n));
+        if s.len() == len {
+            return s;
+        }
+        s.push('/');
+    }
+}
+
+impl Tar {
+    /// A GNU long name (`L`) or long link (`K`) record for the next entry.
+    fn gnu_long(&mut self, kind: EntryType, body: &[u8]) -> &mut Self {
+        let size = u64::try_from(body.len()).unwrap();
+        let h = self.header(b"././@LongLink", kind, 0o644, size);
+        self.push(h, body)
+    }
+}
+
+/// Layers each with, after a good first entry, a value the kernel would
+/// refuse whatever the root holds (#179).
+fn kernel_refused(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
+    let first = || {
+        let mut t = Tar::new(f);
+        t.file("first", 0o644, b"1");
+        t
+    };
+    let path = |p: &[u8]| first().pax(&[("path", p)]).file("x", 0o644, b"").bytes();
+    let symlink_to = |target: &[u8]| {
+        first()
+            .pax(&[("linkpath", target)])
+            .symlink("s", "x")
+            .bytes()
+    };
+    let hardlink_to = |target: &[u8]| {
+        first()
+            .pax(&[("linkpath", target)])
+            .hardlink("h", "first")
+            .bytes()
+    };
+    let xattr = |name: &str, value: &[u8]| {
+        first()
+            .pax(&[(format!("SCHILY.xattr.{name}").as_str(), value)])
+            .file("x", 0o644, b"")
+            .bytes()
+    };
+    let long = format!("d/{}", "n".repeat(256));
+    let deep = format!("{}/f", dir_of(4096));
+    vec![
+        ("a NUL byte in a PAX path", path(b"d/a\0b")),
+        (
+            "a NUL byte in a GNU long name",
+            first()
+                .gnu_long(EntryType::GNULongName, b"d/a\0b\0")
+                .file("x", 0o644, b"")
+                .bytes(),
+        ),
+        ("a NUL byte in a whiteout's name", path(b"d/.wh.a\0b")),
+        ("a NUL byte in a PAX linkpath", symlink_to(b"t\0u")),
+        (
+            "a NUL byte in a GNU long link",
+            first()
+                .gnu_long(EntryType::GNULongLink, b"first\0x\0")
+                .hardlink("h", "x")
+                .bytes(),
+        ),
+        ("a name over NAME_MAX", path(long.as_bytes())),
+        (
+            "a GNU long name over NAME_MAX",
+            first()
+                .gnu_long(EntryType::GNULongName, long.as_bytes())
+                .file("x", 0o644, b"")
+                .bytes(),
+        ),
+        (
+            "a whiteout hiding a name over NAME_MAX",
+            path(format!("d/.wh.{}", "n".repeat(256)).as_bytes()),
+        ),
+        (
+            "a directory path over PATH_MAX with its NUL",
+            path(deep.as_bytes()),
+        ),
+        (
+            "a hardlink target over NAME_MAX",
+            hardlink_to(long.as_bytes()),
+        ),
+        (
+            "a hardlink target in a directory over PATH_MAX with its NUL",
+            hardlink_to(deep.as_bytes()),
+        ),
+        (
+            "a symlink target over PATH_MAX - 1",
+            symlink_to(&[b't'; 4096]),
+        ),
+        ("an empty PAX linkpath", symlink_to(b"")),
+        (
+            "an empty GNU long link",
+            first()
+                .gnu_long(EntryType::GNULongLink, b"\0")
+                .symlink("s", "x")
+                .bytes(),
+        ),
+        ("an empty PAX linkpath of a hardlink", hardlink_to(b"")),
+        ("an xattr with an empty name", xattr("", b"v")),
+        (
+            "an xattr name over XATTR_NAME_MAX",
+            xattr(&format!("user.{}", "a".repeat(251)), b"v"),
+        ),
+        ("an xattr in no namespace", xattr("com.apple.x", b"v")),
+        ("an xattr that is only a namespace", xattr("user.", b"v")),
+        ("an xattr name holding a NUL byte", xattr("user.a\0b", b"v")),
+        (
+            "an xattr value over XATTR_SIZE_MAX",
+            xattr("user.big", &vec![b'v'; 65537]),
+        ),
+        (
+            "a user.* xattr on a symlink",
+            first()
+                .pax(&[("SCHILY.xattr.user.a", b"v")])
+                .symlink("s", "first")
+                .bytes(),
+        ),
+        (
+            "an xattr in no namespace on a directory",
+            first()
+                .pax(&[("SCHILY.xattr.a", b"v")])
+                .dir("d", 0o755)
+                .bytes(),
+        ),
+    ]
+}
+
+/// Every extraction of `tar` into a fresh root, by name: [`extract`] in
+/// each form, [`extract_overlay`] making and leaving out device nodes, and
+/// [`extract_live`]; with the names in the root afterwards (a deeper walk
+/// by host path would stop at `PATH_MAX`).
+fn every_extraction(tar: &[u8]) -> Vec<(&'static str, Result<()>, BTreeSet<OsString>)> {
+    type Run = fn(&RootPath, &[u8]) -> Result<()>;
+    let runs: [(&str, Run); 6] = [
+        ("Apply", |r, t| extract(r, t, Whiteouts::Apply)),
+        ("Overlay", |r, t| extract(r, t, Whiteouts::Overlay)),
+        ("Literal", |r, t| extract(r, t, Whiteouts::Literal)),
+        ("overlay, Create", |r, t| {
+            extract_overlay(r, t, &[], DeviceNodes::Create).map(drop)
+        }),
+        ("overlay, Skip", |r, t| {
+            extract_overlay(r, t, &[], DeviceNodes::Skip).map(drop)
+        }),
+        ("live", |r, t| extract_live(r, t, &live_keep())),
+    ];
+    runs.into_iter()
+        .map(|(name, run)| {
+            let f = Fixture::new();
+            let r = run(&f.root, tar);
+            let names = fs::read_dir(&f.host)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            (name, r, names)
+        })
+        .collect()
+}
+
+/// A value the kernel would refuse while the entry is written (#179) is
+/// refused from the header: by [`check_headers`], and by every extraction
+/// with the same error, before anything of the entry is written.
+#[test]
+fn values_the_kernel_refuses_are_refused_by_the_check_and_every_extraction() {
+    let f = Fixture::new();
+    for (what, tar) in kernel_refused(&f) {
+        let checked = check_headers(tar.as_slice()).unwrap_err();
+        assert!(matches!(checked, Error::Entry { .. }), "{what}: {checked}");
+        for (how, r, tree) in every_extraction(&tar) {
+            let e = r.unwrap_err();
+            assert_eq!(e.to_string(), checked.to_string(), "{what}, {how}");
+            assert_eq!(
+                tree,
+                BTreeSet::from([OsString::from("first")]),
+                "{what}, {how}"
+            );
+        }
+    }
+}
+
+/// Controls: values at the kernel's limits, or that it never gets, are
+/// taken by the check and every extraction: a name of `NAME_MAX` bytes, a
+/// symlink target of `PATH_MAX - 1` bytes, a NUL byte in a name `..` folds
+/// away, an xattr name of `XATTR_NAME_MAX` bytes, a `trusted.*` xattr (never
+/// set) and the xattrs of a hardlink (never set); a whiteout hiding a name
+/// of `NAME_MAX` bytes and AUFS metadata with a NUL byte by all but the
+/// literal form, which writes their names as files; an entry whose whole
+/// path is over `PATH_MAX` in a directory that fits it (the kernel gets the
+/// directory, then the name); and a value of `XATTR_SIZE_MAX` bytes.
+#[test]
+fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
+    let f = Fixture::new();
+    let name = "n".repeat(255);
+    let user = format!("SCHILY.xattr.user.{}", "a".repeat(250));
+    let trusted = format!("SCHILY.xattr.trusted.\0{}", "a".repeat(300));
+    let mut t = Tar::new(&f);
+    t.pax(&[("path", name.as_bytes())])
+        .file("x", 0o644, b"")
+        .pax(&[("linkpath", &[b't'; 4095])])
+        .symlink("s", "x")
+        .pax(&[("path", b"a\0/../folded")])
+        .file("x", 0o644, b"")
+        .pax(&[(user.as_str(), b"v"), (trusted.as_str(), &[b'v'; 70_000])])
+        .file("named", 0o644, b"")
+        .pax(&[
+            ("SCHILY.xattr.com.apple.x", b"v"),
+            ("SCHILY.xattr.user.a", b"v"),
+        ])
+        .hardlink("h", "named");
+    let bytes = t.bytes();
+    check_headers(bytes.as_slice()).unwrap();
+    for (how, r, names) in every_extraction(&bytes) {
+        r.unwrap_or_else(|e| panic!("{how}: {e}"));
+        for n in [name.as_str(), "s", "folded", "named", "h"] {
+            assert!(names.contains(OsStr::new(n)), "{how}: {n}");
+        }
+    }
+
+    let mut t = Tar::new(&f);
+    t.file("d/x", 0o644, b"")
+        .pax(&[("path", format!("d/.wh.{name}").as_bytes())])
+        .file("x", 0o644, b"")
+        .pax(&[("path", format!("d/.wh..wh.\0{name}").as_bytes())])
+        .file("x", 0o644, b"");
+    let bytes = t.bytes();
+    check_headers(bytes.as_slice()).unwrap();
+    for (how, r, _) in every_extraction(&bytes) {
+        match how {
+            "Literal" => assert!(matches!(r, Err(Error::Entry { .. })), "{r:?}"),
+            _ => r.unwrap_or_else(|e| panic!("{how}: {e}")),
+        }
+    }
+
+    // A live root reads where a directory lies through `/proc/self/fd`,
+    // whose link also holds the root's own path: left out here.
+    let dir = dir_of(4095);
+    let mut t = Tar::new(&f);
+    t.pax(&[("path", format!("{dir}/{name}").as_bytes())])
+        .file("x", 0o644, b"deep")
+        .pax(&[("linkpath", format!("{dir}/{name}").as_bytes())])
+        .hardlink("h", "x");
+    let bytes = t.bytes();
+    check_headers(bytes.as_slice()).unwrap();
+    for (how, r, _) in every_extraction(&bytes) {
+        if how != "live" {
+            r.unwrap_or_else(|e| panic!("{how}: {e}"));
+        }
+    }
+
+    // A value's limit is the kernel's, whatever the filesystem takes.
+    let value = |n| {
+        let mut t = Tar::new(&f);
+        t.pax(&[("SCHILY.xattr.user.big", vec![b'v'; n].as_slice())])
+            .file("x", 0o644, b"");
+        check_headers(t.bytes().as_slice())
+    };
+    value(65536).unwrap();
+    value(65537).unwrap_err();
+}
+
+/// A device node or FIFO's xattrs are refused by the extraction that makes
+/// it, before it is made, and left to it by the check: a live root makes
+/// none, and [`DeviceNodes::Skip`] no device.
+#[test]
+fn a_nodes_xattrs_are_refused_where_it_is_made() {
+    let f = Fixture::new();
+    for name in ["com.apple.x", "user.a"] {
+        let key = format!("SCHILY.xattr.{name}");
+        let value: &[u8] = b"v";
+        let mut t = Tar::new(&f);
+        t.pax(&[(key.as_str(), value)])
+            .node("p", EntryType::Fifo, 0, 0)
+            .pax(&[(key.as_str(), value)])
+            .node("c", EntryType::Char, 1, 3);
+        let bytes = t.bytes();
+        check_headers(bytes.as_slice()).unwrap();
+        for (how, r, tree) in every_extraction(&bytes) {
+            match how {
+                "live" => r.unwrap_or_else(|e| panic!("{name}, {how}: {e}")),
+                _ => {
+                    let e = r.unwrap_err();
+                    assert!(
+                        matches!(&e, Error::Entry { path, .. } if path == Path::new("p")),
+                        "{name}, {how}: {e}"
+                    );
+                    assert!(tree.is_empty(), "{name}, {how}: {tree:?}");
+                }
+            }
+        }
+        // Left out, the device's xattrs are never set.
+        let mut t = Tar::new(&f);
+        t.pax(&[(key.as_str(), value)])
+            .node("c", EntryType::Char, 1, 3);
+        let f = Fixture::new();
+        extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Skip).unwrap();
+    }
+}
+
 /// One entry of a generated layer: a kind, a name, a link target, and for
 /// some kinds a value (an mtime, size or uid record, an id). GNU long name
 /// and long link records, and PAX records, apply to the entry after them.
@@ -1975,12 +2287,90 @@ const GEN_TARGETS: &[&str] = &["a", "d/b", "../x", "missing", "./", "d", "proc/x
 const GEN_TIMES: &[&[u8]] = &[b"1", b"1x", b"-1.5", b"", b"1.000000001"];
 const GEN_SIZES: &[&[u8]] = &[b"0", b"1", b"512", b"1024", b"x", b""];
 
+/// The names GNU long name records and PAX `path` records carry: those
+/// above, and values the kernel takes or refuses (#179): a NUL byte, one
+/// that `..` folds away, a name of 255 and of 256 bytes, a whiteout hiding
+/// one, and an entry in a directory of 4095 and of 4096 bytes.
+fn gen_record_names() -> Vec<Vec<u8>> {
+    let (n255, n256) = ("n".repeat(255), "n".repeat(256));
+    let mut names: Vec<Vec<u8>> = GEN_NAMES.iter().map(|n| n.as_bytes().to_vec()).collect();
+    names.extend([
+        b"d/a\0b".to_vec(),
+        b"a\0/../b".to_vec(),
+        format!("d/{n255}").into_bytes(),
+        format!("d/{n256}").into_bytes(),
+        format!("d/.wh.{n255}").into_bytes(),
+        format!("d/.wh.{n256}").into_bytes(),
+        format!("{}/f", dir_of(4095)).into_bytes(),
+        format!("{}/f", dir_of(4096)).into_bytes(),
+    ]);
+    names
+}
+
+/// The link targets GNU long link records and PAX `linkpath` records
+/// carry: those above, a NUL byte, a name of 256 bytes, an entry in a
+/// directory of 4096 bytes, and targets of 4095 and of 4096 bytes.
+fn gen_record_targets() -> Vec<Vec<u8>> {
+    let mut targets: Vec<Vec<u8>> = GEN_TARGETS.iter().map(|t| t.as_bytes().to_vec()).collect();
+    targets.extend([
+        b"t\0u".to_vec(),
+        format!("d/{}", "n".repeat(256)).into_bytes(),
+        format!("{}/f", dir_of(4096)).into_bytes(),
+        vec![b't'; 4095],
+        vec![b't'; 4096],
+    ]);
+    targets
+}
+
+/// The xattrs a PAX record sets: one the kernel takes, names empty, of 255
+/// and 256 bytes, in no namespace, only a namespace or holding a NUL byte,
+/// a value over 64 KiB, a `trusted.*` one (never set) and a `user.overlay.*`
+/// one that only its escaped form puts over 255 bytes.
+fn gen_xattr(i: usize) -> (String, Vec<u8>) {
+    let v = b"v".to_vec();
+    let xattrs = [
+        ("user.a".to_owned(), v.clone()),
+        (String::new(), v.clone()),
+        (format!("user.{}", "a".repeat(250)), v.clone()),
+        (format!("user.{}", "a".repeat(251)), v.clone()),
+        ("com.apple.x".to_owned(), v.clone()),
+        ("user.".to_owned(), v.clone()),
+        ("user.a\0b".to_owned(), v.clone()),
+        ("user.big".to_owned(), vec![b'v'; 65537]),
+        (format!("trusted.\0{}", "a".repeat(300)), vec![b'v'; 70_000]),
+        (format!("user.overlay.{}", "o".repeat(240)), v),
+    ];
+    xattrs.into_iter().nth(i % 10).unwrap()
+}
+
+/// An error the kernel gives for a header value [`check_headers`] refuses
+/// first (#179): a NUL byte (`EINVAL`), a name or path too long
+/// (`ENAMETOOLONG`), an xattr it refuses by its name, size or the entry's
+/// type. Not where a live root's directory lies, read through
+/// `/proc/self/fd`, which depends on where the root is.
+fn is_kernel_refusal(e: &Error) -> bool {
+    let Error::Io { op, .. } = e else {
+        return false;
+    };
+    match (*op, errno(e)) {
+        ("readlink /proc/self/fd", _) => false,
+        (
+            "setxattr",
+            Some(Errno::RANGE | Errno::TOOBIG | Errno::OPNOTSUPP | Errno::PERM | Errno::INVAL),
+        ) => true,
+        (_, Some(Errno::NAMETOOLONG | Errno::INVAL)) => true,
+        _ => false,
+    }
+}
+
 fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
+    let (names, targets) = (gen_record_names(), gen_record_targets());
     let mut t = Tar::new(f);
-    for &(kind, name, target, value) in entries {
-        let name = GEN_NAMES[name % GEN_NAMES.len()];
-        let target = GEN_TARGETS[target % GEN_TARGETS.len()];
-        match kind % 17 {
+    for &(kind, n, l, value) in entries {
+        let name = GEN_NAMES[n % GEN_NAMES.len()];
+        let target = GEN_TARGETS[l % GEN_TARGETS.len()];
+        let (long_name, long_target) = (&names[n % names.len()], &targets[l % targets.len()]);
+        match kind % 18 {
             0 => t.file(name, 0o644, b"x"),
             1 => t.dir(name, 0o755),
             2 => t.symlink(name, target),
@@ -2005,18 +2395,10 @@ fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
                 let h = t.header(name.as_bytes(), EntryType::GNUSparse, 0o644, 0);
                 t.push(h, b"")
             }
-            11 => {
-                let size = u64::try_from(name.len()).unwrap();
-                let h = t.header(b"././@LongLink", EntryType::GNULongName, 0o644, size);
-                t.push(h, name.as_bytes())
-            }
-            12 => {
-                let size = u64::try_from(target.len()).unwrap();
-                let h = t.header(b"././@LongLink", EntryType::GNULongLink, 0o644, size);
-                t.push(h, target.as_bytes())
-            }
-            13 => t.pax(&[("path", name.as_bytes())]),
-            14 => t.pax(&[("linkpath", target.as_bytes())]),
+            11 => t.gnu_long(EntryType::GNULongName, long_name),
+            12 => t.gnu_long(EntryType::GNULongLink, long_target),
+            13 => t.pax(&[("path", long_name)]),
+            14 => t.pax(&[("linkpath", long_target)]),
             15 => t.pax(&[("size", GEN_SIZES[value % GEN_SIZES.len()])]),
             16 => {
                 let uid = match value % 4 {
@@ -2027,7 +2409,11 @@ fn gen_layer(f: &Fixture, entries: &[Gen]) -> Vec<u8> {
                 };
                 t.pax(&[("uid", uid.as_bytes())])
             }
-            _ => unreachable!("a kind modulo 17"),
+            17 => {
+                let (name, value) = gen_xattr(value);
+                t.pax(&[(format!("SCHILY.xattr.{name}").as_str(), &value)])
+            }
+            _ => unreachable!("a kind modulo 18"),
         };
     }
     t.bytes()
@@ -2038,37 +2424,51 @@ proptest::proptest! {
 
     /// Red team (ADR-0123): on generated layers of hostile names, links,
     /// whiteouts, entry types, GNU long names and links, PAX paths, link
-    /// paths, sizes, times and ids, [`check_headers`] refuses
+    /// paths, xattrs, sizes, times and ids, [`check_headers`] refuses
     /// only layers that every extraction applying whiteouts refuses too, so
     /// the spool pass on `/` never fails a layer the extraction takes; and
-    /// on a layer it passes, no extraction fails on the framing or the
-    /// `tar-header` limit.
+    /// on a layer it passes, no extraction fails on the framing, the
+    /// `tar-header` limit or a value the kernel refuses (#179).
     #[test]
     fn red_team_check_headers_refuses_only_what_an_extraction_refuses(
         entries in proptest::collection::vec(
-            (0u8..17, 0..GEN_NAMES.len(), 0..GEN_TARGETS.len(), 0usize..12),
+            (0u8..18, 0usize..32, 0usize..32, 0usize..60),
             0..8,
         ),
     ) {
         let bytes = gen_layer(&Fixture::new(), &entries);
         let checked = check_headers(bytes.as_slice());
-        let results = [Whiteouts::Apply, Whiteouts::Overlay].map(|wh| {
-            let f = Fixture::new();
-            extract(&f.root, bytes.as_slice(), wh)
-        });
-        let f = Fixture::new();
-        let live = extract_live(&f.root, bytes.as_slice(), &live_keep());
-        for r in results.iter().chain([&live]) {
-            match (&checked, r) {
-                (Err(c), Ok(())) => {
-                    proptest::prop_assert!(false, "checked {c}, but extracted");
-                }
-                (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
-                    proptest::prop_assert!(false, "checked, but the framing failed: {e}");
-                }
-                _ => {}
+        for (how, r, _) in applying_extractions(&bytes) {
+            if let Some(why) = disagreement(&checked, &r) {
+                proptest::prop_assert!(false, "{how}: {why}");
             }
         }
+    }
+}
+
+/// The extractions [`check_headers`] reads as: those of [`every_extraction`]
+/// that apply whiteouts.
+fn applying_extractions(tar: &[u8]) -> Vec<(&'static str, Result<()>, BTreeSet<OsString>)> {
+    every_extraction(tar)
+        .into_iter()
+        .filter(|(how, ..)| *how != "Literal")
+        .collect()
+}
+
+/// How the check's result `checked` disagrees with an extraction's `r`:
+/// it refused a layer the extraction takes, or passed one whose framing,
+/// `tar-header` limit or header values ([`is_kernel_refusal`]) the
+/// extraction then refuses.
+fn disagreement(checked: &Result<()>, r: &Result<()>) -> Option<String> {
+    match (checked, r) {
+        (Err(c), Ok(())) => Some(format!("checked {c}, but extracted")),
+        (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
+            Some(format!("checked, but the framing failed: {e}"))
+        }
+        (Ok(()), Err(e)) if is_kernel_refusal(e) => {
+            Some(format!("checked, but the kernel refused a value: {e}"))
+        }
+        _ => None,
     }
 }
 
@@ -2127,6 +2527,50 @@ fn mutation_base(f: &Fixture) -> (Vec<u8>, Vec<usize>) {
     (t.bytes(), at)
 }
 
+/// Members to splice into the base of the proptest below: each value of
+/// [`kernel_refused`], and values at the kernel's limits or that it never
+/// gets (#179); with the offset of every header block in each.
+fn kernel_members(f: &Fixture) -> Vec<(Vec<u8>, Vec<usize>)> {
+    let mut members: Vec<Vec<u8>> = kernel_refused(f)
+        .into_iter()
+        // Without the good first entry (a header and a data block) and the
+        // end blocks.
+        .map(|(_, layer)| layer[1024..layer.len() - 1024].to_vec())
+        .collect();
+    let name = "n".repeat(255);
+    let mut t = Tar::new(f);
+    t.pax(&[("path", format!("d/{name}").as_bytes())])
+        .file("x", 0o644, b"")
+        .pax(&[("linkpath", &[b't'; 4095])])
+        .symlink("s", "x")
+        .pax(&[
+            (
+                format!("SCHILY.xattr.user.{}", "a".repeat(250)).as_str(),
+                b"v",
+            ),
+            (format!("SCHILY.xattr.trusted.\0{name}").as_str(), b"v"),
+        ])
+        .file("named", 0o644, b"")
+        .pax(&[("path", format!("d/.wh.{name}").as_bytes())])
+        .file("x", 0o644, b"");
+    members.push(t.out.clone());
+    members
+        .into_iter()
+        .map(|m| {
+            let mut at = Vec::new();
+            let mut pos = 0;
+            while pos < m.len() {
+                at.push(pos);
+                let mut h = Header::new_old();
+                h.as_mut_bytes().copy_from_slice(&m[pos..pos + 512]);
+                let size = usize::try_from(h.size().unwrap()).unwrap();
+                pos += 512 + size.div_ceil(512) * 512;
+            }
+            (m, at)
+        })
+        .collect()
+}
+
 /// Header bytes worth changing: the first and last of each field.
 const FIELD_BYTES: &[usize] = &[
     0, 1, 99, 100, 107, 108, 116, 124, 125, 134, 135, 136, 147, 156, 157, 158, 256, 257, 262, 263,
@@ -2142,19 +2586,44 @@ const VALUES: &[u8] = &[
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
 
-    /// Red team (ADR-0123): a valid layer with one to four bytes changed,
-    /// in a header (its checksum recomputed, three times in four) or anywhere in the
-    /// stream: [`check_headers`] refuses only what every extraction that
-    /// applies whiteouts refuses too, and on what it passes no extraction
-    /// fails on the framing or the `tar-header` limit.
+    /// Red team (ADR-0123): a valid layer, half the time with a member of
+    /// [`kernel_members`] spliced in between two of its members, with one
+    /// to four bytes changed, in a header (its checksum recomputed, three
+    /// times in four) or anywhere in the stream: [`check_headers`] refuses
+    /// only what every extraction that applies whiteouts refuses too, and
+    /// on what it passes no extraction fails on the framing, the
+    /// `tar-header` limit or a value the kernel refuses (#179).
     #[test]
     fn red_team_check_headers_agrees_with_every_extraction_on_mutated_headers(
+        splice in proptest::option::of((0usize..64, 0usize..64)),
         changes in proptest::collection::vec(
             (proptest::bool::ANY, 0usize..64, 0usize..4096, 0usize..256, 0u8..4),
             1..5,
         ),
     ) {
-        let (mut bytes, headers) = mutation_base(&Fixture::new());
+        let f = Fixture::new();
+        let (mut bytes, mut headers) = mutation_base(&f);
+        if let Some((which, between)) = splice {
+            let members = kernel_members(&f);
+            let (member, at) = &members[which % members.len()];
+            // Before a header no extension header precedes, or before the
+            // end blocks.
+            let mut starts: Vec<usize> = headers
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i == 0 || !b"xLK".contains(&bytes[headers[i - 1] + 156]))
+                .map(|(_, &h)| h)
+                .collect();
+            starts.push(bytes.len() - 1024);
+            let pos = starts[between % starts.len()];
+            bytes.splice(pos..pos, member.iter().copied());
+            for h in &mut headers {
+                if *h >= pos {
+                    *h += member.len();
+                }
+            }
+            headers.extend(at.iter().map(|a| a + pos));
+        }
         for (in_header, which, offset, value, fix) in changes {
             let pos = if in_header {
                 let field = if offset % 2 == 0 {
@@ -2180,21 +2649,9 @@ proptest::proptest! {
             }
         }
         let checked = check_headers(bytes.as_slice());
-        let results = [Whiteouts::Apply, Whiteouts::Overlay].map(|wh| {
-            let f = Fixture::new();
-            extract(&f.root, bytes.as_slice(), wh)
-        });
-        let f = Fixture::new();
-        let live = extract_live(&f.root, bytes.as_slice(), &live_keep());
-        for r in results.iter().chain([&live]) {
-            match (&checked, r) {
-                (Err(c), Ok(())) => {
-                    proptest::prop_assert!(false, "checked {c}, but extracted");
-                }
-                (Ok(()), Err(e @ (Error::Tar(_) | Error::ExtensionHeader { .. }))) => {
-                    proptest::prop_assert!(false, "checked, but the framing failed: {e}");
-                }
-                _ => {}
+        for (how, r, _) in applying_extractions(&bytes) {
+            if let Some(why) = disagreement(&checked, &r) {
+                proptest::prop_assert!(false, "{how}: {why}");
             }
         }
     }

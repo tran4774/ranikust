@@ -92,6 +92,18 @@ const SKIPPED_NAMES_MAX: usize = 1 << 20;
 const SKIPPED_NAME_COST: usize = 64;
 /// Mode of missing parent directories the layer does not list.
 const PARENT_MODE: u32 = 0o755;
+/// The kernel's `NAME_MAX`: the longest name in a directory.
+const NAME_MAX: usize = 255;
+/// The kernel's `PATH_MAX`: the longest path it copies in, its NUL
+/// included.
+const PATH_MAX: usize = 4096;
+/// The kernel's `XATTR_NAME_MAX` and `XATTR_SIZE_MAX` (`setxattr(2)`).
+const XATTR_NAME_MAX: usize = 255;
+const XATTR_SIZE_MAX: usize = 1 << 16;
+/// The xattr namespaces of `xattr(7)`; a name is one of them and more.
+const XATTR_NAMESPACES: &[&[u8]] = &[b"security.", b"system.", b"trusted.", b"user."];
+/// The namespace only regular files and directories take (`xattr(7)`).
+const USER_XATTR: &[u8] = b"user.";
 
 /// Extracts the plain tar stream `tar` into `dst`.
 ///
@@ -232,21 +244,25 @@ pub struct Extracted {
 
 /// Refuses what an extraction that applies whiteouts would refuse from
 /// the headers of the plain tar stream `tar` alone, and writes nothing.
-/// Values only the kernel refuses (a NUL byte or an over-long name, an
-/// xattr it does not take) still fail at write time (#179).
 ///
 /// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
 /// the same framing, up to the end-of-archive block, and the same
 /// `tar-header` limit (ADR-0079). It refuses a name or hardlink target that
 /// leaves the root, a hardlink to itself or whose target is the layer's
-/// root, a link whose header names no target (an empty ustar link field
-/// and no PAX `linkpath` or GNU long link), a GNU sparse or unknown entry
-/// type, a whiteout that names nothing, a file or symlink as the layer's
-/// root, and ids, modes, device numbers and times that do not parse or are
-/// out of range.
+/// root, a link with an empty target, a GNU sparse or unknown entry type,
+/// a whiteout that names nothing, a file or symlink as the layer's root,
+/// ids, modes, device numbers and times that do not parse or are out of
+/// range, and what the kernel would refuse whatever the root holds: a name
+/// or link target with a NUL byte, a name over `NAME_MAX`, a directory
+/// path or symlink target that does not fit `PATH_MAX` with its NUL, and
+/// on a directory, file or symlink an xattr whose name is empty, over
+/// `XATTR_NAME_MAX`, in no namespace or holds a NUL byte, whose value is
+/// over `XATTR_SIZE_MAX`, or a `user.*` one on the symlink.
 /// It refuses nothing such an extraction takes: what depends on the root
 /// or the ignore list (where an entry lands, a hardlink's target, a
-/// hardlink or device node as the layer's root) is left to the extraction.
+/// hardlink or device node as the layer's root) is left to the extraction,
+/// and so are the xattrs of a device node or FIFO, which a live root never
+/// makes.
 /// What follows the end-of-archive block is the caller's to read.
 ///
 /// Public for `rnk-snapshot`'s spool pass on `/` (ADR-0123): the pass that
@@ -478,13 +494,16 @@ fn for_each_entry<R: Read>(
 /// Reads `entry`'s header and PAX records, and refuses what no root can
 /// make right: a GNU sparse entry, a name or hardlink target that leaves
 /// the root, a hardlink to itself or whose target is the layer's root, a
-/// link whose header names no target (an empty ustar link field and no PAX
-/// `linkpath` or GNU long link), a whiteout that names nothing, an unknown
-/// entry type, a file or symlink as the layer's root, and ids, modes,
-/// device numbers and times that do not parse or are out of range. The
-/// first step of every extraction, and all of [`check_headers`]. `wh` tells
-/// what a whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`])
-/// are counted in `skipped`, the first of them kept in `first_skipped`.
+/// link with an empty target (in its ustar field, PAX `linkpath` or GNU
+/// long link), a whiteout that names nothing, an unknown entry type, a
+/// file or symlink as the layer's root, ids, modes, device numbers and
+/// times that do not parse or are out of range, and the values the kernel
+/// refuses whatever the root holds ([`kernel_refuses_name`],
+/// [`kernel_refuses_xattrs`]), for every name and target the extraction
+/// hands it and the xattrs of a directory, file or symlink. The first step
+/// of every extraction, and all of [`check_headers`]. `wh` tells what a
+/// whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`]) are
+/// counted in `skipped`, the first of them kept in `first_skipped`.
 fn read_header<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     wh: Whiteouts,
@@ -507,13 +526,30 @@ fn read_header<R: Read>(
         return Err(refuse("GNU sparse entries are not supported"));
     }
     let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
+    let dir = path.parent().unwrap_or(Path::new(""));
 
     if let Some(name) = path.file_name()
         && wh != Whiteouts::Literal
         && name.as_bytes().starts_with(WHITEOUT_PREFIX)
     {
         let name = whiteout_name(name.as_bytes(), &raw)?;
+        // The kernel gets the name a whiteout hides, never `.wh.<name>`;
+        // AUFS metadata it never gets.
+        let named = match &name {
+            WhiteoutName::Hides(hidden) => Some(hidden.as_os_str()),
+            WhiteoutName::Opaque => path.file_name(),
+            WhiteoutName::Meta => None,
+        };
+        if let Some(why) = named.and_then(|n| kernel_refuses_name("the name", dir, n)) {
+            return Err(refuse(&why));
+        }
         return Ok(Header::Whiteout { raw, path, name });
+    }
+    if let Some(why) = path
+        .file_name()
+        .and_then(|n| kernel_refuses_name("the name", dir, n))
+    {
+        return Err(refuse(&why));
     }
 
     let kind = match etype {
@@ -526,17 +562,39 @@ fn read_header<R: Read>(
             return Err(refuse("GNU sparse entries are not supported"));
         }
         EntryType::Symlink | EntryType::Link => {
+            // An empty PAX `linkpath` or GNU long link stands for the
+            // target as an empty ustar field does: none.
             let link = entry
                 .link_name_bytes()
+                .filter(|l| !l.is_empty())
                 .ok_or_else(|| refuse("a link entry without a target"))?;
             let link = PathBuf::from(OsStr::from_bytes(&link));
             if etype == EntryType::Symlink {
+                // `symlinkat` stores the target as given: only its NUL and
+                // its length matter, not its names.
+                let target = link.as_os_str().as_bytes();
+                if target.contains(&0) {
+                    return Err(refuse("the symlink target holds a NUL byte"));
+                }
+                if target.len() >= PATH_MAX {
+                    return Err(refuse(&format!(
+                        "the symlink target is over {} bytes (PATH_MAX with its NUL)",
+                        PATH_MAX - 1
+                    )));
+                }
                 Kind::Symlink(link)
             } else {
                 let target = path::clean(&link)
                     .ok_or_else(|| refuse("the hardlink target leaves the root"))?;
                 if target == path || target.as_os_str().is_empty() {
                     return Err(refuse("a hardlink to itself or to the root"));
+                }
+                let tdir = target.parent().unwrap_or(Path::new(""));
+                if let Some(why) = target
+                    .file_name()
+                    .and_then(|n| kernel_refuses_name("the hardlink target", tdir, n))
+                {
+                    return Err(refuse(&why));
                 }
                 Kind::Hardlink(target)
             }
@@ -564,6 +622,17 @@ fn read_header<R: Read>(
     // skip it first.
     if path.as_os_str().is_empty() && matches!(kind, Kind::File | Kind::Symlink(_)) {
         return Err(refuse(ROOT_NOT_DIR));
+    }
+    // Whether the entry takes `user.*` xattrs, when its xattrs are checked
+    // here: no extraction sets a hardlink's, and a live root makes no node,
+    // so a node's are checked where it is made ([`Extractor::entry`]).
+    let takes_user = match &kind {
+        Kind::Dir | Kind::File => Some(true),
+        Kind::Symlink(_) => Some(false),
+        Kind::Hardlink(_) | Kind::Node(..) => None,
+    };
+    if let Some(why) = takes_user.and_then(|user| kernel_refuses_xattrs(&meta.xattrs, user)) {
+        return Err(refuse(&why));
     }
     Ok(Header::Entry {
         raw,
@@ -648,6 +717,73 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
             OsStr::from_bytes(name).to_owned()
         }
     }
+}
+
+/// Why the kernel refuses the name `name` in the directory `dir` (both
+/// cleaned), whatever the root holds, `what` naming it in the reason: a
+/// NUL byte, a component of either over [`NAME_MAX`], or a `dir` that does not fit
+/// [`PATH_MAX`] with its NUL. An extraction hands the kernel `dir` whole,
+/// then `name` relative to it, so the whole path may be longer.
+fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr) -> Option<String> {
+    let path = dir.as_os_str().as_bytes();
+    if path.contains(&0) || name.as_bytes().contains(&0) {
+        return Some(format!("{what} holds a NUL byte"));
+    }
+    if dir.iter().chain([name]).any(|n| n.len() > NAME_MAX) {
+        return Some(format!(
+            "{what} has a component over {NAME_MAX} bytes (NAME_MAX)"
+        ));
+    }
+    if path.len() >= PATH_MAX {
+        return Some(format!(
+            "{what} lies in a directory whose path is over {} bytes (PATH_MAX with its NUL)",
+            PATH_MAX - 1
+        ));
+    }
+    None
+}
+
+/// Why the kernel refuses one of `xattrs` (as they are set, escaped in the
+/// overlay form) on any filesystem: a name empty, over [`XATTR_NAME_MAX`],
+/// holding a NUL byte or in no namespace of `xattr(7)`, a value over
+/// [`XATTR_SIZE_MAX`], or a `user.*` name on an entry that is neither a
+/// regular file nor a directory, unless `user`.
+fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], user: bool) -> Option<String> {
+    for (name, value) in xattrs {
+        let n = name.as_bytes();
+        if n.is_empty() {
+            return Some("an xattr has an empty name".to_owned());
+        }
+        if n.len() > XATTR_NAME_MAX {
+            return Some(format!(
+                "an xattr name is over {XATTR_NAME_MAX} bytes (XATTR_NAME_MAX)"
+            ));
+        }
+        let shown = name.to_string_lossy();
+        let shown = shown.escape_debug();
+        if n.contains(&0) {
+            return Some(format!("the xattr name {shown} holds a NUL byte"));
+        }
+        if !XATTR_NAMESPACES
+            .iter()
+            .any(|ns| n.len() > ns.len() && n.starts_with(ns))
+        {
+            return Some(format!(
+                "the xattr {shown} needs a namespace (security., system., trusted. or user.) and a name after it"
+            ));
+        }
+        if value.len() > XATTR_SIZE_MAX {
+            return Some(format!(
+                "the value of the xattr {shown} is over {XATTR_SIZE_MAX} bytes (XATTR_SIZE_MAX)"
+            ));
+        }
+        if !user && n.starts_with(USER_XATTR) {
+            return Some(format!(
+                "the xattr {shown}: only regular files and directories take user.* xattrs"
+            ));
+        }
+    }
+    None
 }
 
 /// What a whiteout's name (`.wh.` and more) stands for.
@@ -758,6 +894,13 @@ impl Extractor<'_> {
                     Err(refuse(ROOT_NOT_DIR))
                 }
             };
+        }
+        // `read_header` leaves a node's xattrs to the extraction that makes
+        // it: refused before its parents or the node are made.
+        if let Kind::Node(..) = kind
+            && let Some(why) = kernel_refuses_xattrs(&meta.xattrs, false)
+        {
+            return Err(refuse(&why));
         }
         // As root this links the device: nothing at its name now, such as a
         // lower layer's file, is what it names.
