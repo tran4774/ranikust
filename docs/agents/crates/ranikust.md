@@ -41,10 +41,10 @@ writer) before `unshare`, the probes and the state directory's checks.
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; a missing state
   directory left so; then `setup::enter_user_namespace_for` (the state
-  directory's checks outside, the namespace, no store opened) and
-  `rnk_store::Store::prune_all` in it. Where the user gets no namespace,
-  its guidance (`prune::NO_USER_NAMESPACE`) replaces the build's, which
-  would send the user to root. Prints one line on stdout; a refusal exits
+  directory's checks outside, the namespace, no store opened), with its
+  own guidance where the user gets no namespace (`prune::NO_USER_NAMESPACE`;
+  the build's sends the user to root); in it, `RLIMIT_NOFILE` raised and
+  `rnk_store::Store::prune_all`. Prints one line on stdout; a refusal exits
   1, `prune` without `--all` 2.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
@@ -498,7 +498,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 ## Metrics
 
 - Emits `ranikust.run` (the process), `ranikust.build` (from flag validation
-  on), `ranikust.setup` (namespace, state directory, store open, probes,
+  on), `ranikust.prune` (the `prune` subcommand, `rnk_store.prune` inside),
+  `ranikust.setup` (namespace, state directory, store open, probes,
   spawner) and inside it `ranikust.probe` with `steps`, the crates' probes
   that really ran, and `ranikust.probe_userns` with `passes`
   ([rows](../../design/metrics.md#ranikust)).

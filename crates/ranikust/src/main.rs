@@ -3,9 +3,10 @@
 //! Parses the `build`, `prune` and `version` subcommands; `build` is the
 //! default and accepts kaniko's common executor flags, plus
 //! `--mode=auto|overlay|kaniko` to choose the snapshot mode (ADR-0011,
-//! ADR-0023, ADR-0049). `prune` takes only `--all`, which empties the state
-//! directory of a user other than root inside the build's user namespace
-//! (`prune`, ADR-0105); by size and age it comes in Phase 5, `push` later
+//! ADR-0023, ADR-0049). `prune` takes `--all`, required, and `--state-dir`:
+//! it empties the state directory of a user other than root inside the
+//! build's user namespace (`prune`, ADR-0105); by size and age it comes in
+//! Phase 5, `push` later
 //! (Q-048); there is no `login` (ADR-0049).
 //!
 //! Set-up order, each step before the next: parse the flags (no I/O;

@@ -52,9 +52,10 @@ The binary: the CLI and the orchestration of a build across the library crates
 (ADR-0067). Parses the `build` (the default), `prune` and `version`
 subcommands, kaniko's common flags (those it does not accept are refused by
 name) and `--mode=auto|overlay|kaniko`
-([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` takes only `--all`, which
-empties a user's state directory inside the build's user namespace through
-`rnk-store` (ADR-0105), until Phase 5 adds removal by size and age; `push` (an
+([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` takes `--all`, required,
+which empties a user's state directory (`--state-dir`) inside the build's user
+namespace through `rnk-store` (ADR-0105), until Phase 5 adds removal by size
+and age; `push` (an
 OCI layout, ADR-0052) has no phase yet, and there is no `login` (ADR-0049).
 Runs the set-up and the probes while
 single-threaded, picks the mode and the root, runs `rnk-sched` with its own

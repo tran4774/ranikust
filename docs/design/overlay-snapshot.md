@@ -51,8 +51,9 @@ is extracted again. Each layout is a new directory, so nothing extracted by an
 earlier rule is reused: `v2` layers may hold an image's `trusted.*` xattrs,
 which `v3` never sets, from the tar or copied up from a lower layer
 (ADR-0075). Earlier layouts stay on disk until `prune --all` empties a user's
-state directory, Phase 5's `prune` by age, or the operator removes them. Planned, Phase 3: a rootless or `--userns` build's key
-also includes the digest of its id map
+state directory, Phase 5's `prune` by age, or the operator removes them.
+Planned, Phase 3: a rootless or `--userns` build's key also includes the
+digest of its id map
 ([cache-and-store](cache-and-store.md#store-layout)).
 
 ## One layer per instruction

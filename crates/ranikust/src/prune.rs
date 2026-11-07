@@ -8,9 +8,10 @@
 //! container's root included), naming Phase 5's `prune`; a state directory
 //! that does not exist left so, nothing made; then, as a build, the state
 //! directory's checks outside and the build's user namespace
-//! ([`setup::enter_user_namespace_for`]); then, in it,
-//! [`rnk_store::Store::prune_all`], which removes nothing while a build
-//! holds the store and refuses a directory without the store's marker.
+//! ([`setup::enter_user_namespace_for`]); then, in it, `RLIMIT_NOFILE`
+//! raised and [`rnk_store::Store::prune_all`], which removes nothing while
+//! a build holds the store, refuses a directory without the store's marker,
+//! and keeps builds out of one it did not finish emptying.
 
 use std::path::{Path, PathBuf};
 
@@ -47,16 +48,16 @@ const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 
 
 /// What root does instead (ADR-0105).
 const ROOT_GUIDANCE: &str = "root removes its state directory with ordinary tools while no \
-     build uses it (rm -rf /var/lib/ranikust, or the --state-dir it built with); Phase 5's \
-     ranikust prune will serve root too";
+     build uses it (rm -rf --one-file-system /var/lib/ranikust, or the --state-dir it built \
+     with); Phase 5's ranikust prune will serve root too";
 
-/// What a user does where it gets no user namespace: the build's guidance,
-/// [`setup::NO_USER_NAMESPACE`], ends in "run ranikust as root", which
-/// `prune --all` refuses.
+/// What a user does where it gets no user namespace: the build's guidance
+/// ends in "run ranikust as root", which `prune --all` refuses.
 pub(crate) const NO_USER_NAMESPACE: &str = "a user other than root gets a user namespace of its \
      own only where kernel.apparmor_restrict_unprivileged_userns is 0, or an AppArmor profile \
      allows ranikust one (Ubuntu 23.10 and later); without it, the user's own files in the state \
-     directory go with rm -rf while no build uses it, and files of subordinate ids stay";
+     directory go with rm -rf --one-file-system while no build uses it, and files of subordinate \
+     ids stay";
 
 /// Runs `prune` with `args`: the state directory it looked at, and what it
 /// found there.
@@ -123,16 +124,13 @@ pub(crate) fn empty(state_dir: &Path) -> Result<Pruned, Refusal> {
             });
         }
     }
-    setup::enter_user_namespace_for(state_dir).map_err(|r| {
-        if r.guidance == setup::NO_USER_NAMESPACE {
-            Refusal {
-                guidance: NO_USER_NAMESPACE,
-                ..r
-            }
-        } else {
-            r
-        }
-    })?;
+    setup::enter_user_namespace_for(state_dir, NO_USER_NAMESPACE)?;
+    // The deletion holds a descriptor per directory level, and a `RUN` may
+    // have left a deep tree.
+    match crate::statedir::raise_nofile_limit() {
+        Ok(limit) => tracing::debug!(?limit, "RLIMIT_NOFILE raised to its hard limit"),
+        Err(e) => tracing::warn!("cannot raise RLIMIT_NOFILE to its hard limit: {e}"),
+    }
     match Store::prune_all(state_dir) {
         Ok(true) => Ok(Pruned::Emptied),
         Ok(false) => Ok(Pruned::Empty),

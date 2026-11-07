@@ -193,7 +193,7 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
 
 /// Guidance where no user namespace with a map can be made for a user
 /// other than root.
-pub(crate) const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
+const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
      its own with an id map: where kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu \
      23.10 and later), only a program an AppArmor profile allows gets one; otherwise run \
      ranikust as root";
@@ -224,7 +224,7 @@ pub(crate) struct UsernsSetup {
     expect(dead_code, reason = "rootless overlay mode (#79) calls it")
 )]
 pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
-    let userns = enter_user_namespace_for(state_dir)?;
+    let userns = enter_user_namespace_for(state_dir, NO_USER_NAMESPACE)?;
     let store = open_store(state_dir, state_dir).map_err(inside_userns)?;
     Ok(UsernsSetup { userns, store })
 }
@@ -239,13 +239,15 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
 ///
 /// # Errors
 ///
-/// A [`Refusal`]. Where the process may be in the namespace already (an
-/// error of [`rnk_sandbox::enter_build_user_namespace`] not known to leave
-/// the process unchanged), it is of [`Kind::Broken`]: the process must end,
-/// and no caller, in any mode, may ignore it. A caller's own failure once
-/// in the namespace is made one with [`inside_userns`].
+/// A [`Refusal`], with `no_userns` as its guidance where a user other than
+/// root gets no user namespace. Where the process may be in the namespace
+/// already (an error of [`rnk_sandbox::enter_build_user_namespace`] not
+/// known to leave the process unchanged), it is of [`Kind::Broken`]: the
+/// process must end, and no caller, in any mode, may ignore it. A caller's
+/// own failure once in the namespace is made one with [`inside_userns`].
 pub(crate) fn enter_user_namespace_for(
     state_dir: &Path,
+    no_userns: &'static str,
 ) -> Result<rnk_sandbox::BuildUserNamespace, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
@@ -255,7 +257,7 @@ pub(crate) fn enter_user_namespace_for(
         reason: format!("cannot read this user's subordinate ids: {e}"),
     })?;
     let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
-        .map_err(|e| userns_refusal(e, euid))?;
+        .map_err(|e| userns_refusal(e, euid, no_userns))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     Ok(userns)
 }
@@ -271,8 +273,9 @@ pub(crate) fn inside_userns(refusal: Refusal) -> Refusal {
 
 /// The refusal for [`rnk_sandbox::enter_build_user_namespace`]'s error
 /// `e`, for the effective uid `euid`: [`Kind::Broken`] unless `e` is one
-/// that function documents as leaving the process unchanged.
-fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
+/// that function documents as leaving the process unchanged; `no_userns`
+/// guides a user other than root who gets no user namespace.
+fn userns_refusal(e: SandboxError, euid: u32, no_userns: &'static str) -> Refusal {
     Refusal {
         kind: match e {
             SandboxError::NotSingleThreaded { .. }
@@ -282,7 +285,7 @@ fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
             _ => Kind::Broken,
         },
         guidance: if euid != 0 && matches!(e, SandboxError::NoUserNamespace { .. }) {
-            NO_USER_NAMESPACE
+            no_userns
         } else {
             ""
         },

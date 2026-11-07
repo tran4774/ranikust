@@ -307,7 +307,7 @@ fn a_broken_user_namespace_never_falls_back() {
         })
     };
     for euid in [0, USER] {
-        let refusal = userns_refusal(broken(), euid);
+        let refusal = userns_refusal(broken(), euid, NO_USER_NAMESPACE);
         assert_eq!(refusal.kind, Kind::Broken);
         assert!(!refusal.needs_kaniko_mode());
         for in_container in [false, true] {
@@ -315,12 +315,25 @@ fn a_broken_user_namespace_never_falls_back() {
         }
     }
     // An error not known to leave the process unchanged counts as broken.
-    let refusal = userns_refusal(SandboxError::Privilege("a user namespace"), USER);
+    let refusal = userns_refusal(
+        SandboxError::Privilege("a user namespace"),
+        USER,
+        NO_USER_NAMESPACE,
+    );
     assert_eq!(refusal.kind, Kind::Broken);
     // Not entered: the process is unchanged, the refusal of the usual kind.
-    let refusal = userns_refusal(SandboxError::NoUserNamespace { tried: Vec::new() }, USER);
+    let refusal = userns_refusal(
+        SandboxError::NoUserNamespace { tried: Vec::new() },
+        USER,
+        NO_USER_NAMESPACE,
+    );
     assert_eq!(refusal.kind, Kind::Other);
     assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
+    // The caller's guidance (`prune`'s), and root's: none.
+    for (euid, want) in [(USER, "prune's"), (0, "")] {
+        let no_userns = SandboxError::NoUserNamespace { tried: Vec::new() };
+        assert_eq!(userns_refusal(no_userns, euid, "prune's").guidance, want);
+    }
     for unchanged in [
         SandboxError::NotSingleThreaded { threads: 2 },
         SandboxError::InPlainChroot,
@@ -329,7 +342,10 @@ fn a_broken_user_namespace_never_falls_back() {
             source: io::Error::from_raw_os_error(EACCES),
         },
     ] {
-        assert_eq!(userns_refusal(unchanged, USER).kind, Kind::Other);
+        assert_eq!(
+            userns_refusal(unchanged, USER, NO_USER_NAMESPACE).kind,
+            Kind::Other
+        );
     }
     // The store refusing once inside: broken whatever its kind, its words
     // kept.
