@@ -392,10 +392,13 @@ What a change here must keep, with where it lives:
   ranikust's own cgroup `D` carries a delegation mark it trusts
   (`trusted_marks`: root in the initial user namespace, `trusted.delegate`
   alone; another uid, also `user.delegate` on a `D` it owns, ADR-0135:
-  `enter_build_user_namespace` records first whether `/proc/self/uid_map`
-  maps ranikust's uid to 0, `maps_to_root`, since rootless overlay mode
-  reads the marks as root of the build's user namespace, where `trusted.*`
-  reads as absent) or is the root of its cgroup namespace, on a read-write
+  `enter_build_user_namespace` records first whether ranikust's effective
+  uid is the owner `/proc/sys/kernel/ostype` shows, a sysctl uid 0 of the
+  initial user namespace owns, seen through every level (`root_shown_as`,
+  a regular file of a procfs that reads `Linux`), else whether
+  `/proc/self/uid_map` maps it to 0, `maps_to_root`; since rootless
+  overlay mode reads the marks as root of the build's user namespace,
+  where `trusted.*` reads as absent) or is the root of its cgroup namespace, on a read-write
   cgroupfs with
   `cgroup.kill`; an unreadable mark, or an unreadable file of a marked or
   namespace-root `D`, is a `warn`. The probe runs every step once, and a
@@ -484,7 +487,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T0** (`cargo test -p rnk-sandbox`): the cgroup decisions and parsers
   (`src/cgroup/tests.rs`: which trees count as delegated, membership,
   controllers, `cgroup.events`, the probe child's report, absent files and
-  delegation marks and which a root or other ranikust trusts, the single
+  delegation marks and which a root or other ranikust trusts, whether
+  ranikust is the initial user namespace's root by the owner a
+  root-owned sysctl shows, else by the map, the sysctl taken only as a
+  procfs file that reads `Linux`
+  (`root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner`), the single
   layout's reason, a taken `run-` name, a `RUN`'s cgroup that cannot be
   made (its step, its path, nothing left), the limits written, the removal
   of every cgroup below a `RUN`'s, a tree at the kernel's limits removed in
@@ -648,7 +655,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   with its ranges mirrored and `setgroups` allowed;
   `the_build_user_namespace_below_one_id_is_told_one_uid`: root of a one-id
   namespace, `setgroups` denied (as `unshare -r`), enters with its map
-  mirrored and is told one uid, `setgroups` denied. Profile `privileged`:
+  mirrored and is told one uid, `setgroups` denied;
+  `root_of_rootless_podman_is_not_the_kernel_root_at_any_depth`: root of
+  the container, and root of a namespace below it mapped 0 to 0 or
+  through another uid, is not the initial namespace's root, where the map
+  one level up calls the 0 to 0 one root. Profile `privileged`:
   `red_team_a_mount_in_the_build_s_namespace_never_shows_outside` (a tmpfs
   mounted in the build's namespaces below a shared mount of the parent
   never shows there, where a plain mount namespace's does);
@@ -710,6 +721,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T2** (VM only, `#[ignore = "T2: ..."]`, `just test-vm unit`):
   `probe_reaches_exec_as_root` and `a_run_joins_a_held_network_namespace`
   (`src/probe.rs`);
+  `the_kernel_root_is_told_through_nested_user_namespaces`
+  (`src/userns/build/tests.rs`): real root is root on the host, one level
+  down mapped 0 to 0, and two levels down through uid 5, where the map one
+  level up misses it (where AppArmor restricts user namespaces, Ubuntu
+  24.04, the second level gets no map); the sudo user is not, on the host
+  or as root two levels down;
   `the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts`
   (`src/userns/tests.rs`: as the user who ran sudo, one id, then
   `newuidmap` with that user's ranges; where AppArmor restricts user

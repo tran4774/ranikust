@@ -22,12 +22,26 @@ namespace, against the stated intent. A review of #79 raised it; the question
 put to the maintainer in the question window, which has no `question` issue:
 decide on which uid, and in which pull request?
 
+A later review of #79 found that the first way of telling that uid, the map of
+ranikust's own user namespace, reads one level only: below a namespace that
+maps another uid to the initial namespace's root, it misses root. The second
+question put to the maintainer: fix it in #79, or leave it to an advisory?
+
 ## Considered Options
 
 - Decide on ranikust's uid in the initial user namespace, recorded before it
-  enters the build's user namespace, in #79 (recommended).
+  enters the build's user namespace, in #79 (recommended, chosen).
 - Keep the effective uid where the sandbox starts, and document that rootless
   overlay mode gets `RUN` cgroups only at its cgroup namespace's root.
+
+How to tell that uid:
+
+- Compare the effective uid with the owner a sysctl that the initial
+  namespace's root owns shows, `/proc/sys/kernel/ostype`; the map one level up
+  where that file is not the sysctl (recommended, chosen).
+- Keep the map one level up alone (the first implementation): no runtime
+  ranikust targets nests a namespace that maps another uid to the initial
+  namespace's root **[inferred]**.
 
 ## Decision Outcome
 
@@ -35,17 +49,28 @@ ranikust trusts `user.delegate` on its cgroup `D` when its uid in the initial
 user namespace is not 0 and it owns `D`; otherwise `trusted.delegate` alone, as
 ADR-0110 (1) says for root.
 
-The maintainer's answer (2026-11-08: "Quyết theo uid ngoài, trong #79 (khuyến
-nghị)", "Decide on the outer uid, in #79 (recommended)") stood for the first
-option, implemented in #79.
+The maintainer's answers stood for the chosen options, both implemented in #79:
+2026-11-08, "Quyết theo uid ngoài, trong #79 (khuyến nghị)" ("Decide on the
+outer uid, in #79 (recommended)"); 2026-11-08, "Sửa luôn trong #79 (khuyến
+nghị)" ("Fix it in #79 now (recommended)").
 
 - **Which uid.** `rnk_sandbox::enter_build_user_namespace` records, before its
-  `unshare`, whether ranikust's effective uid maps to 0 in the parent user
-  namespace by `/proc/self/uid_map`. The parent is the initial user namespace on
-  a host and in a container's user namespace (rootless Podman). Where ranikust
-  never enters the build's user namespace (root's own modes), the same reading is
-  made when the sandbox starts. A map ranikust cannot read or parse, or that maps
-  the uid nowhere, counts as 0: the rule that trusts fewer marks.
+  `unshare`, whether ranikust's effective uid is the initial namespace's root:
+  - It is where it equals the owner that `/proc/sys/kernel/ostype` shows. The
+    initial namespace's root owns that sysctl, and `stat` shows that owner
+    through every level of user namespaces, or as the overflow uid where a
+    level maps it to nothing.
+  - The file counts only as a regular file of a procfs (`statfs`
+    `PROC_SUPER_MAGIC`) that reads `Linux`, which excludes a tmpfs or another
+    procfs file over it.
+  - Elsewhere `/proc/self/uid_map` decides: whether it maps the uid to 0 one
+    level up. A map ranikust cannot read or parse, or that maps the uid
+    nowhere, counts as 0.
+  - Where ranikust never enters the build's user namespace (root's own modes),
+    the same reading is made when the sandbox starts.
+  - Where it cannot tell, the uid counts as 0, the rule that trusts fewer
+    marks: an effective uid that is the overflow uid where root shows as it
+    too.
 - **Which owner.** `D`'s owner and ranikust's effective uid are compared as the
   sandbox sees them: in the build's user namespace, ranikust's own uid outside
   shows as 0, so a `D` the invoking user owns matches, and one owned by root or
@@ -66,13 +91,16 @@ option, implemented in #79.
   `user@<uid>.service`) gets `RUN` cgroups, killed with the `RUN`.
 - Good, because root of a container's user namespace (root of rootless Podman)
   follows the same rule as the user it is: its uid in the initial user
-  namespace is not 0.
+  namespace is not 0, at any depth below it.
+- Good, because real root is told at any depth, through namespaces that remap
+  it.
 - Bad, because a user's own `Delegate=yes` units carry no mark (systemd 259
   **[measured]**), so a build started from one still gets none there.
-- Neutral, because a user namespace nested more than one level below the
-  initial one is judged by its parent's view of the uid: a parent that maps a
-  uid other than 0 to the initial namespace's root is not seen **[inferred]**;
-  no runtime ranikust targets builds such a map.
+- Neutral, because a uid other than root's that shows as the overflow uid,
+  where root does too, counts as root and trusts `trusted.delegate` alone
+  (Podman or Docker `--user 65534` in a user namespace **[measured]**).
+- Neutral, because where `/proc/sys` is not procfs the map one level up
+  decides, as the first implementation did.
 
 ## Evidence
 
@@ -83,14 +111,34 @@ option, implemented in #79.
   namespace, so a process in another one reads them as absent **[external]**
   (xattr(7)); `/proc/<pid>/uid_map` read from the process's own namespace maps
   its ids to the parent namespace **[external]** (user_namespaces(7)).
-- Unit tests in `rnk-sandbox` (`src/cgroup/tests.rs`): the marks trusted for
-  each case, and the map reading on fixture maps **[code]**.
+- The owner of `/proc/sys/kernel/ostype`, compared with the effective uid, was
+  measured in Ubuntu 22.04 (5.15) and 24.04 (6.8) VMs and on this project's
+  test machine (7.0, rootless Podman 5.7) **[measured]**:
+  - It is root for real root on the host, one level down mapped 0 to 0, and
+    two and three levels down through other uids. The map one level up reads
+    `0 5 1` there and misses it.
+  - It is root in rootful Docker, default and `--privileged`.
+  - It is not root for a user, `nobody`, root of rootless Podman (also
+    `--userns=keep-id` and nested `unshare` below it), Docker `userns-remap`,
+    and a user's own namespaces.
+  - The overflow uid on both sides gives a false "root" for a non-root process
+    of uid 65534 (Podman `--user 65534`, `userns-remap` with `--user 65534`, a
+    user mapped to 65534).
+  - A tmpfs over `/proc/sys` or `/proc/sys/kernel`, or a tmpfs or ext4 file
+    bound over the sysctl, shows a type other than procfs.
+  - On 24.04 with `kernel.apparmor_restrict_unprivileged_userns` 1, a second
+    level below root's own namespace gets no map.
+- Unit tests in `rnk-sandbox` **[code]**:
+  - `src/cgroup/tests.rs`: the marks trusted for each case, the map reading on
+    fixture maps, and the sysctl decision.
+  - `src/userns/build/tests.rs`: through nested namespaces, real root and the
+    sudo user (T2), and root of rootless Podman (T1).
 
 ## More Information
 
 Refines how [ADR-0110](0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)
 (1) applies; ADR-0110 itself is unchanged. Implemented in
-`crates/rnk-sandbox/src/cgroup.rs` (`trusted_marks`, `maps_to_root`) and
-`crates/rnk-sandbox/src/setup.rs`; described in
-[`design/sandbox.md`](../design/sandbox.md#run-cgroups) and the book's
-[Where to run](../book/src/where-to-run.md).
+`crates/rnk-sandbox/src/cgroup.rs` (`trusted_marks`, `root_shown_as`,
+`is_kernel_root`, `maps_to_root`) and `crates/rnk-sandbox/src/setup.rs`;
+described in [`design/sandbox.md`](../design/sandbox.md#run-cgroups) and the
+book's [Where to run](../book/src/where-to-run.md).

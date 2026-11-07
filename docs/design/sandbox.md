@@ -650,8 +650,12 @@ then only on a read-write cgroupfs, with `cgroup.kill` (Linux 5.14) and
 alone, which only `CAP_SYS_ADMIN` in the initial user namespace can set;
 `user.delegate`, which anyone who may write `D`'s inode can set, a root
 `RUN` included, counts only where ranikust owns `D` and its uid in the
-initial user namespace is not 0, as `/proc/self/uid_map` gives it before
-the build's user namespace hides it
+initial user namespace is not 0, read before the build's user namespace
+hides it: its effective uid is root's where it is the owner that
+`/proc/sys/kernel/ostype` shows, a sysctl that root owns, which every
+level of user namespaces maps (the overflow uid where one maps root to
+nothing), else, where that file is not the sysctl, as
+`/proc/self/uid_map` maps it one level up
 ([ADR-0135](../adr/0135-run-cgroups-trust-user-delegate-where-ranikusts-uid-in-the-initial-user-namespace-is-not-0.md)): a regular user, or root of rootless Podman. Rootless
 overlay mode reads no `trusted.*` mark (the kernel answers `ENODATA` to a
 process without `CAP_SYS_ADMIN` in the initial user namespace), and sees
