@@ -547,6 +547,137 @@ async fn transient_failures_are_retried() {
     assert_eq!(registry.count("GET /v2/app/manifests/"), before + 1);
 }
 
+/// A 408 or 429 is retried by its status, whatever its body: none, an
+/// error envelope asking for it (`TOOMANYREQUESTS`) or one with another
+/// code; on manifest and blob pulls, `find_manifest`, blob uploads,
+/// manifest pushes and anonymous token requests.
+#[tokio::test]
+async fn a_408_or_429_is_retried_whatever_its_body() {
+    let envelope =
+        |code: &str| format!(r#"{{"errors":[{{"code":"{code}","message":"slow down"}}]}}"#);
+    for status in [408, 429] {
+        for body in [
+            None,
+            Some(envelope("TOOMANYREQUESTS")),
+            Some(envelope("UNSUPPORTED")),
+        ] {
+            let case = format!("{status} with {body:?}");
+            let fault = |method: Method, path: &str, remaining| Fault {
+                method,
+                path_contains: path.to_owned(),
+                status,
+                remaining,
+            };
+
+            let registry = FakeRegistry::start(Auth::Open).await;
+            registry.state().fault_body = body.clone().map(Bytes::from);
+            let image = add_image(&registry, "app", "v1", b"rate limited".repeat(10));
+            let open = client(&registry, Credentials::none());
+            let app = reference(&registry, "app:v1");
+
+            registry
+                .state()
+                .faults
+                .push(fault(Method::GET, "/manifests/", 2));
+            let manifest = open.pull_manifest(&app).await;
+            assert!(manifest.is_ok(), "{case}: {manifest:?}");
+            assert_eq!(registry.count("GET /v2/app/manifests/"), 3, "{case}");
+
+            registry
+                .state()
+                .faults
+                .push(fault(Method::GET, "/manifests/", 2));
+            let found = open.find_manifest(&app).await;
+            assert!(matches!(found, Ok(Some(_))), "{case}: {found:?}");
+            assert_eq!(registry.count("GET /v2/app/manifests/"), 6, "{case}");
+
+            registry
+                .state()
+                .faults
+                .push(fault(Method::GET, "/blobs/", 2));
+            let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
+            let mut layer = Vec::new();
+            let pulled = open.pull_blob(&app, &blob, &mut layer).await;
+            assert!(pulled.is_ok(), "{case}: {pulled:?}");
+            assert_eq!(layer, image.layer, "{case}");
+            assert_eq!(registry.count("GET /v2/app/blobs/"), 3, "{case}");
+
+            let out = reference(&registry, "out:latest");
+            let pushed = vec![3u8; 1024];
+            registry
+                .state()
+                .faults
+                .push(fault(Method::PUT, "/blobs/uploads/", 1));
+            let uploaded = open
+                .push_blob(
+                    &out,
+                    &descriptor(MediaType::OCI_LAYER_GZIP, &pushed),
+                    &BlobBody::Bytes(Bytes::from(pushed)),
+                )
+                .await;
+            assert!(
+                matches!(uploaded, Ok(PushOutcome::Uploaded)),
+                "{case}: {uploaded:?}"
+            );
+            assert_eq!(registry.count("PUT /v2/out/blobs/uploads/"), 2, "{case}");
+
+            registry
+                .state()
+                .faults
+                .push(fault(Method::PUT, "/manifests/", 1));
+            let manifest = RawManifest::new(MediaType::OCI_MANIFEST, image.manifest.clone());
+            let put = open.push_manifest(&out, &manifest).await;
+            assert!(put.is_ok(), "{case}: {put:?}");
+            assert_eq!(registry.count("PUT /v2/out/manifests/"), 2, "{case}");
+
+            let registry = FakeRegistry::start(Auth::Bearer {
+                user: "builder".to_owned(),
+                password: "s3cret".to_owned(),
+                refresh_token: "refresh".to_owned(),
+                anonymous_pull: true,
+            })
+            .await;
+            registry.state().fault_body = body.map(Bytes::from);
+            add_image(&registry, "public", "v1", b"public".to_vec());
+            registry
+                .state()
+                .faults
+                .push(fault(Method::GET, "/token", 2));
+            let bearer = client(&registry, Credentials::none());
+            let pulled = bearer
+                .pull_manifest(&reference(&registry, "public:v1"))
+                .await;
+            assert!(pulled.is_ok(), "{case}: {pulled:?}");
+            assert_eq!(registry.count("GET /token"), 3, "{case}");
+        }
+    }
+}
+
+/// A 404 is answered after one request, even when its error envelope
+/// asks for a retry: the layer cache's lookup of an unknown key counts on
+/// it.
+#[tokio::test]
+async fn a_404_is_never_retried_whatever_its_body() {
+    let registry = FakeRegistry::start(Auth::Open).await;
+    registry.state().fault_body = Some(Bytes::from_static(
+        br#"{"errors":[{"code":"TOOMANYREQUESTS","message":"slow down"}]}"#,
+    ));
+    add_image(&registry, "app", "v1", b"x".to_vec());
+    let client = client(&registry, Credentials::none());
+    registry.state().faults.push(Fault {
+        method: Method::GET,
+        path_contains: "/manifests/".to_owned(),
+        status: 404,
+        remaining: 3,
+    });
+    let found = client
+        .find_manifest(&reference(&registry, "app:v1"))
+        .await
+        .unwrap();
+    assert!(found.is_none());
+    assert_eq!(registry.count("GET /v2/app/manifests/"), 1);
+}
+
 /// `find_manifest`: a manifest, `None` for a 404 of an unknown tag or
 /// repository after one request, and an error for any other failure.
 #[tokio::test]

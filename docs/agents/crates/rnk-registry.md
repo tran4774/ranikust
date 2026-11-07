@@ -136,8 +136,9 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   which the tree already has; it keeps blobs, manifests and upload sessions,
   which a request-matching mock would have to script): open, basic and bearer
   registries, `config.json` credentials, identity tokens per scope, digest
-  and size mismatches, retries on 503 and none on 404, one-PUT push,
-  existence check, mount refused (`202`) then upload, mount accepted,
+  and size mismatches, retries on 503, on 408 and 429 whatever their body
+  (pulls, `find_manifest`, pushes, token requests) and none on 404, one-PUT
+  push, existence check, mount refused (`202`) then upload, mount accepted,
   platform selection, a loopback registry over plain HTTP unlisted,
   `find_manifest` none on a 404 only. `rnk-cache` compiles the fake into its
   own tests: keep it free of anything specific to this crate's tests.
@@ -199,8 +200,8 @@ All T0 unless noted; tiers: [`docs/testing.md`](../../testing.md#tiers).
   `Error::Registry`'s `refused`, set from the status (401, 403) and the
   envelope's `UNAUTHORIZED` and `DENIED` codes
   (`a_refusal_is_decided_from_codes_and_status_not_the_excerpt`), as
-  `retryable` is, and `not_found` from a pull's 404 alone, never retried
-  (`find_manifest_is_none_only_for_a_404`,
+  `retryable` is (its doc lists what), and `not_found` from a pull's 404
+  alone, never retried (`find_manifest_is_none_only_for_a_404`,
   `a_404_is_not_found_and_never_retried`).
 - The test fake answers `HEAD` and `GET` of a blob only in repositories that
   hold it, checks the source scope of a mount under bearer authentication,
