@@ -226,6 +226,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a
   cache 3,000 levels deep.
+  `tests/red_team_probe.rs` (Q-111): a probe directory planted with links
+  out, a hard link to a file outside, a FIFO, a socket, a tree 3,000
+  levels deep and directories without write or search permission is taken
+  by `Store::open` without blocking or changing anything outside; a
+  `prune_all` racing two builds never empties a store or a probe directory
+  a build holds.
   `tests/spans.rs`. Planted symlinks as entries or build directories, a FIFO
   as a lock file, a directory as a dead build's lock file; in
   `src/store/tests.rs`, a directory swapped for a symlink or another
