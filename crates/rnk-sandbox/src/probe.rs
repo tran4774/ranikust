@@ -68,6 +68,16 @@ pub enum KernelFs {
     Rbind,
 }
 
+/// As the outcome line names it.
+impl std::fmt::Display for KernelFs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Fresh => "a new instance",
+            Self::Rbind => "a read-only rbind",
+        })
+    }
+}
+
 /// The kernel filesystems [`probe_with_fallbacks`] may bind where a new
 /// instance is refused. [`crate::UsernsReport::fallbacks`] allows the
 /// read-only rbind of `/sys` the user-namespace probe needed; a read-only
@@ -396,6 +406,12 @@ fn remove_stale_roots(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_way_to_kernel_filesystems_has_its_name() {
+        assert_eq!(KernelFs::Fresh.to_string(), "a new instance");
+        assert_eq!(KernelFs::Rbind.to_string(), "a read-only rbind");
+    }
 
     #[test]
     fn the_mount_root_attribute_is_unknown_unless_in_the_mask() {

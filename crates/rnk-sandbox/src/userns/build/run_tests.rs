@@ -75,15 +75,18 @@ const RUNS: [Run; 3] = [
 ];
 
 /// What a root `RUN` prints about a [`Sleeper`] outside it, of its kernel
-/// uid, given its PID as this test sees it (`{pid}`), which an rbind of
-/// `/proc` shows and a new `proc` does not: `outer=` that PID if it is
-/// there, else `none`; `outer-oom=` as [`KERNEL`]'s `oom=`, for its
-/// `oom_score_adj`; then, for each of its environment, memory, root,
-/// current directory and descriptor 0, `outer-<what>=opened` or the
-/// shell's error.
+/// uid, given its PID and start time (`stat`'s field 22) as this test sees
+/// them (`{pid}`, `{start}`), which an rbind of `/proc` shows and a new
+/// `proc` does not: `outer=` that PID if a process there started then, else
+/// `none` (a process of the `RUN`'s own PID namespace may hold the number);
+/// `outer-oom=` as [`KERNEL`]'s `oom=`, for its `oom_score_adj`; then, for
+/// each of its environment, memory, root, current directory and descriptor
+/// 0, `outer-<what>=opened` or the shell's error.
 const OUTER: &str = r#"
 p={pid}
-if test -e /proc/$p; then echo "outer=$p"; else echo outer=none; fi
+start=none
+if read -r s 2>/dev/null </proc/$p/stat; then s=${s##*") "}; set -- $s; start=${20}; fi
+if test "$start" = {start}; then echo "outer=$p"; else echo outer=none; p=none; fi
 echo "outer-oom=$( (read v </proc/$p/oom_score_adj && echo "$v" >/proc/$p/oom_score_adj && echo written) 2>&1)"
 for f in environ mem root cwd fd/0; do
   echo "outer-${f%/0}=$( (exec 3</proc/$p/$f && echo opened) 2>&1)"
@@ -93,13 +96,22 @@ done
 /// What [`OUTER`] opens of the [`Sleeper`].
 const OUTER_FILES: [&str; 5] = ["environ", "mem", "root", "cwd", "fd"];
 
-/// [`OUTER`] for the [`Sleeper`] `sleeper`, by its PID: a `RUN` cannot
-/// spoof it as it could a command line. Leaked: a test's `RUN` takes a
-/// `'static` script.
+/// [`OUTER`] for the [`Sleeper`] `sleeper`, by its PID and start time: a
+/// `RUN` can spoof neither, as it could a command line. Leaked: a test's
+/// `RUN` takes a `'static` script.
 fn outer(sleeper: &Sleeper) -> &'static str {
+    let pid = sleeper.0.id();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("the sleeper's stat");
+    // The command name, in parentheses, may hold spaces: count after it.
+    let after_comm = &stat[stat.rfind(") ").expect("stat's command name") + 2..];
+    let start = after_comm
+        .split_whitespace()
+        .nth(19)
+        .expect("stat's start time");
     Box::leak(
         OUTER
-            .replace("{pid}", &sleeper.0.id().to_string())
+            .replace("{pid}", &pid.to_string())
+            .replace("{start}", start)
             .into_boxed_str(),
     )
 }

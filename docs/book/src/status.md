@@ -9,7 +9,8 @@ As root, ranikust builds a Dockerfile in overlay mode (stages in parallel) or,
 where root may not mount, in kaniko mode (on a container's `/`, as kaniko, or
 in a directory per stage elsewhere). As a regular user allowed user
 namespaces, or as root in a container that may not mount but has a volume at
-the state directory, it builds in rootless overlay mode. It pushes the image
+the state directory, it builds in rootless overlay mode (where the container's
+`/proc` is masked, only with `--allow proc.rbind`). It pushes the image
 or writes an OCI layout or a Docker tar ([Command line](usage.md)). Overlay
 mode as root and kaniko mode have been compared with kaniko on three test
 workloads in a VM, not yet on real projects. With `--metrics-file=<path>` it writes a JSON report of where the run

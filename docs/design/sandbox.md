@@ -640,8 +640,10 @@ then only on a read-write cgroupfs, with `cgroup.kill` (Linux 5.14) and
 `cgroup.type` `domain`. A root ranikust trusts systemd's `trusted.delegate`
 alone, which only `CAP_SYS_ADMIN` in the initial user namespace can set;
 `user.delegate`, which anyone who may write `D`'s inode can set, a root
-`RUN` included, counts only for a ranikust that is not root and owns `D`
-(rootless, [#79](https://github.com/tran4774/ranikust/issues/79)). A
+`RUN` included, counts only for a ranikust that is not root and owns `D`.
+Rootless overlay mode starts its sandbox as root of the build's user
+namespace, so it trusts `trusted.delegate` alone too, and gets `RUN`
+cgroups only where `D` carries it or is the root of its cgroup namespace. A
 namespace's root counts whoever made it, delegated or not. A `D` with
 neither a mark nor a namespace's root, or on a read-only cgroupfs, is read
 no further. An unreadable mark, or an unreadable file of a marked or

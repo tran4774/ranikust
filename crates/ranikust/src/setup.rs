@@ -72,18 +72,7 @@ impl fmt::Display for Outcome {
             rnk_sandbox::RootEntry::MoveMount => "MS_MOVE",
         })?;
         if let Outcome::OverlayRootless { .. } = self {
-            let kernel_fs = |how| match how {
-                rnk_sandbox::KernelFs::Fresh => "a new instance",
-                rnk_sandbox::KernelFs::Rbind => "a read-only rbind",
-                // `#[non_exhaustive]` across crates: the log line only.
-                _ => "another way",
-            };
-            write!(
-                f,
-                ", proc: {}, sysfs: {}",
-                kernel_fs(sandbox.proc()),
-                kernel_fs(sandbox.sysfs())
-            )?;
+            write!(f, ", proc: {}, sysfs: {}", sandbox.proc(), sandbox.sysfs())?;
         }
         write!(f, ", overlay mounts with {}", mount_api_name(overlay.api))
     }

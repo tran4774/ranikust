@@ -128,7 +128,7 @@ pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before sta
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE; as probe_with_fallbacks(dir, Fallbacks::default()), without its warning on a refused new proc
 pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps>; // #78: a new proc and sysfs first; an EPERM of one allowed tried again as an rbind; warns once for a proc rbind, info for sysfs; a proc EPERM not allowed: Error::Setup at Step::MountProc and a warning with how to get a new proc
 pub struct Caps { pub root_entry: RootEntry, .. } // #[non_exhaustive]; every RUN of the Sandbox gets them; proc(), sysfs(): KernelFs, read-only, so an rbind is only the probe's choice
-pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]
+pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]; Display: "a new instance", "a read-only rbind" (the outcome line)
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
 impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; `ranikust` calls it for --allow proc.rbind): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's command line, status, mount table and network tables, not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6), and writes nothing there: the bind is read-only (ADR-0132); this crate does not scan for a shared PID namespace: `ranikust` runs the peer scan (ADR-0129) before it enters the build's user namespace
 pub enum RootEntry { PivotRoot, MoveMount }
@@ -378,8 +378,9 @@ What a change here must keep, with where it lives:
 - **`RUN` cgroups** (`cgroup.rs`,
   [design](../../design/sandbox.md#run-cgroups), ADR-0110): only where
   ranikust's own cgroup `D` carries a delegation mark it trusts
-  (`trusted_marks`: root, `trusted.delegate` alone; not root, also
-  `user.delegate` on a `D` it owns) or is the root of its cgroup namespace, on
+  (`trusted_marks`: root, rootless overlay mode included, `trusted.delegate`
+  alone; not root, also `user.delegate` on a `D` it owns) or is the root of
+  its cgroup namespace, on
   a read-write cgroupfs with `cgroup.kill`; an unreadable mark, or an
   unreadable file of a marked or namespace-root `D`, is a `warn`. The probe
   runs every step once, and a failure leaves the build as without cgroups.
