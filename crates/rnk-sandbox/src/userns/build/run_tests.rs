@@ -97,7 +97,7 @@ done
 const OUTER_FILES: [&str; 5] = ["environ", "mem", "root", "cwd", "fd"];
 
 /// [`OUTER`] for the [`Sleeper`] `sleeper`, by its PID and start time: a
-/// `RUN` can spoof neither, as it could a command line. Leaked: a test's
+/// `RUN` can spoof neither, unlike a command line. Leaked: a test's
 /// `RUN` takes a `'static` script.
 fn outer(sleeper: &Sleeper) -> &'static str {
     let pid = sleeper.0.id();

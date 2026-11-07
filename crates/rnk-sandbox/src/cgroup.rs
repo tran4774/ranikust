@@ -495,7 +495,7 @@ fn delegation_mark(dir: BorrowedFd<'_>, euid: u32) -> rustix::io::Result<bool> {
 /// who may write the cgroup's inode can set it, a root `RUN` with a cgroupfs
 /// of its own included. `euid` is ranikust's in its own user namespace:
 /// rootless overlay mode, which starts the sandbox in the build's user
-/// namespace, counts as root.
+/// namespace, counts as root, and reads `trusted.*` there as absent.
 fn trusted_marks(euid: u32, owner: u32) -> &'static [&'static str] {
     if euid != 0 && owner == euid {
         &["trusted.delegate", "user.delegate"]
