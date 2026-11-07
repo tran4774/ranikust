@@ -398,11 +398,12 @@ pub(crate) struct BuildArgs {
     /// rootless overlay mode give each `RUN` a read-only bind of `/proc`
     /// where a new one is refused (a container's masked `/proc`): every
     /// `RUN` then sees each process of ranikust's PID namespace and reads
-    /// its command line, status and mount table, ranikust's included, and
-    /// the `RUN`s go one at a time. Keep no secrets in other processes'
-    /// command lines, ranikust's included, and give the build container a
-    /// PID namespace of its own: one shared with another container is
-    /// refused (ADR-0126, ADR-0130). Repeat for several.
+    /// its command line, status, mount table and network tables, ranikust's
+    /// included, and the `RUN`s go one at a time. Keep no secrets in other
+    /// processes' command lines, ranikust's included, and give the build
+    /// container a PID namespace of its own: one shared with the host or
+    /// other containers is refused (ADR-0126, ADR-0130). Repeat for
+    /// several.
     #[arg(
         long = "allow",
         value_name = "ENTITLEMENT",

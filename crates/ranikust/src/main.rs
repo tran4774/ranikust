@@ -1214,7 +1214,8 @@ fn refuse_reachable_peers(
             match reach {
                 exposure::Reach::Slash => "RUN reach that process's files",
                 exposure::Reach::ProcRbind =>
-                    "every RUN read that process's command line, status and mount table",
+                    "every RUN read that process's command line, status, mount table and network \
+                     tables",
             }
         ))
         .with_guidance(
@@ -1985,8 +1986,8 @@ mod tests {
                      its PID namespace with process 42 (sleep),"
                 )
                 && reached.message.ends_with(
-                    "would let every RUN read that process's command line, status and mount \
-                     table"
+                    "would let every RUN read that process's command line, status, mount table \
+                     and network tables"
                 )
                 && reached
                     .guidance

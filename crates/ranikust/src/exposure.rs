@@ -53,7 +53,7 @@ pub(crate) enum Reach {
     /// what root opens there (ADR-0051, ADR-0101).
     Slash,
     /// `--allow proc.rbind`: a `RUN` reads every process's command line,
-    /// status and mount table through the rbind, though not its
+    /// status, mount table and network tables through the rbind, though not its
     /// environment, files or memory (ADR-0130).
     ProcRbind,
 }

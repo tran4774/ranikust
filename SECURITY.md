@@ -110,7 +110,8 @@ These are documented properties, not vulnerabilities:
   namespace.** In rootless overlay mode where a new `/proc` is refused (a
   container's masked `/proc`), the flag gives each `RUN` a read-only rbind of
   `/proc`: it sees every process of ranikust's PID namespace and reads its
-  command line, status and mount table, ranikust's included, but not its
+  command line, status, mount table and network tables, ranikust's
+  included, but not its
   environment, files or memory; the `RUN`s go one at a time. Keep no secrets
   in command lines and give the build container a PID namespace of its own;
   one shared with a process of another mount namespace is refused
