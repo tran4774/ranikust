@@ -443,6 +443,7 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
         | Error::Busy { .. }
         | Error::InUse { .. }
         | Error::NotPruned { .. }
+        | Error::NotAbandoned { .. }
         | Error::PruneCutShort { .. }
         | Error::StateNotEmpty { .. }
         | Error::NotEmptied { .. }

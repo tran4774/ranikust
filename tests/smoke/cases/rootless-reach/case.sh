@@ -246,7 +246,8 @@ in_fallback() {
 # a set-up made to fail (RANIKUST_DEBUG_FAULT=rootless-broken), before,
 # during and after its store's open and abandon, leaves no store that
 # stops the next fallback: it builds in kaniko mode and leaves the state
-# directory with no store marker (ADR-0136).
+# directory with no store marker (ADR-0136). Its log goes to the outputs,
+# which kaniko mode on / keeps, unlike /tmp.
 killed_in_fallback() {
   [ "${RANIKUST_CASE_MODE:-}" = kaniko ] || return 0
   state fallback-sweep
@@ -268,11 +269,11 @@ done
 i=0
 while foreign >/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 rc=0
-"$0" "$@" >/tmp/last.log 2>&1 || rc=$?
+"$0" "$@" >/ranikust/out/last.log 2>&1 || rc=$?
 echo "status=$rc"
-grep -q "ranikust: kaniko mode on /, RUN directly" /tmp/last.log && echo "fell back"
+grep -q "ranikust: kaniko mode on /, RUN directly" /ranikust/out/last.log && echo "fell back"
 echo "left: $(ls -A /var/lib/ranikust | tr "\n" " ")"
-[ "$rc" = 0 ] || cat /tmp/last.log' \
+[ "$rc" = 0 ] || cat /ranikust/out/last.log' \
     "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target userns \
     --allow proc.rbind 2>&1)"
   PODMAN_ARGS=()

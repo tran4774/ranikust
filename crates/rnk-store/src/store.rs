@@ -1413,9 +1413,10 @@ impl Store {
     /// # Errors
     ///
     /// As [`Store::close`]; once the lock is taken, as [`Store::prune_all`]
-    /// for its checks and what deleting returns, and [`Error::Io`] or
-    /// [`Error::Rootfs`] when `blobs/`, `layers/` or `caches/` cannot be
-    /// read as directories; [`Error::NoFlock`] when it cannot be taken.
+    /// for its checks, [`Error::Io`] or [`Error::Rootfs`] when `blobs/`,
+    /// `layers/` or `caches/` cannot be read as directories, and
+    /// [`Error::NotAbandoned`] where anything but [`STATE_MARKER`] stays,
+    /// which then stays too; [`Error::NoFlock`] when it cannot be taken.
     pub fn abandon(self) -> Result<bool> {
         if self.anon.is_some() {
             self.close()?;
@@ -2013,7 +2014,9 @@ fn abandon_unused(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Resu
     if prune_check(state, &state_path)? != Prunable::Marked || holds_data(state)? {
         return Ok(false);
     }
-    empty_all_but(state, state_path, lock, MARKER)?;
+    empty_all_but(state, state_path, lock, MARKER, |path, left| {
+        Error::NotAbandoned { path, left }
+    })?;
     Ok(true)
 }
 
@@ -2091,13 +2094,22 @@ fn empty_locked(root: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<
             source: e.into(),
         });
     }
-    empty_all_but(root, state_path, lock, PRUNING)?;
+    empty_all_but(root, state_path, lock, PRUNING, |path, left| {
+        Error::NotPruned { path, left }
+    })?;
     Ok(true)
 }
 
 /// Deletes everything in the state directory `root` but `last`, whose
 /// exclusive `lock` is held, then, once the filesystem is synced, `last`.
-fn empty_all_but(root: &RootPath, state_path: PathBuf, lock: &OwnedFd, last: &str) -> Result<()> {
+/// What stays besides `last` is the error `left_err` makes, `last` kept.
+fn empty_all_but(
+    root: &RootPath,
+    state_path: PathBuf,
+    lock: &OwnedFd,
+    last: &str,
+    left_err: fn(PathBuf, String) -> Error,
+) -> Result<()> {
     let mut keep = IgnoreList::new();
     keep.insert(last)?;
     let deleted = delete_contents(root, &keep);
@@ -2115,10 +2127,7 @@ fn empty_all_but(root: &RootPath, state_path: PathBuf, lock: &OwnedFd, last: &st
         (false, Ok(())) => Some(format!("{} (on another mount?)", shown_names(&left))),
     };
     if let Some(left) = left {
-        return Err(Error::NotPruned {
-            path: state_path,
-            left,
-        });
+        return Err(left_err(state_path, left));
     }
     // The removals on disk before the marker's, which a filesystem may
     // otherwise keep alone: an unmarked, non-empty directory.

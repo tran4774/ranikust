@@ -368,6 +368,7 @@ pub(crate) fn unfinished_prune(e: &rnk_store::Error) -> Option<(Unfinished, &Pat
         | Error::StateNotEmpty { .. }
         | Error::UsedOnSlash { .. }
         | Error::NotEmptied { .. }
+        | Error::NotAbandoned { .. }
         | Error::Unmarked { .. }
         | Error::Io { .. }
         | Error::BadEntry { .. }

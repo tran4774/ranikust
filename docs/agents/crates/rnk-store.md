@@ -82,7 +82,7 @@ impl Store {
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
     pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it fails once it took the directory as a store, undoing() then the directory emptied where abandon would (logged where it cannot be), the error returned
-    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER; true: emptied; false: another build holds it, or it holds data
+    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER (Error::NotAbandoned names what stays, the marker kept); true: emptied; false: another build holds it, or it holds data
     pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), check_prune's checks, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     pub fn check_prune(state: &Path) -> Result<PruneCheck>; // prune_all's checks, read-only and without its lock, on state as given with no symlink followed: else prune_all's error; ranikust's prune runs it before the namespace and pins the commands it prints with it
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
@@ -96,7 +96,7 @@ pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID, in a us
 pub const SANDBOX_DIR: &str = "sandbox";  // the RUN sandbox's directory at the top, made by ranikust; a name prune_all takes
 pub const USERNS_PROBE_PREFIX: &str = ".ranikust-anon-userns-probe-"; // the user-namespace probe's directories, which alone stand in for the marker; the probe flocks its own while it uses it
 pub struct StateDirHold;  // check_state_dir's shared lock on the state directory, held until dropped
-pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
+pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, NotAbandoned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 impl Error { pub fn is_symlink_on(&self, state: &Path) -> bool }  // check_prune could not open state as given for a symlink on its path (ELOOP), not a refusal of its contents
 ```
 
@@ -286,7 +286,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   made it, what dead builds and the sandbox left included, and leaves as
   `close` does one with an entry in `blobs/`, `layers/` or `caches/`, one
   another build holds, and one with a name the store does not make
-  (`abandon_empties_a_store_with_no_data_that_no_build_holds`), as
+  (`abandon_empties_a_store_with_no_data_that_no_build_holds`); what it
+  cannot remove is named (`NotAbandoned`) and the marker stays, a store
+  builds still open (`abandon_keeps_the_marker_while_anything_stays`); as
   `open_or_abandon` does for an open that fails once it registered its
   build, after its `undoing` lets go of the directory, a store found with
   no data (as a killed open leaves it) emptied too, one with a cache kept

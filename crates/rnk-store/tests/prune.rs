@@ -530,3 +530,40 @@ fn abandon_empties_a_store_with_no_data_that_no_build_holds() {
     other.close().unwrap();
     assert!(Store::prune_all(&state).unwrap());
 }
+
+/// What an emptying of a store with no data cannot remove (a directory
+/// the test user may not empty) is named, and the marker stays: the
+/// directory is still a store, with no data, which builds open.
+#[test]
+fn abandon_keeps_the_marker_while_anything_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    open(&state).close().unwrap();
+    let shut = state.join("tmp").join("shut");
+    fs::create_dir(&shut).unwrap();
+    fs::write(shut.join("f"), b"x").unwrap();
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = shut.join("probe");
+    if fs::File::create(&probe).is_ok() {
+        // Root or `CAP_DAC_OVERRIDE`: the mode stops nothing here.
+        fs::remove_file(&probe).unwrap();
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    let abandoned = open(&state).abandon();
+    let left = tree(&state);
+    let opened = Store::open(&BuildPaths::new(&state, &state));
+    // Before any assertion: the temp dir must go even if one fails.
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+    let e = abandoned.unwrap_err();
+    assert!(matches!(e, Error::NotAbandoned { .. }), "{e}");
+    assert!(e.to_string().contains("\"tmp\""), "{e}");
+    assert!(
+        left.contains(&PathBuf::from(rnk_store::STATE_MARKER)),
+        "{left:?}"
+    );
+    assert!(left.contains(&PathBuf::from("tmp/shut/f")), "{left:?}");
+    opened.unwrap().close().unwrap();
+    assert!(open(&state).abandon().unwrap());
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+}
