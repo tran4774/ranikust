@@ -143,3 +143,87 @@ fn a_build_killed_mid_fill_leaves_nothing_behind() {
     assert_eq!(store.get(&key).unwrap(), None);
     store.fill(&key, |_| Ok::<_, io::Error>(0)).unwrap();
 }
+
+/// Environment variable of [`child_prune_all`].
+const CHILD_PRUNE: &str = "RNK_STORE_TEST_CHILD_PRUNE";
+/// The hard `RLIMIT_NOFILE` [`child_prune_all`] runs under.
+const PRUNE_NOFILE: u64 = 256;
+/// Levels of the cache tree it empties: far more than that limit.
+const PRUNE_DEPTH: usize = 3000;
+
+/// Not a test on its own: in
+/// [`prune_all_empties_a_cache_deeper_than_a_hard_descriptor_limit`], a
+/// process that may never open more than [`PRUNE_NOFILE`] descriptors
+/// empties the state directory.
+#[test]
+fn child_prune_all() {
+    use rustix::process::{Resource, Rlimit, setrlimit};
+    let Some(state) = std::env::var_os(CHILD_PRUNE) else {
+        return;
+    };
+    let limit = Rlimit {
+        current: Some(PRUNE_NOFILE),
+        maximum: Some(PRUNE_NOFILE),
+    };
+    setrlimit(Resource::Nofile, limit).unwrap();
+    assert!(Store::prune_all(Path::new(&state)).unwrap(), "emptied");
+}
+
+/// A process whose hard `RLIMIT_NOFILE` is 256 empties a state directory
+/// whose cache holds a tree of [`PRUNE_DEPTH`] levels, as a `RUN` with a
+/// cache mount can leave; a store opens the directory again, as the next
+/// build would.
+#[test]
+fn prune_all_empties_a_cache_deeper_than_a_hard_descriptor_limit() {
+    use rustix::fs::{Mode, OFlags};
+    /// Empties a temp dir on drop, a failed test included: the temp dir's
+    /// own removal recurses with a descriptor per level.
+    struct Emptied(PathBuf);
+    impl Drop for Emptied {
+        fn drop(&mut self) {
+            let r = fs::canonicalize(&self.0)
+                .map_err(|e| e.to_string())
+                .and_then(|p| rnk_rootfs::RootPath::open(&p).map_err(|e| e.to_string()))
+                .and_then(|root| {
+                    rnk_rootfs::delete_contents(&root, &rnk_rootfs::IgnoreList::new())
+                        .map_err(|e| e.to_string())
+                });
+            // A drop cannot fail the test; a tree left behind is at least shown.
+            if let Err(e) = r {
+                eprintln!("left behind in {}: {e}", self.0.display());
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _emptied = Emptied(dir.path().to_owned());
+    let state = dir.path().join("state");
+    let paths = BuildPaths::new(&state, &state);
+    let store = Store::open(&paths).unwrap();
+    let cache = store.cache_dir("deep").unwrap();
+    store.close().unwrap();
+    let path = OFlags::PATH | OFlags::DIRECTORY;
+    let mut cur = rustix::fs::open(&cache, path, Mode::empty()).unwrap();
+    for _ in 0..PRUNE_DEPTH {
+        rustix::fs::mkdirat(&cur, "d", Mode::from_raw_mode(0o755)).unwrap();
+        cur = rustix::fs::openat(&cur, "d", path, Mode::empty()).unwrap();
+    }
+    let leaf = OFlags::WRONLY | OFlags::CREATE;
+    drop(rustix::fs::openat(&cur, "f", leaf, Mode::from_raw_mode(0o644)).unwrap());
+    drop(cur);
+
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_prune_all", "--test-threads=1", "--quiet"])
+        .env(CHILD_PRUNE, &state)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+    Store::open(&paths)
+        .and_then(Store::close)
+        .expect("a store in the emptied directory");
+}

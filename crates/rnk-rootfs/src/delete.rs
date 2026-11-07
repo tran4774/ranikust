@@ -26,11 +26,14 @@ use crate::root::{Mounts, RootPath, open_name};
 /// `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, then its `ino`, device
 /// and mount id are compared with the `statx` taken before opening it; any
 /// difference stops the deletion with [`Error::Changed`]. Symlinks are
-/// unlinked, never followed. Depth is unlimited by `PATH_MAX`, but one fd is
-/// held per level: the caller raises `RLIMIT_NOFILE` for deep trees. Memory
-/// is linear in the entries on the walk's stack (each level keeps its name
-/// and the names of its directory not yet visited) plus one path buffer, no
-/// longer quadratic in depth.
+/// unlinked, never followed. Depth is limited neither by `PATH_MAX` nor by
+/// `RLIMIT_NOFILE`: at most 32 directory descriptors are held, the nearest
+/// ancestors of the directory being emptied; a farther one is closed and
+/// reopened through `..` on the way back up, checked to be the directory
+/// it was (inode, device and mount id), else [`Error::Changed`].
+/// Memory is linear in the entries on the walk's stack (each level keeps
+/// its name, its `statx` and the names of its directory not yet visited)
+/// plus one path buffer, never quadratic in depth.
 ///
 /// # Errors
 ///
@@ -80,9 +83,12 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
 ///
 /// Walks and deletes as [`delete_contents`] does: by `(parent fd, name)`,
 /// never following a symlink, each directory checked against the `statx`
-/// taken before opening it. A mount anywhere below the root (another mount
-/// id, or a mount root) is an error, as a copy refuses one: nothing would
-/// be deleted across it, so it would stay where the copy would not have it.
+/// taken before opening it, and reopened through `..` checked against it
+/// when the walk climbs back past the descriptors it holds (64 at most:
+/// its own walk and, inside it, the deletion of a directory it removes). A
+/// mount anywhere below the root (another mount id, or a mount root) is an
+/// error, as a copy refuses one: nothing would be deleted across it, so it
+/// would stay where the copy would not have it.
 ///
 /// It also reports ([`Pruned::linked_outside`]) whether an entry it keeps
 /// has more hardlinks than the names it saw for it in the root: a root
@@ -175,16 +181,14 @@ impl Links {
     }
 }
 
-/// One directory [`prune`] walks. Its path is the walk's one path buffer,
-/// not the frame's: a frame per level holding its full path would take
-/// memory quadratic in depth.
+/// What [`prune`] keeps for one directory it walks. Its path is the walk's
+/// one path buffer, not the frame's: a frame per level holding its full
+/// path would take memory quadratic in depth.
 struct PruneFrame {
-    /// `O_RDONLY | O_DIRECTORY` fd: `futimens` needs an open file.
-    fd: OwnedFd,
-    /// Its `statx` before anything in it was deleted.
-    st: Stat,
     names: Vec<OsString>,
-    /// Something in it was deleted: its times are set back when it is done.
+    /// Something in it was deleted: its times (the [`Dir`]'s `statx`,
+    /// taken before anything in it was deleted) are set back when it is
+    /// done.
     changed: bool,
 }
 
@@ -205,19 +209,22 @@ fn prune_walk(
     // copy leaves them out (`meta::Xattrs::Copy`).
     meta::strip_overlay_own(start.as_fd(), FileType::Directory, None, Path::new(""))?;
     let names = read_names(start.as_fd(), Path::new(""))?;
-    let mut stack = vec![PruneFrame {
+    let mut stack = Dirs::new(Dir {
         fd: start,
         st,
-        names,
-        changed: false,
-    }];
+        data: PruneFrame {
+            names,
+            changed: false,
+        },
+    });
     // The path of the directory on top of the stack, then, while an entry
     // of it is handled, of that entry.
     let mut cur = PathBuf::new();
-    while let Some(top) = stack.last_mut() {
-        let Some(name) = top.names.pop() else {
-            if let Some(done) = stack.pop()
-                && done.changed
+    while let Some(top) = stack.top_mut() {
+        let Some(name) = top.data.names.pop() else {
+            let parent = cur.parent().unwrap_or(Path::new(""));
+            if let Some(done) = stack.pop(parent)?
+                && done.data.changed
             {
                 let times = rustix::fs::Timestamps {
                     last_access: done.st.atime.to_timespec(),
@@ -253,11 +260,13 @@ fn prune_walk(
                 meta::strip_overlay_own(fd.as_fd(), file_type, None, &cur)?;
                 let names = read_names(fd.as_fd(), &cur)?;
                 // `cur` stays this directory's path while it is walked.
-                stack.push(PruneFrame {
+                stack.push(Dir {
                     fd,
                     st,
-                    names,
-                    changed: false,
+                    data: PruneFrame {
+                        names,
+                        changed: false,
+                    },
                 });
                 continue;
             }
@@ -268,7 +277,7 @@ fn prune_walk(
             cur.pop();
             continue;
         }
-        top.changed = true;
+        top.data.changed = true;
         if is_dir {
             let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &cur)?;
             let mut all = |_: &Path, _: FileType| Keep::Remove;
@@ -293,6 +302,124 @@ fn prune_walk(
         cur.pop();
     }
     Ok(())
+}
+
+/// Most descriptors one deletion walk holds at a time, whatever the depth
+/// of the tree: the directory it works in, its nearest ancestors, and the
+/// two a step opens briefly (the next directory, and `.` of it, opened
+/// again by `read_names`). A farther ancestor's descriptor is closed and the
+/// directory reopened through `..` when the walk climbs back to it, checked
+/// to be the one it was (as GNU `fts` does for `rm -rf`), so a tree deeper
+/// than `RLIMIT_NOFILE` is deleted like any other (`tests/descriptors.rs`
+/// leaves the walk exactly this many).
+pub(crate) const OPEN_DIRS: usize = 32;
+
+/// A directory a deletion walk works in: its descriptor, its identity and
+/// what the walk keeps for it.
+struct Dir<T> {
+    /// `O_RDONLY | O_DIRECTORY` fd.
+    fd: OwnedFd,
+    /// Its `statx` when it was opened, which a reopened descriptor must
+    /// match.
+    st: Stat,
+    data: T,
+}
+
+/// A deletion walk's stack of directories: the one it works in, on top,
+/// and its ancestors in the walk. Only the `OPEN_DIRS - 2` nearest the top
+/// keep a descriptor; a farther one is reopened through `..` of its child
+/// when it becomes the top again, and must then be the inode, on the
+/// device and mount, that it was: else [`Error::Changed`], with nothing
+/// done in what `..` reached. The child is still open when its parent is
+/// reopened, and `..` never leaves its mount (`RESOLVE_NO_XDEV`).
+struct Dirs<T> {
+    top: Option<Dir<T>>,
+    /// The ancestors of `top`, nearest last; the last `open` of them hold
+    /// their descriptor, the others `None`.
+    below: Vec<(Option<OwnedFd>, Stat, T)>,
+    open: usize,
+}
+
+impl<T> Dirs<T> {
+    fn new(start: Dir<T>) -> Self {
+        Self {
+            top: Some(start),
+            below: Vec::new(),
+            open: 0,
+        }
+    }
+
+    fn top_mut(&mut self) -> Option<&mut Dir<T>> {
+        self.top.as_mut()
+    }
+
+    /// Makes `dir`, opened in the top directory, the top; closes the
+    /// farthest ancestor still open when the stack would hold more than
+    /// `OPEN_DIRS - 2` descriptors.
+    fn push(&mut self, dir: Dir<T>) {
+        if let Some(Dir { fd, st, data }) = self.top.replace(dir) {
+            self.below.push((Some(fd), st, data));
+            self.open += 1;
+        }
+        // Room for the two the next step opens before it pushes: the
+        // directory, then `.` of it, opened again by `read_names`.
+        if 1 + self.open + 2 > OPEN_DIRS {
+            let farthest = self.below.len() - self.open;
+            if let Some(closed) = self.below.get_mut(farthest) {
+                closed.0 = None;
+                self.open -= 1;
+            }
+        }
+    }
+
+    /// Takes the top off and returns it, its descriptor still open. Its
+    /// parent in the walk becomes the top, reopened through `..` from that
+    /// descriptor if it was closed, and checked; `parent` is the parent's
+    /// path, for errors.
+    fn pop(&mut self, parent: &Path) -> Result<Option<Dir<T>>> {
+        let Some(done) = self.top.take() else {
+            return Ok(None);
+        };
+        if let Some((fd, st, data)) = self.below.pop() {
+            let fd = match fd {
+                Some(fd) => {
+                    self.open -= 1;
+                    fd
+                }
+                None => reopen_parent(done.fd.as_fd(), &st, parent)?,
+            };
+            self.top = Some(Dir { fd, st, data });
+        }
+        Ok(Some(done))
+    }
+}
+
+/// Opens the parent of the directory `child` through `..` and checks it is
+/// the directory `st` described: the same inode on the same device and
+/// mount. Anything else (an ancestor renamed, moved or replaced since its
+/// descriptor was closed) is [`Error::Changed`].
+fn reopen_parent(child: BorrowedFd<'_>, st: &Stat, path: &Path) -> Result<OwnedFd> {
+    let fd = match crate::root::open_parent(child, path) {
+        Ok(fd) => fd,
+        Err(e)
+            if matches!(
+                e.raw_os_error().map(Errno::from_raw_os_error),
+                Some(Errno::LOOP | Errno::NOTDIR | Errno::XDEV | Errno::NOENT)
+            ) =>
+        {
+            return Err(Error::Changed {
+                path: path.to_owned(),
+            });
+        }
+        Err(e) => return Err(e),
+    };
+    let now = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?;
+    if !now.same_entry(st) {
+        return Err(Error::Changed {
+            path: path.to_owned(),
+        });
+    }
+    Ok(fd)
 }
 
 /// Opens the directory `dir` inside `root` for a deletion walk: no final
@@ -335,13 +462,11 @@ impl Counts {
     }
 }
 
-/// One directory being emptied. Its path is the walk's one path buffer,
-/// not the frame's: a frame per level holding its full path would take
-/// memory quadratic in depth, and a `RUN` can make a tree as deep as it
-/// likes.
+/// What a deletion walk keeps for one directory being emptied. Its path
+/// is the walk's one path buffer, not the frame's: a frame per level
+/// holding its full path would take memory quadratic in depth, and a `RUN`
+/// can make a tree as deep as it likes.
 struct Frame {
-    /// `O_RDONLY | O_DIRECTORY` fd.
-    fd: OwnedFd,
     /// Its name in the parent frame.
     name: OsString,
     /// Entries still to visit.
@@ -360,6 +485,7 @@ struct Frame {
 /// `decide` gets each entry's cleaned path and type; entries on another
 /// mount, and mount roots, are kept without asking. Starting from an
 /// opened fd means the directory checked by the caller is the one emptied.
+/// At most [`OPEN_DIRS`] directory descriptors are held, `fd` included.
 pub(crate) fn remove_below(
     root: &RootPath,
     fd: OwnedFd,
@@ -387,33 +513,37 @@ fn remove_below_seen(
         return Ok(false);
     }
     let names = read_names(fd.as_fd(), dir)?;
-    let mut stack = vec![Frame {
+    let mut stack = Dirs::new(Dir {
         fd,
-        name: OsString::new(),
-        names,
-        kept: false,
-        keep_self: true,
-    }];
+        st,
+        data: Frame {
+            name: OsString::new(),
+            names,
+            kept: false,
+            keep_self: true,
+        },
+    });
     // The path of the directory on top of the stack, then, while an entry
     // of it is handled, of that entry.
     let mut cur = dir.to_owned();
 
     loop {
-        let Some(top) = stack.last_mut() else {
+        let Some(top) = stack.top_mut() else {
             // Only reached if the start frame was popped, which returns.
             return Ok(true);
         };
-        let Some(name) = top.names.pop() else {
-            let Some(done) = stack.pop() else {
+        let Some(name) = top.data.names.pop() else {
+            let parent_path = cur.parent().unwrap_or(Path::new(""));
+            let Some(done) = stack.pop(parent_path)? else {
                 return Ok(true);
             };
-            let Some(parent) = stack.last_mut() else {
-                return Ok(!done.kept);
+            let Some(parent) = stack.top_mut() else {
+                return Ok(!done.data.kept);
             };
-            if done.kept || done.keep_self {
-                parent.kept = true;
+            if done.data.kept || done.data.keep_self {
+                parent.data.kept = true;
             } else {
-                match rustix::fs::unlinkat(&parent.fd, &done.name, AtFlags::REMOVEDIR) {
+                match rustix::fs::unlinkat(&parent.fd, &done.data.name, AtFlags::REMOVEDIR) {
                     Ok(()) => counts.dirs += 1,
                     // The name now holds something else than the directory
                     // just emptied (a swap), something was added to it, or
@@ -439,7 +569,7 @@ fn remove_below_seen(
         };
         seen(&st);
         if root.off_mount(&st) {
-            top.kept = true;
+            top.data.kept = true;
             counts.kept += 1;
             cur.pop();
             continue;
@@ -448,7 +578,7 @@ fn remove_below_seen(
         let action = decide(&cur, file_type);
         match (action, file_type == FileType::Directory) {
             (Keep::Whole, _) | (Keep::Descend, false) => {
-                top.kept = true;
+                top.data.kept = true;
                 counts.kept += 1;
             }
             (Keep::Remove, false) => {
@@ -464,12 +594,15 @@ fn remove_below_seen(
                 let fd = open_dir_checked(top.fd.as_fd(), &name, &st, &cur)?;
                 let names = read_names(fd.as_fd(), &cur)?;
                 // `cur` stays this directory's path while it is emptied.
-                stack.push(Frame {
+                stack.push(Dir {
                     fd,
-                    name,
-                    names,
-                    kept: false,
-                    keep_self: action == Keep::Descend,
+                    st,
+                    data: Frame {
+                        name,
+                        names,
+                        kept: false,
+                        keep_self: action == Keep::Descend,
+                    },
                 });
                 continue;
             }

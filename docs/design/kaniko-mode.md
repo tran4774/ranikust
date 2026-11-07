@@ -469,9 +469,11 @@ file descriptors:
   root's, and entries with `STATX_ATTR_MOUNT_ROOT`;
 - **never decide by `st_dev` alone**: a bind mount of the same filesystem has
   the same `st_dev`, and its contents would be wiped;
-- independent of `PATH_MAX`; open descriptors grow with tree depth, so
-  `RLIMIT_NOFILE`'s soft limit is raised to its hard limit at start-up (`RUN`
-  processes get the original limit back).
+- independent of `PATH_MAX` and of `RLIMIT_NOFILE`: it holds a fixed number
+  of directory descriptors whatever the depth
+  ([rootfs](rootfs.md#deletion)). The snapshot walk (ADR-0038) and `COPY`
+  hold descriptors per level, so kaniko mode raises the soft limit to its hard
+  limit at start-up (`RUN` processes get the original limit back).
 
 ## Host safety checks
 

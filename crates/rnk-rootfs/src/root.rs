@@ -1137,6 +1137,25 @@ pub(crate) fn open_name(
     })
 }
 
+/// Opens `..` of the directory `dirfd` (`O_RDONLY | O_DIRECTORY`), for a
+/// walk climbing back to a directory whose descriptor it closed: no
+/// symlink or magic link, never onto another mount (`EXDEV`, as from a
+/// mount root). `..` leads wherever the directory has been moved: the
+/// caller checks what it reached. `path` is only for error messages.
+pub(crate) fn open_parent(dirfd: BorrowedFd<'_>, path: &Path) -> Result<OwnedFd> {
+    let resolve = ResolveFlags::NO_SYMLINKS
+        .union(ResolveFlags::NO_MAGICLINKS)
+        .union(ResolveFlags::NO_XDEV);
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    openat2_retry(dirfd, OsStr::new(".."), flags, Mode::empty(), resolve).map_err(|e| match e {
+        Errno::NOSYS => Error::Unsupported {
+            feature: "openat2",
+            source: e.into(),
+        },
+        e => io_err("open", path, e),
+    })
+}
+
 /// Refuses `root` when it is this process's own `/` (same device and
 /// inode, whatever name or mount reaches it): pruning, emptying or moving
 /// it would act on the machine itself, whatever the caller meant

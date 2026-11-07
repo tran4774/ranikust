@@ -292,3 +292,56 @@ fn pruning_a_deep_chain_takes_memory_linear_in_its_depth() {
     eprintln!("peak: {peak} bytes");
     assert!(peak < 4 * MIB, "pruning took {peak} bytes");
 }
+
+/// Empties a root on drop, when a test failed before it did: the temp dir's
+/// own removal recurses with a descriptor and a stack frame per level.
+struct Emptied<'a>(&'a RootPath);
+
+impl Drop for Emptied<'_> {
+    fn drop(&mut self) {
+        // A drop cannot fail the test; a tree left behind is at least shown.
+        if let Err(e) = delete_contents(self.0, &IgnoreList::new()) {
+            eprintln!("left behind: {e}");
+        }
+    }
+}
+
+/// Pruning a chain of 100,000 levels of its files, then removing it whole,
+/// takes heap linear in its depth: a few hundred bytes a level, where a path
+/// a level would take gigabytes.
+#[test]
+fn pruning_a_chain_of_100k_levels_takes_memory_linear_in_its_depth() {
+    use rnk_rootfs::FileType;
+    use rustix::fs::{Mode, OFlags};
+    const DEPTH: usize = 100_000;
+    let _one = one_at_a_time();
+    let (_tmp, host, root) = root();
+    let _emptied = Emptied(&root);
+    let dir = OFlags::PATH | OFlags::DIRECTORY;
+    let mut cur = rustix::fs::open(&host, dir, Mode::empty()).unwrap();
+    rustix::fs::mkdirat(&cur, "deep", Mode::from_raw_mode(0o755)).unwrap();
+    cur = rustix::fs::openat(&cur, "deep", dir, Mode::empty()).unwrap();
+    for _ in 0..DEPTH {
+        let f = rustix::fs::openat(
+            &cur,
+            "f",
+            OFlags::WRONLY | OFlags::CREATE,
+            Mode::from_raw_mode(0o644),
+        );
+        drop(f.unwrap());
+        rustix::fs::mkdirat(&cur, "d", Mode::from_raw_mode(0o755)).unwrap();
+        cur = rustix::fs::openat(&cur, "d", dir, Mode::empty()).unwrap();
+    }
+    drop(cur);
+    let files = peak_of(|| {
+        prune(&root, &|_, t| t == FileType::Regular).unwrap();
+    });
+    let whole = peak_of(|| {
+        prune(&root, &|p, _| p == std::path::Path::new("deep")).unwrap();
+    });
+    eprintln!("peak: {files} bytes pruning files, {whole} bytes removing whole");
+    assert!(root.read_names("").unwrap().is_empty());
+    for (what, peak) in [("pruning files", files), ("removing whole", whole)] {
+        assert!(peak < 64 * MIB, "{what} took {peak} bytes");
+    }
+}

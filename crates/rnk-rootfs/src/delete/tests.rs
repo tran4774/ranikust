@@ -10,6 +10,9 @@ use rustix::fs::{CWD, Mode};
 use super::*;
 use crate::test_util::{Fixture, errno, snapshot, tree};
 
+mod overlay;
+mod reopen;
+
 #[test]
 fn deletes_everything_but_the_root() {
     let f = Fixture::new();
@@ -99,25 +102,9 @@ fn entries_on_another_mount_are_kept() {
 
 #[test]
 fn deletes_a_tree_deeper_than_path_max() {
+    // Past `PATH_MAX`; `tests/descriptors.rs` runs with longer paths, under
+    // a lowered `RLIMIT_NOFILE`.
     const DEPTH: usize = 3004;
-    // One fd per level is held; raise the soft limit like ranikust does at
-    // start-up (only ever upwards, and only in this test process).
-    let lim = rustix::process::getrlimit(rustix::process::Resource::Nofile);
-    let need = u64::try_from(DEPTH).unwrap() + 64;
-    if lim.current.is_some_and(|c| c < need) {
-        assert!(
-            lim.maximum.is_none_or(|m| m >= need),
-            "RLIMIT_NOFILE hard limit below {need}"
-        );
-        rustix::process::setrlimit(
-            rustix::process::Resource::Nofile,
-            rustix::process::Rlimit {
-                current: lim.maximum,
-                maximum: lim.maximum,
-            },
-        )
-        .unwrap();
-    }
     let f = Fixture::new();
     let mut cur =
         rustix::fs::open(&f.host, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap();
@@ -836,4 +823,133 @@ fn red_team_prune_of_a_directory_of_100k_entries_gives_what_a_copy_gives() {
     );
     let m = fs::metadata(f.host("big")).unwrap();
     assert_eq!((m.mtime(), m.mtime_nsec()), (4_000_000, 7));
+}
+
+/// How a test takes a directory a walk has closed the descriptor of away
+/// from the root, while the walk is deeper down.
+#[derive(Clone, Copy, Debug)]
+enum Away {
+    /// Renamed outside the root, to `moved`.
+    Moved,
+    /// Exchanged with the directory `sub` outside (`RENAME_EXCHANGE`).
+    Swapped,
+}
+
+impl Away {
+    /// Its name outside the root once taken away.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Moved => "moved",
+            Self::Swapped => "sub",
+        }
+    }
+
+    /// Takes `d/d` of `f`'s root away, to `out`.
+    fn take(self, f: &Fixture, out: &Path) {
+        match self {
+            Self::Moved => fs::rename(f.host("d/d"), out.join("moved")).unwrap(),
+            Self::Swapped => rustix::fs::renameat_with(
+                CWD,
+                f.host("d/d"),
+                CWD,
+                out.join("sub"),
+                rustix::fs::RenameFlags::EXCHANGE,
+            )
+            .unwrap(),
+        }
+    }
+}
+
+/// A chain `d/d/…/d` of `3 * OPEN_DIRS` directories in `f`'s root, each
+/// holding a file `x`, the last also the file `leaf`; and, outside, an
+/// empty directory `d` and a file `x`, which a walk taking the outside for
+/// the chain's first directory would delete. Returns the outside.
+fn chain_beside_lookalikes(f: &Fixture) -> PathBuf {
+    let (out, _) = f.outside();
+    fs::create_dir(out.join("d")).unwrap();
+    fs::write(out.join("x"), b"outside").unwrap();
+    let mut dir = f.host.clone();
+    for _ in 0..3 * OPEN_DIRS {
+        dir.push("d");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("x"), b"").unwrap();
+    }
+    fs::write(dir.join("leaf"), b"").unwrap();
+    set_times(&f.host("d"), 3_000_000);
+    out
+}
+
+/// What is outside but the directory taken away there, and the outside's
+/// modification time.
+fn outside_but(out: &Path, away: Away) -> (crate::test_util::Snapshot, (i64, i64)) {
+    let entries = snapshot(out)
+        .into_iter()
+        .filter(|(p, _)| !p.starts_with(away.name()))
+        .collect();
+    let m = fs::metadata(out).unwrap();
+    (entries, (m.mtime(), m.mtime_nsec()))
+}
+
+/// A walk deeper than [`OPEN_DIRS`] closes its farthest descriptors and
+/// reopens each directory through `..` when it climbs back to it: what it
+/// reaches must be the directory it left. Once `d/d` is moved out of the
+/// root, or swapped with a directory outside, while the walk is at the
+/// bottom, `..` of it leads outside: the walk stops there with
+/// [`Error::Changed`], deleting nothing that was outside (the lookalike `d`
+/// and `x`) and leaving the outside's times. What `d/d` held was the
+/// root's and goes, as with a descriptor held on every level.
+#[test]
+fn a_directory_reopened_through_dotdot_must_be_the_one_left() {
+    for away in [Away::Moved, Away::Swapped] {
+        let f = Fixture::new();
+        let out = chain_beside_lookalikes(&f);
+        let mut after = None;
+        let mut decide = |p: &Path, _: FileType| {
+            if p.file_name() == Some(OsStr::new("leaf")) && after.is_none() {
+                away.take(&f, &out);
+                after = Some(outside_but(&out, away));
+            }
+            Keep::Remove
+        };
+        let start = open_dir(&f.root, Path::new("")).unwrap();
+        let r = remove_below(
+            &f.root,
+            start,
+            Path::new(""),
+            &mut decide,
+            &mut Counts::default(),
+        );
+        let after = after.expect("the walk reached the leaf");
+        assert!(matches!(r, Err(Error::Changed { .. })), "{away:?}: {r:?}");
+        assert_eq!(outside_but(&out, away), after, "{away:?}");
+        if let Away::Swapped = away {
+            assert_eq!(fs::read(f.host("d/d/file")).unwrap(), b"y");
+        }
+    }
+}
+
+/// So does `prune`'s own walk: with `d/d` moved or swapped out while it is
+/// at the bottom, it stops with [`Error::Changed`] when it climbs back,
+/// deleting nothing outside and setting no times there.
+#[test]
+fn prune_reopens_through_dotdot_only_the_directory_it_left() {
+    for away in [Away::Moved, Away::Swapped] {
+        let f = Fixture::new();
+        let out = chain_beside_lookalikes(&f);
+        let after = std::cell::RefCell::new(None);
+        let remove = |p: &Path, t: FileType| {
+            if p.file_name() == Some(OsStr::new("leaf")) && after.borrow().is_none() {
+                away.take(&f, &out);
+                *after.borrow_mut() = Some(outside_but(&out, away));
+            }
+            t == FileType::Regular
+        };
+        let r = prune(&f.root, &remove);
+        let after = after.into_inner().expect("the walk reached the leaf");
+        assert!(matches!(r, Err(Error::Changed { .. })), "{away:?}: {r:?}");
+        assert_eq!(outside_but(&out, away), after, "{away:?}");
+        if let Away::Swapped = away {
+            assert_eq!(fs::read(f.host("d/d/file")).unwrap(), b"y");
+        }
+    }
 }

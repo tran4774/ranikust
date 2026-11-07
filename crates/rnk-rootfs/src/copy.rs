@@ -297,7 +297,7 @@ impl SkippedSpecial {
 }
 
 /// One source directory being copied. One frame per level holds two fds,
-/// so a deep tree needs a raised `RLIMIT_NOFILE`, as deletion does. Its
+/// so a deep tree needs a raised `RLIMIT_NOFILE`, which deletion does not. Its
 /// paths are not kept: the walk shares one source and one destination path
 /// that grow by a name on entering a frame and shrink when it is done, so
 /// memory is linear in the tree's depth, not in the sum of its paths (T15).

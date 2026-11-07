@@ -210,7 +210,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   else with them still refused
   (`open_marks_a_directory_holding_only_ranikusts_leftovers`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
-  build killed by `SIGKILL` inside `f` leaves nothing and frees the lock.
+  build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
+  `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a
+  cache 3,000 levels deep.
   `tests/spans.rs`. Planted symlinks as entries or build directories, a FIFO
   as a lock file, a directory as a dead build's lock file; in
   `src/store/tests.rs`, a directory swapped for a symlink or another
