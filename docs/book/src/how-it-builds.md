@@ -23,9 +23,9 @@ user may write, because the image's setuid programs land there.
 
 Base layers are unpacked entry by entry. An entry whose name leaves the root,
 or that holds what the kernel refuses (a NUL byte, a name over 255 bytes, a
-directory path or symlink target over 4095 bytes, an xattr name or value out
-of its bounds), fails the build, naming the entry, before any of it is
-written. On a container's `/`, a layer streamed from a registry is checked
+directory path or symlink target over 4095 bytes, a directory path over 4094
+bytes on a container's `/`, an xattr name or value out of its bounds), fails
+the build, naming the entry, before any of it is written. On a container's `/`, a layer streamed from a registry is checked
 whole first, so such a layer leaves `/` as it was.
 
 ## Overlay mode

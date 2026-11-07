@@ -2227,8 +2227,7 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
         }
     }
 
-    // A live root reads where a directory lies through `/proc/self/fd`,
-    // whose link also holds the root's own path: left out here.
+    // A live root's limit is lower: [`a_live_root_takes_a_directory_path_to_what_proc_shows_of_it`].
     let dir = dir_of(4095);
     let mut t = Tar::new(&f);
     t.pax(&[("path", format!("{dir}/{name}").as_bytes())])
@@ -2236,7 +2235,7 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
         .pax(&[("linkpath", format!("{dir}/{name}").as_bytes())])
         .hardlink("h", "x");
     let bytes = t.bytes();
-    check_headers(bytes.as_slice()).unwrap();
+    check_headers_within(bytes.as_slice(), PATH_MAX).unwrap();
     for (how, r, _) in every_extraction(&bytes) {
         if how != "live" {
             r.unwrap_or_else(|e| panic!("{how}: {e}"));
@@ -2272,6 +2271,71 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
         Vec::new(),
     ] {
         xattr("security.capability", &value).unwrap_or_else(|e| panic!("{value:?}: {e}"));
+    }
+}
+
+/// A live root reads where a directory lies through `/proc/self/fd`, whose
+/// link holds at most `PATH_MAX` bytes with the root's own path: it takes a
+/// directory path up to that and refuses one past it before anything of
+/// the entry is written, on `/` past 4094 bytes, as [`check_headers`]
+/// does; [`extract`] and [`extract_overlay`] take 4095.
+#[test]
+fn a_live_root_takes_a_directory_path_to_what_proc_shows_of_it() {
+    assert_eq!(live_dir_max(b"/"), 4094);
+    assert_eq!(live_dir_max(b"/r"), 4092);
+    let layer = |f: &Fixture, dir: &str| {
+        let mut t = Tar::new(f);
+        t.file("first", 0o644, b"1")
+            .pax(&[("path", format!("{dir}/x").as_bytes())])
+            .file("x", 0o644, b"deep")
+            // Its target's directory is read back through `/proc/self/fd`.
+            .pax(&[("linkpath", format!("{dir}/x").as_bytes())])
+            .hardlink("h", "x");
+        t.bytes()
+    };
+
+    let f = Fixture::new();
+    let host = fs::canonicalize(&f.host).unwrap();
+    let max = live_dir_max(host.as_os_str().as_bytes());
+    extract_live(&f.root, layer(&f, &dir_of(max)).as_slice(), &live_keep()).unwrap();
+    assert!(f.host.join("h").exists());
+    let f = Fixture::new();
+    let host = fs::canonicalize(&f.host).unwrap();
+    let past = dir_of(live_dir_max(host.as_os_str().as_bytes()) + 1);
+    let e = extract_live(&f.root, layer(&f, &past).as_slice(), &live_keep()).unwrap_err();
+    assert!(
+        matches!(&e, Error::Entry { path, .. } if *path == Path::new(&past).join("x")),
+        "{e}"
+    );
+    let tree: BTreeSet<OsString> = fs::read_dir(&f.host)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(tree, BTreeSet::from([OsString::from("first")]));
+
+    let f = Fixture::new();
+    check_headers(layer(&f, &dir_of(4094)).as_slice()).unwrap();
+    let past = layer(&f, &dir_of(4095));
+    let checked = check_headers(past.as_slice()).unwrap_err();
+    // The same reason, for an entry of another name.
+    assert_eq!(entry_reason(&checked), entry_reason(&e));
+    assert!(
+        entry_reason(&checked).ends_with(DIR_PAST_PATH_MAX),
+        "{checked}"
+    );
+    for (how, r, _) in every_extraction(&past) {
+        match how {
+            "live" => assert!(matches!(r, Err(Error::Entry { .. })), "{r:?}"),
+            _ => r.unwrap_or_else(|e| panic!("{how}: {e}")),
+        }
+    }
+}
+
+/// The reason of an [`Error::Entry`].
+fn entry_reason(e: &Error) -> &str {
+    match e {
+        Error::Entry { reason, .. } => reason,
+        _ => panic!("{e}"),
     }
 }
 
@@ -2536,11 +2600,14 @@ proptest::proptest! {
 
     /// Red team (ADR-0123): on generated layers of hostile names, links,
     /// whiteouts, entry types, GNU long names and links, PAX paths, link
-    /// paths, xattrs, sizes, times and ids, [`check_headers`] refuses
-    /// only layers that every extraction applying whiteouts refuses too, so
-    /// the spool pass on `/` never fails a layer the extraction takes; and
-    /// on a layer it passes, no extraction fails on the framing, the
-    /// `tar-header` limit or a value the kernel refuses (#179).
+    /// paths, xattrs, sizes, times and ids, the check refuses only layers
+    /// that every extraction applying whiteouts refuses too, so the spool
+    /// pass on `/` never fails a layer the extraction takes; and on a layer
+    /// it passes, no extraction fails on the framing, the `tar-header`
+    /// limit or a value the kernel refuses (#179). The check as
+    /// [`extract`] reads, directory paths to 4095 bytes;
+    /// [`check_headers`], for `/`, refuses the same and else only a
+    /// directory path past 4094 bytes ([`on_slash_disagreement`]).
     #[test]
     fn red_team_check_headers_refuses_only_what_an_extraction_refuses(
         entries in proptest::collection::vec(
@@ -2549,7 +2616,10 @@ proptest::proptest! {
         ),
     ) {
         let bytes = gen_layer(&Fixture::new(), &entries);
-        let checked = check_headers(bytes.as_slice());
+        let checked = check_headers_within(bytes.as_slice(), PATH_MAX);
+        if let Some(why) = on_slash_disagreement(&checked, &check_headers(bytes.as_slice())) {
+            proptest::prop_assert!(false, "{why}");
+        }
         for (how, r, _) in applying_extractions(&bytes) {
             if let Some(why) = disagreement(&bytes, &checked, &r) {
                 proptest::prop_assert!(false, "{how}: {why}");
@@ -2581,6 +2651,20 @@ fn disagreement(tar: &[u8], checked: &Result<()>, r: &Result<()>) -> Option<Stri
             Some(format!("checked, but the kernel refused a value: {e}"))
         }
         _ => None,
+    }
+}
+
+/// How [`check_headers`]'s result `on_slash` disagrees with `checked`, the
+/// check's as [`extract`] reads: it passed a layer the check refuses, or
+/// refused one otherwise than the check did and not for a directory path
+/// past 4094 bytes, which only a live root at `/` refuses.
+fn on_slash_disagreement(checked: &Result<()>, on_slash: &Result<()>) -> Option<String> {
+    match (checked, on_slash) {
+        (Err(c), Ok(())) => Some(format!("checked {c}, but passed on /")),
+        (Err(c), Err(s)) if c.to_string() == s.to_string() => None,
+        (_, Err(Error::Entry { reason, .. })) if reason.ends_with(DIR_PAST_PATH_MAX) => None,
+        (_, Err(s)) => Some(format!("checked {checked:?}, but refused on / with {s}")),
+        (Ok(()), Ok(())) => None,
     }
 }
 
@@ -2706,10 +2790,11 @@ proptest::proptest! {
     /// Red team (ADR-0123): a valid layer, half the time with a member of
     /// [`kernel_members`] spliced in between two of its members, with one
     /// to four bytes changed, in a header (its checksum recomputed, three
-    /// times in four) or anywhere in the stream: [`check_headers`] refuses
-    /// only what every extraction that applies whiteouts refuses too, and
-    /// on what it passes no extraction fails on the framing, the
-    /// `tar-header` limit or a value the kernel refuses (#179).
+    /// times in four) or anywhere in the stream: the check refuses only
+    /// what every extraction that applies whiteouts refuses too, and on
+    /// what it passes no extraction fails on the framing, the `tar-header`
+    /// limit or a value the kernel refuses (#179); as in the proptest
+    /// above.
     #[test]
     fn red_team_check_headers_agrees_with_every_extraction_on_mutated_headers(
         splice in proptest::option::of((0usize..64, 0usize..64)),
@@ -2765,7 +2850,10 @@ proptest::proptest! {
                 bytes[block..block + 512].copy_from_slice(h.as_bytes());
             }
         }
-        let checked = check_headers(bytes.as_slice());
+        let checked = check_headers_within(bytes.as_slice(), PATH_MAX);
+        if let Some(why) = on_slash_disagreement(&checked, &check_headers(bytes.as_slice())) {
+            proptest::prop_assert!(false, "{why}");
+        }
         for (how, r, _) in applying_extractions(&bytes) {
             if let Some(why) = disagreement(&bytes, &checked, &r) {
                 proptest::prop_assert!(false, "{how}: {why}");

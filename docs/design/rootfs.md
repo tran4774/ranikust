@@ -148,10 +148,13 @@ never called.
   ([#179](https://github.com/tran4774/ranikust/issues/179)): a NUL byte in
   a name or link target; a component over 255 bytes (`NAME_MAX`); a
   directory path over 4095 bytes (`PATH_MAX` counts the NUL), the entry's
-  name aside, since the kernel gets the directory, then the name; a symlink
-  target over 4095 bytes. On a directory, file or symlink it refuses an
-  xattr, as it is set (escaped in the overlay form), whose name is empty,
-  over 255 bytes (`XATTR_NAME_MAX`) or holds a NUL byte, whose value is
+  name aside, since the kernel gets the directory, then the name; in a live
+  root, over what `/proc/self/fd` shows of it with the root's own path,
+  4094 bytes on `/` (where a directory lies is read there), which the check
+  holds to as it guards `/`; a symlink target over 4095 bytes. On a
+  directory, file or symlink it refuses an xattr, as it is set (escaped in
+  the overlay form), whose name is empty, over 255 bytes
+  (`XATTR_NAME_MAX`) or holds a NUL byte, whose value is
   over 64 KiB (`XATTR_SIZE_MAX`), a non-empty `security.capability` that
   is not 20 bytes of revision 2 or 24 of revision 3 with a root id other
   than -1 (`cap_convert_nscap` in `security/commoncap.c`), and `user.*` on
@@ -168,8 +171,8 @@ never called.
   take only some of the kernel's namespaces, `user.`, `security.` and the
   like; a FUSE or Ceph one may take any name), a POSIX ACL it refuses, a
   value too big for its blocks, `security.*` in a user namespace, and in a
-  live root a directory whose path, with the root's own, is past
-  `PATH_MAX`.
+  live root a directory whose path reached through a symlink is past what
+  `/proc/self/fd` shows.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

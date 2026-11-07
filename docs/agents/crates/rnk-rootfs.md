@@ -75,10 +75,10 @@ impl RootPath {
 }
 pub struct Pinned;   // stat(), read_link(), xattrs(), open_regular() (reopen of the pinned inode)
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // plain tar; Whiteouts::{Apply, Overlay}
-pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
+pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path, read through /proc/self/fd, so a directory path is held to PATH_MAX less the root's own (4094 bytes on /, #179); no device node or FIFO (ADR-0041)
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped; a link to one the same layer left out past a 1 MiB budget for the names remembered (one warning, ADR-0128), or that a lower layer left out (ADR-0131), is linked to what the layer has at that name, else copied from the nearest lower layer that shows it (ADR-0012), else refused; FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
-pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
+pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors, a directory path held to 4094 bytes as extract_live on / holds it; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
@@ -233,6 +233,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   before anything of it is written, values at the limits or that the kernel
   never gets taken, xattr names of any namespace or none left to the
   filesystem, and a node's name and xattrs refused only where it is made;
+  a live root takes a directory path up to what `/proc/self/fd` shows of it
+  and refuses one byte more before writing, the check taking 4094 bytes and
+  refusing 4095, which `extract` and `extract_overlay` take;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
   GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
   and xattr records, with values at and past the kernel's limits, included):

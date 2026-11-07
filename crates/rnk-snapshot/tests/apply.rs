@@ -1157,6 +1157,8 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
         t.bytes()
     };
     let long = "n".repeat(256);
+    // Sixteen names of 255 bytes: 4095 with their slashes.
+    let deep = format!("{}/x", vec!["n".repeat(255); 16].join("/"));
     let mut summed = first().file("summed", b"").bytes();
     // A name byte of the second header: its checksum no longer matches.
     summed[1024] ^= 1;
@@ -1169,6 +1171,11 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
         (
             "a name over NAME_MAX",
             pax(&[("path", long.as_bytes())], |t| t.file("x", b"")),
+            false,
+        ),
+        (
+            "a directory of 4095 bytes, past what / reads back of it",
+            pax(&[("path", deep.as_bytes())], |t| t.file("x", b"")),
             false,
         ),
         (
