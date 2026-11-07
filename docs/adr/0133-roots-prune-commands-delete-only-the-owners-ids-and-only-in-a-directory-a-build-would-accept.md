@@ -33,10 +33,13 @@ chosen:
 
 - `-nouser` for the emptying: it also matches the subordinate ids of other
   users **[inferred]**, which is what the fix must leave alone.
-- Run root's emptying in a user namespace that maps only the owner's ids. No
-  reason beyond the choice made below was recorded.
-- Give root commands only for directories root owns. A user's state directory
-  then gets none **[inferred]**.
+- Run root's emptying in a user namespace that maps only the owner's ids. Not
+  taken: ADR-0105 keeps root's deletion out of ranikust and in commands root
+  reads before running, and a namespace set up for another user's ids would
+  add a privileged path to a refusal.
+- Give root commands only for directories root owns. Not taken: a user's
+  directory that the user's own `prune --all` could not finish, where no user
+  namespace is allowed, is the case the commands exist for.
 
 ## Decision Outcome
 
