@@ -657,11 +657,12 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
             "made by mv: {made_by_mv}"
         );
         assert!(state.join("blobs").is_dir(), "made by mv: {made_by_mv}");
-        // The machine's `mv` ran after the shim's `mkdir`, and failed.
+        // The machine's `mv` ran after the shim's `mkdir`, and failed;
+        // absent where it did not run.
         let status = fs::read_to_string(&mv_ran).ok();
         let want = made_by_mv.then(|| "1\n".to_owned());
         assert_eq!(status, want, "made by mv: {made_by_mv}: mv's status");
-        // Absent where `mv` did not run; the next pass starts without it.
+        // The next pass starts without it, absent where `mv` did not run.
         let _ = fs::remove_file(&mv_ran);
         fs::remove_dir_all(&state).unwrap();
     }

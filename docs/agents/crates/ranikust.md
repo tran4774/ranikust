@@ -375,9 +375,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   ending in `..` or an empty directory, and each script changing nothing
   with a `find` that answers `--version` as BusyBox's does or not at all;
   the ways out only in `prune`'s refusal of a prune that could not
-  finish), `statedir`
-  (each ADR-0050 refusal: `/`, system directories, symlinks, writable
-  parents, nothing created through a planted link; `0700`; a user's default
+  finish), `statedir` (each ADR-0050 refusal: `/`, system directories,
+  symlinks, writable parents, nothing created through a planted link;
+  `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
   advice, a `$HOME` reached through a `/proc` link is refused with nothing
   made; a regular `.ranikust-pruning` counts as the marker, for the store

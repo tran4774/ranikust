@@ -18,7 +18,7 @@
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use rnk_store::Store;
 
@@ -266,7 +266,8 @@ pub(crate) struct Pin {
 impl Pin {
     /// The pin of the state directory `dir` that `check` describes, for
     /// commands that name it: `dir` must end in a name, which they enter
-    /// its parent to act on.
+    /// its parent to act on ([`pin`] turns away a path ending in `..`
+    /// first; past `check_prune`, only that can lack one).
     pub(crate) fn of(dir: &Path, check: &rnk_store::PruneCheck) -> Result<Self, NoPin> {
         match (dir.parent(), dir.file_name()) {
             (Some(_), Some(_)) => Ok(Self {
@@ -303,7 +304,7 @@ pub(crate) enum NoPin {
 /// the owner.
 pub(crate) fn pin(dir: &Path) -> Result<(Pin, bool), NoPin> {
     // Whatever `..` leads to, the commands could not name it.
-    if dir.components().next_back() == Some(std::path::Component::ParentDir) {
+    if dir.components().next_back() == Some(Component::ParentDir) {
         return Err(NoPin::NoName);
     }
     let check = Store::check_prune(dir).map_err(|e| NoPin::Unchecked(e.to_string()))?;
