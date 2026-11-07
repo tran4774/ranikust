@@ -277,11 +277,11 @@ The steps, in order:
       `mount_setattr(AT_RECURSIVE)` (without it the `RUN` fails); the
       sandbox's probe chooses it once and logs it once per build. Unasked,
       the probe fails at `Step::MountProc` and warns how to get a new `proc`:
-      run where a user namespace may mount one (a container without masked
-      paths, such as Docker's `--security-opt systempaths=unconfined` or
-      Kubernetes' `procMount: Unmasked` [inferred]), or ask for the rbind. So
-      a `RUN` never sees the container's `/proc` unasked, and always gets a
-      new `proc` where one mounts. Otherwise a refused `proc` mount fails the
+      build as a regular user on a host, where one mounts, or in a container
+      where ranikust may mount (overlay mode as root,
+      [where environments land](modes-and-detection.md#where-environments-land)),
+      or ask for the rbind. So a `RUN` never sees the container's `/proc`
+      unasked, and always gets a new `proc` where one mounts. Otherwise a refused `proc` mount fails the
       `RUN` (`Step::MountProc`). `proc`, `sysfs` (3) and the `/dev` tmpfs
       (4) go only on a real directory of the root: `/proc`, `/sys` or `/dev`
       as a symlink is refused before any stub is placed, and the child

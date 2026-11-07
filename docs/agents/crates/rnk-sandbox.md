@@ -69,11 +69,11 @@ does not call yet.
   `Error::UserNamespaceBroken`, after which the process must end.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`. In the
-  build's user namespace (#78): the `proc` and `sysfs` the probe chose,
+  build's user namespace (#78): the `proc` and `sysfs` the probe chose;
   `setgroups` only where `/proc/self/setgroups` allows it
-  ([sandbox.md, step 2](../../design/sandbox.md#per-run-sequence)),
-  `devpts` without `gid=5` where gid 5 is unmapped (`OwnNamespace`, read
-  once per `Sandbox`).
+  ([sandbox.md, step 2](../../design/sandbox.md#per-run-sequence)) and
+  `devpts` without `gid=5` where gid 5 is unmapped, both read once per
+  `Sandbox` (`OwnNamespace`).
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
   (`cgroup.rs`, ADR-0110): the start-up probe, the nesting, and each `RUN`'s
   cgroups, killed and removed when it ends.
@@ -116,7 +116,7 @@ pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave
 pub fn enter_build_user_namespace(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
 pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, StepResult)>, .. } // #[non_exhaustive]; read back from /proc/self once inside: map OneId whenever the uid or gid map gives one id (root's own one-id map mirrored too); setgroups_allowed(): as /proc/self/setgroups says (deny for OneId written by the process, or inherited); unreadable: UserNamespaceBroken; Display: "newuidmap map", "one uid map, setgroups denied (newuidmap: ...)"
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
-pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE; probe_with_fallbacks(dir, Fallbacks::default())
+pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE; as probe_with_fallbacks(dir, Fallbacks::default()), without its user-namespace warning
 pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps>; // #78: a new proc and sysfs first; an EPERM of one allowed tried again as an rbind; warns once for a proc rbind, info for sysfs; a proc EPERM not allowed: Error::Setup at Step::MountProc and a warning with how to get a new proc
 pub struct Caps { pub root_entry: RootEntry, pub proc: KernelFs, pub sysfs: KernelFs } // #[non_exhaustive]; every RUN of the Sandbox gets them
 pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]

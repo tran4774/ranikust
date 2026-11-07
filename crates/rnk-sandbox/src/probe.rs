@@ -61,7 +61,7 @@ pub struct Fallbacks {
 }
 
 impl Fallbacks {
-    /// These, and an rbind of `/proc` where a new `proc` is refused, at the
+    /// Also allows an rbind of `/proc` where a new `proc` is refused, at the
     /// operator's request only (ADR-0126): through it a `RUN` sees every
     /// process of the PID namespace ranikust runs in, and reaches those of
     /// its uid through their `/proc` entries.
@@ -116,10 +116,11 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
         && !allowed.proc
     {
         tracing::warn!(
-            "rnk-sandbox: a RUN needs a new proc, which a user namespace may not mount here \
-             (a container whose /proc has masked paths): run where it can, or allow an rbind \
-             of /proc, through which each RUN sees this container's processes and reaches \
-             those of its uid"
+            "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
+             (a container whose /proc has masked paths): build as a regular user on a host, \
+             or in a container where ranikust may mount, or allow an rbind of /proc \
+             (--allow proc.rbind), through which each RUN sees this container's processes \
+             and reaches those of its uid"
         );
     }
     result
@@ -221,8 +222,8 @@ fn log_rbinds(caps: Caps) {
     }
 }
 
-/// A new `proc` refused with `EPERM`, as a user namespace is where the
-/// `/proc` it sees has masked paths.
+/// A new `proc` refused with `EPERM`, as in a user namespace whose `/proc`
+/// has masked paths.
 fn is_proc_refusal(e: &Error) -> bool {
     matches!(
         e,

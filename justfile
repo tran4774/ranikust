@@ -285,7 +285,7 @@ smoke image="docker.io/library/alpine:3.20":
       /smoke-build --userns --image "$smoke_image" --out /out >"$OUT_U.refused.log" 2>&1; then
       echo "error: --userns without --allow proc.rbind: expected a refusal" >&2; exit 1
     fi
-    grep -q '^smoke-build: RUN sandbox: mount proc: ' "$OUT_U.refused.log" ||
+    grep -q '^smoke-build: RUN sandbox: mount proc: Operation not permitted' "$OUT_U.refused.log" ||
       { echo "error: --userns without --allow proc.rbind: not refused at the new proc:" >&2;
         cat "$OUT_U.refused.log" >&2; exit 1; }
     runs=(--run 'echo "hello from ranikust" > /hello' --run 'apk add --no-cache jq')

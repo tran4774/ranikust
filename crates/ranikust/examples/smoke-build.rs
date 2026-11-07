@@ -93,11 +93,15 @@ fn parse_args() -> Result<Args, BoxError> {
             "--tag" => args.tag = value,
             "--run" => args.runs.push(value),
             "--allow" if value == "proc.rbind" => args.proc_rbind = true,
+            "--allow" => return Err(format!("--allow {value:?}: only proc.rbind is known").into()),
             _ => return Err(format!("unknown argument {flag:?}").into()),
         }
     }
     if args.out.as_os_str().is_empty() {
         return Err("--out is required".into());
+    }
+    if args.proc_rbind && !args.userns {
+        return Err("--allow proc.rbind needs --userns".into());
     }
     Ok(args)
 }
