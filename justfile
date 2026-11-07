@@ -274,8 +274,8 @@ smoke image="docker.io/library/alpine:3.20":
     podman load --quiet -i "$OUT.tar"
     podman run --rm "$NAME" sh -c 'cat /hello && jq --version'
     # Root of a default `podman run`: the build's user namespace, with an
-    # rbind of the container's /proc and /sys (#78), so without the checks
-    # of the RUN's own /proc; nor the host name's: Podman's seccomp profile
+    # rbind of the container's /proc and /sys (#78), so without the check
+    # of the RUN's own PID 1; nor the host name's: Podman's seccomp profile
     # refuses `sethostname` without CAP_SYS_ADMIN.
     OUT_U="$TARGET/smoke/oci-userns" NAME_U=localhost/ranikust-smoke-userns:latest
     rm -rf "$OUT_U" "$OUT_U.tar" && mkdir -p "$OUT_U"

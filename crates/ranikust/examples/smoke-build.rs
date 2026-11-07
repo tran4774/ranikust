@@ -60,6 +60,19 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    // As `ranikust` first of all (ADR-0051), so that a `RUN` sharing this
+    // process's uid (`--userns`) reaches its `/proc` entries as it would
+    // ranikust's.
+    if let Err(e) =
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+    {
+        eprintln!("smoke-build: prctl(PR_SET_DUMPABLE, 0): {e}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = rnk_sandbox::forbid_core_dumps() {
+        eprintln!("smoke-build: setrlimit(RLIMIT_CORE, 0): {e}");
+        return ExitCode::FAILURE;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
