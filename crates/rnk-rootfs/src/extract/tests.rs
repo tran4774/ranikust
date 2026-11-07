@@ -827,7 +827,13 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
         .hardlink("bin/sh2", "/usr/bin/dash")
         .file("usr/bin/own", 0o644, b"own")
         .hardlink("usr/bin/own2", "usr/bin/own");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
 
     // A regular file with the lower inode's content and metadata.
     let sh = fs::symlink_metadata(f.host("usr/bin/sh")).unwrap();
@@ -865,7 +871,13 @@ fn a_hardlink_copied_from_a_lower_layer_gets_no_trusted_xattrs() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.hardlink("sh", "dash");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(xattr(&f.host("sh"), "trusted.x"), None);
     assert_eq!(xattr(&f.host("sh"), "user.app").unwrap(), b"u");
 }
@@ -892,7 +904,13 @@ fn every_name_of_a_lower_inode_shares_one_copy() {
         .hardlink("b", "n1")
         .hardlink("c", "n2")
         .hardlink("d", "n3");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     let a = fs::metadata(f.host("a")).unwrap();
     assert_eq!(a.nlink(), 4);
     for n in ["b", "c", "d"] {
@@ -919,7 +937,13 @@ fn a_copy_the_layer_removed_is_not_linked_again() {
         .hardlink("b", "n1")
         .file("b", 0o644, b"replaced")
         .hardlink("c", "n2");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     // `a` is overlay's whiteout now, `b` the layer's own file.
     assert!(
         fs::symlink_metadata(f.host("a"))
@@ -950,7 +974,13 @@ fn a_copy_whose_directory_went_by_another_name_is_copied_again() {
         .hardlink("s/a", "big")
         .file(".wh.d", 0o644, b"")
         .hardlink("c", "n1");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(fs::read(f.host("c")).unwrap(), b"content");
     assert_eq!(fs::metadata(f.host("c")).unwrap().nlink(), 1);
 }
@@ -965,7 +995,13 @@ fn the_nearest_lower_layer_shows_the_target() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.hardlink("a", "t").hardlink("b", "only_bottom");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&top.root, &bottom.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&top.root, &bottom.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(fs::read(f.host("a")).unwrap(), b"top");
     assert_eq!(fs::read(f.host("b")).unwrap(), b"bottom");
 }
@@ -984,7 +1020,13 @@ fn assert_hidden(setup: &dyn Fn(&Fixture), target: &str, layer: &dyn Fn(&mut Tar
     let mut t = Tar::new(&f);
     layer(&mut t);
     t.hardlink("h", target);
-    let e = extract_overlay(&f.root, t.bytes().as_slice(), &[&top.root, &bottom.root]).unwrap_err();
+    let e = extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&top.root, &bottom.root],
+        DeviceNodes::Create,
+    )
+    .unwrap_err();
     assert!(
         matches!(e, Error::Entry { ref reason, .. }
             if reason.contains("hidden") || reason.contains("whited out")),
@@ -1051,14 +1093,26 @@ fn lower_targets_never_leave_the_lower_roots() {
     for target in ["dir/sentinel", "missing", "adir"] {
         let mut t = Tar::new(&f);
         t.hardlink("h", target);
-        let e = extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap_err();
+        let e = extract_overlay(
+            &f.root,
+            t.bytes().as_slice(),
+            &[&lower.root],
+            DeviceNodes::Create,
+        )
+        .unwrap_err();
         assert!(matches!(e, Error::Entry { .. }), "{target}: {e}");
         assert!(!f.host("h").exists(), "{target}");
     }
     // A symlink target is copied as a symlink, never followed.
     let mut t = Tar::new(&f);
     t.hardlink("h", "file");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(fs::read_link(f.host("h")).unwrap(), out.join("sentinel"));
     assert_eq!(snapshot(&out), before);
 }
@@ -1068,15 +1122,69 @@ fn extract_overlay_reports_whether_the_layer_set_the_root() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.file("f", 0o644, b"x");
-    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[]).unwrap();
+    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap();
     assert!(!r.root_set);
 
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.dir("./", 0o555).file("f", 0o644, b"x");
-    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[]).unwrap();
+    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap();
     assert!(r.root_set);
     assert_eq!(f.root.statx("").unwrap().permissions(), 0o555);
+}
+
+/// ADR-0106: in a user namespace, block and character devices are left out;
+/// FIFOs, whiteouts and opaque markers are still made, unprivileged as
+/// there. `tests/spans.rs` checks the count.
+#[test]
+fn skipped_device_nodes_leave_fifos_and_whiteouts() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("d/", 0o755)
+        .file("d/.wh..wh..opq", 0o644, b"")
+        .node("fifo", EntryType::Fifo, 0, 0)
+        .node("null", EntryType::Char, 1, 3)
+        .node("zero", EntryType::Char, 0, 0)
+        .node("loop0", EntryType::Block, 7, 0)
+        .file(".wh.gone", 0o644, b"")
+        .file("kept", 0o644, b"ok");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Skip).unwrap();
+    for name in ["null", "zero", "loop0"] {
+        assert!(fs::symlink_metadata(f.host(name)).is_err(), "{name}");
+    }
+    assert!(
+        fs::symlink_metadata(f.host("fifo"))
+            .unwrap()
+            .file_type()
+            .is_fifo()
+    );
+    let gone = fs::symlink_metadata(f.host("gone")).unwrap();
+    assert!(gone.file_type().is_char_device());
+    assert_eq!(gone.rdev(), 0);
+    assert_eq!(
+        xattr(&f.host("d"), "user.overlay.opaque").as_deref(),
+        Some(&b"y"[..])
+    );
+    assert_eq!(fs::read(f.host("kept")).unwrap(), b"ok");
+
+    // A device as the layer's root is refused, as when they are made.
+    for devices in [DeviceNodes::Skip, DeviceNodes::Create] {
+        let f = Fixture::new();
+        let mut t = Tar::new(&f);
+        t.node("./", EntryType::Char, 1, 3);
+        let e = extract_overlay(&f.root, t.bytes().as_slice(), &[], devices).unwrap_err();
+        assert!(e.to_string().contains(ROOT_NOT_DIR), "{devices:?}: {e}");
+    }
+
+    // Control: asked to create them, an unprivileged process cannot.
+    if f.ids().0 != 0 {
+        let f = Fixture::new();
+        let mut t = Tar::new(&f);
+        t.node("null", EntryType::Char, 1, 3);
+        let e =
+            extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap_err();
+        assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
+    }
 }
 
 fn live_keep() -> IgnoreList {

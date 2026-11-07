@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 use rnk_metrics::Capture;
 use rnk_rootfs::{
-    CopyOpts, IgnoreList, RootPath, Whiteouts, copy, delete_contents, extract, extract_live,
+    CopyOpts, DeviceNodes, IgnoreList, RootPath, Whiteouts, copy, delete_contents, extract,
+    extract_live, extract_overlay,
 };
 
 /// A fresh root below a temp dir, removed on drop.
@@ -156,4 +157,34 @@ fn a_live_extraction_counts_ignored_entries_and_skipped_nodes() {
     assert_eq!(x["ignored"], 1);
     assert_eq!(x["nodes_skipped"], 1);
     assert_eq!(x["files"], 1);
+}
+
+/// ADR-0106: in a user namespace, a layer's block and character devices are
+/// counted; a FIFO is made.
+#[test]
+fn an_extraction_without_devices_counts_the_skipped_nodes() {
+    let capture = Capture::new();
+    let (_tmp, _host, root) = root();
+    let mut b = tar::Builder::new(Vec::new());
+    let mut add = |name: &str, t: tar::EntryType, major: u32, minor: u32| {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(t);
+        h.set_mode(0o644);
+        h.set_uid(rustix::process::getuid().as_raw().into());
+        h.set_gid(rustix::process::getgid().as_raw().into());
+        h.set_mtime(0);
+        h.set_size(0);
+        h.set_device_major(major).unwrap();
+        h.set_device_minor(minor).unwrap();
+        b.append_data(&mut h, name, &b""[..]).unwrap();
+    };
+    add("null", tar::EntryType::Char, 1, 3);
+    add("loop0", tar::EntryType::Block, 7, 0);
+    add("fifo", tar::EntryType::Fifo, 0, 0);
+    let tar = b.into_inner().unwrap();
+    capture.run(|| extract_overlay(&root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap());
+    let report = capture.report();
+    let x = &report["phases"]["rnk_rootfs.extract"];
+    assert_eq!(x["entries"], 3);
+    assert_eq!(x["nodes_skipped"], 2);
 }

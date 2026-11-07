@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rnk_oci::Digest;
-use rnk_rootfs::{FileTime, Meta, RootPath, extract_overlay};
+use rnk_rootfs::{DeviceNodes, FileTime, Meta, RootPath, extract_overlay};
 use rnk_store::{EntryKey, Store};
 
 use sha2::{Digest as _, Sha256};
@@ -125,7 +125,7 @@ pub(crate) fn extract_layer(
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let refs: Vec<&RootPath> = lower_roots.iter().collect();
         let mut decoder = rnk_layer::Decoder::new(blob)?;
-        let extracted = extract_overlay(root, &mut decoder, &refs)?;
+        let extracted = extract_overlay(root, &mut decoder, &refs, DeviceNodes::Create)?;
         let size = decoder.tar_size();
         let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
         if &actual != diff_id {

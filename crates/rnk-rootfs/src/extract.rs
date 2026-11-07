@@ -54,6 +54,18 @@ pub enum Whiteouts {
     Literal,
 }
 
+/// What [`extract_overlay`] does with a layer's block and character device
+/// nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeviceNodes {
+    /// Creates them, as overlay mode as root does (ADR-0041 left it so).
+    Create,
+    /// Creates none and counts them as `nodes_skipped`, for a process in a
+    /// user namespace, where `mknod` of a device needs `CAP_MKNOD` in the
+    /// initial one (ADR-0106). FIFOs and whiteouts are still made.
+    Skip,
+}
+
 const WHITEOUT_PREFIX: &[u8] = b".wh.";
 const OPAQUE: &[u8] = b".wh..wh..opq";
 /// AUFS bookkeeping (`.wh..wh.plnk`, `.wh..wh.aufs`, ...), skipped.
@@ -92,7 +104,7 @@ const PARENT_MODE: u32 = 0o755;
 /// entry, [`Error::Io`] when the filesystem refuses an operation (for
 /// example a device node or a foreign owner without privileges).
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
-    extract_with(dst, tar, wh, &[], None).map(drop)
+    extract_with(dst, tar, wh, &[], None, DeviceNodes::Create).map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into a live root, as kaniko mode
@@ -127,7 +139,15 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// As [`extract`]; [`Error::Entry`] when the physical path of a directory
 /// cannot be told (`/proc/self/fd` gives a path outside the root).
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
-    extract_with(dst, tar, Whiteouts::Apply, &[], Some(keep)).map(drop)
+    extract_with(
+        dst,
+        tar,
+        Whiteouts::Apply,
+        &[],
+        Some(keep),
+        DeviceNodes::Skip,
+    )
+    .map(drop)
 }
 
 /// [`extract_live`] with [`Whiteouts::Literal`]: a snapshot of a tree, not
@@ -138,7 +158,15 @@ pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result
 ///
 /// As [`extract_live`].
 pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
-    extract_with(dst, tar, Whiteouts::Literal, &[], Some(keep)).map(drop)
+    extract_with(
+        dst,
+        tar,
+        Whiteouts::Literal,
+        &[],
+        Some(keep),
+        DeviceNodes::Skip,
+    )
+    .map(drop)
 }
 
 /// Extracts the plain tar stream `tar` into `dst` in the overlay form
@@ -158,6 +186,11 @@ pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -
 /// link to that copy, so the bytes written stay bounded by the lower
 /// layers' size. The lower layers are only read.
 ///
+/// `devices` tells whether block and character device nodes are made or
+/// left out ([`DeviceNodes::Skip`], ADR-0106). One as the layer's root is
+/// refused either way, so a layer extracts in a user namespace only if it
+/// would as root.
+///
 /// Returns what the caller cannot see on disk afterwards: whether the layer
 /// set the root's metadata (an entry `./`). Without one, the root of an
 /// image keeps what the layers below gave it, so the caller takes it from
@@ -167,8 +200,13 @@ pub fn extract_live_literal(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -
 ///
 /// As [`extract`]; [`Error::Entry`] when the target is in no layer or hidden,
 /// is a directory, or lies below a symlink in a lower layer.
-pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath]) -> Result<Extracted> {
-    extract_with(dst, tar, Whiteouts::Overlay, lowers, None)
+pub fn extract_overlay(
+    dst: &RootPath,
+    tar: impl Read,
+    lowers: &[&RootPath],
+    devices: DeviceNodes,
+) -> Result<Extracted> {
+    extract_with(dst, tar, Whiteouts::Overlay, lowers, None, devices)
 }
 
 /// What [`extract_overlay`] reports about a layer.
@@ -223,6 +261,7 @@ fn extract_with(
     wh: Whiteouts,
     lowers: &[&RootPath],
     keep: Option<&IgnoreList>,
+    devices: DeviceNodes,
 ) -> Result<Extracted> {
     let span = tracing::info_span!(
         "rnk_rootfs.extract",
@@ -256,6 +295,7 @@ fn extract_with(
         wh,
         lowers,
         live,
+        devices,
         dirs: BTreeMap::new(),
         created: Created::default(),
         copied: HashMap::new(),
@@ -337,6 +377,8 @@ struct Extractor<'r> {
     lowers: &'r [&'r RootPath],
     /// [`extract_live`]: the ignore list and physical paths.
     live: Option<Live<'r>>,
+    /// Whether block and character device nodes are made.
+    devices: DeviceNodes,
     /// Lower inodes copied for a hardlink, by index in `lowers`, device and
     /// inode, and where the copy is with its `statx`, so that every further
     /// link to any of their names links to it while it is still there.
@@ -649,8 +691,17 @@ impl Extractor<'_> {
             reason: reason.to_owned(),
         };
 
-        // kaniko creates no device node or FIFO in its root (ADR-0041).
-        if self.live.is_some() && matches!(kind, Kind::Node(..)) {
+        // kaniko creates no device node or FIFO in its root (ADR-0041); a
+        // user namespace can make no device node (ADR-0106).
+        let skipped = match &kind {
+            Kind::Node(RawFileType::CharacterDevice | RawFileType::BlockDevice, ..) => {
+                self.live.is_some()
+                    || (self.devices == DeviceNodes::Skip && !path.as_os_str().is_empty())
+            }
+            Kind::Node(..) => self.live.is_some(),
+            Kind::Dir | Kind::File | Kind::Symlink(_) | Kind::Hardlink(_) => false,
+        };
+        if skipped {
             self.stats.nodes_skipped += 1;
             return Ok(());
         }
