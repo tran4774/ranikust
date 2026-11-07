@@ -3,8 +3,8 @@
 //!
 //! A test binary of its own: each test lowers this process's soft
 //! `RLIMIT_NOFILE` around the call so that exactly the descriptors the
-//! function's doc promises are free, far fewer than the depth of the trees,
-//! which no other test should run under.
+//! function's doc promises are free, far fewer than the depth of the trees.
+//! No other test should run under such a limit.
 
 use std::ffi::OsString;
 use std::fs;
@@ -49,6 +49,7 @@ fn open_fds() -> Vec<u64> {
     let own = u64::try_from(fd.as_raw_fd()).unwrap();
     rustix::fs::Dir::new(fd)
         .unwrap()
+        // `.` and `..` are no numbers.
         .filter_map(|e| e.unwrap().file_name().to_str().unwrap().parse().ok())
         .filter(|&n| n != own)
         .collect()
@@ -88,6 +89,7 @@ impl Free {
 
 impl Drop for Free {
     fn drop(&mut self) {
+        // A drop cannot fail the test, and may run while it unwinds.
         let _ = setrlimit(Resource::Nofile, self.was);
     }
 }
@@ -126,7 +128,10 @@ impl Root {
 
 impl Drop for Root {
     fn drop(&mut self) {
-        let _ = delete_contents(&self.root, &IgnoreList::new());
+        // A drop cannot fail the test; a tree left behind is at least shown.
+        if let Err(e) = delete_contents(&self.root, &IgnoreList::new()) {
+            eprintln!("left behind in {}: {e}", self.host.display());
+        }
     }
 }
 

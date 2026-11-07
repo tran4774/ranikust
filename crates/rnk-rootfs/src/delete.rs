@@ -306,8 +306,8 @@ fn prune_walk(
 
 /// Most descriptors one deletion walk holds at a time, whatever the depth
 /// of the tree: the directory it works in, its nearest ancestors, and the
-/// two a step opens briefly (the next directory, and the duplicate it is
-/// listed through). A farther ancestor's descriptor is closed and the
+/// two a step opens briefly (the next directory, and `.` of it, opened
+/// again by `read_names`). A farther ancestor's descriptor is closed and the
 /// directory reopened through `..` when the walk climbs back to it, checked
 /// to be the one it was (as GNU `fts` does for `rm -rf`), so a tree deeper
 /// than `RLIMIT_NOFILE` is deleted like any other (`tests/descriptors.rs`
@@ -362,7 +362,7 @@ impl<T> Dirs<T> {
             self.open += 1;
         }
         // Room for the two the next step opens before it pushes: the
-        // directory, then the duplicate `read_names` lists it through.
+        // directory, then `.` of it, opened again by `read_names`.
         if 1 + self.open + 2 > OPEN_DIRS {
             let farthest = self.below.len() - self.open;
             if let Some(closed) = self.below.get_mut(farthest) {
