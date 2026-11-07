@@ -785,8 +785,9 @@ and runs it. `smoke-build` is not a builder: one squashed layer, no diff per
 instruction, no xattrs. It runs again with `--userns` in a default `podman
 run` (no `--privileged`): the user-namespace probe, the build's user
 namespace, then the sandbox's probe, which must refuse at the new `proc`
-without `--allow proc.rbind` (ADR-0126) and with it choose an rbind of
-`/proc` and of `/sys` there (#78); the `smoke_checks` run but for the first
+without `--allow proc.rbind`
+([ADR-0126](adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md))
+and with it choose an rbind of `/proc` and of `/sys` there (#78); the `smoke_checks` run but for the first
 three, which need the `RUN`'s own `/proc` (`smoke_checks_own_proc`), and
 the host name, which Podman's seccomp profile refuses to set without
 `CAP_SYS_ADMIN`; podman then runs that image too. The recipe then builds `tests/smoke/e2e`

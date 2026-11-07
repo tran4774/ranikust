@@ -16,7 +16,8 @@ the probe of that path, reported only
 the build's user namespace
 ([#75](https://github.com/tran4774/ranikust/issues/75)), and a `RUN` in
 it with the `sysfs` rbind the probe chooses (`/proc`'s only on request,
-ADR-0126), `setgroups` where the map allows it and `--network=none`
+[ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), `setgroups` where the map allows it and
+`--network=none`
 ([#78](https://github.com/tran4774/ranikust/issues/78)), which the binary
 does not call yet.
 
@@ -36,7 +37,8 @@ does not call yet.
   `root_entry` and how a `RUN` gets `proc` and `sysfs`: a new one, else,
   in the build's user namespace, an rbind, logged once (#78): `/sys`'s
   where the user-namespace probe found the same refusal, `/proc`'s only
-  at the operator's request (`Fallbacks::allow_proc_rbind`, ADR-0126),
+  at the operator's request (`Fallbacks::allow_proc_rbind`,
+  [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)),
   unasked a refusal at `Step::MountProc` with a warning that says how to
   get a new `proc`; its guidance (uid map, bind mounts) is Phase 3.
 - The user-namespace probe (`userns.rs`, #74), reported only: nothing
@@ -241,7 +243,9 @@ What a change here must keep, with where it lives:
   A new `proc` or `sysfs` is used wherever it mounts: an rbind only where
   `Caps` says so, which only `probe_with_fallbacks` sets after an `EPERM`,
   for `/sys` where the user-namespace probe met it too, for `/proc` only
-  on request (#78, ADR-0126, and #79's condition). The rbind
+  on request (#78,
+  [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md),
+  and #79's condition). The rbind
   (`MS_BIND | MS_REC`, its source `/proc` or `/sys` opened `O_PATH`, its
   type checked before and after) gets `nosuid`, `nodev`, `noexec`, and
   `/sys` read-only, on every mount of it with `mount_setattr(AT_RECURSIVE)`;
