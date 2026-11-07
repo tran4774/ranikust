@@ -13,8 +13,8 @@ use crate::error::Error;
 /// How failed requests are retried.
 ///
 /// Only errors that may pass on their own are retried: those
-/// [`Error::Registry`]'s `retryable` names. Each attempt starts the
-/// operation over (a new upload session, a pull from the first byte).
+/// [`Error::is_retryable`] accepts. Each attempt starts the operation over
+/// (a new upload session, a pull from the first byte).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// Attempts in total, the first included; 1 never retries.

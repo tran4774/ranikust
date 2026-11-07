@@ -55,10 +55,12 @@ pub enum Error {
         target: String,
         /// The status and the registry's message, without credentials.
         message: String,
-        /// Whether trying again may succeed: a connection failure or
-        /// timeout, a 408, 429, 500, 502, 503 or 504 whatever the body
-        /// says, or an error envelope's `TOOMANYREQUESTS` code. Never a
-        /// pull's 404 (`not_found`).
+        /// Whether trying again may succeed: a request that did not complete
+        /// (a connection failure, a timeout, a request or body cut short,
+        /// nothing sent for the `registry-idle` limit), a 408, 429, 500,
+        /// 502, 503 or 504 whatever the body says, or an error envelope's
+        /// `TOOMANYREQUESTS` code. Never a pull's 404 (`not_found`), nor a
+        /// transfer that cannot start over.
         retryable: bool,
         /// Whether the registry refused access: a 401 or 403, or an
         /// `UNAUTHORIZED` or `DENIED` code in its error envelope. Decided
@@ -252,9 +254,9 @@ pub(crate) fn retryable_status(code: u16) -> bool {
 }
 
 impl Op<'_> {
-    /// [`Op::error`] for an answer whose status is known: a 401 or 403 is a
-    /// refusal and a 408, 429, 500, 502, 503 or 504 is retried, whatever
-    /// its body said; a 404 is "not found" and never retried, even with a
+    /// [`Op::error`] for an answer whose status is known: a status
+    /// [`refusal_status`] or [`retryable_status`] names decides, whatever
+    /// the body said; a 404 is "not found" and never retried, even with a
     /// `TOOMANYREQUESTS` code.
     pub(crate) fn error_for_status(&self, status: u16, err: OciDistributionError) -> Error {
         let mut e = self.error(err);

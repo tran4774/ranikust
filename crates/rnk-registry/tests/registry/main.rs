@@ -550,7 +550,7 @@ async fn transient_failures_are_retried() {
 /// A 408 or 429 is retried by its status, whatever its body: none, an
 /// error envelope asking for it (`TOOMANYREQUESTS`) or one with another
 /// code; on manifest and blob pulls, `find_manifest`, blob uploads,
-/// manifest pushes and token requests.
+/// manifest pushes and anonymous token requests.
 #[tokio::test]
 async fn a_408_or_429_is_retried_whatever_its_body() {
     let envelope =
@@ -572,14 +572,14 @@ async fn a_408_or_429_is_retried_whatever_its_body() {
             let registry = FakeRegistry::start(Auth::Open).await;
             registry.state().fault_body = body.clone().map(Bytes::from);
             let image = add_image(&registry, "app", "v1", b"rate limited".repeat(10));
-            let client = client(&registry, Credentials::none());
+            let open = client(&registry, Credentials::none());
             let app = reference(&registry, "app:v1");
 
             registry
                 .state()
                 .faults
                 .push(fault(Method::GET, "/manifests/", 2));
-            let manifest = client.pull_manifest(&app).await;
+            let manifest = open.pull_manifest(&app).await;
             assert!(manifest.is_ok(), "{case}: {manifest:?}");
             assert_eq!(registry.count("GET /v2/app/manifests/"), 3, "{case}");
 
@@ -587,7 +587,7 @@ async fn a_408_or_429_is_retried_whatever_its_body() {
                 .state()
                 .faults
                 .push(fault(Method::GET, "/manifests/", 2));
-            let found = client.find_manifest(&app).await;
+            let found = open.find_manifest(&app).await;
             assert!(matches!(found, Ok(Some(_))), "{case}: {found:?}");
             assert_eq!(registry.count("GET /v2/app/manifests/"), 6, "{case}");
 
@@ -597,7 +597,7 @@ async fn a_408_or_429_is_retried_whatever_its_body() {
                 .push(fault(Method::GET, "/blobs/", 2));
             let blob = descriptor(MediaType::OCI_LAYER_GZIP, &image.layer);
             let mut layer = Vec::new();
-            let pulled = client.pull_blob(&app, &blob, &mut layer).await;
+            let pulled = open.pull_blob(&app, &blob, &mut layer).await;
             assert!(pulled.is_ok(), "{case}: {pulled:?}");
             assert_eq!(layer, image.layer, "{case}");
             assert_eq!(registry.count("GET /v2/app/blobs/"), 3, "{case}");
@@ -608,7 +608,7 @@ async fn a_408_or_429_is_retried_whatever_its_body() {
                 .state()
                 .faults
                 .push(fault(Method::PUT, "/blobs/uploads/", 1));
-            let uploaded = client
+            let uploaded = open
                 .push_blob(
                     &out,
                     &descriptor(MediaType::OCI_LAYER_GZIP, &pushed),
@@ -626,7 +626,7 @@ async fn a_408_or_429_is_retried_whatever_its_body() {
                 .faults
                 .push(fault(Method::PUT, "/manifests/", 1));
             let manifest = RawManifest::new(MediaType::OCI_MANIFEST, image.manifest.clone());
-            let put = client.push_manifest(&out, &manifest).await;
+            let put = open.push_manifest(&out, &manifest).await;
             assert!(put.is_ok(), "{case}: {put:?}");
             assert_eq!(registry.count("PUT /v2/out/manifests/"), 2, "{case}");
 
@@ -643,8 +643,8 @@ async fn a_408_or_429_is_retried_whatever_its_body() {
                 .state()
                 .faults
                 .push(fault(Method::GET, "/token", 2));
-            let client = support::client(&registry, Credentials::none());
-            let pulled = client
+            let bearer = client(&registry, Credentials::none());
+            let pulled = bearer
                 .pull_manifest(&reference(&registry, "public:v1"))
                 .await;
             assert!(pulled.is_ok(), "{case}: {pulled:?}");
