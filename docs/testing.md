@@ -627,7 +627,8 @@ own runner, about five minutes of wall time together:
   `vm.sh` uses too) and runs the same guest scripts as the runner's user,
   each privileged command under `sudo`. No network check: `guest/net.sh`
   keeps the VM's root off the developer host's loopback (ADR-0086), and the
-  runner has nothing to keep it from.
+  runner has nothing to keep it from; so a `unit`-only tree lacks the
+  `ranikust` binary the VM stages for that check.
 - For `unit-c` it makes a marker naming this runner, for the job
   (root-owned, the form `lane.sh` checks): the one exception to "never
   create the marker anywhere else" ([above](#the-container-lane-tier-t2c)).
