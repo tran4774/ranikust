@@ -409,11 +409,12 @@ impl Store {
     }
 
     /// [`Store::open`], with `undoing` as [`Store::open_or_abandon`] takes
-    /// it, and `marked` run once the marker is checked: a test's failure.
+    /// it, and `registered` run once the build is registered: a test's
+    /// failure.
     fn open_with(
         paths: &BuildPaths,
         undoing: Option<impl FnOnce()>,
-        marked: impl FnOnce(&RootPath) -> Result<()>,
+        registered: impl FnOnce(&RootPath) -> Result<()>,
     ) -> Result<Self> {
         let host_err = |op, source| Error::Io {
             op,
@@ -441,14 +442,15 @@ impl Store {
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
         let made = check_marker(&state, &state_path)?;
-        let filled = marked(&state).and_then(|()| {
+        let filled = (|| {
             for d in DIRS {
                 state.create_dir_all(d, DIR_MODE)?;
                 own_group(&state, d)?;
             }
             warn_if_shared(&state, &state_path);
-            register(&state, &state_path)
-        });
+            let build = register(&state, &state_path)?;
+            registered(&state).map(|()| build)
+        })();
         let (id, build_lock) = match filled {
             Ok(registered) => registered,
             Err(e) => {

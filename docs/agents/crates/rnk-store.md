@@ -280,8 +280,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   open made it and no other build holds it, and otherwise leaves it as
   `close` does
   (`abandon_empties_only_a_store_its_open_made_and_no_build_holds`), as
-  `open_or_abandon` does for an open that fails once it wrote the marker,
-  after its `undoing`, and never one it found
+  `open_or_abandon` does for an open that fails once it wrote the marker
+  and registered its build, after its `undoing` lets go of the directory,
+  and never one it found
   (`src/store/tests.rs`:
   `an_open_that_fails_once_it_made_the_store_empties_it_where_asked`);
   `check_prune`'s refusal of a path with a
@@ -297,7 +298,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 
 - `rnk_store.lock` (`contended`; time = lock wait), `rnk_store.fill`
   (`reused`, `bytes_written`, `bytes_reused`), `rnk_store.cleanup`,
-  `rnk_store.prune` (`prune_all`; its fields come with Phase 5's `prune`)
+  `rnk_store.prune` (`prune_all`, `abandon`, `open_or_abandon`; its fields
+  come with Phase 5's `prune`)
   ([rows](../../design/metrics.md#rnk-store)).
 - Lock waits and reuse show what sharing the store costs and saves.
 
