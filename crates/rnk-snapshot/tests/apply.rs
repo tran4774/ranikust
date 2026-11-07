@@ -1293,6 +1293,237 @@ fn on_slash_a_streamed_layer_with_a_bad_tar_header_changes_nothing() {
     }
 }
 
+impl Tar {
+    /// A GNU long name (`L`) or long link (`K`) record for the next entry.
+    fn gnu_long(&mut self, kind: EntryType, body: &[u8]) -> &mut Self {
+        self.entry("././@LongLink", kind, "", body, 0o644, (0, 0))
+    }
+}
+
+/// A cleaned directory path of `len` bytes, of names of at most 255 bytes
+/// (`NAME_MAX`).
+fn dir_of(len: usize) -> String {
+    let mut s = String::new();
+    loop {
+        let room = len - s.len();
+        let n = match room {
+            0..=255 => room,
+            256 => 254,
+            _ => 255,
+        };
+        s.push_str(&"q".repeat(n));
+        if s.len() == len {
+            return s;
+        }
+        s.push('/');
+    }
+}
+
+/// Red team (T26, #179): on `/` a streamed hit with, after a good first
+/// entry, any other value over the kernel's limits (in a GNU record or a
+/// PAX one, an xattr's name or value, a file capability of no form the
+/// kernel sets, an empty link target) is refused by the spool pass before
+/// `/` changes, which stays usable.
+#[test]
+fn red_team_on_slash_every_value_over_the_kernels_limits_is_refused_before_slash_changes() {
+    let first = || {
+        let mut t = Tar::new();
+        t.file("first", b"1");
+        t
+    };
+    let long = "n".repeat(256);
+    let deep = format!("{}/x", dir_of(4095));
+    let xattr = |name: &str, value: &[u8]| {
+        first()
+            .pax(&[(format!("SCHILY.xattr.{name}").as_str(), value)])
+            .file("x", b"")
+            .file("after", b"2")
+            .bytes()
+    };
+    let mut v3_unowned = vec![0; 24];
+    v3_unowned[..4].copy_from_slice(&0x0300_0000_u32.to_le_bytes());
+    v3_unowned[20..].fill(0xff);
+    let mut v1 = vec![0; 12];
+    v1[..4].copy_from_slice(&0x0100_0000_u32.to_le_bytes());
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "a NUL at the end of a PAX path",
+            first().pax(&[("path", b"d/x\0")]).file("x", b"").bytes(),
+        ),
+        (
+            "a GNU long name ending in two NULs",
+            first()
+                .gnu_long(EntryType::GNULongName, b"d/x\0\0")
+                .file("x", b"")
+                .bytes(),
+        ),
+        (
+            "a NUL in a GNU long link",
+            first()
+                .gnu_long(EntryType::GNULongLink, b"first\0x\0")
+                .hardlink("h", "x")
+                .bytes(),
+        ),
+        (
+            "a whiteout hiding a name over NAME_MAX",
+            first()
+                .pax(&[("path", format!("d/.wh.{long}").as_bytes())])
+                .file("x", b"")
+                .bytes(),
+        ),
+        (
+            "a hardlink target over NAME_MAX",
+            first()
+                .pax(&[("linkpath", long.as_bytes())])
+                .hardlink("h", "first")
+                .bytes(),
+        ),
+        (
+            "a hardlink target in a directory of 4095 bytes",
+            first()
+                .pax(&[("linkpath", deep.as_bytes())])
+                .hardlink("h", "first")
+                .bytes(),
+        ),
+        (
+            "an empty PAX linkpath",
+            first()
+                .pax(&[("linkpath", b"")])
+                .symlink("s", "first")
+                .bytes(),
+        ),
+        (
+            "an empty GNU long link",
+            first()
+                .gnu_long(EntryType::GNULongLink, b"\0")
+                .symlink("s", "first")
+                .bytes(),
+        ),
+        ("an xattr with an empty name", xattr("", b"v")),
+        (
+            "an xattr name of 256 bytes",
+            xattr(&format!("user.{}", "a".repeat(251)), b"v"),
+        ),
+        ("an xattr name holding a NUL", xattr("user.a\0b", b"v")),
+        (
+            "an xattr value of 65537 bytes",
+            xattr("user.big", &[b'v'; 65537]),
+        ),
+        (
+            "a file capability of revision 1",
+            xattr("security.capability", &v1),
+        ),
+        (
+            "a file capability no namespace maps",
+            xattr("security.capability", &v3_unowned),
+        ),
+    ];
+    let good = Tar::new().file("good", b"g").bytes();
+    for (what, tar) in cases {
+        let f = Shared::new(true);
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let source = Source::new(gzip(&tar));
+        let e = r
+            .apply_layer(&streamed(&f.snap, &tar, &source))
+            .unwrap_err();
+        assert!(
+            matches!(e, Error::Rootfs(rnk_rootfs::Error::Entry { .. })),
+            "{what}: {e:?}"
+        );
+        assert_eq!(source.opens(), 1, "{what}");
+        for p in ["first", "d", "x", "h", "s", "after"] {
+            assert!(f.root.join(p).symlink_metadata().is_err(), "{what}: {p}");
+        }
+        r.begin_layer().unwrap();
+        assert!(r.end_layer().unwrap().diff().is_empty(), "{what}");
+        r.apply_layer(&streamed(&f.snap, &good, &Source::new(gzip(&good))))
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert!(f.root.join("good").exists(), "{what}");
+        r.release().unwrap();
+    }
+}
+
+/// Red team (T26, #179, ADR-0123): on `/` a streamed hit whose headers are
+/// each fine but whose entries together fail on their way (a symlink of
+/// the layer that puts an entry's directory past what `/proc/self/fd`
+/// shows, a symlink loop, a name below a file, a hardlink to a directory)
+/// passes the spool pass and is refused part-way, as a failure found while
+/// writing: `/` keeps what came before, and nothing past or outside it,
+/// and is broken until the next base empties it.
+#[test]
+fn red_team_on_slash_a_layer_that_fails_on_its_way_breaks_slash_until_emptied() {
+    let good = Tar::new().file("good", b"g").bytes();
+    for case in ["deep", "loop", "below a file", "link to a directory"] {
+        let f = Shared::new(true);
+        // What `/proc/self/fd` shows of a directory of the root: `PATH_MAX`
+        // with the root's own path and its slash.
+        let max = 4095 - (f.root.as_os_str().len() + 1);
+        let deep = dir_of(max - 2);
+        let mut t = Tar::new();
+        t.file("first", b"1");
+        match case {
+            "deep" => t
+                .pax(&[("path", deep.as_bytes())])
+                .dir("d", 0o755)
+                .pax(&[("linkpath", deep.as_bytes())])
+                .symlink("s", "d")
+                .file("s/a/fits", b"in")
+                .file("s/aa/past", b"past"),
+            "loop" => t.symlink("l", "l").file("l/x", b"x"),
+            "below a file" => t.file("f", b"f").file("f/x", b"x"),
+            _ => t.dir("d", 0o755).hardlink("h", "d"),
+        };
+        let tar = t.file("after", b"2").bytes();
+        let mut r = f.snap.prepare(Base::Scratch).unwrap();
+        r.set_layers_needed(true);
+        let source = Source::new(gzip(&tar));
+        let e = r
+            .apply_layer(&streamed(&f.snap, &tar, &source))
+            .unwrap_err();
+        match (case, &e) {
+            ("deep", Error::Rootfs(rnk_rootfs::Error::Entry { path, reason })) => {
+                assert_eq!(path, Path::new("s/aa/past"));
+                assert!(reason.contains("past PATH_MAX"), "{reason}");
+            }
+            ("deep", _) => panic!("{case}: {e:?}"),
+            (_, Error::Rootfs(rnk_rootfs::Error::Io { .. })) => {}
+            _ => panic!("{case}: {e:?}"),
+        }
+        assert_eq!(source.opens(), 1, "{case}");
+        assert!(f.root.join("first").exists(), "{case}: written before");
+        assert!(!f.root.join("after").exists(), "{case}");
+        if case == "deep" {
+            let root = fs::File::open(&f.root).unwrap();
+            let at = |rel: &str| {
+                rustix::fs::statat(
+                    &root,
+                    Path::new(&deep).join(rel),
+                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                )
+            };
+            at("a/fits").unwrap();
+            assert_eq!(at("aa").unwrap_err(), rustix::io::Errno::NOENT);
+        }
+        let mut top: Vec<_> = fs::read_dir(&f.top)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        top.sort();
+        assert_eq!(top, ["blobs", "kept", "root"], "{case}");
+        assert!(matches!(r.begin_layer(), Err(Error::State(_))), "{case}");
+        r.release().unwrap();
+        let stored = blob(&f.snap, &f.blobs(), "good", &good);
+        let mut next = f.snap.prepare(Base::Image(&[stored])).unwrap();
+        assert!(!f.root.join("first").exists(), "{case}: emptied");
+        assert!(f.root.join("good").exists(), "{case}");
+        next.set_layers_needed(true);
+        next.begin_layer().unwrap();
+        assert!(next.end_layer().unwrap().diff().is_empty(), "{case}");
+        next.release().unwrap();
+    }
+}
+
 /// `bytes` as one zstd frame of raw blocks (RFC 8878 3.1.1.2), which
 /// libzstd reads as any other frame: a zstd layer without an encoder.
 fn zstd_stored(bytes: &[u8]) -> Vec<u8> {
