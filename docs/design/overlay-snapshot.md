@@ -236,8 +236,9 @@ from `/proc/self/ns/user` whether it runs in a namespace other than the
 initial one; there, block and character devices of a base layer are left out
 and counted as `nodes_skipped`
 ([ADR-0106](../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)):
-a `RUN` or a `COPY --from` of a path holding one gets what a lower layer has
-there, or nothing, as in kaniko mode, kaniko and BuildKit rootless, and the
+a `RUN` or a `COPY --from` of a path holding one gets the entry already at
+its name (a lower layer's, or an earlier one of the same layer), or nothing,
+as in kaniko mode, kaniko and BuildKit rootless, and the
 image, built on the base blobs unchanged, keeps the device
 ([rootfs](rootfs.md#extraction),
 [ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
