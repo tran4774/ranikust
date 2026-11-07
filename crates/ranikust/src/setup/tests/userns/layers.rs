@@ -341,14 +341,18 @@ fn extract_layers(store: Store) -> String {
             .finish(),
         "chown",
     );
-    let selinux = outcome(
-        Tar::default()
-            .dir("./", ROOT, 0o755)
-            .xattrs(&[("security.selinux", b"system_u:object_r:bin_t:s0")])
-            .file("sel", ROOT, 0o644, b"sel")
-            .finish(),
-        "setxattr",
-    );
+    let selinux = if selinux_enabled() {
+        SELINUX_SKIPPED.to_owned()
+    } else {
+        outcome(
+            Tar::default()
+                .dir("./", ROOT, 0o755)
+                .xattrs(&[("security.selinux", b"system_u:object_r:bin_t:s0")])
+                .file("sel", ROOT, 0o644, b"sel")
+                .finish(),
+            "setxattr",
+        )
+    };
     // The refusing call counts, not its errno, which a security module may
     // change.
     let selinux = if selinux.starts_with("refused: setxattr ./sel: ") {
@@ -380,14 +384,37 @@ fn extract_layers(store: Store) -> String {
     }
 }
 
+/// What [`extract_layers`] reports for the `security.selinux` layer where
+/// SELinux runs: it is not extracted there.
+const SELINUX_SKIPPED: &str = "skipped: SELinux is enabled here and decides it by policy";
+
+/// Whether SELinux runs here, which decides `security.selinux` by policy
+/// rather than by capability: told by its filesystem or the kernel's list
+/// of security modules on a host, and, in a container that masks both, by
+/// the label procfs gives this process, which only SELinux answers.
+fn selinux_enabled() -> bool {
+    let mut label = [0u8; 256];
+    Path::new("/sys/fs/selinux/enforce").exists()
+        || fs::read_to_string("/sys/kernel/security/lsm")
+            .is_ok_and(|lsm| lsm.trim().split(',').any(|m| m == "selinux"))
+        || matches!(
+            rustix::fs::lgetxattr("/proc/self", "security.selinux", &mut label),
+            Ok(_) | Err(rustix::io::Errno::RANGE)
+        )
+}
+
 /// [`extract_layers`]'s report, its paths left out, for a build in a user
 /// namespace (`userns`) or as root. In the namespace, the owner no map
 /// holds fails the extraction, which publishes nothing (ADR-0098), and so
 /// does a `security.*` xattr other than `security.capability`, which only
 /// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets
 /// where no security module manages the name (SELinux decides
-/// `security.selinux` by policy).
+/// `security.selinux` by policy, so the case is skipped where it runs).
 fn expected(userns: bool) -> String {
+    let selinux = selinux_enabled();
+    if selinux {
+        eprintln!("the security.selinux case is skipped: {SELINUX_SKIPPED}");
+    }
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
         bottom.extend(DEVICES.map(str::to_owned));
@@ -403,12 +430,16 @@ fn expected(userns: bool) -> String {
         } else {
             "published"
         },
-        if userns {
-            "refused: setxattr ./sel"
-        } else {
-            "published"
+        match (selinux, userns) {
+            (true, _) => SELINUX_SKIPPED,
+            (false, true) => "refused: setxattr ./sel",
+            (false, false) => "published",
         },
-        if userns { 2 } else { 4 },
+        match (userns, selinux) {
+            (true, _) => 2,
+            (false, true) => 3,
+            (false, false) => 4,
+        },
         bottom.join("\n"),
     )
 }
@@ -557,8 +588,8 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 /// user's, is published by the rename; device nodes are left out and
 /// counted; a diff ID the tar does not hash to, an owner the namespace does
 /// not map, or a `security.selinux` xattr publishes nothing, the last
-/// refused by its `setxattr` on a host without SELinux, which would decide
-/// it by policy.
+/// refused by its `setxattr`; where SELinux runs, which decides it by
+/// policy, that case is skipped with a message.
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container extracts layers in the build's user namespace"]
 fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() {
@@ -626,7 +657,8 @@ const UNMAPPED_GID: u32 = 4242;
 /// layers come out as root's, devices aside and those two layers refused,
 /// owned outside by the user (the namespace's root) and by subordinate ids
 /// (the others), and the user outside the namespace cannot move a `0555`
-/// root of a subordinate id.
+/// root of a subordinate id. Where SELinux runs, the `security.selinux`
+/// case is skipped with a message.
 #[test]
 #[ignore = "T2: extracts layers as real root and as the sudo user in the build's user namespace"]
 fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {

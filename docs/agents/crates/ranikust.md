@@ -417,7 +417,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
   directories as overlay as root makes them, `0555` roots published, devices
   skipped and counted, keys other than the chain IDs, an owner outside the map
-  and a `security.selinux` xattr each failing the extraction) and
+  and a `security.selinux` xattr each failing the extraction, the latter
+  skipped with a message where SELinux runs) and
   `a_killed_extraction_in_the_user_namespace_publishes_nothing`.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
