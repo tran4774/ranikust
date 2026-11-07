@@ -1245,7 +1245,7 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
 
 /// A layer remembers only the devices it leaves out itself. A link to one
 /// a lower layer left out finds nothing there: it is refused, or copies
-/// what a deeper layer has at that name (`ADR-0012`).
+/// what a deeper layer has at that name (ADR-0131).
 #[test]
 fn a_link_to_a_device_a_lower_layer_left_out_is_refused_or_copies_a_deeper_layer() {
     let deep = Fixture::new();

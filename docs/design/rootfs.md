@@ -233,8 +233,10 @@ never called.
   nearest lower layer that shows it, else refused (ADR-0128). A link to a
   device a lower layer left out takes that path too, as the names are
   remembered per layer: a deeper layer's entry at that name is copied, and
-  with none the layer is refused. A device as the layer's root is refused
-  either way. Foreign owners need root or a user namespace (T1).
+  with none the layer is refused
+  ([ADR-0131](../adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md)).
+  A device as the layer's root is refused either way. Foreign owners need
+  root or a user namespace (T1).
 
 ## Copy
 
