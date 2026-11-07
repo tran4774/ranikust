@@ -124,6 +124,19 @@ fn root_is_refused_naming_phase_5_before_anything() {
 }
 
 #[test]
+fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
+    // Builds refuse the directory meanwhile, and a later prune finishes it.
+    let renamed = NO_USER_NAMESPACE.find("mv DIR/.ranikust-state DIR/.ranikust-pruning");
+    let removed =
+        NO_USER_NAMESPACE.find("! -name .ranikust-pruning -exec rm -rf --one-file-system");
+    assert!(
+        matches!((renamed, removed), (Some(m), Some(r)) if m < r),
+        "{NO_USER_NAMESPACE}"
+    );
+    assert!(NO_USER_NAMESPACE.contains("subordinate ids stay"));
+}
+
+#[test]
 fn a_missing_state_directory_is_left_missing() {
     let tmp = private_tempdir();
     for dir in [

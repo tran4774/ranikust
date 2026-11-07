@@ -560,7 +560,7 @@ fn a_store_refusal_names_its_state_directory_once() {
     use rnk_store::Error;
     let dir = Path::new("/home/u/state");
     let path = || dir.to_owned();
-    let source = || io::Error::from_raw_os_error(95);
+    let source = || io::Error::from(rustix::io::Errno::OPNOTSUPP);
     let (left, found, why) = (String::from("x"), String::from("x"), String::from("x"));
     for e in [
         Error::NotAStateDir { path: path() },
@@ -592,6 +592,11 @@ fn a_store_refusal_names_its_state_directory_once() {
             source: source(),
         },
         Error::NameOutlivesUnlink { path: path(), why },
+        Error::Io {
+            op: "create",
+            path: path(),
+            source: source(),
+        },
     ] {
         let refusal = store_refusal(&e, dir);
         assert_eq!(refusal.reason.matches("/home/u/state").count(), 1, "{e}");

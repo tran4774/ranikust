@@ -144,8 +144,9 @@ Design: [locks](../../design/cache-and-store.md#locks),
   holds shared for its life, and keeps it to the end, so it is refused
   while any build runs (`Error::InUse`) and a store opened meanwhile is
   `Error::Busy`. Like `open` it refuses a non-empty directory without a
-  regular marker and one an anonymous store used; it makes nothing in an
-  empty directory. It empties entries in place, under their published
+  regular `.ranikust-state` and one an anonymous store used, but takes one
+  holding the regular `.ranikust-pruning` an earlier prune left, which
+  `open` refuses; it makes nothing in an empty directory. It empties entries in place, under their published
   names, so it first renames the marker `.ranikust-pruning`
   (`PRUNING_MARKER`) and syncs the directory, and `open` refuses a
   directory holding that name (`Error::PruneCutShort`) until a prune
@@ -153,8 +154,8 @@ Design: [locks](../../design/cache-and-store.md#locks),
   with files missing ([why a rename](../../design/cache-and-store.md#prune)).
   It deletes through `rnk-rootfs::delete_contents` by descriptor (no
   symlink followed, no mount crossed or emptied), and only when nothing
-  else is left removes `.ranikust-pruning`; else `Error::NotPruned` names
-  what is. One that is not a regular file is neither taken nor removed:
+  else is left syncs the filesystem (`syncfs`) and removes
+  `.ranikust-pruning`; else `Error::NotPruned` names what is. One that is not a regular file is neither taken nor removed:
   `NotPruned` says to remove it.
   `prune` by size and age (Phase 5) removes entries while builds run: per
   [ADR-0122](../../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),

@@ -1271,15 +1271,19 @@ impl Store {
     /// store holds it shared for its life, so nothing a running build uses
     /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
     /// Before removing anything it refuses, as [`Store::open`] does, a
-    /// non-empty directory without its regular marker ([`STATE_MARKER`],
-    /// or the [`PRUNING_MARKER`] a prune that did not finish leaves) and
-    /// one holding [`BUILDING_MARKER`]; it makes nothing in an empty
-    /// directory, not even the marker. Then it renames [`STATE_MARKER`] to
-    /// [`PRUNING_MARKER`] and syncs the directory before deleting: entries
-    /// are emptied in place, and a prune cut short or failed leaves a
-    /// directory no store opens and the next prune accepts. Deletes through
-    /// `rnk-rootfs` by descriptor: no symlink followed, no mount crossed or
-    /// emptied.
+    /// non-empty directory without a regular [`STATE_MARKER`] and one
+    /// holding [`BUILDING_MARKER`], but takes one holding the regular
+    /// [`PRUNING_MARKER`] a prune that did not finish leaves, which `open`
+    /// refuses; it makes nothing in an empty directory, not even the
+    /// marker. Then it renames [`STATE_MARKER`] to [`PRUNING_MARKER`], or
+    /// takes over the one an earlier prune left, and syncs the directory
+    /// before deleting: entries are emptied in place, and a prune cut short
+    /// or failed leaves a directory no store opens and the next prune
+    /// accepts. A failed sync renames back only a marker this call renamed:
+    /// one an earlier prune left stays, since that prune may have removed
+    /// entries. Deletes through `rnk-rootfs` by descriptor: no symlink
+    /// followed, no mount crossed or emptied; the filesystem is synced
+    /// before [`PRUNING_MARKER`] goes, which a failed sync keeps.
     ///
     /// Files of ids the process may not remove (a rootless build's, of
     /// subordinate ids) need the caller in the build's user namespace,
@@ -1353,7 +1357,7 @@ impl Store {
         // On disk before any entry is emptied in place, even when an
         // earlier prune renamed it and was killed before its sync.
         if let Err(e) = rustix::fs::fsync(&lock) {
-            // Nothing removed yet: builds may have the directory back.
+            // Only this call's: an earlier prune's may cover removed entries.
             if renamed && let Err(back) = root.rename(PRUNING, MARKER) {
                 tracing::warn!(
                     target: "rnk_store",
@@ -1387,6 +1391,13 @@ impl Store {
         if let Some(left) = left {
             return Err(not_pruned(left));
         }
+        // The removals on disk before the marker's, which a filesystem may
+        // otherwise keep alone: an unmarked, non-empty directory.
+        rustix::fs::syncfs(&lock).map_err(|e| Error::Io {
+            op: "sync",
+            path: state_path,
+            source: e.into(),
+        })?;
         root.remove_file(PRUNING)?;
         drop(lock);
         Ok(true)

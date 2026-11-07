@@ -56,9 +56,11 @@ const ROOT_GUIDANCE: &str = "root removes its state directory with ordinary tool
 /// ends in "run ranikust as root", which `prune --all` refuses.
 pub(crate) const NO_USER_NAMESPACE: &str = "a user other than root gets a user namespace of its \
      own only where kernel.apparmor_restrict_unprivileged_userns is 0, or an AppArmor profile \
-     allows ranikust one (Ubuntu 23.10 and later); without it, the user's own files in the state \
-     directory go while no build uses it, its .ranikust-state first (rm -f) and then the rest \
-     with rm -rf --one-file-system, and files of subordinate ids stay";
+     allows ranikust one (Ubuntu 23.10 and later); without it, while no build uses the state \
+     directory DIR, mv DIR/.ranikust-state DIR/.ranikust-pruning keeps builds out of it, then find \
+     DIR -mindepth 1 -maxdepth 1 ! -name .ranikust-pruning -exec rm -rf --one-file-system {} + \
+     removes the user's own files; files of subordinate ids stay, for a ranikust prune --all \
+     where a user namespace is allowed to finish";
 
 /// Runs `prune` with `args`: the state directory it looked at, and what it
 /// found there.

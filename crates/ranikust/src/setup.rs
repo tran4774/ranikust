@@ -389,6 +389,7 @@ fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
     use rnk_store::Error;
     let reason = match e {
+        Error::Io { path, .. } if path == state_dir => e.to_string(),
         Error::NotAStateDir { .. }
         | Error::NoFlock { .. }
         | Error::Busy { .. }
