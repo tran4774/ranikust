@@ -119,8 +119,9 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
     result
 }
 
-/// How to get a new `proc`, where the probe ended in `e`, a new one refused,
-/// and `allowed` has no rbind of `/proc`.
+/// The warning for a new `proc` refused without the request (`e`, with no
+/// rbind of `/proc` in `allowed`): how to get one, or the request and what
+/// it exposes.
 fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
     (is_proc_refusal(e) && !allowed.proc).then_some(
         "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
@@ -419,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn proc_is_bound_only_on_request_and_sysfs_without_one() {
+    fn proc_is_bound_only_on_request_else_refused_with_guidance() {
         let setup = |step, errno| Error::Setup {
             step,
             source: io::Error::from_raw_os_error(errno),
@@ -460,6 +461,7 @@ mod tests {
         assert!(!Fallbacks::default().allow_proc_rbind().sysfs);
         // The way out, only where the refusal was final for want of a request.
         let guidance = proc_guidance(&proc_eperm, report).unwrap();
+        assert!(guidance.contains("allows user namespaces"), "{guidance}");
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
         assert!(guidance.contains("processes"), "{guidance}");
         assert_eq!(proc_guidance(&proc_eperm, asked), None);

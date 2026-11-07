@@ -110,21 +110,25 @@ fn run() -> Result<(), BoxError> {
     let args = parse_args()?;
     rnk_rootfs::probe_support()?;
     // Before any thread exists.
+    // `None`: no user namespace of the build's own, so the plain probe.
     let fallbacks = if args.userns {
         let found = enter_user_namespace(&args.work)?;
-        if args.proc_rbind {
+        Some(if args.proc_rbind {
             found.allow_proc_rbind()
         } else {
             found
-        }
+        })
     } else {
         rnk_sandbox::enter_build_namespace()?;
-        Fallbacks::default()
+        None
     };
     fs::create_dir_all(&args.work)?;
     let work = args.work.canonicalize()?;
     let sandbox_dir = work.join("sandbox");
-    let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, fallbacks)?;
+    let caps = match fallbacks {
+        Some(allowed) => rnk_sandbox::probe_with_fallbacks(&sandbox_dir, allowed)?,
+        None => rnk_sandbox::probe(&sandbox_dir)?,
+    };
     println!("probe: {caps:?}");
 
     let reference = Reference::parse(&args.image)?.with_default_tag();

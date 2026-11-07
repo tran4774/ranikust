@@ -278,13 +278,14 @@ The steps, in order:
       sandbox's probe chooses it once and logs it once per build. Unasked,
       the probe fails at `Step::MountProc` and warns how to get a new `proc`:
       build as a regular user on a host that allows user namespaces, where
-      one mounts, or in a container where ranikust may mount (overlay mode
-      as root), both in
+      a new `proc` mounts, or in a container where ranikust may mount
+      (overlay mode as root), both in
       [where environments land](modes-and-detection.md#where-environments-land);
       or ask for the rbind. So a `RUN` never sees the container's `/proc`
-      unasked, and always gets a new `proc` where one mounts. Outside the
-      build's user namespace, a refused `proc` mount fails the `RUN`
-      (`Step::MountProc`). `proc`, `sysfs` (3) and the `/dev` tmpfs (4) go
+      unasked, and always gets a new `proc` where one mounts. Wherever the
+      probe chose a new `proc`, a refusal at a later `RUN` fails it
+      (`Step::MountProc`); the choice is not tried again during the build.
+      `proc`, `sysfs` (3) and the `/dev` tmpfs (4) go
       only on a real directory of the root: `/proc`, `/sys` or `/dev` as a
       symlink is refused before any stub is placed, and the child resolves
       them again with `RESOLVE_NO_SYMLINKS`, as runc requires for `proc` and
