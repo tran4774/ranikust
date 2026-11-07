@@ -60,7 +60,7 @@ impl LayerDemand {
     pub fn saved(self, saved: bool) -> Self;  // kaniko mode: a later stage is built FROM it; encoded, never pushed or written
     pub fn needed(&self) -> bool;
 }
-pub trait LayerSource: Send {                           // rnk-snapshot's exporter implements it
+pub trait LayerSource: Send {                           // rnk-snapshot's exporter implements it; its refusals come back as rnk_layer::Error::Exporter, naming the entry (past PATH_MAX, say)
     fn encode(self: Box<Self>, options: EncodeOptions, out: &mut dyn Write) -> Result<LayerDigests, rnk_layer::Error>;
 }
 pub struct EntriesLayer<S: EntrySource + Send>;         // entries plus a content source

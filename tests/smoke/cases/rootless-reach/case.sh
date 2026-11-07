@@ -66,8 +66,8 @@ writes() {
 }
 
 # A tree deeper than PATH_MAX that a RUN makes, partly a mapped user's and
-# unsearchable: the exporter refuses it, or exports it, and the build's
-# directories go either way (T15).
+# unsearchable: the exporter refuses it, naming PATH_MAX, or exports it,
+# and the build's directories go either way (T15).
 deep_tree() {
   local o log rc=0 left
   o="$(out deep)"
@@ -75,7 +75,7 @@ deep_tree() {
   log="$(rnk_run "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target deep \
     --allow proc.rbind 2>&1)" || rc=$?
   printf '%s\n' "$log" >"$o/build.log"
-  [ "$rc" = 0 ] || { [ "$rc" = 1 ] && grep -q 'RUN mkdir /r && sh /deep.sh /r: encoding a layer: ' <<<"$log"; } ||
+  [ "$rc" = 0 ] || { [ "$rc" = 1 ] && grep -q 'RUN mkdir /r && sh /deep.sh /r: encoding a layer: cannot export .*: an entry.s path is longer than PATH_MAX' <<<"$log"; } ||
     fail "a deep tree: neither exported nor refused by the exporter ($rc): $log"
   left="$(find "$WORK/builds" "$WORK/tmp" -mindepth 1 -maxdepth 1 2>/dev/null)"
   [ -z "$left" ] || fail "a deep tree: left in the state directory: $left"

@@ -1038,7 +1038,17 @@ impl<D: ExportLayer> LayerSource for DiffLayer<D> {
         self.0
             .export(options, out)
             .map(|(digests, _)| digests)
-            .map_err(|e| rnk_layer::Error::Io(std::io::Error::other(e)))
+            .map_err(exporter_error)
+    }
+}
+
+/// The error of a layer's exporter as `rnk-layer` reports it: the
+/// writer's own as it is, any other (an entry refused past `PATH_MAX`,
+/// say) with its message, which names the entry and why.
+fn exporter_error(e: rnk_snapshot::Error) -> rnk_layer::Error {
+    match e {
+        rnk_snapshot::Error::Layer(e) => e,
+        e => rnk_layer::Error::Exporter(Box::new(e)),
     }
 }
 
@@ -1339,6 +1349,29 @@ mod tests {
     use rnk_dockerfile::InlineFile;
 
     use super::*;
+
+    /// An entry a layer's exporter refuses is named in the build's error,
+    /// with the limit, as kaniko mode's walk names it; the writer's own
+    /// error stays as it is.
+    #[test]
+    fn an_entry_the_exporter_refuses_is_named_in_the_error() {
+        let refused = rnk_snapshot::Error::Export {
+            path: "r/d/d/d".into(),
+            reason: "an entry's path is longer than PATH_MAX",
+        };
+        let e = Error::Layer(exporter_error(refused)).to_string();
+        assert_eq!(
+            e,
+            "encoding a layer: cannot export r/d/d/d: an entry's path is longer than PATH_MAX"
+        );
+        let own = rnk_snapshot::Error::Layer(rnk_layer::Error::MissingParent(
+            rnk_layer::EntryPath::new("a/b").unwrap(),
+        ));
+        assert!(matches!(
+            exporter_error(own),
+            rnk_layer::Error::MissingParent(_)
+        ));
+    }
 
     /// `--network=none` under `Direct` is refused, never turned into the
     /// container's network (ADR-0057).
