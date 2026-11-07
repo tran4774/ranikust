@@ -93,6 +93,20 @@ and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
   rmdir -- './NAME' )
 ```
 
+For a directory another user owns, uid `UID`, the emptying's last line is
+instead:
+
+```sh
+  { find . -xdev -mindepth 1 \( -uid UID -o -nouser \) -delete &&
+  test -z "$(find . -mindepth 1 -maxdepth 1)" ||
+  { echo "not emptied: entries of accounts other than uid UID are left in place, as is anything find names above" >&2;
+  exit 1; }; }' )
+```
+
+It deletes only that user's entries and entries of no account, as the
+user's subordinate ids are; what other accounts own is left in place, and
+the emptying then stops, saying so, so the directory is not removed.
+
 The error gives no commands for an empty directory (ranikust gives
 commands only for one that holds its marker), for a path that ends in `..` (give the
 directory's own path), for a path with a symbolic link on it (give the
