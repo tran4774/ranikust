@@ -1388,8 +1388,9 @@ impl LayerOpen for Dropping {
 /// decompression fails while the spool pass reads its headers (a corrupt
 /// or cut deflate stream, a bad gzip checksum with or without the tar's
 /// end, a digest the source refuses, a connection dropped, which fails
-/// again or reads as an end) is refused before `/` changes, never as an
-/// entry refusal or a `--limit` overrun, and leaves `/` usable.
+/// again or reads as an end) is refused before `/` changes, reported as the
+/// body's error (a dropped connection as itself), never as one of its tar,
+/// and leaves `/` usable.
 #[test]
 fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
     let big: Vec<u8> = (0..200_000_u32).flat_map(u32::to_le_bytes).collect();
@@ -1466,17 +1467,18 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
         r.set_layers_needed(true);
         let layer = f.snap.streamed_layer(&diff_id(tar), source).unwrap();
         let e = r.apply_layer(&layer).unwrap_err();
-        assert!(
-            !matches!(
-                e,
-                Error::Rootfs(
-                    rnk_rootfs::Error::Entry { .. } | rnk_rootfs::Error::ExtensionHeader { .. }
-                )
-            ),
-            "{what}: {e:?}"
-        );
         // The body's failure, never one of its tar.
         assert!(matches!(e, Error::Layer(_)), "{what}: {e:?}");
+        if what.contains("dropped") {
+            assert!(
+                matches!(
+                    &e,
+                    Error::Layer(rnk_layer::Error::Io(io))
+                        if io.kind() == std::io::ErrorKind::ConnectionReset
+                ),
+                "{what}: the first error, {e:?}"
+            );
+        }
         assert!(!f.root.join("first").exists(), "{what}");
         r.begin_layer()
             .unwrap_or_else(|e| panic!("{what}: / broken: {e:?}"));

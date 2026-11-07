@@ -1054,15 +1054,15 @@ impl Spooled {
         };
         let headers = rnk_rootfs::check_headers(&mut read);
         let failed = read.first;
-        // A failure of the body (its source's verdict) or of its
-        // decompression is reported before its tar's, even one the decoder
-        // reported once and then read as an end.
-        let finished = decoder.finish()?;
-        if let (Err(_), Some(e)) = (&headers, failed) {
+        // The first failure of the body or of its decompression is reported
+        // before its tar's: a decoder may report one once, then fail
+        // otherwise or read as an end.
+        let finished = decoder.finish();
+        if let Some(e) = failed {
             return Err(rnk_layer::Error::from(e).into());
         }
+        let actual = Digest::from_sha256_bytes(finished?.as_bytes());
         headers?;
-        let actual = Digest::from_sha256_bytes(finished.as_bytes());
         // The source verifies the digest only at the end of its body.
         if !ended.load(Ordering::Relaxed) {
             return Err(Error::State(
@@ -1113,13 +1113,17 @@ struct FirstError<R> {
 
 impl<R: std::io::Read> std::io::Read for FirstError<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self.inner.read(buf) {
-            Err(e) if self.first.is_none() && e.kind() != std::io::ErrorKind::Interrupted => {
-                let copy = std::io::Error::new(e.kind(), e.to_string());
-                self.first = Some(e);
-                Err(copy)
+        loop {
+            match self.inner.read(buf) {
+                // The tar reader does not retry it, and it is no failure.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if self.first.is_none() => {
+                    let copy = std::io::Error::new(e.kind(), e.to_string());
+                    self.first = Some(e);
+                    return Err(copy);
+                }
+                r => return r,
             }
-            r => r,
         }
     }
 }

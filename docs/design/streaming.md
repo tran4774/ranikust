@@ -121,7 +121,8 @@ layers uploading or waiting to is bounded by twice `--jobs`.
     descriptor's size, while one decompression of the same bytes reads the tar
     headers as the extraction will, refusing what it would refuse from a header
     alone (except values only the kernel refuses,
-    [#179](https://github.com/tran4774/ranikust/issues/179)) and what is over `--limit` (`rnk_rootfs::check_headers`, ADR-0123), and
+    [#179](https://github.com/tran4774/ranikust/issues/179))
+    and what is over `--limit` (`rnk_rootfs::check_headers`, ADR-0123), and
     computes the diff ID; the size and compressed digest are checked at the end
     of the body.
     Only then is the spool decompressed a second time into the root (the diff

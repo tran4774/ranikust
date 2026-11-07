@@ -773,9 +773,11 @@ layer is.
   [ADR-0123](../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md)),
   so a hit with a header every extraction refuses from the header alone, or
   one over the limit, is a miss too (values only the kernel refuses still fail
-  while writing, [#179](https://github.com/tran4774/ranikust/issues/179)); per stage a layer is extracted as it arrives (ADR-0055). The scan
-  ADR-0098 plans for base layers in a user namespace (Phase 3) must cover
-  cached layers too.
+  while writing,
+  [#179](https://github.com/tran4774/ranikust/issues/179));
+  per stage a layer is extracted as it arrives (ADR-0055). The scan ADR-0098
+  plans for base layers in a user namespace (Phase 3) must cover cached layers
+  too.
 - **The walk catches up lazily.** Applying a layer marks the walk's record
   of the root stale; the next `begin_layer` of a stage whose layers are
   needed takes a new baseline (`forget`, then a full walk), so the next diff
