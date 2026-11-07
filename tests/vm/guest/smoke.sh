@@ -10,7 +10,8 @@
 # the VM itself `--reproducible` must give one digest with `--jobs 1` and the
 # default. Each build's user-namespace probe line is printed, and a default
 # `docker run` checks where that probe stops (#74). smoke-build runs as the
-# VM's regular user too, in the build's user namespace (#78).
+# VM's regular user too, in the build's user namespace (#78), and so does
+# the ranikust binary, in rootless overlay mode (#79).
 set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
@@ -269,6 +270,7 @@ for v in "${VARIANTS[@]}"; do
       { echo "error: --reproducible digests differ: $a (default jobs), $b (--jobs 1), $c (later, with metrics)" >&2; exit 1; }
     sudo test -s "$m" || { echo "error: no metrics report at $m" >&2; exit 1; }
     echo "host: --reproducible gives $a with --jobs 1 and the default, 2 s later, and with metrics on"
+    root_digest="$a"
     # Phase 1 acceptance: the secret reaches no build log and no metrics
     # report (the blobs are checked above, the RUN environments in the
     # Dockerfile).
@@ -453,6 +455,31 @@ else
   [[ "$got" == "hello from ranikust"$'\n'jq-* ]] ||
     { echo "error: user: the image does not run as built: $got" >&2; exit 1; }
   sudo docker rmi -f "$loaded" >/dev/null
+fi
+# #79: the ranikust binary as this user builds tests/smoke/e2e in rootless
+# overlay mode, with a fresh proc, and the --reproducible digest of root's
+# build; where AppArmor restricts the user namespace, it refuses, naming
+# the step.
+ud="$dir/e2e" rc=0
+mkdir -p "$ud/out" && mkdir -m 700 -p "$ud/w"
+sudo cat "$W/token" >"$ud/token"
+smoke_e2e_args "$CTX" "$ud/w" "$ud/out" "$ud/token"
+e2e_args+=(--build-arg "BASE=$E2E_BASE")
+log="$("$RNK" "${e2e_args[@]}" --reproducible 2>&1)" || rc=$?
+printf '%s\n' "$log" >"$dir/e2e.log"
+grep -E 'user namespace probe|rootless' <<<"$log" || true
+if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" ||
+    { echo "error: user: expected rootless overlay mode refused, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it, as expected"
+else
+  [ "$rc" = 0 ] &&
+    grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
+    { echo "error: user: expected rootless overlay mode with a fresh proc, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  got="$(smoke_digest "$log")"
+  [ "$got" = "$root_digest" ] ||
+    { echo "error: user: --reproducible digest $got, root's $root_digest" >&2; exit 1; }
+  echo "user: ranikust builds in rootless overlay mode, with root's --reproducible digest $got"
 fi
 echo "user: ok"
 
