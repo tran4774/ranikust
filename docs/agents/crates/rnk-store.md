@@ -81,6 +81,7 @@ impl Store {
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
+    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then, only where this open wrote the marker, the shared state lock turned exclusive without waiting on the same descriptor and the directory emptied as prune_all does; true: emptied; false: another build holds it, or the store was there before
     pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), check_prune's checks, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     pub fn check_prune(state: &Path) -> Result<PruneCheck>; // prune_all's checks, read-only and without its lock, on state as given with no symlink followed: else prune_all's error; ranikust's prune runs it before the namespace and pins the commands it prints with it
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
@@ -215,7 +216,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   anonymous name, a file or a symlink with the probe's prefix is refused and
   left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
-  (`open_removes_only_the_probe_directories_no_probe_holds`); the hold of
+  (`open_removes_only_the_probe_directories_no_probe_holds`), and one gone
+  before the open reaches it skipped
+  (`a_probe_directory_gone_before_it_is_opened_is_skipped`); the hold of
   `check_state_dir` keeps a prune out until dropped
   (`check_state_dir_holds_the_directory_until_dropped`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
@@ -272,7 +275,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   inotify events); a prune cut short inside a layer, or after the last
   entry, keeps every store out (`PruneCutShort`, nothing changed) until a
   prune finishes; a `.ranikust-pruning` that is not a regular file refused
-  by both until removed; `check_prune`'s refusal of a path with a
+  by both until removed; `abandon` empties a store only where its own
+  open made it and no other build holds it, and otherwise leaves it as
+  `close` does
+  (`abandon_empties_only_a_store_its_open_made_and_no_build_holds`);
+  `check_prune`'s refusal of a path with a
   symlink on it, last or not, told apart (`is_symlink_on`) from a
   missing, unmarked or symlinked-marker one; in a cache mount, symlinks out
   (absolute, climbing), a hardlink and a FIFO, and a build directory that

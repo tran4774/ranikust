@@ -55,7 +55,14 @@ writer) before `unshare`, the probes and the state directory's checks.
   build-argument warnings, still outside the namespace, where it can open
   the other processes. `set_up`, inside the namespace: the store, the
   sandbox probe with the fallbacks `plan` allows, the overlay probe, the
-  spawner. A failure from the entry on is `Kind::Broken`. The probe's
+  spawner. A failure from the entry on is `Kind::Broken`. Root's
+  `--mode=auto` (`Via::AutoRoot`) runs `set_up` and the build in a child
+  (`rnk_sandbox::fork_to_wait`, ADR-0136): its failure abandons the store
+  (`Store::abandon`) and sends the reason, and the parent, which never
+  entered the namespace, returns `Rootless::FellBack` and builds in kaniko
+  mode; once set up, `Supervised::proceed` closes that way back and the
+  build stops on the forwarded `SIGUSR1` (`build::Stops::Forwarded`). The
+  probe's
   directory takes the process's gid and no setgid bit, as the store's own
   directories do (ADR-0099), so a setgid state directory does not stop its
   `chown`.
@@ -263,7 +270,9 @@ Each step before the next; design in
    `builds/<id>/overlay-probe` → outcome → `Sandbox::start`.
    `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
    process unchanged: the T0 tests of the binary set it, so none makes a
-   user namespace.
+   user namespace. Root's `--mode=auto` forks before `set_up` (ADR-0136);
+   `RANIKUST_DEBUG_FAULT=rootless-broken` fails `set_up` once the store is
+   open, so that the T1 smoke case `rootless` sees the fallback.
 6. **Kaniko mode** (`kaniko` in `main.rs`, then `setup::set_up_kaniko`,
    ADR-0050): `NofileLimit::current()` is read first (for `RUN`); root is
    required; the root is picked by `container::detect`. On `/`,
@@ -426,6 +435,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   build's refusal of a prune cut short giving a user and root the next
   step; the probe's directory taking the process's gid and losing a
   setgid parent's bit, `the_probe_directory_drops_a_setgid_parents_bit`;
+  a lock taken only on a directory a store's open would remove as the
+  probe's, `only_a_probe_directory_a_store_would_remove_is_held`;
   `setup/tests/userns.rs`: the store opened inside the build's
   user namespace, as root of it, or the set-up refused before the store,
   whatever the machine allows; `prune --all` emptying a state directory
@@ -537,8 +548,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (ADR-0129: the same refusal, naming what the rbind exposes),
   `a_build_with_an_rbind_of_proc_refuses_a_pid_namespace_shared_as_unchecked_files_show`
   (ADR-0134),
-  `the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe` and
-  `auto_mode_keeps_kaniko_mode_for_a_flag_only_it_honours`;
+  `the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe`,
+  `auto_mode_keeps_kaniko_mode_for_a_flag_only_it_honours` and
+  `only_roots_auto_mode_falls_back_to_kaniko_mode`;
   `--snapshot-mode` and `--snapshot-workers` reach the
   walk, `--ignore-path` reaches the ignore lists of `/` and of a stage root
   and never uncovers protected paths. `build.rs`: `kaniko_units` (what each

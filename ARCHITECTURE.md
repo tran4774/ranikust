@@ -169,6 +169,10 @@ namespace, each id map tried in a forked child first (rootless overlay mode,
 come from `ranikust`. Where its `RUN`s get an rbind of `/proc`, they take
 turns, whatever `--jobs` allows
 ([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
+For root's `--mode=auto`, it forks before that namespace: the child enters it
+and builds, the parent waits outside, forwarding the stop signals, and goes on
+in kaniko mode where the child's set-up fails
+([ADR-0136](docs/adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)).
 A bare `chroot` is never used when mounting is possible; the bare-`chroot`
 path for `--parallel-stages` is held back, as the flag is refused
 ([ADR-0060](docs/adr/0060-copy-leaves-special-files-out-where-run-has-no-nodev.md)).

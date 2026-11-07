@@ -112,10 +112,16 @@ overlay mount options.
   refused there for the same reason ([ADR-0054]); nor with `--ignore-path`,
   which only kaniko mode honours. `--mode=overlay` there builds rootless or is
   refused with both reasons.
-- **After the namespace.** Once ranikust is in it no other mode can follow, so
-  a failure there ends the build. The probe that chose the mode has already
-  run the same steps in a child process, so such a failure is one it could
-  not see, such as the state directory's store.
+- **After the namespace.** A process in it cannot leave it, and kaniko mode
+  never runs there. The probe that chose the mode has already run the same
+  steps in a child process, so a failure there is one it could not see, such
+  as the state directory's store. For a user other than root and for
+  `--mode=overlay` it ends the build. Root's `--mode=auto` enters the
+  namespace in a child process while ranikust waits outside it: where the
+  child's set-up fails, before anything is built, ranikust builds in kaniko
+  mode, as it did before rootless overlay mode, and logs why. `SIGINT` and
+  `SIGTERM` reach the build through the waiting process, and the exit code
+  is the build's.
 
 ## kaniko mode
 

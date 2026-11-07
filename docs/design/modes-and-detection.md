@@ -258,11 +258,22 @@ cannot leave the namespace once it is in:
 2. `set_up`, in the namespace: `enter_build_user_namespace` (user and mount
    namespace), the store, the sandbox probe with the fallbacks `plan`
    allows (step 3), the overlay probe (step 4), then the mode line and the
-   spawner. A failure here is `Kind::Broken`: no other mode follows, the
-   process ends. `plan`'s probe child has already run what this repeats,
-   each step a `RUN` needs and an overlay mount on the state directory's
+   spawner. A failure here is `Kind::Broken`: no other mode follows in the
+   process. `plan`'s probe child has already run what this repeats, each
+   step a `RUN` needs and an overlay mount on the state directory's
    filesystem, so what fails here is what that child could not see: the
-   store, the spawner's start, or a change between the two.
+   store, the spawner's start, or a change between the two. For root's
+   `--mode=auto`, which built in kaniko mode before rootless overlay mode,
+   the process forks first (`rnk_sandbox::fork_to_wait`, ADR-0136): the
+   child runs `set_up` and the build; the parent waits outside the
+   namespace, sends the child `SIGUSR1` for each `SIGINT` or `SIGTERM` it
+   gets (the child ignores those two itself), and ends as the child ends.
+   Where the child's `set_up` fails, the child empties the state directory
+   its store's open made a store (`Store::abandon`; not one it found, or one
+   another build holds) and sends the reason, and the parent, with no stop
+   received, logs `<reason>; kaniko mode instead, before anything was built
+   (ADR-0136)` and builds in kaniko mode as below. A user other than root
+   and `--mode=overlay` get the error.
 
 The mode line says what the build got: `overlay mode, rootless, in the
 build's user namespace, RUN enters its root with pivot_root, proc: a new
@@ -384,8 +395,10 @@ ranikust was started in (rootless Podman), the map is read from
   probe does not guess.
 - The probe result is fixed for the whole build. A later mount failure in the
   chosen mode is a build error, not a reason to switch modes mid-build. Once
-  the process is in the build's user namespace no other mode can follow, so a
-  failure there ends the build (`Kind::Broken`).
+  the process is in the build's user namespace no other mode can follow in
+  it, so a failure there ends the build (`Kind::Broken`), unless root's
+  `--mode=auto` set up in a child, whose parent then builds in kaniko mode
+  (ADR-0136).
 - When an overlay-mode `RUN` fails with `EXDEV`, ranikust suggests rerunning
   with `--mode=kaniko` ([ADR-0016](../adr/0016-overlay-mount-options.md),
   [ADR-0023](../adr/0023-mode-flag.md)).
