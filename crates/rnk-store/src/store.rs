@@ -72,6 +72,12 @@ const KEEPS_NOTHING: &str =
     "the store keeps nothing in the state directory a RUN could reach (ADR-0051)";
 /// The directories [`Store::open`] creates in the state directory.
 const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
+/// The directory of the `RUN` sandbox's own files at the top of a store's
+/// state directory, beside the store's own; the caller makes it, and
+/// [`Store::prune_all`] counts it as the store's.
+pub const SANDBOX_DIR: &str = "sandbox";
+/// Why [`Error::NotAStateDir`] refuses a directory without the marker.
+const UNMARKED: &str = "is not empty and has no regular file .ranikust-state";
 /// Mode of the state directory and the store's own directories: image
 /// content stays away from other users of the host.
 const DIR_MODE: u32 = 0o700;
@@ -1270,12 +1276,15 @@ impl Store {
     /// an anonymous store does, and holds it to the end: every build's
     /// store holds it shared for its life, so nothing a running build uses
     /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
-    /// Before removing anything it refuses, as [`Store::open`] does, a
-    /// non-empty directory without a regular [`STATE_MARKER`] and one
-    /// holding [`BUILDING_MARKER`], but takes one holding the regular
-    /// [`PRUNING_MARKER`] a prune that did not finish leaves, which `open`
-    /// refuses; it makes nothing in an empty directory, not even the
-    /// marker. Then it renames [`STATE_MARKER`] to [`PRUNING_MARKER`], or
+    /// Before removing anything it refuses this process's own `/`, by
+    /// device and inode as `rnk_rootfs::prune` does; as [`Store::open`]
+    /// does, a non-empty directory without a regular [`STATE_MARKER`] and
+    /// one holding [`BUILDING_MARKER`]; and one whose top level holds a
+    /// name neither the store nor a build makes there (the markers, the
+    /// store's directories, [`SANDBOX_DIR`], an anonymous store's names).
+    /// It takes one holding the regular [`PRUNING_MARKER`] a prune that did
+    /// not finish leaves, which `open` refuses, and makes nothing in an
+    /// empty directory, not even the marker. Then it renames [`STATE_MARKER`] to [`PRUNING_MARKER`], or
     /// takes over the one an earlier prune left, and syncs the directory
     /// before deleting: entries are emptied in place, and a prune cut short
     /// or failed leaves a directory no store opens and the next prune
@@ -1285,16 +1294,21 @@ impl Store {
     /// followed, no mount crossed or emptied; the filesystem is synced
     /// before [`PRUNING_MARKER`] goes, which a failed sync keeps.
     ///
-    /// Files of ids the process may not remove (a rootless build's, of
-    /// subordinate ids) need the caller in the build's user namespace,
-    /// whose root removes them; nothing here knows which namespace it runs
-    /// in.
+    /// The caller has checked `state` as a build's state directory: no
+    /// other user may write it or a directory above it (`ranikust`'s
+    /// state-directory checks, ADR-0050), since it is resolved by path
+    /// here, and the checks above are all this function adds. Files of ids
+    /// the process may not remove (a rootless build's, of subordinate ids)
+    /// need the caller in the build's user namespace, whose root removes
+    /// them; nothing here knows which namespace it runs in.
     ///
     /// # Errors
     ///
     /// [`Error::InUse`] while a build holds the state directory;
-    /// [`Error::NotAStateDir`], [`Error::UsedOnSlash`] and
-    /// [`Error::NoFlock`] as [`Store::open`]; [`Error::NotPruned`] naming
+    /// [`Error::NotAStateDir`] for a name the store does not make, else as
+    /// [`Store::open`], as are [`Error::UsedOnSlash`] and
+    /// [`Error::NoFlock`]; [`Error::Rootfs`] for this process's own `/`;
+    /// [`Error::NotPruned`] naming
     /// what is left when anything but [`PRUNING_MARKER`] stays (an entry on
     /// another mount, one this process may not remove), or when
     /// [`PRUNING_MARKER`] is not a regular file; [`Error::Io`] or
@@ -1309,6 +1323,7 @@ impl Store {
             source,
         })?;
         let root = RootPath::open(&state_path)?;
+        rnk_rootfs::refuse_own_root(&root, &state_path)?;
         let lock = root.open_at(".", &OpenHow::read().directory().no_follow())?;
         match lock::try_lock(&lock) {
             Ok(true) => {}
@@ -1321,8 +1336,19 @@ impl Store {
             }
         }
         refuse_used_on_slash(&root, &state_path)?;
-        if list(&root, Path::new("."))?.is_empty() {
+        let names = list(&root, Path::new("."))?;
+        if names.is_empty() {
             return Ok(false);
+        }
+        let foreign: Vec<OsString> = names.into_iter().filter(|n| !made_by_store(n)).collect();
+        if !foreign.is_empty() {
+            return Err(Error::NotAStateDir {
+                path: state_path,
+                why: format!(
+                    "holds {}, which ranikust does not make there",
+                    shown_names(&foreign)
+                ),
+            });
         }
         let not_pruned = |left: String| Error::NotPruned {
             path: state_path.clone(),
@@ -1346,7 +1372,10 @@ impl Store {
             }
             None => {
                 if regular(MARKER)? != Some(true) {
-                    return Err(Error::NotAStateDir { path: state_path });
+                    return Err(Error::NotAStateDir {
+                        path: state_path,
+                        why: UNMARKED.to_owned(),
+                    });
                 }
                 // No new inode, which a full disk or quota would refuse;
                 // not RENAME_NOREPLACE, which NFS refuses (the flock is ours).
@@ -1857,6 +1886,18 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
+/// Whether `name`, at the top of a state directory, is one the store or a
+/// build makes there: the markers, [`DIRS`], [`SANDBOX_DIR`], and an
+/// anonymous store's names.
+fn made_by_store(name: &OsString) -> bool {
+    let name = name.as_encoded_bytes();
+    [MARKER, PRUNING, BUILDING, SANDBOX_DIR]
+        .iter()
+        .chain(&DIRS)
+        .any(|own| name == own.as_bytes())
+        || name.starts_with(anon::PREFIX.as_bytes())
+}
+
 /// The first few of `names`, quoted, for a log line: names a `RUN` chose.
 fn shown_names(names: &[OsString]) -> String {
     const SHOWN: usize = 5;
@@ -1877,6 +1918,7 @@ fn shown_names(names: &[OsString]) -> String {
 fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
     let refuse = || Error::NotAStateDir {
         path: state_path.to_owned(),
+        why: UNMARKED.to_owned(),
     };
     let marked = |state: &RootPath| -> Result<Option<bool>> {
         match state.statx(MARKER) {

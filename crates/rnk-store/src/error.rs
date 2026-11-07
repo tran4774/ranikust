@@ -10,10 +10,12 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The state directory is not empty and carries no `.ranikust-state`
-    /// marker file (or the marker is not a regular file): it may be a
-    /// directory the user cares about, which clean-up would delete from.
+    /// marker file (or the marker is not a regular file), or, for
+    /// [`crate::Store::prune_all`], holds a name the store does not make:
+    /// it may be a directory the user cares about, which clean-up would
+    /// delete from.
     #[error(
-        "{} is not empty and has no regular file .ranikust-state; \
+        "{} {why}; \
          refusing to use it as the state directory (pass an empty or new --state-dir; \
          a state directory of an earlier ranikust, marked .ranikust-root, is not reused: \
          delete it first)",
@@ -22,6 +24,8 @@ pub enum Error {
     NotAStateDir {
         /// The state directory.
         path: PathBuf,
+        /// What it holds or lacks, with any name quoted.
+        why: String,
     },
 
     /// The filesystem of the state directory does not support `flock`,

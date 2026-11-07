@@ -39,13 +39,18 @@ writer) before `unshare`, the probes and the state directory's checks.
   rootless overlay mode (#79) will; a user other than root is still
   refused before the state directory (`NEEDS_ROOT`).
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
-  in any user namespace), naming Phase 5's `prune`; a missing state
-  directory left so; then `setup::enter_user_namespace_for` (the state
-  directory's checks outside, the namespace, no store opened), with its
-  own guidance where the user gets no namespace (`prune::NO_USER_NAMESPACE`;
-  the build's sends the user to root); in it, `RLIMIT_NOFILE` raised and
-  `rnk_store::Store::prune_all`. Prints one line on stdout; a refusal exits
-  1, `prune` without `--all` 2.
+  in any user namespace), naming Phase 5's `prune`; then
+  `statedir::check` (a build's checks, outside, with nothing made and no
+  mode changed): a missing or empty state directory left so; then
+  `setup::enter_build_userns` (the namespace, no store opened), with its
+  own guidance where the user gets no namespace
+  (`prune::no_user_namespace`; the build's sends the user to root); in it,
+  `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
+  guidance gives name the state directory, shell-quoted, under
+  `flock -xn` on it, so they fail while a build holds it; a prune that did
+  not finish (`NotPruned`, and a build's `PruneCutShort`) gets the ways
+  out (`prune::unfinished`). Prints one line on stdout; a refusal exits 1,
+  `prune` without `--all` 2.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -71,10 +76,10 @@ Modules of `crates/ranikust/src/` (all crate-private):
 |---|---|
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
-| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (the namespace, then `Store::prune_all`), `Pruned`, `summary` |
+| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace`, `unfinished`, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_user_namespace_for` (without the store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
-| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace` |
+| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `check` (the same, making and changing nothing, for `prune`), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101) |
@@ -123,13 +128,16 @@ Modules of `crates/ranikust/src/` (all crate-private):
   OverlayCaps }`; kaniko mode is set up by `set_up_kaniko`
   (`KanikoSetup`). Planned: an overlay-rootless outcome (Phase 3, #41); each
   library receives only its own part [open: #3].
-- `Refusal { kind, reason, guidance }`: what failed, what to do.
-  `Refusal::needs_kaniko_mode()` lets auto pick kaniko mode.
+- `Refusal { kind, reason, guidance }`: what failed, what to do (ranikust's
+  own text, which may name the state directory; `main` escapes both as
+  `rnk_metrics::terminal_text` does). `Refusal::needs_kaniko_mode()` lets
+  auto pick kaniko mode.
 - `statedir::prepare(state_dir)`: the nearest existing directory and every
   real parent walked by descriptor, owned by root or the user and not
   writable by group or others (root's sticky directories excepted); created
   `0700` by `mkdirat` below the checked descriptor; chain checked again.
-  Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
+  `statedir::check(state_dir)`: the same rules on an existing directory,
+  `Found { Missing, Empty, Entries }`, nothing made or chmodded. Details: [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks).
 
 ### Set-up order
 
@@ -333,8 +341,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   directory unchanged, no process or mount left), `prune` (`--all` and
   `--state-dir` parsed, `--kaniko-dir` refused; without `--all` a usage
   error naming Phase 5; root refused before anything, a missing directory
-  left missing, one without the marker refused before the namespace,
-  modes unchanged), `statedir`
+  left missing, an empty one left as it is, one without the marker
+  refused before the namespace, modes unchanged; the guidance's commands:
+  paths quoted so bash reads them back byte for byte, the `flock` failing
+  while a store is open, nothing made at a missing path; the ways out of
+  a prune that did not finish, in `prune`'s refusal and a build's),
+  `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
@@ -394,7 +406,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   missing state directory, the default one included, left missing (exit
   0); as a user, a directory without the marker refused unchanged, and a
   state directory emptied or, without a user namespace, refused with
-  `prune`'s guidance and unchanged.
+  `prune`'s guidance, naming it under `flock`, and unchanged.
   `red_team_a_regular_user_s_dead_build_links_out_are_removed_and_never_followed`
   (`setup/tests/userns.rs`): the T1 red team's links out as the user who
   ran sudo, with files of subordinate ids, through `newuidmap`'s map;

@@ -1080,10 +1080,16 @@ pub(crate) fn open_name(
 }
 
 /// Refuses `root` when it is this process's own `/` (same device and
-/// inode): pruning or moving it would act on the machine itself, whatever
-/// the caller meant (ADR-0061; `rnk-sandbox` refuses system directories the
-/// same way).
-pub(crate) fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()> {
+/// inode, whatever name or mount reaches it): pruning, emptying or moving
+/// it would act on the machine itself, whatever the caller meant
+/// (ADR-0061; `rnk-sandbox` refuses system directories the same way).
+/// `path` names `root` in the error.
+///
+/// # Errors
+///
+/// [`Error::InvalidPath`] for this process's own `/`; [`Error::Io`] when
+/// either cannot be read.
+pub fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()> {
     let own = meta::statx_at(rustix::fs::CWD, OsStr::new("/"), Path::new("/"))?;
     let st = meta::statx_at(root.fd(), OsStr::new(""), path)?;
     if st.same_inode(&own) {

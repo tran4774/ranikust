@@ -127,7 +127,7 @@ fn route_sends_only_an_unusable_overlay_outside_a_container_to_kaniko_stages() {
     let of = |kind| Refusal {
         kind,
         reason: "r".to_owned(),
-        guidance: "",
+        guidance: "".into(),
     };
     // The probe's mount refused, or a state directory on overlayfs.
     assert_eq!(
@@ -218,7 +218,7 @@ fn a_blocked_sandbox_wins_over_an_unusable_overlay() {
     let overlay = Refusal {
         kind: Kind::OverlayUnusable,
         reason: "overlay: EINVAL".to_owned(),
-        guidance: OVERLAY_UNUSABLE,
+        guidance: OVERLAY_UNUSABLE.into(),
     };
     let r = pick::<()>(
         Err(SandboxError::Setup {
@@ -273,7 +273,7 @@ fn a_failed_overlay_probe_refuses_even_with_a_sandbox() {
     let failed = Refusal {
         kind: Kind::OverlayUnusable,
         reason: "overlay: EINVAL".to_owned(),
-        guidance: OVERLAY_UNUSABLE,
+        guidance: OVERLAY_UNUSABLE.into(),
     };
     let r = pick(Ok(()), Err(failed), 0);
     assert_eq!(r.unwrap_err().reason, "overlay: EINVAL");
@@ -307,7 +307,7 @@ fn a_broken_user_namespace_never_falls_back() {
         })
     };
     for euid in [0, USER] {
-        let refusal = userns_refusal(broken(), euid, NO_USER_NAMESPACE);
+        let refusal = userns_refusal(broken(), euid, NO_USER_NAMESPACE.into());
         assert_eq!(refusal.kind, Kind::Broken);
         assert!(!refusal.needs_kaniko_mode());
         for in_container in [false, true] {
@@ -318,21 +318,24 @@ fn a_broken_user_namespace_never_falls_back() {
     let refusal = userns_refusal(
         SandboxError::Privilege("a user namespace"),
         USER,
-        NO_USER_NAMESPACE,
+        NO_USER_NAMESPACE.into(),
     );
     assert_eq!(refusal.kind, Kind::Broken);
     // Not entered: the process is unchanged, the refusal of the usual kind.
     let refusal = userns_refusal(
         SandboxError::NoUserNamespace { tried: Vec::new() },
         USER,
-        NO_USER_NAMESPACE,
+        NO_USER_NAMESPACE.into(),
     );
     assert_eq!(refusal.kind, Kind::Other);
     assert_eq!(refusal.guidance, NO_USER_NAMESPACE);
     // The caller's guidance (`prune`'s), and root's: none.
     for (euid, want) in [(USER, "prune's"), (0, "")] {
         let no_userns = SandboxError::NoUserNamespace { tried: Vec::new() };
-        assert_eq!(userns_refusal(no_userns, euid, "prune's").guidance, want);
+        assert_eq!(
+            userns_refusal(no_userns, euid, "prune's".into()).guidance,
+            want
+        );
     }
     for unchanged in [
         SandboxError::NotSingleThreaded { threads: 2 },
@@ -343,7 +346,7 @@ fn a_broken_user_namespace_never_falls_back() {
         },
     ] {
         assert_eq!(
-            userns_refusal(unchanged, USER, NO_USER_NAMESPACE).kind,
+            userns_refusal(unchanged, USER, NO_USER_NAMESPACE.into()).kind,
             Kind::Other
         );
     }
@@ -359,10 +362,13 @@ fn a_broken_user_namespace_never_falls_back() {
         let refusal = inside_userns(Refusal {
             kind,
             reason: "r".to_owned(),
-            guidance: "g",
+            guidance: "g".into(),
         });
         assert_eq!(refusal.kind, Kind::Broken, "{kind:?}");
-        assert_eq!((refusal.reason.as_str(), refusal.guidance), ("r", "g"));
+        assert_eq!(
+            (refusal.reason.as_str(), refusal.guidance.as_ref()),
+            ("r", "g")
+        );
         assert_eq!(route(&refusal, false), Route::Refuse);
     }
 }
@@ -563,7 +569,10 @@ fn a_store_refusal_names_its_state_directory_once() {
     let source = || io::Error::from(rustix::io::Errno::OPNOTSUPP);
     let (left, found, why) = (String::from("x"), String::from("x"), String::from("x"));
     for e in [
-        Error::NotAStateDir { path: path() },
+        Error::NotAStateDir {
+            path: path(),
+            why: why.clone(),
+        },
         Error::NoFlock {
             path: path(),
             source: source(),
@@ -609,6 +618,35 @@ fn a_store_refusal_names_its_state_directory_once() {
         refusal.reason,
         format!("cannot open the store in /home/u/state: {e}")
     );
+}
+
+/// A build refused by a `prune --all` that did not finish is shown the
+/// ways out, for the directory the store names; other refusals get none.
+#[test]
+fn a_build_refused_by_an_unfinished_prune_is_shown_the_ways_out() {
+    use rnk_store::Error;
+    let given = Path::new("/home/u/link");
+    let real = Path::new("/home/u/my state");
+    let refusal = store_refusal(
+        &Error::PruneCutShort {
+            path: real.to_owned(),
+        },
+        given,
+    );
+    let ways = crate::prune::unfinished(real);
+    assert!(ways.contains("'/home/u/my state'"), "{ways}");
+    assert_eq!(refusal.guidance, ways);
+    assert!(
+        refusal.to_string().ends_with(&format!("\n  {ways}")),
+        "{refusal}"
+    );
+    let busy = store_refusal(
+        &Error::Busy {
+            path: real.to_owned(),
+        },
+        given,
+    );
+    assert_eq!(busy.guidance, "");
 }
 
 #[test]

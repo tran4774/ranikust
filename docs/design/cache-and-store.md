@@ -155,16 +155,19 @@ under `volatile` is never trusted after a crash.
 empties the state directory of a user other than root, files of
 subordinate ids included, so the user can then remove it. In order: root
 is refused (euid 0 in any user namespace, a container's root included),
-naming Phase 5's `prune`; a state directory that does not exist is left so;
-then, as a build, the state directory's checks outside and the build's
-user namespace; in it, `Store::prune_all`. That takes the state
+naming Phase 5's `prune`; then a build's checks of the state directory,
+outside, which neither make it nor change its mode: one that does not
+exist, or is empty, is left so; then the build's user namespace; in it,
+`Store::prune_all`, which refuses the process's own `/` itself. That takes the state
 directory's `flock` exclusive without waiting, as an anonymous store does,
 and holds it to the end: every build holds it shared for its life, so
 `prune --all` removes nothing while any build runs there (it says so and
 exits 1), and a build that starts meanwhile is refused. It refuses a
 non-empty directory without its regular marker (`.ranikust-state`, or the
-`.ranikust-pruning` a prune that did not finish leaves) and creates nothing
-in an empty one. Before deleting it syncs the directory with
+`.ranikust-pruning` a prune that did not finish leaves), and, before any
+rename, one whose top level holds a name neither the store nor a build
+makes there (the markers, its directories, `sandbox/`, an anonymous
+store's names); it creates nothing in an empty one. Before deleting it syncs the directory with
 `.ranikust-pruning` in it, whether it renamed `.ranikust-state` itself or
 found one an earlier prune left: entries are emptied in place, under their
 published names, so a prune killed or failed part-way leaves a layer a
@@ -177,7 +180,13 @@ one an earlier prune left stays, since that prune may have removed entries.
 It deletes by descriptor (no symlink followed, no mount crossed), names
 what it could not remove, then syncs the filesystem and removes
 `.ranikust-pruning` last, so the marker's removal never reaches the disk
-without the deletions; a failed sync keeps it.
+without the deletions; a failed sync keeps it. Where it cannot finish (a
+mount below, files of ids no user namespace maps), its refusal and every
+build's name the ways out with the directory's real path: unmount, set up
+the user's subordinate ids, or move the directory aside and remove it in
+`podman unshare` or as root. The commands its other refusals give (root's,
+and a user's without a user namespace) take the same exclusive `flock`
+(`flock -xn`), so they fail while a build runs there.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

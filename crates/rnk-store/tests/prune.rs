@@ -108,19 +108,28 @@ fn prune_all_refuses_while_a_build_holds_the_store() {
 fn prune_all_refuses_a_directory_without_the_marker() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    fs::create_dir(&state).unwrap();
-    fs::write(state.join("precious"), b"x").unwrap();
+    // Under a name the store makes, so that the marker alone decides.
+    let precious = |state: &Path| {
+        fs::create_dir_all(state.join("blobs")).unwrap();
+        fs::write(state.join("blobs/precious"), b"x").unwrap();
+    };
+    precious(&state);
+    let before = tree(&state);
     let e = Store::prune_all(&state).unwrap_err();
     assert!(matches!(e, Error::NotAStateDir { .. }), "{e}");
-    assert_eq!(tree(&state), [PathBuf::from("precious")]);
+    assert!(
+        e.to_string()
+            .contains("has no regular file .ranikust-state"),
+        "{e}"
+    );
+    assert_eq!(tree(&state), before);
     // A marker that is not a regular file marks nothing.
     for (i, kind) in ["link", "dir"].into_iter().enumerate() {
         let state = dir.path().join(format!("state-{i}"));
-        fs::create_dir(&state).unwrap();
-        fs::write(state.join("precious"), b"x").unwrap();
+        precious(&state);
         let marker = state.join(rnk_store::STATE_MARKER);
         if kind == "link" {
-            std::os::unix::fs::symlink(state.join("precious"), &marker).unwrap();
+            std::os::unix::fs::symlink(state.join("blobs/precious"), &marker).unwrap();
         } else {
             fs::create_dir(&marker).unwrap();
         }
@@ -129,6 +138,72 @@ fn prune_all_refuses_a_directory_without_the_marker() {
         assert!(matches!(e, Error::NotAStateDir { .. }), "{kind}: {e}");
         assert_eq!(tree(&state), before, "{kind}");
     }
+}
+
+/// A marked directory holding, at its top, one name neither the store nor
+/// a build makes there is refused whole, the marker kept in place, also
+/// when an earlier prune renamed it.
+#[test]
+fn prune_all_refuses_a_name_the_store_does_not_make() {
+    let dir = tempfile::tempdir().unwrap();
+    for (i, (kind, journal)) in [
+        ("file", false),
+        ("dir", false),
+        ("file", true),
+        ("dir", true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let state = dir.path().join(format!("state-{i}"));
+        used_store(&state);
+        if journal {
+            fs::rename(
+                state.join(rnk_store::STATE_MARKER),
+                state.join(rnk_store::PRUNING_MARKER),
+            )
+            .unwrap();
+        }
+        let foreign = state.join("notes");
+        if kind == "file" {
+            fs::write(&foreign, b"x").unwrap();
+        } else {
+            fs::create_dir(&foreign).unwrap();
+            fs::write(foreign.join("f"), b"x").unwrap();
+        }
+        let before = tree(&state);
+        let e = Store::prune_all(&state).unwrap_err();
+        assert!(matches!(e, Error::NotAStateDir { .. }), "{kind}: {e}");
+        assert!(
+            e.to_string()
+                .contains("holds \"notes\", which ranikust does not make there"),
+            "{kind}: {e}"
+        );
+        assert_eq!(tree(&state), before, "{kind}, journal {journal}");
+    }
+}
+
+/// Every name the store and a build make at the top is taken: the store's
+/// directories, the sandbox's and an anonymous store's names.
+#[test]
+fn prune_all_takes_every_name_the_store_makes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    used_store(&state);
+    fs::create_dir(state.join(rnk_store::SANDBOX_DIR)).unwrap();
+    fs::write(state.join(rnk_store::SANDBOX_DIR).join("runs"), b"").unwrap();
+    fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    assert!(Store::prune_all(&state).unwrap());
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+}
+
+/// This process's own `/` is refused before anything is locked or looked
+/// at; nothing would be removed there anyway, holding no marker.
+#[test]
+fn prune_all_refuses_the_machines_own_root() {
+    let e = Store::prune_all(Path::new("/")).unwrap_err();
+    assert!(matches!(e, Error::Rootfs(_)), "{e}");
+    assert!(e.to_string().contains("own root"), "{e}");
 }
 
 #[test]

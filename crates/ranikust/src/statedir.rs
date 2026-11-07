@@ -92,6 +92,53 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
     }
 }
 
+/// What [`check`] found at the state directory's path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// Nothing.
+    Missing,
+    /// An empty directory.
+    Empty,
+    /// A directory holding what [`check_contents`] accepts: the store's
+    /// marker, or only what an anonymous store leaves, which the store
+    /// refuses itself.
+    Entries,
+}
+
+/// [`prepare`]'s checks on a state directory that is not created and
+/// whose mode is not changed, for `prune --all`, which makes nothing: when
+/// something is at `state_dir`, it must be a directory, opened without
+/// following a symlink anywhere on its path, not `/`, whose chain passes
+/// [`check_chain`]'s rule as the state directory, and empty or accepted by
+/// [`check_contents`]. [`SYSTEM_DIRS`] guard the mode [`prepare`] sets, so
+/// they are not refused here. `state_dir` must be absolute.
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
+    let euid = rustix::process::geteuid().as_raw();
+    match std::fs::symlink_metadata(state_dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Found::Missing),
+        Err(e) => {
+            return Err(Refused(format!(
+                "cannot look up the state directory {}: {e}",
+                state_dir.display()
+            )));
+        }
+    }
+    let fd = open_dir(state_dir, OFlags::RDONLY)?;
+    refuse_slash(&fd, state_dir, euid)?;
+    check_chain(&walk(&fd, state_dir)?, euid, true)?;
+    let names = list_names(&fd, state_dir)?;
+    if names.is_empty() {
+        return Ok(Found::Empty);
+    }
+    check_names(&fd, state_dir, &names)?;
+    Ok(Found::Entries)
+}
+
 /// Creates what is missing of `state_dir` below `existing`, its nearest
 /// existing directory, open as `parent` and already checked; returns the
 /// state directory, opened for reading.
@@ -256,6 +303,11 @@ fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refu
 /// The marker of a `prune --all` that did not finish counts: the store
 /// refuses a build there itself, saying so, and `prune --all` finishes.
 fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
+    check_names(fd, state_dir, &list_names(fd, state_dir)?)
+}
+
+/// The names in the directory `fd`, `.` and `..` left out.
+fn list_names(fd: &OwnedFd, state_dir: &Path) -> Result<Vec<Vec<u8>>, Refused> {
     let err = |e: Errno| Refused(format!("cannot list {}: {e}", state_dir.display()));
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::read_from(fd).map_err(err)? {
@@ -264,6 +316,11 @@ fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
             names.push(name);
         }
     }
+    Ok(names)
+}
+
+/// [`check_contents`] on `names`, the names in `fd`.
+fn check_names(fd: &OwnedFd, state_dir: &Path, names: &[Vec<u8>]) -> Result<bool, Refused> {
     // Only what an anonymous store (kaniko mode on `/`) leaves when a
     // build is cut short: its marker and its unpacked names, which it
     // removes or heeds at its next start (ADR-0056, Q-360).

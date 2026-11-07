@@ -73,7 +73,7 @@ impl Store {
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
-    pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): EX flock without waiting (Error::InUse), marker check, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
+    pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), marker and names check, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
 }
 pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
@@ -81,7 +81,8 @@ pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new ca
 impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer); path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID (rnk-snapshot, ADR-0032) [open: #1]; digest() -> &Digest
-pub enum Error { NotAStateDir, NoFlock, Busy, InUse { path }, NotPruned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
+pub const SANDBOX_DIR: &str = "sandbox";  // the RUN sandbox's directory at the top, made by ranikust; a name prune_all takes
+pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 ```
 
 `f` must return `Ok` only for a verified entry: the store does not hash a
@@ -144,9 +145,13 @@ Design: [locks](../../design/cache-and-store.md#locks),
   holds shared for its life, and keeps it to the end, so it is refused
   while any build runs (`Error::InUse`) and a store opened meanwhile is
   `Error::Busy`. Like `open` it refuses a non-empty directory without a
-  regular `.ranikust-state` and one an anonymous store used, but takes one
-  holding the regular `.ranikust-pruning` an earlier prune left, which
-  `open` refuses; it makes nothing in an empty directory. It empties entries in place, under their published
+  regular `.ranikust-state` and one an anonymous store used, and, before
+  any rename, one whose top level holds a name neither the store nor a
+  build makes there (`NotAStateDir` naming it); it takes one holding the
+  regular `.ranikust-pruning` an earlier prune left, which `open`
+  refuses, and makes nothing in an empty directory. It refuses this
+  process's own `/` itself (`rnk_rootfs::refuse_own_root`), whatever its
+  caller checked. It empties entries in place, under their published
   names, so it first renames the marker `.ranikust-pruning`
   (`PRUNING_MARKER`) and syncs the directory, and `open` refuses a
   directory holding that name (`Error::PruneCutShort`) until a prune
@@ -203,7 +208,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T0** `tests/prune.rs` (`prune_all`, the test user's own files): every
   kind of entry a build leaves emptied, marker last; refused while a build
   holds the store, nothing removed; a directory without a regular marker
-  (none, a symlink, a directory) refused; an empty one left as it is,
+  (none, a symlink, a directory) refused; a marked one, or one an earlier
+  prune left, holding a file or a directory the store does not make
+  refused, marker in place and nothing removed; every name the store and
+  a build make taken; the machine's own `/` refused; an empty one left as it is,
   nothing made; one an anonymous store used refused; the marker renamed,
   `NotPruned`, and `open` refused while anything stays (a `0555` directory
   as a user); the rename before any removal and no file made (the order of

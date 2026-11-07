@@ -61,6 +61,6 @@ pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
 pub use mode::{Chmod, ModeSet};
 pub use mountinfo::{MountInfo, MountInfoError, parse_mountinfo};
-pub use root::{OpenHow, Pinned, RootPath};
+pub use root::{OpenHow, Pinned, RootPath, refuse_own_root};
 pub use support::{Cause, Unsupported, probe_support};
 pub use user::{Owner, User, lookup_owner, lookup_user};

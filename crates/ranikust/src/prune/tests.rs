@@ -108,32 +108,151 @@ fn root_is_refused_naming_phase_5_before_anything() {
             "{refusal}"
         );
         assert!(refusal.guidance.contains("Phase 5"), "{refusal}");
-        // The marker first: what an interrupted removal leaves is unmarked.
-        let marker = refusal
-            .guidance
-            .find("rm -f /var/lib/ranikust/.ranikust-state");
-        let rest = refusal.guidance.find("rm -rf --one-file-system");
-        assert!(
-            matches!((marker, rest), (Some(m), Some(r)) if m < r),
-            "{refusal}"
-        );
+        // Under the lock builds take, the marker first: what an interrupted
+        // removal leaves is unmarked, and a directory without it stays.
+        let d = shell_word(dir.as_os_str());
+        let script = r#"'rm "$1/.ranikust-state" && rm -rf --one-file-system "$1"'"#;
+        let want = format!("test -d {d} && flock -xn {d} sh -c {script} sh {d}");
+        assert!(refusal.guidance.contains(&want), "{refusal}");
         assert_eq!(refusal.kind, Kind::Other);
     }
     assert_eq!(listing(&state), before);
     assert!(!missing.exists());
+    // The path the user gave, quoted.
+    let odd = Path::new("/srv/the 'state'");
+    let refusal = prune_all(0, odd).unwrap_err();
+    assert!(
+        refusal
+            .guidance
+            .contains(r"test -d '/srv/the '\''state'\''' && flock -xn '/srv/the '\''state'\'''"),
+        "{refusal}"
+    );
 }
 
 #[test]
 fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
-    // Builds refuse the directory meanwhile, and a later prune finishes it.
-    let renamed = NO_USER_NAMESPACE.find("mv DIR/.ranikust-state DIR/.ranikust-pruning");
-    let removed =
-        NO_USER_NAMESPACE.find("! -name .ranikust-pruning -exec rm -rf --one-file-system");
+    // Builds refuse the directory meanwhile; its marker goes once nothing
+    // else is left, or a later prune finishes it.
+    let dir = Path::new("/home/u/my state");
+    let guidance = no_user_namespace(dir);
     assert!(
-        matches!((renamed, removed), (Some(m), Some(r)) if m < r),
-        "{NO_USER_NAMESPACE}"
+        guidance.contains("test -d '/home/u/my state' && flock -xn '/home/u/my state' sh -c 'mv "),
+        "{guidance}"
     );
-    assert!(NO_USER_NAMESPACE.contains("subordinate ids stay"));
+    assert!(
+        guidance.contains("' sh '/home/u/my state' renames the marker"),
+        "{guidance}"
+    );
+    let at = |what: &str| guidance.find(what);
+    let renamed = at(r#"mv "$1/.ranikust-state" "$1/.ranikust-pruning" && "#);
+    let removed = at(
+        r#"find "$1" -mindepth 1 -maxdepth 1 ! -name .ranikust-pruning -exec rm -rf --one-file-system {} + && "#,
+    );
+    let marker = at(r#"rm "$1/.ranikust-pruning"'"#);
+    assert!(
+        matches!((renamed, removed, marker), (Some(m), Some(r), Some(l)) if m < r && r < l),
+        "{guidance}"
+    );
+    assert!(guidance.contains("subordinate ids stay"));
+}
+
+/// A state directory's path, as one word bash reads back byte for byte;
+/// nothing in the word is left for a terminal to act on.
+#[test]
+fn a_path_is_quoted_for_a_shell() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let cases: [&[u8]; 9] = [
+        b"/var/lib/ranikust",
+        b"/home/u/.local/share/ranikust",
+        b"/srv/a b",
+        b"/srv/it's",
+        b"/srv/$HOME/`id`/*/!x;y|z&",
+        b"/srv/\xc3\xa9t\xc3\xa9",
+        b"/srv/\x1b]0;x\x07\n",
+        b"/srv/\xff\\'",
+        "/srv/\u{202e}x".as_bytes(),
+    ];
+    for bytes in cases {
+        let path = OsStr::from_bytes(bytes);
+        let word = shell_word(path);
+        assert_eq!(&*rnk_metrics::terminal_text(&word), word, "{word}");
+        let out = std::process::Command::new("bash")
+            .args(["-c", &format!("printf %s {word}")])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{word}: {out:?}");
+        assert_eq!(out.stdout, bytes, "{word}");
+    }
+    assert_eq!(
+        shell_word(OsStr::new("/var/lib/ranikust")),
+        "/var/lib/ranikust"
+    );
+    assert_eq!(shell_word(OsStr::new("/srv/it's")), r"'/srv/it'\''s'");
+    assert_eq!(shell_word(OsStr::from_bytes(b"/a\nb")), r"$'/a\x0ab'");
+}
+
+/// The commands the guidance gives run under the `flock` a build holds
+/// shared: refused while a store is open, run once it is closed.
+#[test]
+fn the_suggested_commands_wait_for_no_build() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("my 'state'");
+    marked_state(&state);
+    let ran = state.join("ran");
+    let command = locked(&state, r#"touch "$1/ran""#);
+    let run = || {
+        std::process::Command::new("bash")
+            .args(["-c", &command])
+            .status()
+            .unwrap()
+    };
+    let open = Store::open(&rnk_store::BuildPaths::new(&state, &state)).unwrap();
+    assert!(!run().success(), "{command}");
+    assert!(!ran.exists());
+    open.close().unwrap();
+    assert!(run().success(), "{command}");
+    assert!(ran.exists());
+    // Nothing is made at a missing path, where `flock` would make a file.
+    let missing = tmp.path().join("missing");
+    let command = locked(&missing, "true");
+    let status = std::process::Command::new("bash")
+        .args(["-c", &command])
+        .status()
+        .unwrap();
+    assert!(!status.success());
+    assert!(!missing.exists());
+}
+
+/// A prune that did not finish names its causes and the ways out, with the
+/// state directory quoted: in `prune --all`'s refusal and a build's.
+#[test]
+fn a_prune_that_did_not_finish_names_the_ways_out() {
+    let dir = Path::new("/home/u/my state");
+    let ways = unfinished(dir);
+    for want in [
+        "on another mount",
+        "subordinate ids",
+        "unmount anything below '/home/u/my state'",
+        "install newuidmap and give this user ranges in /etc/subuid and /etc/subgid",
+        "mv -T '/home/u/my state' '/home/u/my state.old'",
+        "podman unshare rm -rf --one-file-system '/home/u/my state.old', or as root",
+    ] {
+        assert!(ways.contains(want), "{want}: {ways}");
+    }
+    let refusal = store_refusal(&rnk_store::Error::NotPruned {
+        path: dir.to_owned(),
+        left: "\"x\"".to_owned(),
+    });
+    assert_eq!(refusal.guidance, ways);
+    assert_eq!(refusal.kind, Kind::Broken);
+    assert!(
+        refusal.to_string().ends_with(&format!("\n  {ways}")),
+        "{refusal}"
+    );
+    let refusal = store_refusal(&rnk_store::Error::InUse {
+        path: dir.to_owned(),
+    });
+    assert_eq!(refusal.guidance, "");
 }
 
 #[test]
@@ -147,6 +266,27 @@ fn a_missing_state_directory_is_left_missing() {
         assert!(!dir.exists());
     }
     assert_eq!(listing(tmp.path()), Vec::new());
+}
+
+/// An empty state directory is left as it is, before any namespace: no
+/// marker, no `builds/`, its mode kept; and the checks that let `prune`
+/// on to the namespace change no mode either.
+#[test]
+fn an_empty_state_directory_is_left_as_it_is() {
+    let tmp = private_tempdir();
+    let dir = tmp.path().join("state");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let before = listing(tmp.path());
+    let user_ns = fs::read_link("/proc/self/ns/user").unwrap();
+    assert_eq!(empty(&dir).unwrap(), Pruned::Empty);
+    assert_eq!(listing(tmp.path()), before, "modes included");
+    assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
+    marked_state(&dir);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let before = listing(tmp.path());
+    assert_eq!(statedir::check(&dir).unwrap(), Found::Entries);
+    assert_eq!(listing(tmp.path()), before, "modes included");
 }
 
 #[test]

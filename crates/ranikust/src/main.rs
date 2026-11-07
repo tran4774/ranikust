@@ -55,6 +55,7 @@ mod startup;
 mod statedir;
 mod subids;
 
+use std::borrow::Cow;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
@@ -93,8 +94,9 @@ struct Failure {
     /// image's tar entry, a context file), so [`report_to`] escapes it.
     message: String,
     /// What to do instead, ranikust's own text, printed on a line of its
-    /// own after the message; empty when there is none.
-    guidance: &'static str,
+    /// own after the message; empty when there is none. It may name the
+    /// state directory, so [`report_to`] escapes it too.
+    guidance: Cow<'static, str>,
 }
 
 impl Failure {
@@ -102,7 +104,7 @@ impl Failure {
         Self {
             code: EXIT_USAGE,
             message: message.into(),
-            guidance: "",
+            guidance: Cow::Borrowed(""),
         }
     }
 
@@ -110,7 +112,7 @@ impl Failure {
         Self {
             code: 1,
             message: message.into(),
-            guidance: "",
+            guidance: Cow::Borrowed(""),
         }
     }
 
@@ -119,8 +121,11 @@ impl Failure {
         Self::error(refusal.reason).with_guidance(refusal.guidance)
     }
 
-    fn with_guidance(self, guidance: &'static str) -> Self {
-        Self { guidance, ..self }
+    fn with_guidance(self, guidance: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            guidance: guidance.into(),
+            ..self
+        }
     }
 
     /// The message and the guidance as one text, for the metrics report:
@@ -258,7 +263,7 @@ fn main() -> ExitCode {
     let (code, outcome) = match &result {
         Ok(()) => (0, Outcome::success()),
         Err(failure) => {
-            report(&failure.message, failure.guidance);
+            report(&failure.message, &failure.guidance);
             (
                 failure.code,
                 Outcome::error(i32::from(failure.code), failure.text()),
@@ -299,10 +304,12 @@ fn report(message: &str, guidance: &str) {
 /// The fatal error line, with `message` escaped
 /// ([`rnk_metrics::terminal_text`]): nothing in it can drive the terminal
 /// or start a line that looks like ranikust's own. The guidance, ranikust's
-/// own text, follows indented on its own line. One write.
+/// own text, follows indented on its own line, escaped the same way: it
+/// may name the state directory. One write.
 fn report_to(out: &mut impl std::io::Write, message: &str, guidance: &str) -> std::io::Result<()> {
     let mut text = format!("ranikust: error: {}\n", rnk_metrics::terminal_text(message));
     if !guidance.is_empty() {
+        let guidance = rnk_metrics::terminal_text(guidance);
         text.push_str(&format!("  {guidance}\n"));
     }
     out.write_all(text.as_bytes())
@@ -1361,7 +1368,7 @@ mod tests {
 
     fn reported(failure: &Failure) -> String {
         let mut out = Vec::new();
-        report_to(&mut out, &failure.message, failure.guidance).unwrap();
+        report_to(&mut out, &failure.message, &failure.guidance).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -1395,7 +1402,7 @@ mod tests {
     fn guidance_keeps_its_own_line() {
         let refusal = setup::Refusal {
             reason: "probe of /x\ny failed".to_owned(),
-            guidance: "pass --state-dir on a local filesystem",
+            guidance: "pass --state-dir on a local filesystem".into(),
             kind: setup::Kind::Other,
         };
         let shown = refusal.to_string();
@@ -1405,6 +1412,20 @@ mod tests {
             "ranikust: error: probe of /x\\ny failed\n  pass --state-dir on a local filesystem\n"
         );
         assert_eq!(failure.text(), shown);
+    }
+
+    /// Guidance that names the state directory prints it on the guidance
+    /// line, escaped as the message is: one line, nothing a terminal acts on.
+    #[test]
+    fn guidance_naming_a_path_is_escaped() {
+        let failure = Failure::error("refused").with_guidance(format!(
+            "remove {}",
+            Path::new("/s/\x1b]0;x\x07\nINFO").display()
+        ));
+        assert_eq!(
+            reported(&failure),
+            "ranikust: error: refused\n  remove /s/\\u{1b}]0;x\\u{7}\\nINFO\n"
+        );
     }
 
     /// `--metrics-file` in the build context, or through a symlink, is

@@ -807,7 +807,7 @@ fn prune_all_empties_in_the_user_namespace_or_changes_nothing() {
                     reason.starts_with("no user namespace for the build: "),
                     "{out}"
                 );
-                assert_eq!(guidance, crate::prune::NO_USER_NAMESPACE, "{out}");
+                assert_eq!(guidance, crate::prune::no_user_namespace(&state), "{out}");
             }
             assert_eq!(tree(&state), before, "{out}");
         }
@@ -964,7 +964,7 @@ fn a_regular_user_s_prune_all_empties_a_state_directory_of_subordinate_ids() {
             out.starts_with("refused\tno user namespace for the build: "),
             "{out}"
         );
-        let guidance = crate::prune::NO_USER_NAMESPACE;
+        let guidance = crate::prune::no_user_namespace(&state);
         assert!(
             out.ends_with(&format!("\t{guidance}\tOther\tnone")),
             "{out}"

@@ -87,6 +87,7 @@ pub struct OutputDir; // open(path, create, fence): from / one name at a time, n
 pub fn reach(path, fence: &Fence) -> Result<Reached>; // walks a host path to read (--dockerfile and its ignore file, ADR-0076); Reached::Inside(rest) once it enters the fence, for the context's RootPath; Reached::Outside(HostFile): pinned, open_regular(), open_beside(name)
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;
 pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // deletes what `remove` names (with what is below), every touched directory's times set back, overlay's own xattrs (is_overlay_own) removed from kept entries and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root
+pub fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()>; // Error::InvalidPath when root is this process's own / by device and inode, whatever name or mount reaches it: prune's guard, also rnk-store's prune_all's (ADR-0061)
 pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
