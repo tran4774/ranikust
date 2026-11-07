@@ -2387,9 +2387,13 @@ fn an_empty_posix_acl_removes_the_one_there() {
         ("system.posix_acl_access", &named),
         ("system.posix_acl_default", &minimal),
     ] {
-        if let Err(Errno::NOTSUP) = rustix::fs::setxattr(&d, name, value, flags) {
-            eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
-            return;
+        match rustix::fs::setxattr(&d, name, value, flags) {
+            Ok(()) => {}
+            Err(Errno::NOTSUP) => {
+                eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
+                return;
+            }
+            Err(e) => panic!("{name}: {e}"),
         }
     }
     let mut t = Tar::new(&f);
@@ -2466,8 +2470,8 @@ fn the_check_takes_a_posix_acl_where_the_kernel_does() {
             fs::write(&p, b"").unwrap();
         }
         let kernel = rustix::fs::setxattr(&p, name, &value, flags);
-        // Linux before 6.2 refuses an empty value, which removes the ACL
-        // since: every extraction removes it instead.
+        // Linux before 6.2 refuses an empty value, which 6.2 and later take
+        // as a removal: every extraction removes the ACL instead.
         let removal = value.is_empty() && kernel == Err(Errno::INVAL);
         assert!(
             kernel.is_ok() == takes || removal,

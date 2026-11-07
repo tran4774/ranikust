@@ -876,9 +876,9 @@ fn is_file_capability(value: &[u8]) -> bool {
 /// `do_set_acl`, `posix_acl_from_xattr`, `set_posix_acl` and
 /// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order, for every
 /// filesystem since Linux 6.2 (before it, in the ACL handler most share;
-/// 9p, CIFS and FUSE without ACLs passed the value on unparsed). Not an id
-/// the user namespace does not map, nor ACLs on a filesystem without them:
-/// those fail where it is set.
+/// 9p, CIFS and, in the initial user namespace, FUSE without ACLs pass the
+/// value on unparsed). Not an id the user namespace does not map, nor ACLs
+/// on a filesystem without them: those fail where it is set.
 fn posix_acl_refusal(value: &[u8], default: bool, dir: bool) -> Option<&'static str> {
     // `posix_acl_xattr_header` (version) and `posix_acl_xattr_entry`
     // (tag, permissions, id), little-endian.

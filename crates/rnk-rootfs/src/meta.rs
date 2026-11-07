@@ -611,16 +611,22 @@ fn removed(r: rustix::io::Result<()>) -> rustix::io::Result<()> {
 }
 
 /// What a refused xattr does: an error when strict (no `skipped`), else it
-/// is counted.
+/// is counted. `value` tells the call made ([`is_acl_removal`]).
 fn xattr_result(
     r: rustix::io::Result<()>,
     name: &OsStr,
+    value: &[u8],
     skipped: Option<&SkippedXattrs>,
     path: &Path,
 ) -> Result<()> {
+    let op = if is_acl_removal(name, value) {
+        "removexattr"
+    } else {
+        "setxattr"
+    };
     match (r, skipped) {
         (Ok(()), _) => Ok(()),
-        (Err(e), None) => Err(io_err("setxattr", path, e)),
+        (Err(e), None) => Err(io_err(op, path, e)),
         (Err(e), Some(s)) => {
             s.note(path, &format!("xattr {}", name.to_string_lossy()), &e);
             Ok(())
@@ -662,7 +668,7 @@ fn apply_with(
                 } else {
                     rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty())
                 };
-                xattr_result(r, name, skipped, path)?;
+                xattr_result(r, name, value, skipped, path)?;
             }
             if let Some(mode) = mode {
                 rustix::fs::fchmod(fd, mode).map_err(|e| io_err("chmod", path, e))?;
@@ -706,7 +712,7 @@ fn apply_with(
                 // pass).
                 target.check_still_pinned(path)?;
                 for (name, value) in &m.xattrs {
-                    xattr_result(target.set(name, value), name, skipped, path)?;
+                    xattr_result(target.set(name, value), name, value, skipped, path)?;
                 }
                 target.check_still_pinned(path)?;
             }
