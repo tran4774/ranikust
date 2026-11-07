@@ -461,7 +461,9 @@ fi
 # build; where AppArmor restricts the user namespace, it refuses, naming
 # the step.
 ud="$dir/e2e" rc=0
-mkdir -p "$ud/out" && mkdir -m 700 -p "$ud/w"
+# The user's umask may leave a new directory group-writable, which a state
+# directory and every directory above it may not be (ADR-0050).
+mkdir -m 700 -p "$ud" "$ud/w" && mkdir -p "$ud/out"
 sudo cat "$W/token" >"$ud/token"
 smoke_e2e_args "$CTX" "$ud/w" "$ud/out" "$ud/token"
 e2e_args+=(--build-arg "BASE=$E2E_BASE")
