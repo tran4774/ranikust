@@ -68,10 +68,9 @@ does not call yet.
 - The per-`RUN` sandbox: namespaces, mounts, `pivot_root`, capability drop,
   the `USER` ids `rnk-rootfs` resolved in the root, stubs, `exec`. In the
   build's user namespace (#78): the `proc` and `sysfs` the probe chose,
-  `setgroups` only where `/proc/self/setgroups` allows it (else the
-  build process's supplementary groups stay, as rootless runc's), `devpts`
+  `setgroups` only where `/proc/self/setgroups` allows it, `devpts`
   without `gid=5` where gid 5 is unmapped (`OwnNamespace`, read once per
-  `Sandbox`).
+  `Sandbox`; [sandbox.md, step 2](../../design/sandbox.md#per-run-sequence)).
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
   (`cgroup.rs`, ADR-0110): the start-up probe, the nesting, and each `RUN`'s
   cgroups, killed and removed when it ends.

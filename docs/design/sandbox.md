@@ -245,8 +245,8 @@ The steps, in order:
    `setgroups` (`/proc/self/setgroups` is `deny`: one id,
    [ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)),
    step 7 skips it, so the `RUN` keeps the build process's supplementary
-   groups, as rootless runc does, and `devpts` gets no `gid=5` where gid 5
-   is unmapped (3.4); a `USER` with unmapped ids then fails at `setgid`
+   groups, as rootless runc does. `devpts` gets no `gid=5` where gid 5 is
+   unmapped (3.4), and a `USER` with unmapped ids fails at `setgid`
    (`Step::Gid`).
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
    out ([below](#hardening-planned-for-phase-3)).
@@ -452,11 +452,12 @@ The steps, in order:
 7. `setgroups` (where the user namespace allows it, step 2), `setgid`,
    `setuid` to the ids of `USER`, which `rnk-rootfs` looked up in the root's
    `/etc/passwd` and `/etc/group` before the fork [inferred]. A numeric uid
-   with no passwd entry gets gid 0, as in Docker. A change of uid or gid clears the death signal, so it is armed again: in
-   `Direct` toward ranikust and checked; in the full sandbox's command toward
-   the init, only as a second line (the init's signal is what ends the
-   namespace with ranikust, whatever the command does to its own: a set-id
-   `execve` or `prctl(PR_SET_PDEATHSIG, 0)` clears it).
+   with no passwd entry gets gid 0, as in Docker. A change of uid or gid
+   clears the death signal, so it is armed again: in `Direct` toward
+   ranikust and checked; in the full sandbox's command toward the init, only
+   as a second line (the init's signal is what ends the namespace with
+   ranikust, whatever the command does to its own: a set-id `execve` or
+   `prctl(PR_SET_PDEATHSIG, 0)` clears it).
 8. **Enter `WORKDIR` and `execve`.**
    - Resolve `WORKDIR` in the root with `openat2(RESOLVE_IN_ROOT |
      RESOLVE_NO_MAGICLINKS)` and `fchdir` to it (before the id switch, and

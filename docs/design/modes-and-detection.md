@@ -139,10 +139,10 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      namespace is owned by the new user namespace and a refusal names its
      step.
    - A new `proc` in a new PID namespace; if that fails, an rbind of the
-     existing `/proc` (`RUN` then sees the container's processes, like
-     BuildKit's `--oci-worker-no-process-sandbox`). Read-only `sysfs`, else
-     an rbind of `/sys`. `mknod`, reported only: no user namespace allows
-     it, and the sandbox binds `/dev`'s nodes.
+     existing `/proc`, whose processes the `RUN` then sees
+     ([sandbox.md, step 3.2](sandbox.md#per-run-sequence)). Read-only
+     `sysfs`, else an rbind of `/sys`. `mknod`, reported only: no user
+     namespace allows it, and the sandbox binds `/dev`'s nodes.
    - The overlay mount (`rnk_snapshot::probe`; `userxattr` is implied) as
      root of a namespace with the map that worked, in a child of its own,
      under the state directory ([open: #4]).
