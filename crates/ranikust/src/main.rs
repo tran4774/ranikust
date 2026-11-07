@@ -509,8 +509,15 @@ fn build(
     tracing::debug!(limits = %config.limits.text(), "limits in force");
     // Before a set-up may enter a mount namespace of its own: kaniko mode on
     // `/` counts this one as ranikust's too, held open until its scan
-    // (`exposure::scan_peers`).
-    let started_in = exposure::mount_namespace();
+    // (`exposure::scan_peers`); a build that may bind `/proc` compares PID
+    // 1's mounts with its own (`exposure::check_pid_namespace`).
+    let started_in = exposure::mount_namespace().map(|ns| {
+        if config.allow_proc_rbind {
+            ns.with_mounts()
+        } else {
+            ns
+        }
+    });
     match config.mode {
         config::Mode::Kaniko => {
             // Whether root may mount picks how `RUN` is isolated on a root
@@ -758,9 +765,10 @@ fn rootless_kept_off() -> Option<String> {
 /// Rootless overlay mode (ADR-0104, ADR-0107): the user namespace probe
 /// ([`setup::rootless::plan`]); then, where the build binds `/proc`
 /// (`--allow proc.rbind`), the peer scan, refused as kaniko mode on `/`
-/// refuses it (ADR-0129, ADR-0130), and the warnings for what the rbind
-/// exposes, both before the build's user namespace, where ranikust could no
-/// longer open the other processes; then overlay mode's flags, where
+/// refuses it (ADR-0129, ADR-0130), the check of the PID namespace from
+/// files with no ptrace check (ADR-0134), and the warnings for what the
+/// rbind exposes, all before the build's user namespace, where ranikust
+/// could no longer open the other processes; then overlay mode's flags, where
 /// `flags` gives them (`--mode=auto`; `--mode=overlay` checked them
 /// first); then the set-up in the namespace and the build. `how` names the
 /// flag; `started_in` as for [`kaniko`]; `no_userns` is the test hook's
@@ -787,7 +795,11 @@ fn rootless(
     let scanned = plan.proc_rbind();
     if scanned {
         let scan = exposure::scan_peers(started_in);
-        if let Err(failure) = refuse_reachable_peers(how, exposure::Reach::ProcRbind, scan) {
+        if let Err(failure) = refuse_reachable_peers(how, exposure::Reach::ProcRbind, scan)
+            .and_then(|()| {
+                refuse_shared_pid_namespace(how, exposure::check_pid_namespace(started_in))
+            })
+        {
             return Rootless::Built(Err(failure));
         }
         exposure::warn_build_args(&config.build_args, exposure::Reach::ProcRbind);
@@ -1237,10 +1249,11 @@ fn refuse_reachable_peers(
              mount namespace, whose files ranikust reaches through /proc/{}, would let {}",
             process.pid,
             match reach {
-                exposure::Reach::Slash => "RUN reach that process's files",
-                exposure::Reach::ProcRbind =>
-                    "every RUN read that process's command line, status, mount table and network \
-                     tables",
+                exposure::Reach::Slash => "RUN reach that process's files".to_owned(),
+                exposure::Reach::ProcRbind => format!(
+                    "every RUN read that process's {}",
+                    exposure::UNCHECKED_PROC_FILES.trim_start_matches("the ")
+                ),
             }
         ))
         .with_guidance(
@@ -1285,6 +1298,43 @@ fn refuse_reachable_peers(
         .with_guidance(
             "mount /proc in the container, and let its seccomp profile allow opening \
              /proc/self/ns/mnt with O_PATH and fstat (ADR-0101)",
+        )),
+    }
+}
+
+/// A build that binds `/proc` refuses a PID namespace that files with no
+/// ptrace check show shared with another mount namespace, or cannot tell
+/// (ADR-0134): through the rbind every `RUN` reads those files of each
+/// process there, whether or not ranikust may open the process.
+fn refuse_shared_pid_namespace(how: &str, found: exposure::PidNamespace) -> Result<(), Failure> {
+    use exposure::PidNamespace;
+    let subject = exposure::Reach::ProcRbind.build();
+    let reads = exposure::UNCHECKED_PROC_FILES;
+    let guidance = "give the build container a PID namespace of its own: no Kubernetes \
+         hostPID: true or shareProcessNamespace: true on its pod, no Docker or podman \
+         --pid=host or --pid container:<name>, and start ranikust in the container's mount \
+         namespace (ADR-0134)";
+    match found {
+        PidNamespace::Own => Ok(()),
+        PidNamespace::Host(process) => Err(Failure::error(format!(
+            "{how}: {subject} in the host's PID namespace (process {process} is a kernel \
+             thread) would let every RUN read {reads} of each process of the host"
+        ))
+        .with_guidance(guidance)),
+        PidNamespace::OtherInit(process) => Err(Failure::error(format!(
+            "{how}: {subject} sharing its PID namespace with PID 1, process {process}, of \
+             another mount namespace (its /proc/1/mountinfo lists no mount of ranikust's) \
+             would let every RUN read {reads} of each process there"
+        ))
+        .with_guidance(guidance)),
+        PidNamespace::Unknown(step, e) => Err(Failure::error(format!(
+            "{how}: cannot tell whether {subject} shares its PID namespace with another mount \
+             namespace: {step} failed ({e}); it refuses to build without knowing"
+        ))
+        .with_guidance(
+            "mount /proc in the container, let ranikust read /proc/self/mountinfo, \
+             /proc/1/mountinfo and /proc/2/stat, and give the build container a PID namespace \
+             of its own (ADR-0134)",
         )),
     }
 }
@@ -2025,8 +2075,8 @@ mod tests {
                      its PID namespace with process 42 (sleep),"
                 )
                 && reached.message.ends_with(
-                    "would let every RUN read that process's command line, status, mount table \
-                     and network tables"
+                    "would let every RUN read that process's files of /proc/<pid> not under \
+                     ptrace's check, such as cmdline, status, stat, mountinfo, cgroup and net/*"
                 )
                 && reached
                     .guidance
@@ -2044,6 +2094,68 @@ mod tests {
                 .contains("; a build with an rbind of /proc (--allow proc.rbind) refuses"),
             "{}",
             unlisted.message
+        );
+    }
+
+    /// ADR-0134: a build with an rbind of `/proc` refuses the host's PID
+    /// namespace, PID 1 of another mount namespace, and a check that
+    /// cannot tell, naming what every `RUN` would read.
+    #[test]
+    fn a_build_with_an_rbind_of_proc_refuses_a_pid_namespace_shared_as_unchecked_files_show() {
+        use exposure::{PidNamespace, Process};
+        let how = "--mode=overlay";
+        refuse_shared_pid_namespace(how, PidNamespace::Own).unwrap();
+        let process = |pid: &str, comm: &str| Process {
+            pid: pid.into(),
+            comm: comm.into(),
+        };
+        let host = refuse_shared_pid_namespace(how, PidNamespace::Host(process("2", "kthreadd")))
+            .unwrap_err();
+        let other =
+            refuse_shared_pid_namespace(how, PidNamespace::OtherInit(process("1", "systemd")))
+                .unwrap_err();
+        for (failure, what) in [
+            (
+                &host,
+                "in the host's PID namespace (process 2 (kthreadd) is a kernel thread)",
+            ),
+            (
+                &other,
+                "with PID 1, process 1 (systemd), of another mount namespace",
+            ),
+        ] {
+            assert!(
+                failure.code == 1
+                    && failure.message.starts_with(
+                        "--mode=overlay: a build with an rbind of /proc (--allow proc.rbind) "
+                    )
+                    && failure.message.contains(what)
+                    && failure.message.contains(
+                        "the files of /proc/<pid> not under ptrace's check, such as cmdline, \
+                         status, stat, mountinfo, cgroup and net/*"
+                    )
+                    && failure.guidance.contains("PID namespace of its own")
+                    && failure.guidance.contains("--pid=host"),
+                "{}: {}",
+                failure.message,
+                failure.guidance
+            );
+        }
+        let unknown = refuse_shared_pid_namespace(
+            how,
+            PidNamespace::Unknown("reading /proc/1/mountinfo", rustix::io::Errno::ACCESS),
+        )
+        .unwrap_err();
+        assert!(
+            unknown.code == 1
+                && unknown
+                    .message
+                    .contains("reading /proc/1/mountinfo failed (Permission denied")
+                && unknown
+                    .message
+                    .ends_with("it refuses to build without knowing"),
+            "{}",
+            unknown.message
         );
     }
 

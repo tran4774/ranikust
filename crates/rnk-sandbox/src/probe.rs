@@ -98,7 +98,8 @@ impl Fallbacks {
     /// `proc` lets it (ADR-0132). Through it a `RUN` sees every
     /// process of the PID namespace ranikust runs in (the container's, or
     /// one it shares with the host or other containers), and reads the
-    /// command line, status, mount table and network tables of each,
+    /// files of `/proc/<pid>` not under ptrace's check, such as `cmdline`,
+    /// `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, of each,
     /// ranikust's included (its build arguments, its secret paths). Their
     /// environment, files and memory stay closed to it: they need
     /// `CAP_SYS_PTRACE` in the process's user namespace, which a `RUN` in
@@ -175,10 +176,11 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
 macro_rules! proc_rbind_exposure {
     () => {
         "each RUN sees every process of this PID namespace (the host's or other \
-         containers' too where the container shares one) and reads their command lines, \
-         status, mount tables and network tables, ranikust's included, though not their \
-         environment, files or memory; the rbind is read-only, so a RUN writes nothing \
-         there, not even its own oom_score_adj; RUNs then run one at a time"
+         containers' too where the container shares one) and reads the files of \
+         /proc/<pid> not under ptrace's check, such as cmdline, status, stat, mountinfo, \
+         cgroup and net/*, ranikust's included, though not their environment, files or \
+         memory; the rbind is read-only, so a RUN writes nothing there, not even its own \
+         oom_score_adj; RUNs then run one at a time"
     };
 }
 
@@ -548,8 +550,7 @@ mod tests {
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
         for advice in [
             "every process of this PID namespace",
-            "status",
-            "network tables",
+            "not under ptrace's check, such as cmdline, status, stat, mountinfo, cgroup and net/*",
             "not their environment, files or memory",
             "read-only, so a RUN writes nothing there, not even its own oom_score_adj",
             "one at a time",

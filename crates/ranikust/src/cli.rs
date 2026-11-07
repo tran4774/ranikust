@@ -416,12 +416,13 @@ pub(crate) struct BuildArgs {
     /// rootless overlay mode give each `RUN` a read-only bind of `/proc`
     /// where a new one is refused (a container's masked `/proc`): every
     /// `RUN` then sees each process of ranikust's PID namespace and reads
-    /// its command line, status, mount table and network tables, ranikust's
-    /// included, and the `RUN`s go one at a time. Keep no secrets in other
-    /// processes' command lines, ranikust's included, and give the build
-    /// container a PID namespace of its own: ranikust refuses one shared
-    /// with a process of the host or another container only where it can
-    /// open that process as it starts (ADR-0126, ADR-0129, ADR-0130).
+    /// the files of `/proc/<pid>` not under ptrace's check, such as
+    /// `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`,
+    /// ranikust's included, and the `RUN`s go one at a time. Keep no secrets
+    /// in other processes' command lines, ranikust's included, and give the
+    /// build container a PID namespace of its own: ranikust refuses one
+    /// shared with the host or with a process of another mount namespace
+    /// (ADR-0126, ADR-0129, ADR-0130, ADR-0134).
     /// Repeat for several.
     #[arg(
         long = "allow",

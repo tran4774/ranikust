@@ -213,7 +213,8 @@ fn the_help_says_what_proc_rbind_exposes() {
     let help = clap_error(&["--help"]).to_string();
     assert!(help.contains("proc.rbind"), "{help}");
     assert!(help.contains("PID namespace of its own"), "{help}");
-    assert!(help.contains("command line"), "{help}");
+    assert!(help.contains("not under ptrace's check"), "{help}");
+    assert!(help.contains("command lines"), "{help}");
 }
 
 #[test]

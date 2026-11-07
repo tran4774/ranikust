@@ -1,7 +1,8 @@
 # Rootless overlay mode end to end (#79, ADR-0107, ADR-0126), Podman only
 # (T1, both legs): where root may not mount (rootless Podman's defaults), a
 # build with --allow proc.rbind runs in overlay mode in the build's user
-# namespace, and is refused without the flag, naming it. Its --reproducible
+# namespace, and is refused without the flag, naming it, and with it in the
+# host's PID namespace (--pid=host, ADR-0134). Its --reproducible
 # digest equals overlay mode as root's (--privileged), also at --jobs 1; a
 # file capability a RUN sets is exported; ranikust killed during a RUN
 # (SIGKILL, SIGINT, SIGINT to its group) leaves no process, and the next
@@ -36,6 +37,19 @@ case_run() {
   expect "$rc" 1 "--mode=overlay where a new proc is refused, without --allow proc.rbind"
   grep -q 'or pass --allow proc.rbind, through which every RUN' <<<"$log" ||
     fail "the refusal does not name --allow proc.rbind: $log"
+  # The host's PID namespace, whose processes ranikust may not open, is
+  # refused with the flag before any RUN (ADR-0134).
+  o="$(out pid-host)" rc=0
+  rm -rf "$o" && mkdir -p "$o"
+  PODMAN_ARGS=(--pid=host)
+  log="$(rnk_run "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target content \
+    --allow proc.rbind 2>&1)" || rc=$?
+  PODMAN_ARGS=()
+  printf '%s\n' "$log" >"$o/build.log"
+  expect "$rc" 1 "--pid=host with --allow proc.rbind"
+  grep -q "in the host's PID namespace (process 2 (kthreadd) is a kernel thread)" <<<"$log" ||
+    fail "--pid=host: not refused as the host's PID namespace: $log"
+  [ ! -e "$o/image.tar" ] || fail "--pid=host: an image was written"
   local first one
   first="$(build user --reproducible --target content --allow proc.rbind)"
   grep -q "ranikust: overlay mode, rootless, in the build's user namespace" \

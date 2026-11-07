@@ -53,12 +53,12 @@ const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
 const PROC_RBIND: &str = "a RUN needs a new proc, which this user namespace may not mount (a \
      container whose /proc has masked paths): build as a regular user on a host that allows \
      user namespaces, or in a container where ranikust may mount, or pass --allow proc.rbind, \
-     through which every RUN sees each process of this PID namespace and reads its command \
-     line, status, mount table and network tables, ranikust's included, and RUNs run one at \
-     a time; keep no secrets in other processes' command lines and give the build container \
-     a PID namespace of its own: one shared with a process of the host or another container \
-     is refused only where ranikust can open that process as it starts (ADR-0126, ADR-0129, \
-     ADR-0130)";
+     through which every RUN sees each process of this PID namespace and reads the files of \
+     /proc/<pid> not under ptrace's check, such as cmdline, status, stat, mountinfo, cgroup \
+     and net/*, ranikust's included, and RUNs run one at a time; keep no secrets in other \
+     processes' command lines and give the build container a PID namespace of its own: one \
+     shared with the host or with a process of another mount namespace is refused (ADR-0126, \
+     ADR-0129, ADR-0130, ADR-0134)";
 
 /// Guidance where another step of the user namespace fails.
 const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), or in a \
@@ -325,6 +325,7 @@ mod tests {
         }
         assert!(super::super::NO_USER_NAMESPACE.contains("apparmor_restrict_unprivileged_userns"));
         assert!(PROC_RBIND.contains("--allow proc.rbind"));
+        assert!(PROC_RBIND.contains("not under ptrace's check"));
     }
 
     /// The probe writes nothing in a directory the store would refuse, and
