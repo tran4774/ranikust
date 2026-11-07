@@ -126,14 +126,14 @@ and its last line is instead:
 
 It deletes only the entries owned by that user's uids, its own and its
 subordinate ids, wherever they sit: the only ids its builds' user namespace
-maps. Where another uid owns an entry, it stops before the marker goes,
+maps ([ADR-0133]). Where another uid owns an entry, it stops before the marker goes,
 saying so, and changes nothing; one that appears meanwhile is left in place,
 and the emptying stops after the deletion, so the directory is not removed.
 Where the user has no range in `/etc/subuid` and `/etc/subgid`, or they
 cannot be read (the error says why), the lines name `UID` alone.
 
 The error gives commands only for a directory that holds the marker and
-that a build would accept. An empty directory gets none, and no `rmdir`:
+that a build would accept ([ADR-0133]). An empty directory gets none, and no `rmdir`:
 only one with the marker is a state directory. Nor are commands given for a
 path that ends in `..` (give the directory's own path), for a path with a
 symbolic link on it (give the path with none, or, for a user's directory,
@@ -362,4 +362,5 @@ behaviour, which for most of them is what the flag turns on.
 [ADR-0105]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
 [ADR-0114]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md
+[ADR-0133]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md
 [threat model]: https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks

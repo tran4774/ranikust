@@ -226,8 +226,8 @@ the process that prints them opens the path as given, made absolute,
 with no symlink followed on it, runs `Store::check_prune` on it, then
 the build's own rule with the directory's owner as the user, and
 refuses one of the system directories (`statedir::check_for_commands`):
-commands only for a directory a build would accept, none for one
-another user may write, or below one, the refusal then saying to fix
+commands only for a directory a build would accept
+([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)), none for one another user may write, or below one, the refusal then saying to fix
 the owner or mode or to remove the directory by hand. It takes the
 directory's device, inode and owner, and the mode the rule judged.
 Each command first refuses a `PATH` with a relative or empty entry,
@@ -260,7 +260,8 @@ before changing anything, with a message for each, where there is none
 or it cannot be removed; each script counts a listing that fails as
 entries left.
 Root's emptying of a directory another user owns deletes only that
-user's entries and those of its subordinate ids: its uid and its first
+user's entries and those of its subordinate ids
+([ADR-0133](../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md)): its uid and its first
 `/etc/subuid` range (`subids::lookup`), the only uids its builds' user
 namespace maps, or its uid alone where it has no range in `/etc/subuid`
 and `/etc/subgid` or they cannot be read (the guidance names the
