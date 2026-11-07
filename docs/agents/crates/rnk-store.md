@@ -17,8 +17,8 @@ extract the same digest at once.
 - The store layout in the state directory (ADR-0022): `blobs/sha256/`,
   `layers/<id>/`, `caches/<sha256(id)>/`, `tmp/`, lock files, the per-build
   `builds/<id>/` areas, the `.ranikust-state` marker (`STATE_MARKER`;
-  ADR-0050 renamed it from `.ranikust-root`) and the journal of an
-  unfinished `prune_all`, `.ranikust-pruning` (`PRUNING_MARKER`).
+  ADR-0050 renamed it from `.ranikust-root`), which `prune_all` renames
+  `.ranikust-pruning` (`PRUNING_MARKER`) while it empties the directory.
 - The anonymous store of kaniko mode on `/` (ADR-0051, ADR-0056, ADR-0066,
   ADR-0077): see Invariants.
 - Per-digest `flock` locks; publication of a filled temporary entry by atomic
@@ -73,7 +73,7 @@ impl Store {
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
-    pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): EX flock without waiting (Error::InUse), marker check, PRUNING_MARKER written and synced, empty by descriptor, journal then marker last; false: was empty
+    pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): EX flock without waiting (Error::InUse), marker check, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
 }
 pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
@@ -146,14 +146,17 @@ Design: [locks](../../design/cache-and-store.md#locks),
   `Error::Busy`. Like `open` it refuses a non-empty directory without a
   regular marker and one an anonymous store used; it makes nothing in an
   empty directory. It empties entries in place, under their published
-  names, so it writes `.ranikust-pruning` (`PRUNING_MARKER`) and syncs the
-  directory first, and `open` refuses a directory holding that name
-  (`Error::PruneCutShort`) until a prune finishes: a prune killed or failed
-  part-way never hands a build a layer with files missing. It deletes
-  through `rnk-rootfs::delete_contents` by descriptor (no symlink
-  followed, no mount crossed or emptied), and only when nothing else is
-  left removes the journal, syncs, then removes the marker; else
-  `Error::NotPruned` names what is.
+  names, so it first renames the marker `.ranikust-pruning`
+  (`PRUNING_MARKER`; a rename makes no inode, which a full disk or quota
+  would refuse) and syncs the directory, and `open` refuses a directory
+  holding that name (`Error::PruneCutShort`) until a prune finishes: a
+  prune killed or failed part-way never hands a build a layer with files
+  missing, and a ranikust that predates it finds no marker. A failed sync
+  renames it back. It deletes through `rnk-rootfs::delete_contents` by
+  descriptor (no symlink followed, no mount crossed or emptied), and only
+  when nothing else is left removes `.ranikust-pruning`; else
+  `Error::NotPruned` names what is. One that is not a regular file is
+  neither taken nor removed: `NotPruned` says to remove it.
   `prune` by size and age (Phase 5) removes entries while builds run: per
   [ADR-0122](../../adr/0122-prune-tells-an-entry-in-use-by-a-shared-lock-and-its-last-use-by-its-markers-mtime.md),
   not built yet, a shared `flock` on each entry a build uses, and the
@@ -201,11 +204,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   kind of entry a build leaves emptied, marker last; refused while a build
   holds the store, nothing removed; a directory without a regular marker
   (none, a symlink, a directory) refused; an empty one left as it is,
-  nothing made; one an anonymous store used refused; both markers kept,
+  nothing made; one an anonymous store used refused; the marker renamed,
   `NotPruned`, and `open` refused while anything stays (a `0555` directory
-  as a user); a prune cut short inside a layer keeps every store out
-  (`PruneCutShort`, nothing changed) until a prune finishes; a journal that
-  is not a regular file refused by both; in a cache mount, symlinks out
+  as a user); the rename before any removal and no file made (the order of
+  inotify events); a prune cut short inside a layer, or after the last
+  entry, keeps every store out (`PruneCutShort`, nothing changed) until a
+  prune finishes; a `.ranikust-pruning` that is not a regular file refused
+  by both until removed; in a cache mount, symlinks out
   (absolute, climbing), a hardlink and a FIFO, and a build directory that
   is a symlink out, removed, what they lead to unchanged.
 - To do: `prune` by size and age (Phase 5); two builds as real root sharing

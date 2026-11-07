@@ -44,7 +44,8 @@ fn private_state(euid: u32) -> &'static str {
 ///    below that descriptor, one name at a time ([`create_missing`]);
 /// 3. the state directory, opened without following a symlink, must be
 ///    empty (just created, or empty already) or hold the store's regular
-///    marker file [`rnk_store::STATE_MARKER`], and if unmarked must not be
+///    marker file [`rnk_store::STATE_MARKER`] (or [`rnk_store::PRUNING_MARKER`],
+///    which a `prune --all` cut short leaves), and if unmarked must not be
 ///    one of [`SYSTEM_DIRS`]: any other directory is not taken, so a
 ///    mistyped `--state-dir=/usr` or `/mnt` is left as it is;
 /// 4. the whole chain again from its descriptor: owned by the effective
@@ -252,6 +253,8 @@ fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refu
 
 /// Accepts an empty directory or one holding the store's regular marker
 /// file, telling which (`true`: marked); refuses anything else unchanged.
+/// The marker of a `prune --all` that did not finish counts: the store
+/// refuses a build there itself, saying so, and `prune --all` finishes.
 fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
     let err = |e: Errno| Refused(format!("cannot list {}: {e}", state_dir.display()));
     let mut names = Vec::new();
@@ -272,11 +275,13 @@ fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
         return Ok(false);
     }
     let marker = rnk_store::STATE_MARKER;
-    if names.iter().any(|n| n == marker.as_bytes()) {
-        let st = rustix::fs::statat(fd, marker, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|e| stat_err(state_dir, e))?;
-        if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
-            return Ok(true);
+    for m in [marker, rnk_store::PRUNING_MARKER] {
+        if names.iter().any(|n| n == m.as_bytes()) {
+            let st = rustix::fs::statat(fd, m, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|e| stat_err(state_dir, e))?;
+            if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
+                return Ok(true);
+            }
         }
     }
     let earlier = if names.iter().any(|n| n == b".ranikust-root") {
@@ -447,8 +452,9 @@ pub(crate) fn on_overlayfs(dir: &Path) -> bool {
 }
 
 /// Raises `RLIMIT_NOFILE`'s soft limit to its hard limit: the kaniko-mode
-/// walk holds a directory fd per worker and depth (`ADR-0038`). Returns the
-/// new soft limit, `None` when unlimited.
+/// walk holds a directory fd per worker and depth (`ADR-0038`), and
+/// `prune --all`'s deletion one per depth. Returns the new soft limit,
+/// `None` when unlimited.
 ///
 /// # Errors
 ///

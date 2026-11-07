@@ -63,8 +63,16 @@ ranikust did not make (one without `.ranikust-state`), leaves a missing one
 missing, and prints what it did. If it is interrupted or cannot remove
 everything, builds refuse the directory until `prune --all` runs to the end.
 Root is refused, a container's root included: it removes its state directory
-with `rm -rf --one-file-system` while no build uses it ([ADR-0105]). Without
-`--all`, `prune` is a usage error: removing by size and age comes in Phase 5.
+with ordinary tools while no build uses it, the marker first, so that no
+build takes what an interrupted removal leaves ([ADR-0105]):
+
+```sh
+rm /var/lib/ranikust/.ranikust-state
+rm -rf --one-file-system /var/lib/ranikust
+```
+
+Without `--all`, `prune` is a usage error: removing by size and age comes in
+Phase 5.
 
 ## kaniko flags it accepts
 

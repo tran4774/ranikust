@@ -556,6 +556,21 @@ fn a_second_build_on_slash_is_refused_by_the_lock() {
 }
 
 #[test]
+fn a_store_refusal_names_its_state_directory_once() {
+    let dir = Path::new("/home/u/state");
+    let path = dir.to_owned();
+    for e in [
+        rnk_store::Error::Busy { path: path.clone() },
+        rnk_store::Error::UsedOnSlash { path: path.clone() },
+        rnk_store::Error::PruneCutShort { path },
+    ] {
+        let refusal = store_refusal(&e, dir);
+        assert_eq!(refusal.reason.matches("/home/u/state").count(), 1, "{e}");
+        assert_eq!(refusal.kind, Kind::Other, "{e}");
+    }
+}
+
+#[test]
 fn the_user_namespace_line_says_whether_the_path_passes_and_where_it_stops() {
     let steps = "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok";
     let ok = Some(Ok(Ok(mount_api_name(MountApi::LowerdirPlus).to_owned())));

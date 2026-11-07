@@ -45,7 +45,8 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 
 ```
 <state-dir>/
-├── .ranikust-state
+├── .ranikust-state             marker: a non-empty directory without it is refused
+├── .ranikust-pruning           the marker renamed while prune --all empties it
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v3/sha256/<hex>/     extracted layers by chain ID, immutable [open: #1]
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
@@ -160,13 +161,16 @@ and holds it to the end: every build holds it shared for its life, so
 `prune --all` removes nothing while any build runs there (it says so and
 exits 1), and a build that starts meanwhile is refused. It refuses a
 non-empty directory without a regular `.ranikust-state` file and creates
-nothing in an empty one. Before deleting it writes `.ranikust-pruning` and
-syncs the directory: entries are emptied in place, under their published
-names, so a prune killed or failed part-way leaves a layer a build would
-reuse with files missing, and `Store::open` refuses any directory holding
-that file until a `prune --all` finishes. It deletes by descriptor (no
-symlink followed, no mount crossed), names what it could not remove, and
-removes `.ranikust-pruning`, then `.ranikust-state`, last.
+nothing in an empty one. Before deleting it renames `.ranikust-state` to
+`.ranikust-pruning` and syncs the directory: entries are emptied in place,
+under their published names, so a prune killed or failed part-way leaves a
+layer a build would reuse with files missing, and `Store::open` refuses any
+directory holding that name until a `prune --all` finishes (a ranikust that
+predates it finds the directory unmarked, and refuses it too). The rename
+makes no inode, which a full disk or quota, the usual reason to prune,
+would refuse. It deletes by descriptor (no symlink followed, no mount
+crossed), names what it could not remove, and removes `.ranikust-pruning`
+last.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

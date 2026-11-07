@@ -238,6 +238,19 @@ fn a_directory_that_is_not_a_state_directory_keeps_its_mode() {
     fs::create_dir(&linked).unwrap();
     symlink("/etc/hostname", linked.join(rnk_store::STATE_MARKER)).unwrap();
     assert!(prepare(&linked).is_err());
+    // The marker of a prune cut short counts: the store refuses a build
+    // there itself, and prune --all finishes it.
+    let pruning = tmp.path().join("pruning");
+    fs::create_dir(&pruning).unwrap();
+    fs::set_permissions(&pruning, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(pruning.join("data"), b"x").unwrap();
+    let marker = pruning.join(rnk_store::PRUNING_MARKER);
+    symlink("/etc/hostname", &marker).unwrap();
+    let why = prepare(&pruning).unwrap_err().0;
+    assert!(why.contains("not a state directory"), "{why}");
+    fs::remove_file(&marker).unwrap();
+    fs::write(&marker, b"").unwrap();
+    prepare(&pruning).unwrap();
 }
 
 #[test]

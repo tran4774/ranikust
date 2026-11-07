@@ -174,9 +174,10 @@ fn prune_all_keeps_the_marker_while_anything_stays() {
         let e = pruned.unwrap_err();
         assert!(matches!(e, Error::NotPruned { .. }), "{e}");
         assert!(e.to_string().contains("\"builds\""), "{e}");
-        for marker in [rnk_store::STATE_MARKER, rnk_store::PRUNING_MARKER] {
-            assert!(left.contains(&PathBuf::from(marker)), "{marker}: {left:?}");
-        }
+        let marker = PathBuf::from(rnk_store::PRUNING_MARKER);
+        assert!(left.contains(&marker), "{left:?}");
+        let old = PathBuf::from(rnk_store::STATE_MARKER);
+        assert!(!left.contains(&old), "renamed, not copied: {left:?}");
         assert!(left.contains(&PathBuf::from("builds/shut/f")), "{left:?}");
         // What the prune left is never a build's store.
         let Err(e) = opened else {
@@ -193,7 +194,7 @@ fn prune_all_keeps_the_marker_while_anything_stays() {
 
 /// A prune killed while it empties a layer in place leaves the layer
 /// published and part-empty: no build opens the directory until a prune
-/// finishes, which then empties it, its journal and marker last.
+/// finishes, which then empties it, its marker last.
 #[test]
 fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
     let dir = tempfile::tempdir().unwrap();
@@ -201,10 +202,11 @@ fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
     used_store(&state);
     let layer = open(&state).get(&EntryKey::Layer(digest(2))).unwrap();
     let layer = layer.expect("the layer is published");
-    // Where a killed prune stops: one file of the layer gone, the journal
-    // it wrote first still there.
+    // Where a killed prune stops: its marker renamed first, then one file
+    // of the layer gone.
+    let marker = state.join(rnk_store::PRUNING_MARKER);
+    fs::rename(state.join(rnk_store::STATE_MARKER), &marker).unwrap();
     fs::remove_file(layer.join("usr/f")).unwrap();
-    fs::write(state.join(rnk_store::PRUNING_MARKER), b"").unwrap();
     let before = tree(&state);
     for _ in 0..2 {
         let Err(e) = Store::open(&BuildPaths::new(&state, &state)) else {
@@ -219,26 +221,94 @@ fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
     assert_eq!(tree(&state), before, "the refusal changes nothing");
     assert!(Store::prune_all(&state).unwrap());
     assert_eq!(tree(&state), Vec::<PathBuf>::new());
+    // Killed after the last entry, before its marker: the next one ends.
+    fs::write(&marker, b"").unwrap();
+    assert!(Store::open(&BuildPaths::new(&state, &state)).is_err());
+    assert!(Store::prune_all(&state).unwrap());
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
     open(&state).close().unwrap();
 }
 
-/// A journal that is not a regular file was not written by a prune: the
-/// prune removes nothing, and no build opens the directory either.
+/// The marker becomes the journal by a rename, before anything is removed:
+/// a prune killed at any point after leaves a directory no build opens,
+/// and none needs a new inode, which a full disk or quota would refuse.
+#[test]
+fn the_marker_is_renamed_before_anything_is_removed() {
+    use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    used_store(&state);
+    let layer = open(&state).get(&EntryKey::Layer(digest(2))).unwrap();
+    let layer = layer.expect("the layer is published");
+    let fd = inotify::init(CreateFlags::NONBLOCK | CreateFlags::CLOEXEC).unwrap();
+    let watched =
+        WatchFlags::CREATE | WatchFlags::DELETE | WatchFlags::MOVED_FROM | WatchFlags::MOVED_TO;
+    // One queue: the events of both directories in the order they happened.
+    let top = inotify::add_watch(&fd, &state, watched).unwrap();
+    inotify::add_watch(&fd, layer.join("usr"), watched).unwrap();
+    assert!(Store::prune_all(&state).unwrap());
+    let mut buf = vec![std::mem::MaybeUninit::uninit(); 1 << 16];
+    let mut reader = inotify::Reader::new(&fd, &mut buf);
+    let mut events = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(e) => {
+                let name = e.file_name().map(|n| n.to_string_lossy().into_owned());
+                events.push((e.wd() == top, e.events(), name));
+            }
+            Err(rustix::io::Errno::AGAIN) => break,
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let renamed = events.iter().position(|(at_top, flags, name)| {
+        *at_top
+            && flags.contains(ReadFlags::MOVED_TO)
+            && name.as_deref() == Some(rnk_store::PRUNING_MARKER)
+    });
+    let renamed = renamed.unwrap_or_else(|| panic!("no rename: {events:?}"));
+    let removed = events
+        .iter()
+        .position(|(_, flags, _)| flags.contains(ReadFlags::DELETE));
+    let removed = removed.unwrap_or_else(|| panic!("nothing removed: {events:?}"));
+    assert!(renamed < removed, "{events:?}");
+    assert!(
+        !events.iter().any(|(_, f, _)| f.contains(ReadFlags::CREATE)),
+        "{events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|(_, f, _)| f.contains(ReadFlags::QUEUE_OVERFLOW)),
+        "{events:?}"
+    );
+}
+
+/// A journal that is not a regular file was not left by a prune: the
+/// prune removes nothing and says to remove it, and no build opens the
+/// directory either.
 #[test]
 fn a_journal_that_is_not_a_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     used_store(&state);
-    fs::create_dir(state.join(rnk_store::PRUNING_MARKER)).unwrap();
+    let journal = state.join(rnk_store::PRUNING_MARKER);
+    fs::create_dir(&journal).unwrap();
     let before = tree(&state);
     let e = Store::prune_all(&state).unwrap_err();
     assert!(matches!(e, Error::NotPruned { .. }), "{e}");
-    assert!(e.to_string().contains("not a regular file"), "{e}");
+    let e = e.to_string();
+    assert!(e.contains("not a regular file"), "{e}");
+    assert!(
+        e.contains("remove it, then run ranikust prune --all"),
+        "{e}"
+    );
     assert_eq!(tree(&state), before);
     let Err(e) = Store::open(&BuildPaths::new(&state, &state)) else {
         panic!("a store opened")
     };
     assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
+    fs::remove_dir(&journal).unwrap();
+    assert!(Store::prune_all(&state).unwrap());
 }
 
 #[test]

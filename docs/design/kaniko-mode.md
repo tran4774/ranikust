@@ -493,11 +493,12 @@ per stage made for the build (ADR-0059). Before anything is written,
    user, not writable by others, and set to `0700` if others may search it;
    then the whole chain is checked again from its descriptor.
 3. Before its mode is touched: never `/`, and only a directory just created,
-   empty, or holding the store's regular `.ranikust-state` marker; unmarked,
-   none of the thirty system directories of `statedir::SYSTEM_DIRS` (`/mnt`,
-   `/srv`, `/opt`..., by device and inode); one marked only with the old
-   `.ranikust-root` is refused, named. After `chmod 0700` the mode must read
-   back so; `builds/` likewise.
+   empty, or holding the store's regular `.ranikust-state` marker (or
+   `.ranikust-pruning`, what a `prune --all` cut short leaves, which the store
+   then refuses itself); unmarked, none of the thirty system directories of
+   `statedir::SYSTEM_DIRS` (`/mnt`, `/srv`, `/opt`..., by device and inode);
+   one marked only with the old `.ranikust-root` is refused, named. After
+   `chmod 0700` the mode must read back so; `builds/` likewise.
 4. On `/`, the store then refuses a marked directory too, and anything but its
    own marker and leftovers (ADR-0077; [locks](cache-and-store.md#locks)).
 

@@ -385,14 +385,16 @@ fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
 }
 
 /// A store that cannot be opened in `state_dir`, as a [`Refusal`]. A state
-/// directory another build holds, or one kaniko mode on `/` may not share
-/// with persistent builds (ADR-0077), says so itself.
+/// directory another build holds, one kaniko mode on `/` may not share
+/// with persistent builds (ADR-0077), or one a `prune --all` did not finish
+/// emptying, says so itself.
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
     use rnk_store::Error;
     let reason = match e {
-        Error::Busy { .. } | Error::StateNotEmpty { .. } | Error::UsedOnSlash { .. } => {
-            e.to_string()
-        }
+        Error::Busy { .. }
+        | Error::StateNotEmpty { .. }
+        | Error::UsedOnSlash { .. }
+        | Error::PruneCutShort { .. } => e.to_string(),
         _ => format!("cannot open the store in {}: {e}", state_dir.display()),
     };
     Refusal {

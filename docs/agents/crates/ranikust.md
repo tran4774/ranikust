@@ -325,7 +325,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   a refusal once the process may be in the build's user namespace, no
   guidance sends a user back to the mode they used, the user-namespace
   probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
-  the overlay probe was left, and only then; `setup/tests/userns.rs`: the
+  the overlay probe was left, and only then, a store refusal naming its
+  state directory once; `setup/tests/userns.rs`: the
   store opened inside the build's user namespace, as root of it, or the
   set-up refused before the store, whatever the machine allows; `prune
   --all` emptying a state directory there, or refused before it with the
@@ -338,7 +339,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's
   advice, a `$HOME` reached through a `/proc` link is refused with nothing
-  made), `subids` (ranges by name or uid, the first well-formed one,
+  made; a regular `.ranikust-pruning` counts as the marker, for the store
+  to refuse), `subids` (ranges by name or uid, the first well-formed one,
   malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
   not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
   no name, an end past

@@ -701,8 +701,7 @@ Exceptions, all from emulation (the native CI job runs them all):
   `red_team_the_build_user_namespace_is_whole_or_not_entered`,
   `prune_all_empties_in_the_user_namespace_or_changes_nothing` and
   `prune_all_as_a_user_empties_a_state_directory_or_changes_nothing` are
-  skipped:
-  qemu-user runs a thread of its own, so the set-up, or
+  skipped: qemu-user runs a thread of its own, so the set-up, or
   `enter_build_user_namespace`, stops at its single-thread check before the
   privilege refusal or the user namespace the tests expect.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` and

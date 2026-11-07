@@ -10,7 +10,7 @@
 //! ```text
 //! <state-dir>/
 //! ├── .ranikust-state                marker: a non-empty directory without it is refused
-//! ├── .ranikust-pruning              while prune --all empties it: no build opens it
+//! ├── .ranikust-pruning              the marker while prune --all empties it: no build opens it
 //! ├── blobs/<algorithm>/<hex>        compressed blobs, by digest
 //! ├── layers/v3/<algorithm>/<hex>/   extracted layers, by chain ID [open: #1]
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
@@ -22,8 +22,8 @@
 //! A build is alive while it holds the `flock` on `builds/<build-id>.lock`;
 //! [`Store::open`] removes the `builds/` and `tmp/` directories of every
 //! build that is not. [`Store::prune_all`] empties the whole directory only
-//! while no build holds it, and leaves [`PRUNING_MARKER`] when it does not
-//! finish, which keeps every build out until a prune does.
+//! while no build holds it, its marker renamed [`PRUNING_MARKER`] first,
+//! which keeps every build out until a prune finishes.
 //!
 //! # Boundaries
 //!

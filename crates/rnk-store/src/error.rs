@@ -69,10 +69,12 @@ pub enum Error {
         path: PathBuf,
     },
 
-    /// [`crate::Store::prune_all`] left more than its markers in the state
-    /// directory: an entry on another mount, or one this process may not
-    /// remove. Both markers stay, so no build opens the directory and the
-    /// next `prune --all` accepts it.
+    /// [`crate::Store::prune_all`] left more than [`crate::PRUNING_MARKER`]
+    /// in the state directory: an entry on another mount, or one this
+    /// process may not remove; that marker stays, so no build opens the
+    /// directory and the next `prune --all` accepts it. Or the directory
+    /// holds a [`crate::PRUNING_MARKER`] that is not a regular file, which
+    /// `prune --all` neither takes nor removes: `left` says to remove it.
     #[error(
         "ranikust prune --all could not empty the state directory {}: it still holds {left}; \
          no build uses it until ranikust prune --all empties it",
