@@ -1266,9 +1266,7 @@ impl tracing::Subscriber for Warnings {
 #[test]
 fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
     let warnings = tracing::Dispatch::new(Warnings::default());
-    // Components under `NAME_MAX` and paths under `PATH_MAX`, so that the
-    // link to a device not remembered fails as "neither", not with
-    // `ENAMETOOLONG`.
+    // Long names fill the budget in a few hundred entries.
     let long = format!("{}/", "n".repeat(250)).repeat(16);
     let name = |i: usize| format!("{long}{i:03}");
     let cost = name(0).len() + SKIPPED_NAME_COST;
@@ -1309,7 +1307,7 @@ fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
 
     tracing::dispatcher::with_default(&warnings, || {
         let e = extract_overlay(&f.root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap_err();
-        assert!(e.to_string().contains("neither"), "{e}");
+        assert!(e.to_string().contains("target s is neither"), "{e}");
 
         let lower = Fixture::new();
         fs::write(lower.host("s"), b"lower").unwrap();

@@ -61,8 +61,9 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   overlay root as an upper directory, and ranikust says so.
 - **In a user namespace** that may mount, a base layer's block and character
   devices are left out, as the namespace's root may not make them; FIFOs and
-  whiteouts are kept ([ADR-0106]). A crafted layer whose device names pass a
-  1 MiB budget can be refused, with a warning ([ADR-0128]).
+  whiteouts are kept ([ADR-0106]). A crafted layer with more device nodes
+  than a budget allows (about 14 000) can be refused, with a warning
+  ([ADR-0128]).
 - kaniko's `--snapshot-mode` is accepted and ignored with a warning: there is
   no filesystem walk to tune.
 
@@ -315,5 +316,5 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
 [ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
-[ADR-0128]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
+[ADR-0128]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md

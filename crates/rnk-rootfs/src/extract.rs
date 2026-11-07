@@ -63,9 +63,9 @@ pub enum DeviceNodes {
     /// Creates none, nor a hardlink to one, and counts each as
     /// `nodes_skipped`, for a process in a user namespace, where `mknod` of
     /// a device needs `CAP_MKNOD` in the initial one (ADR-0106). FIFOs and
-    /// whiteouts are still made. Past a budget for the names it remembers,
-    /// a hardlink to a device is copied from a lower layer, or refused
-    /// (ADR-0128).
+    /// whiteouts are still made. A hardlink to a device whose name came
+    /// past a budget for the names remembered is copied from a lower layer,
+    /// or refused (ADR-0128).
     Skip,
 }
 
@@ -401,8 +401,8 @@ struct Extractor<'r> {
     /// [`DeviceNodes::Skip`]: the names of the devices left out, and of the
     /// hardlinks to them, until the layer puts something else there.
     devices_skipped: BTreeSet<PathBuf>,
-    /// The bytes spent on `devices_skipped` so far, freed or not: a budget
-    /// per layer, never refunded.
+    /// The bytes charged for `devices_skipped`, never refunded; past
+    /// [`SKIPPED_NAMES_MAX`] once the budget is closed.
     skipped_bytes: usize,
     /// Directory mode and times, set at the end, deepest first (reverse
     /// path order), so that adding entries does not move a directory's

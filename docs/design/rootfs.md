@@ -213,13 +213,16 @@ never called.
   `DeviceNodes::Skip`, as a build in a user namespace extracts, makes no
   block or character device and counts each in `nodes_skipped`, as
   `extract_live` does (ADR-0106). A lower layer's entry at a device's name
-  then stays visible, as in kaniko mode, kaniko and BuildKit rootless
-  ([ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)). A hardlink to a device left out is left out
-  with it, rather than link what a lower layer has at its name, while the
-  names remembered fit a budget of about 1 MiB a layer; past it, with one
-  warning, such a link is copied from the nearest lower layer that has its
-  name, or the layer is refused (ADR-0128). A device as the layer's root is
-  refused either way.
+  then stays visible, as in kaniko mode, in kaniko, whose `ExtractFile` has
+  no case for a device (`kaniko@44aa7ddc0 pkg/util/fs_util.go:439-581`), and
+  in BuildKit rootless, which skips one before it clears the path
+  (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:251-262`;
+  [ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
+  A hardlink to a device left out is left out with it, rather than link
+  what a lower layer has at its name, while the names remembered fit a
+  budget of about 1 MiB a layer; past it, with one warning, such a link is
+  copied from the nearest lower layer that has its name, or the layer is
+  refused (ADR-0128). A device as the layer's root is refused either way.
   Foreign owners need root or a user namespace (T1).
 
 ## Copy
