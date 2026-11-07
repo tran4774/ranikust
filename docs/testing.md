@@ -115,7 +115,9 @@ run goes through these steps:
 
 1. **Build** on the host, as the user, with `cargo zigbuild`: the static
    musl test binaries of the crates that hold `#[ignore = "T2: ..."]` and
-   `"T2c: ..."` tests (`unit`) and the `smoke-build` example (`smoke`).
+   `"T2c: ..."` tests (`unit`), and the `ranikust` binary with the
+   `smoke-build` example, for every run: the network check builds with
+   `ranikust` before any suite (step 5).
 2. **Fetch** the Ubuntu cloud image of `RANIKUST_VM_RELEASE` (`noble`,
    kernel 6.8, by default; `jammy`, kernel 5.15) and check its SHA-256
    against the published `SHA256SUMS`. The verified image is cached in

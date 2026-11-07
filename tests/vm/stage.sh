@@ -2,12 +2,13 @@
 # Stages what the T2 suites run: the guest scripts with the smoke files they
 # read, quick.env, and the static musl binaries the named suites need (the
 # root tests' binaries and their list for `unit`; the ranikust binary and the
-# smoke-build example for the others). One tree for both places T2 runs:
+# smoke-build example for the others, and for `net`, guest/net.sh's network
+# check, which builds with ranikust). One tree for both places T2 runs:
 # tests/vm/vm.sh copies it into its VM as ~/rnk, tests/vm/runner.sh puts it
 # at ~/rnk on a GitHub-hosted runner (ADR-0090). Builds as the invoking user;
 # nothing here needs root.
 #
-#   tests/vm/stage.sh <empty stage directory> [suite]...
+#   tests/vm/stage.sh <empty stage directory> [net] [suite]...
 #
 # RANIKUST_LOG_T0, the caller's seconds since its start, puts the `[stage
 # +Ns]` lines on the caller's clock, so a run's log keeps one timeline.
@@ -18,7 +19,7 @@ T0="${RANIKUST_LOG_T0:-0}"
 log() { printf '[stage +%ss] %s\n' "$((T0 + SECONDS))" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-[ $# -ge 1 ] || die "usage: tests/vm/stage.sh <empty stage directory> [suite]..."
+[ $# -ge 1 ] || die "usage: tests/vm/stage.sh <empty stage directory> [net] [suite]..."
 STAGE="$1"
 shift
 SUITES=("$@")
@@ -27,7 +28,7 @@ case "$STAGE" in /*) ;; *) die "the stage directory must be an absolute path (go
 [ -d "$STAGE" ] && [ ! -L "$STAGE" ] || die "$STAGE is not a directory"
 [ -z "$(ls -A "$STAGE")" ] || die "$STAGE is not empty"
 for s in ${SUITES[@]+"${SUITES[@]}"}; do
-  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra) ;; *) die "unknown suite '$s'" ;; esac
+  case "$s" in net | unit | smoke | quick | e2e | push | secrets | ultra) ;; *) die "unknown suite '$s'" ;; esac
 done
 wants() { local s; for s in ${SUITES[@]+"${SUITES[@]}"}; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
@@ -74,7 +75,7 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets; then
+if wants net || wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
