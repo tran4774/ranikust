@@ -1425,7 +1425,7 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
             "a cut deflate stream, the digest refused",
             &tar,
             Source::failing_at_end(gz[..gz.len() / 2].to_vec()),
-            None,
+            Some(ErrorKind::Other),
         ),
         (
             "a bad gzip checksum",
@@ -1449,7 +1449,7 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
             "no tar end, the digest refused",
             unended,
             Source::failing_at_end(gzip(unended)),
-            None,
+            Some(ErrorKind::Other),
         ),
     ];
     for sticky in [true, false] {
@@ -1500,6 +1500,7 @@ fn red_team_on_slash_a_body_failing_during_the_header_check_changes_nothing() {
 struct Interrupted {
     bytes: Vec<u8>,
     at: usize,
+    opens: AtomicUsize,
 }
 
 struct InterruptedBody {
@@ -1524,6 +1525,7 @@ impl std::io::Read for InterruptedBody {
 
 impl LayerOpen for Interrupted {
     fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(InterruptedBody {
             bytes: std::io::Cursor::new(self.bytes.clone()),
             at: Some(self.at),
@@ -1542,10 +1544,17 @@ fn on_slash_a_body_interrupted_once_is_read_on() {
         let mut r = f.snap.prepare(Base::Scratch).unwrap();
         r.set_layers_needed(true);
         let at = blob.len() / 3;
-        let source = Arc::new(Interrupted { bytes: blob, at });
-        let layer = f.snap.streamed_layer(&diff_id(&tar), source).unwrap();
+        let source = Arc::new(Interrupted {
+            bytes: blob,
+            at,
+            opens: AtomicUsize::new(0),
+        });
+        let open = Arc::clone(&source) as Arc<dyn LayerOpen>;
+        let layer = f.snap.streamed_layer(&diff_id(&tar), open).unwrap();
         r.apply_layer(&layer)
             .unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        // Read once, by the spool pass, where the header check met it.
+        assert_eq!(source.opens.load(Ordering::Relaxed), 1, "{what}");
         assert_eq!(fs::read(f.root.join("first")).unwrap(), big, "{what}");
         assert!(f.root.join("second").exists(), "{what}");
         r.release().unwrap();

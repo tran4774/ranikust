@@ -280,8 +280,8 @@ that found a bug stay as its regression test.
   body or its decompression failing while the headers are read (corrupt or
   cut, a bad gzip checksum, a digest refused, a connection dropped) is
   reported as the body's error (a dropped connection as itself), never as an
-  error of its tar, and leaves `/` usable, and a read interrupted once is
-  made again; in
+  error of its tar, and leaves `/` usable; a read interrupted once while the
+  headers are read is made again and the layer applied; in
   `src/kaniko/root/tests.rs`, a base or `COPY --from` image layer with a bad
   header is refused before any of it is written or any directory made, and
   keeps no spool. `tests/spans.rs`: on `/` a streamed layer is decoded once

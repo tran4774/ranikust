@@ -1055,7 +1055,8 @@ impl Spooled {
             first: None,
         };
         let headers = rnk_rootfs::check_headers(&mut read);
-        // Reported as is: a decoder may report a failure once, then another.
+        // The kept error, not the tar's: a decoder may fail once, then fail
+        // otherwise or read as an end.
         if let Some(e) = read.first {
             return Err(rnk_layer::Error::from(e).into());
         }
