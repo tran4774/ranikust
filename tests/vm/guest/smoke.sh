@@ -471,7 +471,8 @@ log="$("$RNK" "${e2e_args[@]}" --reproducible 2>&1)" || rc=$?
 printf '%s\n' "$log" >"$dir/e2e.log"
 grep -E 'user namespace probe|rootless' <<<"$log" || true
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
-  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" ||
+  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
+    grep -q 'where kernel.apparmor_restrict_unprivileged_userns is 1' <<<"$log" ||
     { echo "error: user: expected rootless overlay mode refused, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it, as expected"
 else

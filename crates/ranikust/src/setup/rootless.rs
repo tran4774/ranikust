@@ -142,14 +142,10 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         probed: true,
     };
     if let Some(step) = report.stop(allowed) {
-        let guidance = match step {
-            "proc" if matches!(report.proc, MountResult::Rbind { .. }) => PROC_RBIND,
-            "unshare" | "map" if euid != 0 => super::NO_USER_NAMESPACE,
-            _ => UNUSABLE,
-        };
+        let rbind = matches!(report.proc, MountResult::Rbind { .. });
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
-            guidance,
+            guidance(step, rbind, euid),
         ));
     }
     if let Some(e) = probed.overlay_error() {
@@ -169,6 +165,18 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         fallbacks,
         proc_rbind: bind_proc,
     })
+}
+
+/// What to do where the user namespace probe stops at `step` for the
+/// effective uid `euid`; `rbind` says an rbind of `/proc` worked there. A
+/// user namespace without capabilities (Ubuntu's AppArmor switch) stops a
+/// user other than root at the map, the `chown` or the mount namespace.
+fn guidance(step: &str, rbind: bool, euid: u32) -> &'static str {
+    match step {
+        "proc" if rbind => PROC_RBIND,
+        "unshare" | "map" | "chown" | "mount namespace" if euid != 0 => super::NO_USER_NAMESPACE,
+        _ => UNUSABLE,
+    }
 }
 
 /// A name no other build's probe takes at once: this process's id and the
@@ -248,5 +256,32 @@ fn broken(reason: String) -> Refusal {
         kind: Kind::Broken,
         reason: format!("rootless overlay mode: {reason}"),
         guidance: "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A user other than root whose user namespace has no capabilities
+    /// (Ubuntu 24.04 stops it at the `chown`) is pointed at the AppArmor
+    /// switch; root, and a step past the namespace, at running as root; a
+    /// refused new `proc` with a working rbind, at `--allow proc.rbind`.
+    #[test]
+    fn each_stop_of_the_probe_gets_its_guidance() {
+        for step in ["unshare", "map", "chown", "mount namespace"] {
+            assert_eq!(
+                guidance(step, false, 1000),
+                super::super::NO_USER_NAMESPACE,
+                "{step}"
+            );
+            assert_eq!(guidance(step, false, 0), UNUSABLE, "{step}");
+        }
+        assert_eq!(guidance("proc", true, 1000), PROC_RBIND);
+        assert_eq!(guidance("proc", true, 0), PROC_RBIND);
+        assert_eq!(guidance("proc", false, 1000), UNUSABLE);
+        assert_eq!(guidance("sysfs", false, 1000), UNUSABLE);
+        assert!(super::super::NO_USER_NAMESPACE.contains("apparmor_restrict_unprivileged_userns"));
+        assert!(PROC_RBIND.contains("--allow proc.rbind"));
     }
 }
