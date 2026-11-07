@@ -710,3 +710,40 @@ fn create_sub_root_refuses_another_mount_without_following_it() {
     let e = other.create_sub_root("x", 0o700).unwrap_err();
     assert!(e.to_string().contains("another mount"), "{e}");
 }
+
+/// `set_meta_if` changes the inode it read, even when `decide` swaps its
+/// name for another directory first; `None` changes nothing.
+#[test]
+fn set_meta_if_changes_the_entry_it_read_whatever_its_name_holds_then() {
+    let f = Fixture::new();
+    let dir = |name: &str| {
+        fs::create_dir(f.host(name)).unwrap();
+        fs::set_permissions(f.host(name), fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    let state = |name: &str| {
+        let md = fs::symlink_metadata(f.host(name)).unwrap();
+        (md.ino(), md.mode() & 0o7777, md.ctime(), md.ctime_nsec())
+    };
+    dir("d");
+    let before = state("d");
+    let none = f.root.set_meta_if("d", |st| {
+        assert_eq!(st.permissions(), 0o700);
+        None
+    });
+    assert!(!none.unwrap());
+    assert_eq!(state("d"), before);
+    assert!(!f.root.set_meta_if("/", |_| None).unwrap());
+
+    let swapped = f.root.set_meta_if("d", |_| {
+        fs::rename(f.host("d"), f.host("d-old")).unwrap();
+        dir("d");
+        Some(Meta {
+            mode: Some(0o750),
+            ..Meta::default()
+        })
+    });
+    assert!(swapped.unwrap());
+    let (old_ino, old_mode, ..) = state("d-old");
+    assert_eq!((old_ino, old_mode), (before.0, 0o750));
+    assert_eq!(state("d").1, 0o700);
+}
