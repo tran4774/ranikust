@@ -286,9 +286,11 @@ The steps, in order:
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
       stays closed. So that no `RUN` reaches another's processes directly,
       the `RUN`s of such a build run one at a time: `Sandbox::run` holds a
-      lock, one for the whole process, from before the clone until the
-      `RUN`'s init is reaped, the processes of its PID namespace gone with
-      it, and refuses `Isolation::Direct`, which has no PID namespace;
+      lock, one for the whole process, alone, from before the clone until
+      the `RUN`'s init is reaped, the processes of its PID namespace gone
+      with it (every other `RUN` of the process shares it, so none runs
+      meanwhile; after a panic during a turn no `RUN` runs), and refuses
+      `Isolation::Direct`, which has no PID namespace, before any wait;
       stages still schedule in parallel
       ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
       A `RUN` that reaches another process of its uid (a CI shell) can
