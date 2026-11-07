@@ -34,6 +34,7 @@ mod lowers;
 mod mount;
 mod probe;
 mod stage;
+mod userns;
 
 pub use error::{Error, Result};
 pub use export::{DiffCounts, LayerDiff};

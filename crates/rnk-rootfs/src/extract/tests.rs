@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, symlink};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tar::{EntryType, Header};
 
@@ -827,7 +827,13 @@ fn a_hardlink_into_a_lower_layer_is_copied_from_it() {
         .hardlink("bin/sh2", "/usr/bin/dash")
         .file("usr/bin/own", 0o644, b"own")
         .hardlink("usr/bin/own2", "usr/bin/own");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
 
     // A regular file with the lower inode's content and metadata.
     let sh = fs::symlink_metadata(f.host("usr/bin/sh")).unwrap();
@@ -865,7 +871,13 @@ fn a_hardlink_copied_from_a_lower_layer_gets_no_trusted_xattrs() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.hardlink("sh", "dash");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(xattr(&f.host("sh"), "trusted.x"), None);
     assert_eq!(xattr(&f.host("sh"), "user.app").unwrap(), b"u");
 }
@@ -892,7 +904,13 @@ fn every_name_of_a_lower_inode_shares_one_copy() {
         .hardlink("b", "n1")
         .hardlink("c", "n2")
         .hardlink("d", "n3");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     let a = fs::metadata(f.host("a")).unwrap();
     assert_eq!(a.nlink(), 4);
     for n in ["b", "c", "d"] {
@@ -919,7 +937,13 @@ fn a_copy_the_layer_removed_is_not_linked_again() {
         .hardlink("b", "n1")
         .file("b", 0o644, b"replaced")
         .hardlink("c", "n2");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     // `a` is overlay's whiteout now, `b` the layer's own file.
     assert!(
         fs::symlink_metadata(f.host("a"))
@@ -950,7 +974,13 @@ fn a_copy_whose_directory_went_by_another_name_is_copied_again() {
         .hardlink("s/a", "big")
         .file(".wh.d", 0o644, b"")
         .hardlink("c", "n1");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(fs::read(f.host("c")).unwrap(), b"content");
     assert_eq!(fs::metadata(f.host("c")).unwrap().nlink(), 1);
 }
@@ -965,7 +995,13 @@ fn the_nearest_lower_layer_shows_the_target() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.hardlink("a", "t").hardlink("b", "only_bottom");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&top.root, &bottom.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&top.root, &bottom.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(fs::read(f.host("a")).unwrap(), b"top");
     assert_eq!(fs::read(f.host("b")).unwrap(), b"bottom");
 }
@@ -984,7 +1020,13 @@ fn assert_hidden(setup: &dyn Fn(&Fixture), target: &str, layer: &dyn Fn(&mut Tar
     let mut t = Tar::new(&f);
     layer(&mut t);
     t.hardlink("h", target);
-    let e = extract_overlay(&f.root, t.bytes().as_slice(), &[&top.root, &bottom.root]).unwrap_err();
+    let e = extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&top.root, &bottom.root],
+        DeviceNodes::Create,
+    )
+    .unwrap_err();
     assert!(
         matches!(e, Error::Entry { ref reason, .. }
             if reason.contains("hidden") || reason.contains("whited out")),
@@ -1051,14 +1093,26 @@ fn lower_targets_never_leave_the_lower_roots() {
     for target in ["dir/sentinel", "missing", "adir"] {
         let mut t = Tar::new(&f);
         t.hardlink("h", target);
-        let e = extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap_err();
+        let e = extract_overlay(
+            &f.root,
+            t.bytes().as_slice(),
+            &[&lower.root],
+            DeviceNodes::Create,
+        )
+        .unwrap_err();
         assert!(matches!(e, Error::Entry { .. }), "{target}: {e}");
         assert!(!f.host("h").exists(), "{target}");
     }
     // A symlink target is copied as a symlink, never followed.
     let mut t = Tar::new(&f);
     t.hardlink("h", "file");
-    extract_overlay(&f.root, t.bytes().as_slice(), &[&lower.root]).unwrap();
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Create,
+    )
+    .unwrap();
     assert_eq!(fs::read_link(f.host("h")).unwrap(), out.join("sentinel"));
     assert_eq!(snapshot(&out), before);
 }
@@ -1068,15 +1122,257 @@ fn extract_overlay_reports_whether_the_layer_set_the_root() {
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.file("f", 0o644, b"x");
-    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[]).unwrap();
+    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap();
     assert!(!r.root_set);
 
     let f = Fixture::new();
     let mut t = Tar::new(&f);
     t.dir("./", 0o555).file("f", 0o644, b"x");
-    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[]).unwrap();
+    let r = extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap();
     assert!(r.root_set);
     assert_eq!(f.root.statx("").unwrap().permissions(), 0o555);
+}
+
+/// ADR-0106: in a user namespace, block and character devices are left out;
+/// FIFOs, whiteouts and opaque markers are still made, unprivileged as
+/// there. `tests/spans.rs` checks the count; the budget for the names
+/// remembered is `past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused`.
+#[test]
+fn skipped_device_nodes_leave_fifos_and_whiteouts() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.dir("d/", 0o755)
+        .file("d/.wh..wh..opq", 0o644, b"")
+        .node("fifo", EntryType::Fifo, 0, 0)
+        .node("null", EntryType::Char, 1, 3)
+        .node("zero", EntryType::Char, 0, 0)
+        .node("loop0", EntryType::Block, 7, 0)
+        .file(".wh.gone", 0o644, b"")
+        .file("kept", 0o644, b"ok");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Skip).unwrap();
+    for name in ["null", "zero", "loop0"] {
+        assert!(fs::symlink_metadata(f.host(name)).is_err(), "{name}");
+    }
+    assert!(
+        fs::symlink_metadata(f.host("fifo"))
+            .unwrap()
+            .file_type()
+            .is_fifo()
+    );
+    let gone = fs::symlink_metadata(f.host("gone")).unwrap();
+    assert!(gone.file_type().is_char_device());
+    assert_eq!(gone.rdev(), 0);
+    assert_eq!(
+        xattr(&f.host("d"), "user.overlay.opaque").as_deref(),
+        Some(&b"y"[..])
+    );
+    assert_eq!(fs::read(f.host("kept")).unwrap(), b"ok");
+
+    // A hardlink to a device left out, or to such a link, is left out too:
+    // never copied from a lower layer's file at the device's name. Once the
+    // layer puts something else at that name, a link links it.
+    let lower = Fixture::new();
+    fs::write(lower.host("sda"), b"lower").unwrap();
+    fs::write(lower.host("tty"), b"lower").unwrap();
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.node("sda", EntryType::Block, 8, 0)
+        .hardlink("sda-link", "sda")
+        .hardlink("sda-link2", "sda-link")
+        .node("tty", EntryType::Char, 5, 0)
+        .file("tty", 0o644, b"file")
+        .hardlink("tty-link", "tty");
+    extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Skip,
+    )
+    .unwrap();
+    for name in ["sda", "sda-link", "sda-link2"] {
+        assert!(fs::symlink_metadata(f.host(name)).is_err(), "{name}");
+    }
+    assert_eq!(fs::read(f.host("tty-link")).unwrap(), b"file");
+    assert_eq!(
+        fs::metadata(f.host("tty")).unwrap().ino(),
+        fs::metadata(f.host("tty-link")).unwrap().ino()
+    );
+    // A device after an entry of this layer at its name leaves that entry
+    // there; a link to the name is left out with the device.
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.file("x", 0o644, b"first")
+        .node("x", EntryType::Char, 1, 3)
+        .hardlink("x-link", "x");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Skip).unwrap();
+    assert_eq!(fs::read(f.host("x")).unwrap(), b"first");
+    assert!(fs::symlink_metadata(f.host("x-link")).is_err());
+
+    // A device the layer whites out is gone, as when they are made.
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.node("sda", EntryType::Block, 8, 0)
+        .file(".wh.sda", 0o644, b"")
+        .hardlink("sda-link", "sda");
+    let e = extract_overlay(
+        &f.root,
+        t.bytes().as_slice(),
+        &[&lower.root],
+        DeviceNodes::Skip,
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("whited out"), "{e}");
+
+    // A device as the layer's root is refused, as when they are made.
+    for devices in [DeviceNodes::Skip, DeviceNodes::Create] {
+        let f = Fixture::new();
+        let mut t = Tar::new(&f);
+        t.node("./", EntryType::Char, 1, 3);
+        let e = extract_overlay(&f.root, t.bytes().as_slice(), &[], devices).unwrap_err();
+        assert!(e.to_string().contains(ROOT_NOT_DIR), "{devices:?}: {e}");
+    }
+
+    // Control: asked to create them, an unprivileged process cannot.
+    if f.ids().0 != 0 {
+        let f = Fixture::new();
+        let mut t = Tar::new(&f);
+        t.node("null", EntryType::Char, 1, 3);
+        let e =
+            extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap_err();
+        assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
+    }
+}
+
+/// A layer remembers only the devices it leaves out itself. A link to one
+/// a lower layer left out finds nothing there: it is refused, or copies
+/// what a deeper layer has at that name (ADR-0131).
+#[test]
+fn a_link_to_a_device_a_lower_layer_left_out_is_refused_or_copies_a_deeper_layer() {
+    let deep = Fixture::new();
+    fs::write(deep.host("tty"), b"deep").unwrap();
+    let lower = Fixture::new();
+    let mut t = Tar::new(&lower);
+    t.node("sda", EntryType::Block, 8, 0)
+        .node("tty", EntryType::Char, 5, 0);
+    extract_overlay(
+        &lower.root,
+        t.bytes().as_slice(),
+        &[&deep.root],
+        DeviceNodes::Skip,
+    )
+    .unwrap();
+    let lowers = [&lower.root, &deep.root];
+
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("sda-link", "sda");
+    let e = extract_overlay(&f.root, t.bytes().as_slice(), &lowers, DeviceNodes::Skip).unwrap_err();
+    assert!(e.to_string().contains("in no layer below"), "{e}");
+
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("tty-link", "tty");
+    extract_overlay(&f.root, t.bytes().as_slice(), &lowers, DeviceNodes::Skip).unwrap();
+    assert_eq!(fs::read(f.host("tty-link")).unwrap(), b"deep");
+}
+
+/// Counts the warnings logged while it is the default.
+#[derive(Default)]
+struct Warnings(AtomicUsize);
+
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        *m.level() == tracing::Level::WARN
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// ADR-0128: within the budget, a link to a device left out is left out;
+/// past it, the layer remembers no further name, a short one after the
+/// first that does not fit included, and warns once: a link to a device it
+/// does not remember is linked to what the layer has at that name, else
+/// copied from a lower layer that has it, else refused, never left out.
+/// The only test here that reaches the warning, so no other can cache it
+/// as unwanted.
+#[test]
+fn past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused() {
+    let warnings = tracing::Dispatch::new(Warnings::default());
+    // Long names fill the budget in a few hundred entries.
+    let long = format!("{}/", "n".repeat(250)).repeat(16);
+    let name = |i: usize| format!("{long}{i:03}");
+    let cost = name(0).len() + SKIPPED_NAME_COST;
+    let fit = SKIPPED_NAMES_MAX / cost;
+    // What the names that fit leave would hold "s" or "y": only a budget
+    // closed at the first name past it leaves them unremembered.
+    assert!(SKIPPED_NAMES_MAX - fit * cost >= "s".len() + SKIPPED_NAME_COST);
+
+    let f = Fixture::new();
+    let (uid, gid) = f.ids();
+    let header = |t| {
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(t);
+        h.set_mode(0o644);
+        h.set_uid(uid.into());
+        h.set_gid(gid.into());
+        h.set_mtime(0);
+        h.set_size(0);
+        h
+    };
+    let mut b = tar::Builder::new(Vec::new());
+    let mut file = header(EntryType::Regular);
+    file.set_size(1);
+    b.append_data(&mut file, "y", &b"y"[..]).unwrap();
+    let mut device = |path: &str| {
+        let mut h = header(EntryType::Char);
+        h.set_device_major(1).unwrap();
+        h.set_device_minor(3).unwrap();
+        b.append_data(&mut h, path, &b""[..]).unwrap();
+    };
+    // Two names past the budget, for one warning.
+    for i in 0..fit + 2 {
+        device(&name(i));
+    }
+    device("s");
+    device("y");
+    b.append_link(&mut header(EntryType::Link), "first", name(0))
+        .unwrap();
+    b.append_link(&mut header(EntryType::Link), "to-y", "y")
+        .unwrap();
+    b.append_link(&mut header(EntryType::Link), "to-s", "s")
+        .unwrap();
+    let tar = b.into_inner().unwrap();
+
+    tracing::dispatcher::with_default(&warnings, || {
+        let e = extract_overlay(&f.root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap_err();
+        assert!(e.to_string().contains("target s is neither"), "{e}");
+
+        let lower = Fixture::new();
+        fs::write(lower.host("s"), b"lower").unwrap();
+        // The layer's own "y" comes before a lower layer's.
+        fs::write(lower.host("y"), b"lower").unwrap();
+        let f = Fixture::new();
+        extract_overlay(&f.root, tar.as_slice(), &[&lower.root], DeviceNodes::Skip).unwrap();
+        assert!(fs::symlink_metadata(f.host("first")).is_err());
+        let ino = |p: &str| fs::symlink_metadata(f.host(p)).unwrap().ino();
+        assert_eq!(ino("to-y"), ino("y"));
+        assert_eq!(fs::read(f.host("y")).unwrap(), b"y");
+        assert_eq!(fs::read(f.host("to-s")).unwrap(), b"lower");
+    });
+    let count = warnings
+        .downcast_ref::<Warnings>()
+        .unwrap()
+        .0
+        .load(Ordering::Relaxed);
+    assert_eq!(count, 2, "one warning a layer");
 }
 
 fn live_keep() -> IgnoreList {

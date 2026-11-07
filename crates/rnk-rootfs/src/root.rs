@@ -1,5 +1,6 @@
 //! `RootPath`: every path inside a root, resolved by the kernel from a root fd.
 
+use std::borrow::Borrow;
 use std::ffi::{OsStr, OsString};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
@@ -895,6 +896,36 @@ impl RootPath {
         }
     }
 
+    /// [`RootPath::set_meta`] with what `decide` returns for the entry's
+    /// `statx`, `Ok(false)` when it returns `None`: the entry is pinned
+    /// (`O_PATH | O_NOFOLLOW`) before it is read, and changed through that
+    /// descriptor, so a swap of its name cannot redirect the change to
+    /// another inode than the one decided on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] of op `chown` (owner, group), `setxattr`, `chmod`
+    /// (mode) or `utimensat` (times) when a change fails, and of the step
+    /// that failed when `p` cannot be reached or read; [`Error::Unsupported`]
+    /// without `openat2` or without procfs at `/proc` (xattrs, mode);
+    /// [`Error::InvalidPath`] when `p` ends in `..`, and for a symlink
+    /// root's xattrs; [`Error::Changed`] when a symlink's name is swapped
+    /// while its xattrs are set. Earlier changes stay applied.
+    pub fn set_meta_if(
+        &self,
+        p: impl AsRef<Path>,
+        decide: impl FnOnce(&Stat) -> Option<Meta>,
+    ) -> Result<bool> {
+        let p = p.as_ref();
+        match path::target(p)? {
+            Target::Root => set_meta_pinned(self.fd(), None, decide, p),
+            Target::Entry { parent, name } => {
+                let pfd = self.resolve_dir(&parent)?;
+                set_meta_at_if(pfd.as_fd(), name, decide, p)
+            }
+        }
+    }
+
     /// [`RootPath::set_meta`] only if `p` is a directory, checked on the
     /// pinned entry itself; `Ok(false)` when it is something else. For the
     /// extraction, which never writes across a mount: the parent is resolved
@@ -921,17 +952,44 @@ pub(crate) fn set_meta_at(
     only: Option<FileType>,
     path: &Path,
 ) -> Result<bool> {
+    set_meta_at_if(
+        pfd,
+        name,
+        |st| only.is_none_or(|t| t == st.file_type()).then_some(m),
+        path,
+    )
+}
+
+/// [`RootPath::set_meta_if`] on the entry `name` of the resolved directory
+/// `pfd`, pinned `O_PATH | O_NOFOLLOW`.
+fn set_meta_at_if<M: Borrow<Meta>>(
+    pfd: BorrowedFd<'_>,
+    name: &OsStr,
+    decide: impl FnOnce(&Stat) -> Option<M>,
+    path: &Path,
+) -> Result<bool> {
     let fd = open_name(pfd, name, OFlags::PATH | OFlags::NOFOLLOW, 0, false, path)?;
-    let file_type = meta::statx_at(fd.as_fd(), OsStr::new(""), path)?.file_type();
-    if only.is_some_and(|t| t != file_type) {
+    set_meta_pinned(fd.as_fd(), Some((pfd, name)), decide, path)
+}
+
+/// `decide` on the `statx` of the pinned `fd`, then what it returns applied
+/// through `fd`; `parent` names it for a symlink's xattrs.
+fn set_meta_pinned<M: Borrow<Meta>>(
+    fd: BorrowedFd<'_>,
+    parent: Option<(BorrowedFd<'_>, &OsStr)>,
+    decide: impl FnOnce(&Stat) -> Option<M>,
+    path: &Path,
+) -> Result<bool> {
+    let st = meta::statx_at(fd, OsStr::new(""), path)?;
+    let Some(m) = decide(&st) else {
         return Ok(false);
-    }
-    let h = Handle::Path {
-        fd: fd.as_fd(),
-        file_type,
-        parent: Some((pfd, name)),
     };
-    meta::apply(&h, m, path)?;
+    let h = Handle::Path {
+        fd,
+        file_type: st.file_type(),
+        parent,
+    };
+    meta::apply(&h, m.borrow(), path)?;
     Ok(true)
 }
 

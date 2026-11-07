@@ -66,6 +66,9 @@ const DIRS: [&str; 6] = ["blobs", "layers", "caches", "locks", "tmp", "builds"];
 /// Mode of the state directory and the store's own directories: image
 /// content stays away from other users of the host.
 const DIR_MODE: u32 = 0o700;
+/// `S_ISGID`: a directory with it gives its gid, and the bit, to the
+/// directories made in it.
+const SETGID: u32 = 0o2000;
 
 /// The paths handed down to every crate of a build.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,6 +321,11 @@ impl Store {
     /// canonicalized; a new or empty directory gets the [`STATE_MARKER`]
     /// marker, and a non-empty one without it is refused. A state directory
     /// owned by another user or writable by others is used with a warning.
+    /// The store's own directories take the process's gid and no setgid
+    /// bit, whatever a setgid state directory or a `grpid` mount gave them,
+    /// so that what the store makes carries ids a user namespace maps
+    /// (ADR-0099); outside a user namespace, a filesystem that refuses the
+    /// `chown` (`EPERM`) leaves them as they were, with a warning.
     ///
     /// The store holds a shared `flock` on the state directory for its
     /// life: persistent builds share it, and an anonymous store (kaniko
@@ -364,6 +372,7 @@ impl Store {
         check_marker(&state, &state_path)?;
         for d in DIRS {
             state.create_dir_all(d, DIR_MODE)?;
+            own_group(&state, d)?;
         }
         warn_if_shared(&state, &state_path);
         let (id, build_lock) = register(&state, &state_path)?;
@@ -1739,6 +1748,69 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
             _ => Err(refuse()),
         },
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Gives `d`, one of [`DIRS`] and this user's, the effective gid and no
+/// setgid bit, where a setgid state directory gave it its own gid and the
+/// bit, or a `grpid` mount its parent's gid: entries below then get the gid of
+/// the process that makes them, which a user namespace maps (ADR-0099),
+/// and never a gid and setgid bit from the host in an extracted layer.
+/// Read and changed through one pinned descriptor, and only when it needs
+/// it. Outside a user namespace no map needs the gid, so a filesystem that
+/// refuses the `chown` (`EPERM`) does not stop the store: a warning; in
+/// one, an error.
+fn own_group(state: &RootPath, d: &str) -> Result<()> {
+    let euid = rustix::process::geteuid().as_raw();
+    let egid = rustix::process::getegid().as_raw();
+    let changed = state.set_meta_if(d, |st| {
+        let needed = st.file_type() == FileType::Directory
+            && st.uid == euid
+            && (st.mode & SETGID != 0 || st.gid != egid);
+        needed.then(|| rnk_rootfs::Meta {
+            gid: Some(egid),
+            mode: Some(st.permissions() & !SETGID),
+            ..rnk_rootfs::Meta::default()
+        })
+    });
+    match changed {
+        Ok(_) => Ok(()),
+        Err(e) => refused_group(e, d, crate::userns::in_user_namespace),
+    }
+}
+
+/// What [`own_group`] does when the change of `d` fails with `e`: a
+/// warning for a refused group change (`EPERM` from the `chown` itself)
+/// outside a user namespace; an error for any other failure, in one, or
+/// where `in_user_namespace` cannot tell.
+fn refused_group(
+    e: rnk_rootfs::Error,
+    d: &str,
+    in_user_namespace: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    // A refused chmod is not a filesystem without groups: the chown before
+    // it needs the same ownership and passed.
+    let refused = matches!(&e, rnk_rootfs::Error::Io { op: "chown", .. })
+        && e.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error());
+    if !refused {
+        return Err(e.into());
+    }
+    match in_user_namespace() {
+        Ok(false) => {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory: {d} keeps its group and mode: {e}"
+            );
+            Ok(())
+        }
+        Ok(true) => Err(e.into()),
+        Err(ns) => {
+            tracing::warn!(
+                target: "rnk_store",
+                "state directory: {d}: the user namespace cannot be told: {ns}"
+            );
+            Err(e.into())
+        }
     }
 }
 
