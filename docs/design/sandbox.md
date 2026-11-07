@@ -299,9 +299,9 @@ The steps, in order:
       as its PID 1 with no other process of its uid during the build, keep
       its secrets in its environment rather than on its command line or in
       a shell left running, and ask for the rbind only with trusted base
-      images. Only the library asks for it until [#79](https://github.com/tran4774/ranikust/issues/79),
-      which brings the flag, refuses a PID namespace shared with a process
-      of another mount namespace and gives such a build an anonymous store
+      images. With the flag, #79 also refuses a PID namespace shared with a
+      process of another mount namespace, as T21, and gives such a build an
+      anonymous store
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)).
       The rbind's masks come along, every mount of it made `nosuid`,
       `nodev` and `noexec` with `mount_setattr(AT_RECURSIVE)` (without it

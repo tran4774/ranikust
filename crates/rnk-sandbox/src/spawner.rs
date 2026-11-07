@@ -65,9 +65,9 @@ impl Sandbox {
     /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
     /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
     /// the full sandbox can run (ADR-0014, ADR-0060). Where [`Caps::proc`]
-    /// is [`KernelFs::Rbind`] it runs no `Direct` `RUN` at all, whose turn
-    /// would end with no PID namespace (ADR-0127). Kaniko mode that
-    /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
+    /// is [`KernelFs::Rbind`] it runs no `Direct` `RUN` at all: a turn ends
+    /// with the `RUN`'s PID namespace, which `Direct` lacks (ADR-0127).
+    /// Kaniko mode that cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
     /// under [`SeccompProfile::docker_default`] until
     /// [`Sandbox::set_seccomp`] says otherwise (ADR-0103).
     ///
@@ -5324,8 +5324,9 @@ mod tests {
 
     /// Under an rbind of `/proc` a `RUN` waits for its turn, whichever
     /// `Sandbox` runs it, until the one before has released its own; with a
-    /// new `proc` no `RUN` waits. That the turn lasts until the `RUN` is
-    /// reaped is the T1 `runs_take_turns_under_an_rbind_of_proc`'s.
+    /// new `proc` no `RUN` waits. The T1
+    /// `runs_take_turns_under_an_rbind_of_proc` checks that the turn lasts
+    /// until the `RUN` is reaped.
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
         let empty = tempfile::tempdir().unwrap();
@@ -5334,8 +5335,6 @@ mod tests {
         // Without `Sandbox::start`'s cgroups and profile: a `Direct` `RUN`
         // fails before executing anything, and under an rbind is refused
         // once its turn comes.
-        // Kept here, so that a waiting thread's only sleep is its turn, not
-        // the drop of its `Sandbox`.
         let sandbox = |dir: &tempfile::TempDir, proc| {
             let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot))
                 .unwrap()
@@ -5360,6 +5359,8 @@ mod tests {
             })) => {}
             r => panic!("a RUN with a new proc while the turn is held: {r:?}"),
         }
+        // Kept here, so that a waiting thread's only sleep is its turn, not
+        // the drop of its `Sandbox`.
         let rbind = [&dirs[1], &dirs[2]].map(|dir| sandbox(dir, KernelFs::Rbind));
         let waiting = rbind.each_ref().map(run);
         for (tid, result) in &waiting {

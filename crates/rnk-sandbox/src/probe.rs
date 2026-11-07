@@ -98,10 +98,11 @@ impl Fallbacks {
     /// ranikust as its PID 1 with no other process of its uid during the
     /// build, keep its secrets in its environment, not on its command line
     /// or in a shell left running, and ask for this only where the base
-    /// images are trusted. No command-line flag asks for it before #79,
-    /// which brings `--allow proc.rbind`, refuses a PID namespace shared
-    /// with a process of another mount namespace and gives such a build an
-    /// anonymous store (ADR-0129).
+    /// images are trusted. The `ranikust` binary has no flag for it before
+    /// #79. This crate neither scans for a PID namespace shared with a
+    /// process of another mount namespace nor chooses the store: its caller
+    /// runs ADR-0101's peer scan and uses an anonymous store (ADR-0129), as
+    /// the binary does from #79.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -156,24 +157,42 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
     result
 }
 
+/// What a `RUN` reaches through an rbind of `/proc`, in the guidance and
+/// the warning alike (ADR-0127, ADR-0129).
+macro_rules! proc_rbind_exposure {
+    () => {
+        "each RUN sees every process of this PID namespace (the host's or other \
+         containers' too where the container shares one), reads their command lines, \
+         mount tables and network tables, ranikust's included, and reaches the \
+         environment and files of those of its own kernel uid (ranikust's, for a RUN as \
+         root); RUNs then run one at a time, though one that reaches another process of \
+         that uid can still act through it, and through the files it sees, after its turn"
+    };
+}
+
+/// How to run ranikust where its `RUN`s get an rbind of `/proc`.
+macro_rules! proc_rbind_mitigation {
+    () => {
+        "give the container a PID namespace of its own, start ranikust as its PID 1 with \
+         no other process of ranikust's uid during the build, and keep secrets in its \
+         environment, not on its command line or in a shell left running"
+    };
+}
+
 /// The warning for a new `proc` refused without the request (`e`, with no
 /// rbind of `/proc` in `allowed`): how to get one, or the request and what
 /// it exposes.
 fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
-    (is_proc_refusal(e) && !allowed.proc).then_some(
+    (is_proc_refusal(e) && !allowed.proc).then_some(concat!(
         "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
-         (a container whose /proc has masked paths): build as a regular user on a host that \
-         allows user namespaces, or in a container where ranikust may mount, or, only with \
-         trusted base images, allow an rbind of /proc (--allow proc.rbind), through which \
-         each RUN sees every process of this PID namespace (the host's or other containers' \
-         too where the container shares one), reads their command lines, mount tables and \
-         network tables, ranikust's included, and reaches the environment and files of those \
-         of its own kernel uid (ranikust's, for a RUN as root); RUNs then run one at a time, \
-         though one that reaches another process of that uid can still act through it after \
-         its turn: then give the container a PID namespace of its own, start ranikust as its PID 1 with no other process of its uid \
-         during the build, and keep secrets in its environment, not on its command line or \
-         in a shell left running",
-    )
+         (a container whose /proc has masked paths): build as a regular user on a host \
+         that allows user namespaces, or in a container where ranikust may mount, or, \
+         only with trusted base images, allow an rbind of /proc (--allow proc.rbind), \
+         through which ",
+        proc_rbind_exposure!(),
+        ": then ",
+        proc_rbind_mitigation!(),
+    ))
 }
 
 fn probe_in(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
@@ -259,19 +278,12 @@ fn next_attempt(caps: Caps, allowed: Fallbacks, e: &Error) -> Option<Caps> {
 fn log_rbinds(caps: Caps) {
     match caps.proc {
         KernelFs::Fresh => {}
-        KernelFs::Rbind => tracing::warn!(
-            "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so \
-             each RUN sees every process of this PID namespace (the host's or other \
-             containers' too where the container shares one), reads their command lines, mount \
-             tables and network tables, ranikust's included, and reaches the environment and \
-             files of those of its own kernel uid (ranikust's, for a RUN as root); RUNs run one \
-             at a time, but one that reaches another process of that uid can act through it \
-             after its turn. Give the \
-             container a PID namespace of its own, start ranikust as its PID 1 with no other \
-             process of its uid during the build, keep secrets in its environment, not on its \
-             command line or in a shell left running, and allow this only with trusted base \
-             images"
-        ),
+        KernelFs::Rbind => tracing::warn!(concat!(
+            "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so ",
+            proc_rbind_exposure!(),
+            ". Allow this only with trusted base images; then ",
+            proc_rbind_mitigation!(),
+        )),
     }
     match caps.sysfs {
         KernelFs::Fresh => {}
@@ -522,10 +534,11 @@ mod tests {
             "trusted base images",
             "PID namespace of its own",
             "PID 1",
-            "no other process of its uid",
+            "no other process of ranikust's uid",
             "its own kernel uid",
             "one at a time",
             "after its turn",
+            "through the files it sees",
             "secrets in its environment",
             "not on its command line",
             "shell left running",
