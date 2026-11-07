@@ -146,6 +146,66 @@ fn pax_set(key: &str, size: u64) -> Box<dyn Read> {
     )
 }
 
+/// A GNU long name or long link of `size` bytes that names `first`: the
+/// slashes after it clean away, so the kernel would take it (#179).
+fn long_path(kind: tar::EntryType, size: u64, first: u8) -> Box<dyn Read> {
+    let pad = (512 - size % 512) % 512;
+    Box::new(
+        io::Cursor::new(header("././@LongLink", kind, size, ""))
+            .chain(io::Cursor::new([first]))
+            .chain(io::repeat(b'/').take(size - 1))
+            .chain(io::repeat(0).take(pad)),
+    )
+}
+
+/// The length of a PAX record of a `key` and a value of `value` bytes, its
+/// own digits included.
+fn record_len(key: &str, value: u64) -> u64 {
+    let body = u64::try_from(key.len()).unwrap() + value + 3;
+    let digits = |n: u64| u64::try_from(n.to_string().len()).unwrap();
+    let mut len = body + 1;
+    while len != body + digits(len) {
+        len = body + digits(len);
+    }
+    len
+}
+
+/// A PAX record set of exactly `size` bytes the kernel would take (#179):
+/// `user.*` xattrs of 64 KiB (`XATTR_SIZE_MAX`), as many as fit, and a
+/// `comment` record that fills the rest.
+fn pax_xattrs(size: u64) -> Box<dyn Read> {
+    let record = |key: &str, value: u64| -> Box<dyn Read> {
+        let len = record_len(key, value);
+        Box::new(
+            io::Cursor::new(format!("{len} {key}="))
+                .chain(io::repeat(b'v').take(value))
+                .chain(io::Cursor::new(b"\n")),
+        )
+    };
+    let mut body: Box<dyn Read> = Box::new(io::empty());
+    let mut left = size;
+    for i in 0.. {
+        let key = format!("SCHILY.xattr.user.v{i:02}");
+        let len = record_len(&key, 1 << 16);
+        // Room for the `comment` record after it.
+        if len + 64 > left {
+            break;
+        }
+        body = Box::new(body.chain(record(&key, 1 << 16)));
+        left -= len;
+    }
+    // `<left> comment=<value>\n`
+    let value = left - u64::try_from(format!("{left} comment=\n").len()).unwrap();
+    assert_eq!(record_len("comment", value), left);
+    let pad = (512 - size % 512) % 512;
+    Box::new(
+        io::Cursor::new(header("pax", tar::EntryType::XHeader, size, ""))
+            .chain(body)
+            .chain(record("comment", value))
+            .chain(io::repeat(0).take(pad)),
+    )
+}
+
 fn piece(bytes: Vec<u8>) -> Option<Box<dyn Read>> {
     Some(Box::new(io::Cursor::new(bytes)))
 }
@@ -182,15 +242,16 @@ fn red_team_check_headers_holds_one_entry_at_a_time_within_the_tar_header_limit(
     }
 
     // Entries each with a GNU long name, a GNU long link and a PAX record
-    // set at the limit: what one entry needs is let go before the next.
+    // set at the limit, of values the kernel takes: what one entry needs is
+    // let go before the next.
     const AT_LIMIT: u64 = 16;
     let tar = made(|i| match (i, i % 4) {
         (i, _) if i == AT_LIMIT * 4 => piece(vec![0; 1024]),
         (i, _) if i > AT_LIMIT * 4 => None,
-        (_, 0) => Some(extension(tar::EntryType::GNULongName, MIB, b'n')),
-        (_, 1) => Some(extension(tar::EntryType::GNULongLink, MIB, b't')),
-        (_, 2) => Some(pax_set("SCHILY.xattr.user.v", MIB)),
-        _ => piece(header("s", tar::EntryType::Symlink, 0, "l")),
+        (_, 0) => Some(long_path(tar::EntryType::GNULongName, MIB, b'n')),
+        (_, 1) => Some(long_path(tar::EntryType::GNULongLink, MIB, b't')),
+        (_, 2) => Some(pax_xattrs(MIB)),
+        _ => piece(header("s", tar::EntryType::Link, 0, "l")),
     });
     let (checked, at_limit) = peak_of(|| check_headers(tar));
     checked.unwrap();

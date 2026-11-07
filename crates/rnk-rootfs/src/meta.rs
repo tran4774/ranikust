@@ -217,7 +217,9 @@ pub struct Meta {
     /// Last modification time.
     pub mtime: Option<FileTime>,
     /// Extended attributes to set, `(name, value)`, for example
-    /// `("security.capability", ...)`. Existing ones not listed are kept.
+    /// `("security.capability", ...)`. Existing ones not listed are kept. An
+    /// empty POSIX ACL value (`system.posix_acl_access` or `_default`)
+    /// removes the ACL, on every kernel.
     pub xattrs: Vec<(OsString, Vec<u8>)>,
 }
 
@@ -322,7 +324,7 @@ pub(crate) const LAYER_SKIPPED_XATTR: &[u8] = b"trusted.";
 
 /// Largest xattr name list or value Linux allows (`XATTR_LIST_MAX`,
 /// `XATTR_SIZE_MAX`).
-const XATTR_MAX: usize = 64 << 10;
+pub(crate) const XATTR_MAX: usize = 64 << 10;
 
 /// The extended attributes of the pinned entry `fd` of type `file_type`.
 ///
@@ -588,17 +590,52 @@ pub(crate) fn read_xattrs_lenient(
     }
 }
 
-/// What a refused xattr does: an error when strict (no `skipped`), else it
-/// is counted.
+/// Whether setting `name` to `value` removes a POSIX ACL: an empty value
+/// does since Linux 6.2 (`do_set_acl`), which an older kernel refuses
+/// (`EINVAL`), so it is removed on every kernel instead of set.
+fn is_acl_removal(name: &OsStr, value: &[u8]) -> bool {
+    value.is_empty()
+        && matches!(
+            name.as_bytes(),
+            b"system.posix_acl_access" | b"system.posix_acl_default"
+        )
+}
+
+/// A removal's result, where no such xattr is no error.
+fn removed(r: rustix::io::Result<()>) -> rustix::io::Result<()> {
+    match r {
+        Err(Errno::NODATA) => Ok(()),
+        r => r,
+    }
+}
+
+/// Sets `name` to `value` with `set`, or removes it with `remove` when
+/// [`is_acl_removal`]: the name of the call made, and its result.
+fn set_or_remove(
+    name: &OsStr,
+    value: &[u8],
+    set: impl FnOnce() -> rustix::io::Result<()>,
+    remove: impl FnOnce() -> rustix::io::Result<()>,
+) -> (&'static str, rustix::io::Result<()>) {
+    if is_acl_removal(name, value) {
+        ("removexattr", removed(remove()))
+    } else {
+        ("setxattr", set())
+    }
+}
+
+/// What a refused xattr does: an error naming `op`, the call made, when
+/// strict (no `skipped`), else it is counted.
 fn xattr_result(
     r: rustix::io::Result<()>,
+    op: &'static str,
     name: &OsStr,
     skipped: Option<&SkippedXattrs>,
     path: &Path,
 ) -> Result<()> {
     match (r, skipped) {
         (Ok(()), _) => Ok(()),
-        (Err(e), None) => Err(io_err("setxattr", path, e)),
+        (Err(e), None) => Err(io_err(op, path, e)),
         (Err(e), Some(s)) => {
             s.note(path, &format!("xattr {}", name.to_string_lossy()), &e);
             Ok(())
@@ -635,8 +672,13 @@ fn apply_with(
                 rustix::fs::fchown(fd, uid, gid).map_err(|e| io_err("chown", path, e))?;
             }
             for (name, value) in &m.xattrs {
-                let r = rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty());
-                xattr_result(r, name, skipped, path)?;
+                let (op, r) = set_or_remove(
+                    name,
+                    value,
+                    || rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty()),
+                    || rustix::fs::fremovexattr(fd, name.as_os_str()),
+                );
+                xattr_result(r, op, name, skipped, path)?;
             }
             if let Some(mode) = mode {
                 rustix::fs::fchmod(fd, mode).map_err(|e| io_err("chmod", path, e))?;
@@ -680,7 +722,13 @@ fn apply_with(
                 // pass).
                 target.check_still_pinned(path)?;
                 for (name, value) in &m.xattrs {
-                    xattr_result(target.set(name, value), name, skipped, path)?;
+                    let (op, r) = set_or_remove(
+                        name,
+                        value,
+                        || target.set(name, value),
+                        || target.remove(name),
+                    );
+                    xattr_result(r, op, name, skipped, path)?;
                 }
                 target.check_still_pinned(path)?;
             }
@@ -824,5 +872,71 @@ mod tests {
         };
         let e = apply(&h, &m, Path::new("l")).unwrap_err();
         assert!(matches!(e, Error::Changed { .. }), "{e:?}");
+    }
+
+    /// A failed xattr names the call made: `removexattr` for an empty POSIX
+    /// ACL, which is removed, `setxattr` for one with entries. A symlink
+    /// takes no ACL (`set_posix_acl` finds no `set_acl` there), so both
+    /// calls fail on it.
+    #[test]
+    fn a_failed_posix_acl_names_the_call_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = dir.path().join("l");
+        std::os::unix::fs::symlink("a", &l).unwrap();
+        // A valid ACL, so the symlink is what refuses it, not its parsing.
+        let mut minimal = 2u32.to_le_bytes().to_vec();
+        for tag in [0x01u16, 0x04, 0x20] {
+            minimal.extend(tag.to_le_bytes());
+            minimal.extend(7u16.to_le_bytes());
+            minimal.extend(u32::MAX.to_le_bytes());
+        }
+        let name = "system.posix_acl_access";
+        let set = rustix::fs::lsetxattr(&l, name, &minimal, XattrFlags::empty());
+        // A missing ACL is no error to a removal, so it must fail otherwise.
+        let remove = rustix::fs::lremovexattr(&l, name);
+        if set.is_ok() || matches!(remove, Ok(()) | Err(Errno::NODATA)) {
+            eprintln!("skipped: this filesystem sets or removes an ACL on a symlink");
+            return;
+        }
+        let parent = pin(dir.path(), OFlags::DIRECTORY);
+        let fd = pin(&l, OFlags::empty());
+        let h = Handle::Path {
+            fd: fd.as_fd(),
+            file_type: FileType::Symlink,
+            parent: Some((parent.as_fd(), OsStr::new("l"))),
+        };
+        for (value, call) in [(Vec::new(), "removexattr"), (minimal, "setxattr")] {
+            let m = Meta {
+                xattrs: vec![(OsString::from(name), value)],
+                ..Meta::default()
+            };
+            let e = apply(&h, &m, Path::new("l")).unwrap_err();
+            assert!(
+                matches!(e, Error::Io { op, .. } if op == call),
+                "{call}: {e:?}"
+            );
+        }
+    }
+
+    /// `set_or_remove` makes the call it names: the removal for an empty
+    /// POSIX ACL value, where a missing ACL is no error, else the set.
+    #[test]
+    fn set_or_remove_makes_the_call_it_names() {
+        let access = OsStr::new("system.posix_acl_access");
+        let default = OsStr::new("system.posix_acl_default");
+        let removal = |name, r| set_or_remove(name, b"", || panic!("set"), || r);
+        assert_eq!(
+            removal(access, Err(Errno::PERM)),
+            ("removexattr", Err(Errno::PERM))
+        );
+        assert_eq!(
+            removal(default, Err(Errno::NODATA)),
+            ("removexattr", Ok(()))
+        );
+        assert_eq!(removal(default, Ok(())), ("removexattr", Ok(())));
+        for (name, value) in [(access, &b"\x02\0\0\0"[..]), (OsStr::new("user.x"), b"")] {
+            let set = set_or_remove(name, value, || Err(Errno::PERM), || panic!("remove"));
+            assert_eq!(set, ("setxattr", Err(Errno::PERM)), "{name:?}");
+        }
     }
 }

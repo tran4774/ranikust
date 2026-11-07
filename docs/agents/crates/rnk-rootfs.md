@@ -75,10 +75,10 @@ impl RootPath {
 }
 pub struct Pinned;   // stat(), read_link(), xattrs(), open_regular() (reopen of the pinned inode)
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // plain tar; Whiteouts::{Apply, Overlay}
-pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
+pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path, read through /proc/self/fd, so a directory path is held to PATH_MAX less the root's own (4094 bytes on /, #179); no device node or FIFO (ADR-0041)
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped; a link to one the same layer left out past a 1 MiB budget for the names remembered (one warning, ADR-0128), or that a lower layer left out (ADR-0131), is linked to what the layer has at that name, else copied from the nearest lower layer that shows it (ADR-0012), else refused; FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
-pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, with their errors, except values only the kernel refuses (#179); what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
+pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors, a directory path held to 4094 bytes as extract_live on / holds it; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
@@ -139,6 +139,13 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   none extracted before this rule is reused.
 - Identity is compared by `(dev, ino)` (and mount id), never by string; the
   store's `.ranikust-state` marker is a regular file.
+- The header check (`read_header`, #179) gives a layer the same answer on
+  every host: it holds a name to `NAME_MAX` though a FUSE filesystem may
+  take a longer one, and refuses a malformed POSIX ACL though, on Linux 5.8
+  to 6.1, 9p outside `access=client`, CIFS, and FUSE mounted in the initial
+  user namespace without ACLs would pass it on unparsed. An empty ACL value
+  removes the ACL on every kernel
+  ([design/rootfs.md#extraction](../../design/rootfs.md#extraction)).
 
 ## Refs
 
@@ -225,13 +232,45 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   root, bad PAX times, ids out of range, a bad checksum, a cut stream, a long
   name over the limit) refused with the extraction's very error; a missing
   hardlink target, a hardlink or device node as the layer's root, and ignored
-  paths left to the extraction;
+  paths left to the extraction; each value over the kernel's limits (#179: a
+  NUL byte, a component over `NAME_MAX`, a directory path or symlink target
+  past `PATH_MAX`, an empty PAX or GNU link target, an xattr name or value
+  the kernel refuses, a file capability it never sets, `user.*` on a
+  symlink, a POSIX ACL the VFS refuses or a default one on a file:
+  `red_team_a_posix_acl_the_kernel_never_sets_is_refused_by_the_check`)
+  refused by the check and every extraction with the same error
+  before anything of it is written, values at the limits or that the kernel
+  never gets taken, xattr names of any namespace or none left to the
+  filesystem, and a node's name and xattrs refused only where it is made;
+  the check takes a POSIX ACL exactly where the kernel sets one on the
+  temporary filesystem, and every extraction takes those
+  (`the_check_takes_a_posix_acl_where_the_kernel_does`, skipped without
+  ACLs), and an empty one removes the ACL there, as Linux 6.2 and later do,
+  on an older kernel too (`an_empty_posix_acl_removes_the_one_there`);
+  a live root takes a directory path up to what `/proc/self/fd` shows of it
+  and refuses one byte more before writing, the check taking 4094 bytes and
+  refusing 4095, which `extract` and `extract_overlay` take, and refuses
+  one a symlink puts past it before a directory it lacks is made, and an
+  entry, whiteout or hardlink target in a directory already past it, by
+  name, before anything is removed or linked; each such value judged alike
+  by the check and every extraction whatever its encoding
+  (`red_team_each_encoding_of_a_value_at_the_kernels_limits_is_judged_alike`:
+  ustar, PAX, GNU long names and links, a PAX record after a GNU long name
+  and two of one key, a NUL at a value's end, UTF-8 cut at 255 bytes), and
+  a directory path padded with `./` and `//` held to its cleaned bytes
+  (`red_team_a_padded_directory_path_is_held_to_its_limit_by_its_cleaned_bytes`);
+  `tests/memory.rs`: 43,648 xattrs in one header checked and extracted, and
+  values just over 64 KiB refused, with a few MiB of heap;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
-  GNU long names and links and PAX `path`, `linkpath`, `size`, `uid` and
-  `mtime` records included): it refuses no generated layer that an extraction
-  takes, and passes none whose framing an extraction refuses;
+  GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
+  and xattr records, with values at and past the kernel's limits, included):
+  it refuses no generated layer that an extraction takes, and passes none
+  whose framing or values an extraction refuses (the check as `extract`
+  reads; `check_headers`, for `/`, refuses besides only a directory past
+  4094 bytes);
   `red_team_check_headers_agrees_with_every_extraction_on_mutated_headers`
-  (proptest) holds the same on a layer of every header kind with one to four
+  (proptest) holds the same on a layer of every header kind, half the time
+  with a member at or past the kernel's limits spliced in, with one to four
   bytes changed, in a header's fields or anywhere. `tests/header_check.rs`:
   `check_headers` refuses a 64 MiB GNU long name, long link or PAX set with
   under 2 MiB held, holds one entry at a time (16 entries each with a long
@@ -263,13 +302,19 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of itself or of the outside) is never reopened through `..`, nothing on
   the mount deleted; a 192-level chain with a bind and a tmpfs at depth
   keeps both and every level above them (`delete_contents`), and `prune`
-  refuses it.
+  refuses it. As root of the container, on its tmpfs (`default`), the
+  kernel sets no form of `security.capability` the check refuses
+  (`red_team_root_of_a_user_namespace_sets_the_file_capabilities_the_check_takes`,
+  a `measured:` line per form).
 - **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
   and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
   directory on the same filesystem and a tmpfs inside a root, with links to
   them, in a private mount namespace), device nodes in `extract`, device
   nodes and foreign owners in `copy`, `trusted.*` xattrs, a symlink owned by
-  another user in `host`.
+  another user in `host`, an empty POSIX ACL value removing the ACL
+  (`an_empty_posix_acl_removes_the_one_there_as_root`, `default`; with a
+  `measured:` line of the kernel's own verdict, which on Linux 5.15,
+  `RANIKUST_VM_RELEASE=jammy`, refuses the value).
 - **T2** (`just test-vm unit`):
   `deep_trees_on_an_overlay_are_deleted_and_pruned_whatever_its_layers`:
   `delete_contents` and `prune` on a 64-level tree in an overlay's lower
@@ -277,6 +322,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and with the upper on a tmpfs (`xino` off, then on): each ancestor
   reopened through `..` after its copy-up must still be the one left; a
   `measured:` line per configuration, with the kernel.
+  `red_team_the_kernel_sets_the_file_capabilities_the_check_takes`: as root
+  the kernel sets exactly the forms of `security.capability` the check
+  takes; in a user namespace it refuses every form the check refuses, and
+  a revision 3 whose root id the namespace does not map; a `measured:` line
+  per form.
 - **To do:** `cargo fuzz` on `extract` (Phase 6).
 
 ## Metrics

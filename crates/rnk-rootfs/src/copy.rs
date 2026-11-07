@@ -20,7 +20,7 @@ use crate::delete;
 use crate::error::{Error, Result, io_err};
 use crate::meta::{self, FileType, Handle, Meta, Stat, Xattrs};
 use crate::mode::Chmod;
-use crate::path;
+use crate::path::{self, PATH_MAX};
 use crate::root::{self, Mounts, RootPath};
 use crate::user::Owner;
 
@@ -238,10 +238,6 @@ struct Stats {
 
 /// An inode: device major and minor, inode number.
 type Inode = (u32, u32, u64);
-
-/// The longest path below a root a path-based operation reaches
-/// (`PATH_MAX` less the NUL), as `rnk-snapshot`'s exporter and walk use.
-const PATH_MAX: usize = 4095;
 
 /// Why an entry past [`PATH_MAX`] is refused, in the words `rnk-snapshot`
 /// uses.

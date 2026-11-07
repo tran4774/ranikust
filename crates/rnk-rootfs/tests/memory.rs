@@ -138,7 +138,13 @@ fn devices_left_out_cost_a_bounded_heap_whatever_their_names() {
     let _one = one_at_a_time();
     let (_tmp, _host, root) = root();
     let mut b = tar::Builder::new(Vec::new());
-    let long = "n".repeat(4000);
+    // Names of about 4000 bytes the kernel would take, as a hardlink's name
+    // must be (#179); a left-out device's name never reaches it.
+    let long = format!(
+        "{}{}",
+        format!("{}/", "n".repeat(250)).repeat(15),
+        "n".repeat(200)
+    );
     for i in 0..4000 {
         let name = if i == 0 {
             "dev".to_owned()
@@ -344,4 +350,80 @@ fn pruning_a_chain_of_100k_levels_takes_memory_linear_in_its_depth() {
     for (what, peak) in [("pruning files", files), ("removing whole", whole)] {
         assert!(peak < 64 * MIB, "{what} took {peak} bytes");
     }
+}
+
+/// A PAX header of `records` (key, value), padded to its blocks.
+fn pax(records: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (k, v) in records {
+        // The record's length counts its own digits.
+        let len = k.len() + v.len() + 3;
+        let mut total = len + 1;
+        while total != len + total.to_string().len() {
+            total = len + total.to_string().len();
+        }
+        body.extend_from_slice(format!("{total} {k}=").as_bytes());
+        body.extend_from_slice(v);
+        body.push(b'\n');
+    }
+    let mut h = header(tar::EntryType::XHeader);
+    h.set_path("pax").unwrap();
+    h.set_size(u64::try_from(body.len()).unwrap());
+    h.set_cksum();
+    let mut out = h.as_bytes().to_vec();
+    out.extend_from_slice(&body);
+    out.resize(out.len().next_multiple_of(512), 0);
+    out
+}
+
+/// Red team (T15, T16, #179): for one entry's PAX header just under the
+/// `tar-header` limit holding about 43 000 xattr records, the check and the
+/// extractions hold a heap of a few times that limit (4.3 MiB measured);
+/// one of 15 values just over `XATTR_SIZE_MAX` is refused holding about
+/// twice it, and nothing panics.
+#[test]
+fn red_team_thousands_of_xattrs_in_one_header_cost_a_bounded_heap() {
+    let _one = one_at_a_time();
+    let file = |name: &str| {
+        let mut h = header(tar::EntryType::Regular);
+        h.set_path(name).unwrap();
+        h.set_cksum();
+        h.as_bytes().to_vec()
+    };
+    // `24 SCHILY.xattr.user.a=\n`, 24 bytes each.
+    let tiny: Vec<_> = (0..(MIB - 1024) / 24)
+        .map(|_| ("SCHILY.xattr.user.a".to_owned(), Vec::new()))
+        .collect();
+    let mut many = file("first");
+    many.extend(pax(&tiny));
+    many.extend(file("x"));
+    many.extend([0; 1024]);
+    assert!(many.len() < MIB + 4096);
+    let big: Vec<_> = (0..15)
+        .map(|i| (format!("SCHILY.xattr.user.v{i:02}"), vec![b'v'; 65537]))
+        .collect();
+    let mut over = file("first");
+    over.extend(pax(&big));
+    over.extend(file("x"));
+    over.extend([0; 1024]);
+
+    let checked = peak_of(|| rnk_rootfs::check_headers(many.as_slice()).unwrap());
+    let (_tmp, _host, applied) = root();
+    let extracted = peak_of(|| extract(&applied, many.as_slice(), Whiteouts::Apply).unwrap());
+    let (_tmp2, _host2, live_root) = root();
+    let keep = IgnoreList::new();
+    let live = peak_of(|| extract_live(&live_root, many.as_slice(), &keep).unwrap());
+    let refused = peak_of(|| {
+        let e = rnk_rootfs::check_headers(over.as_slice()).unwrap_err();
+        assert!(e.to_string().contains("XATTR_SIZE_MAX"), "{e}");
+    });
+    eprintln!(
+        "peak: {} xattrs: check {checked}, extract {extracted}, live {live}; 15 values over 64 KiB: check {refused} bytes",
+        tiny.len()
+    );
+    for (what, peak) in [("check", checked), ("extract", extracted), ("live", live)] {
+        assert!(peak < 8 * MIB, "{what} took {peak} bytes");
+    }
+    // The record set and a copy of its values.
+    assert!(refused < 3 * MIB, "the refusal took {refused} bytes");
 }
