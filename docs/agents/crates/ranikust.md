@@ -377,18 +377,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the ways out only in `prune`'s refusal of a prune that could not
   finish), `statedir` (each ADR-0050 refusal: `/`, system directories,
   symlinks, writable parents, nothing created through a planted link;
-  `0700`; a user's default
-  below `$HOME` passes, a group-writable home is refused with that user's
-  advice, a `$HOME` reached through a `/proc` link is refused with nothing
-  made; a regular `.ranikust-pruning` counts as the marker, for the store
-  to refuse), `subids` (ranges by name or uid, the first well-formed one,
-  malformed and empty ones and lines of `/etc/subuid` and `/etc/subgid`
-  not UTF-8 passed over, a `/etc/passwd` comment field not UTF-8 hiding
-  no name, an end past
-  32 bits refused, both files needed, none for root, an unreadable file an
-  error; its red team: files of many lines with binary, overlong and NUL
-  lines and the user's malformed ranges first give that user's first
-  well-formed range only),
+  `0700`; a user's default below `$HOME` passes, a group-writable home is
+  refused with that user's advice, a `$HOME` reached through a `/proc`
+  link is refused with nothing made; a regular `.ranikust-pruning` counts
+  as the marker, for the store to refuse), `subids` (ranges by name or
+  uid, the first well-formed one, malformed and empty ones and lines of
+  `/etc/subuid` and `/etc/subgid` not UTF-8 passed over, a `/etc/passwd`
+  comment field not UTF-8 hiding no name, an end past 32 bits refused,
+  both files needed, none for root, an unreadable file an error; its red
+  team: files of many lines with binary, overlong and NUL lines and the
+  user's malformed ranges first give that user's first well-formed range
+  only),
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process

@@ -202,13 +202,14 @@ piped to `grep -qxF`, so the check and the action name the same word):
 `.` for the emptying, `./name` in the parent it entered for `rmdir` and
 the move aside. So a path changed after the message was printed, a
 parent swapped for a symlink included, makes it fail before it changes
-anything. A path that ends in `..` gets no commands, before anything is
-opened, whatever it leads to: the refusal says to give the directory's
-own path. Where the open or check fails, no commands are printed either,
-and the refusal says to give the path with no symbolic link on it and,
-to root only, for a user's directory, to run `ranikust prune --all` as
-that user (a user's own `prune --all` is refused before, with the
-check's reason).
+anything. A path that ends in `..` gets no commands, and the refusal
+says to give the directory's own path: root's, before anything is
+opened, whatever the path leads to; a user's, once `prune --all` has
+checked it as any other path. Where root's open or check fails, no
+commands are printed either, and the refusal says to give the path with
+no symbolic link on it and, for a user's directory, to run `ranikust
+prune --all` as that user (a user's own `prune --all` is refused before,
+with the check's reason).
 Root gets no `rmdir` for an empty directory: only one that holds the
 marker is a state directory. Both emptying scripts first check that
 `find` is GNU findutils' and otherwise stop before changing anything,

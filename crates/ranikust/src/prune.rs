@@ -266,8 +266,9 @@ pub(crate) struct Pin {
 impl Pin {
     /// The pin of the state directory `dir` that `check` describes, for
     /// commands that name it: `dir` must end in a name, which they enter
-    /// its parent to act on ([`pin`] turns away a path ending in `..`
-    /// first; past `check_prune`, only that can lack one).
+    /// its parent to act on. Only [`empty`] meets one that does not, an
+    /// absolute path ending in `..` that passed the checks: [`pin`] turns
+    /// such a path away first.
     pub(crate) fn of(dir: &Path, check: &rnk_store::PruneCheck) -> Result<Self, NoPin> {
         match (dir.parent(), dir.file_name()) {
             (Some(_), Some(_)) => Ok(Self {
