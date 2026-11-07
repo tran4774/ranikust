@@ -58,13 +58,15 @@ its properties, stood for this.
   the state directory a store and no other build holds it, empties the
   directory (`Store::abandon`; an open that fails once it wrote the marker
   empties it too, `Store::open_or_abandon`), then sends the reason through
-  a pipe and exits. Once set up, it closes the pipe before the build: from then on the
-  run ends as the child does.
+  a pipe and exits with a status of the fallback's own (75), none of
+  ranikust's. Once set up, it closes the pipe before the build: from then
+  on the run ends as the child does.
 - **The parent** drops its copy of the state directory's hold right after
-  the fork, waits, and on a fallback with no stop signal received logs the
-  reason and builds in kaniko mode, as `--mode=auto` did before rootless
-  overlay mode, without a second probe line. Otherwise it ends as the child
-  did: its exit code, or its signal.
+  the fork, waits, and on a fallback (the reason, the fallback's status)
+  with no stop signal received logs the reason and builds in kaniko mode,
+  as `--mode=auto` did before rootless overlay mode, without a second
+  probe line. Otherwise it ends as the child did: its exit code (1 for the
+  fallback's status without its reason), or its signal.
 - **Signals.** `SIGINT` and `SIGTERM` are blocked in the parent and read
   with `sigwaitinfo`, so that one sent to the process group and one sent to
   ranikust alone each count once; the parent sends the child `SIGUSR1` for

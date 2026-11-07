@@ -33,9 +33,10 @@ pub const FORWARDED_STOP: i32 = libc::SIGUSR1;
 /// ranikust's exit status for an error.
 const ERROR_STATUS: i32 = 1;
 
-/// The child's exit status when it asks for the fallback: an error's, so
-/// that a parent that cannot read the reason ends as for one.
-const FALLBACK_STATUS: i32 = ERROR_STATUS;
+/// The child's exit status when it asks for the fallback: none of
+/// ranikust's own (0, 1, 2, 130), so that an error's status never reads as
+/// one. A parent that gets it without the reason ends as for an error.
+const FALLBACK_STATUS: i32 = 75;
 
 /// The longest reason the child sends: less than `PIPE_BUF`, so that it is
 /// written at once.
@@ -253,7 +254,8 @@ impl Supervised {
     /// Asks the parent to fall back, for `reason`, and exits: before the
     /// build, once what the set-up made is undone. The reason is cut to
     /// 4000 bytes, so that it is written at once; where it cannot be sent,
-    /// it is logged here, and the parent ends as for an error.
+    /// it is logged here, and the parent ends as for an error. The exit
+    /// status is the fallback's own, never an error's.
     pub fn fall_back(self, reason: &str) -> ! {
         let mut end = reason.len().min(MAX_REASON);
         while !reason.is_char_boundary(end) {
@@ -295,12 +297,14 @@ enum Then {
 /// What the parent does once the child ended as `end`, a stop signal
 /// `stop` having come meanwhile, the child having sent `reason`: a stop
 /// wins over the fallback, and stands for the forwarded signal that ended
-/// the child; the fallback needs the reason and the child's status for it.
+/// the child; the fallback needs the reason and the child's status for it,
+/// whose status without the reason is an error's.
 fn then(end: End, stop: Option<i32>, reason: Option<String>) -> Then {
     match (end, stop, reason) {
         (End::Exited(FALLBACK_STATUS), Some(sig), Some(_)) => Then::Raise(sig),
         (End::Killed(FORWARDED_STOP), Some(sig), _) => Then::Raise(sig),
         (End::Exited(FALLBACK_STATUS), None, Some(reason)) => Then::FallBack(reason),
+        (End::Exited(FALLBACK_STATUS), _, None) => Then::Exit(ERROR_STATUS),
         (End::Exited(code), _, _) => Then::Exit(code),
         (End::Killed(sig), _, _) | (End::Lost, Some(sig), _) => Then::Raise(sig),
         (End::Lost, None, Some(reason)) => Then::Fail(reason),
@@ -476,10 +480,13 @@ mod tests {
             then(End::Killed(FORWARDED_STOP), None, None),
             Then::Raise(FORWARDED_STOP)
         );
+        // The fallback's status without its reason is an error's, and a
+        // reason with an error's status is no fallback.
         assert_eq!(
             then(End::Exited(FALLBACK_STATUS), None, None),
             Then::Exit(1)
         );
+        assert_eq!(then(End::Exited(1), None, why()), Then::Exit(1));
         assert_eq!(then(End::Exited(0), None, why()), Then::Exit(0));
         assert_eq!(then(End::Exited(130), Some(int), None), Then::Exit(130));
         assert_eq!(then(End::Exited(0), Some(int), None), Then::Exit(0));

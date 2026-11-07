@@ -161,7 +161,7 @@ impl Sandbox {
 }
 pub struct SeccompProfile;  // compiled for this architecture, kernel and Docker's 14 capabilities: docker_default(), from_json(&[u8]); Error::SeccompProfile (ADR-0109)
 pub fn fork_to_wait() -> io::Result<Forked>; // ADR-0136, single-threaded, before enter_build_user_namespace: Forked::Child(Supervised) enters; Forked::Parent(Box<Waiting>) waits outside; Err: the process as before
-pub struct Supervised;   // proceed(self) -> io::Result<()>: before the build, the fallback no longer possible (Err: parent gone); undoing(&self) -> io::Result<()>: FORWARDED_STOP ignored from here, while the set-up is undone; fall_back(self, reason: &str) -> !: exits 1 with the reason (at most 4000 bytes) for the parent (logged here where it cannot be sent)
+pub struct Supervised;   // proceed(self) -> io::Result<()>: before the build, the fallback no longer possible (Err: parent gone); undoing(&self) -> io::Result<()>: FORWARDED_STOP ignored from here, while the set-up is undone; fall_back(self, reason: &str) -> !: exits 75, the fallback's own status, with the reason (at most 4000 bytes) for the parent (logged here where it cannot be sent)
 pub struct Waiting;      // wait(self: Box<Self>) -> String: returns the reason only where the child fell back and no SIGINT/SIGTERM came, mask and SIGCHLD as before the fork; else ends the process as the child ended (exit code, or the signal: the stop for FORWARDED_STOP; 128 + n where the default action does not end it; a status lost: the stop, else exit 1)
 pub const FORWARDED_STOP: i32; // SIGUSR1: what the child's build takes as SIGINT/SIGTERM
 pub fn block_stop_signals() -> io::Result<StopSignals>; // kaniko mode on / (ADR-0077): SIGINT/SIGTERM blocked while single-threaded, read from a signalfd
@@ -507,7 +507,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, what the parent outside the build's user namespace
   does once its child ended (`supervise.rs`: a stop signal wins over the
-  fallback, which needs exit status 1 and a reason, else the child's end;
+  fallback, which needs its own exit status and a reason, the status alone
+  an error's, a reason with an error's status none, else the child's end;
   a status lost: the stop, else an error's, the reason logged,
   `the_parent_ends_as_the_child_unless_it_falls_back_unstopped`),
   the sealed copy (the order of the ways and the stop
