@@ -270,6 +270,9 @@ fn dump(root: &Path) -> String {
             .split(|&b| b == 0)
             .filter(|n| !n.is_empty())
             .collect();
+        // SELinux labels every inode by policy where it runs; no layer dumped
+        // here sets the name.
+        names.retain(|&x| x != b"security.selinux");
         names.sort_unstable();
         for x in names {
             let x = std::ffi::OsStr::from_bytes(x);
@@ -299,9 +302,10 @@ fn holds(dir: &Path, name: &str) -> bool {
 
 /// In a build with `store`: the bottom and top layers through `overlay`,
 /// then a diff ID the bottom layer's tar does not hash to, a layer of an
-/// owner no map holds and one with a `security.selinux` xattr. What it
-/// saw, for [`expected`], then where the two layers are. Closes the store.
-fn extract_layers(store: Store) -> String {
+/// owner no map holds and one with a `security.selinux` xattr, unless
+/// `selinux` runs. What it saw, for [`expected`], then where the two layers
+/// are. Closes the store.
+fn extract_layers(store: Store, selinux: bool) -> String {
     let capture = rnk_metrics::Capture::new();
     let store = Arc::new(store);
     let overlay = Overlay::new(Arc::clone(&store), CAPS).unwrap();
@@ -341,7 +345,7 @@ fn extract_layers(store: Store) -> String {
             .finish(),
         "chown",
     );
-    let selinux = if selinux_enabled() {
+    let selinux = if selinux {
         SELINUX_SKIPPED.to_owned()
     } else {
         outcome(
@@ -391,16 +395,28 @@ const SELINUX_SKIPPED: &str = "skipped: SELinux is enabled here and decides it b
 /// Whether SELinux runs here, which decides `security.selinux` by policy
 /// rather than by capability: told by its filesystem or the kernel's list
 /// of security modules on a host, and, in a container that masks both, by
-/// the label procfs gives this process, which only SELinux answers.
+/// the label procfs gives this process's directory, which only SELinux
+/// answers.
 fn selinux_enabled() -> bool {
     let mut label = [0u8; 256];
     Path::new("/sys/fs/selinux/enforce").exists()
         || fs::read_to_string("/sys/kernel/security/lsm")
             .is_ok_and(|lsm| lsm.trim().split(',').any(|m| m == "selinux"))
         || matches!(
-            rustix::fs::lgetxattr("/proc/self", "security.selinux", &mut label),
+            rustix::fs::getxattr("/proc/self", "security.selinux", &mut label),
             Ok(_) | Err(rustix::io::Errno::RANGE)
         )
+}
+
+/// [`selinux_enabled`], told once per test so that its processes agree,
+/// with a note in the lane's log when the `security.selinux` case is
+/// skipped.
+fn selinux_case_skipped() -> bool {
+    let on = selinux_enabled();
+    if on {
+        measured("the security.selinux case is skipped: SELinux decides it by policy here");
+    }
+    on
 }
 
 /// [`extract_layers`]'s report, its paths left out, for a build in a user
@@ -409,12 +425,9 @@ fn selinux_enabled() -> bool {
 /// does a `security.*` xattr other than `security.capability`, which only
 /// a process with `CAP_SYS_ADMIN` over the filesystem's namespace sets
 /// where no security module manages the name (SELinux decides
-/// `security.selinux` by policy, so the case is skipped where it runs).
-fn expected(userns: bool) -> String {
-    let selinux = selinux_enabled();
-    if selinux {
-        eprintln!("the security.selinux case is skipped: {SELINUX_SKIPPED}");
-    }
+/// `security.selinux` by policy, so the case is skipped where it runs,
+/// `selinux`).
+fn expected(userns: bool, selinux: bool) -> String {
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
         bottom.extend(DEVICES.map(str::to_owned));
@@ -430,9 +443,9 @@ fn expected(userns: bool) -> String {
         } else {
             "published"
         },
-        match (selinux, userns) {
-            (true, _) => SELINUX_SKIPPED,
-            (false, true) => "refused: setxattr ./sel",
+        match (userns, selinux) {
+            (_, true) => SELINUX_SKIPPED,
+            (true, false) => "refused: setxattr ./sel",
             (false, false) => "published",
         },
         match (userns, selinux) {
@@ -445,11 +458,12 @@ fn expected(userns: bool) -> String {
 }
 
 /// The base layers of [`extract_layers`], in a build that enters the user
-/// namespace with the state directory `state`, as `user` when given. The
-/// map, the report and the layers' paths, or `refused\t<refusal>`.
-fn extract_in_namespace(state: &Path, user: Option<(u32, u32)>) -> String {
+/// namespace with the state directory `state`, as `user` when given, with
+/// `selinux` for [`extract_layers`]. The map, the report and the layers'
+/// paths, or `refused\t<refusal>`.
+fn extract_in_namespace(state: &Path, user: Option<(u32, u32)>, selinux: bool) -> String {
     in_child(user, || match enter_user_namespace(state) {
-        Ok(s) => format!("{}\n{}", s.userns.map, extract_layers(s.store)),
+        Ok(s) => format!("{}\n{}", s.userns.map, extract_layers(s.store, selinux)),
         Err(r) => format!("refused\t{r}"),
     })
 }
@@ -589,7 +603,7 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 /// counted; a diff ID the tar does not hash to, an owner the namespace does
 /// not map, or a `security.selinux` xattr publishes nothing, the last
 /// refused by its `setxattr`; where SELinux runs, which decides it by
-/// policy, that case is skipped with a message.
+/// policy, that case is skipped, with a `measured:` line in the lane's log.
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container extracts layers in the build's user namespace"]
 fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() {
@@ -603,11 +617,12 @@ fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() 
         rustix::process::geteuid().is_root(),
         "run as root of a rootless Podman container (just test-rootless)"
     );
+    let selinux = selinux_case_skipped();
     let tmp = private_tempdir();
-    let out = extract_in_namespace(&tmp.path().join("state"), None);
+    let out = extract_in_namespace(&tmp.path().join("state"), None, selinux);
     let (map, report, _) = split(&out);
     assert_eq!(map, "multi-range", "{out}");
-    assert_eq!(report, expected(true));
+    assert_eq!(report, expected(true, selinux));
 }
 
 /// T1, as root of a rootless Podman container: an extraction in the build's
@@ -658,7 +673,7 @@ const UNMAPPED_GID: u32 = 4242;
 /// owned outside by the user (the namespace's root) and by subordinate ids
 /// (the others), and the user outside the namespace cannot move a `0555`
 /// root of a subordinate id. Where SELinux runs, the `security.selinux`
-/// case is skipped with a message.
+/// case is skipped, with a `measured:` line in the suite's log.
 #[test]
 #[ignore = "T2: extracts layers as real root and as the sudo user in the build's user namespace"]
 fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {
@@ -669,24 +684,25 @@ fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {
         return;
     }
     let ((uid, gid), restricted) = sudo_user();
+    let selinux = selinux_case_skipped();
     let tmp = private_tempdir();
     let as_root = in_child(None, || {
         match Store::open(&BuildPaths::new(tmp.path(), tmp.path().join("root-state"))) {
-            Ok(store) => extract_layers(store),
+            Ok(store) => extract_layers(store, selinux),
             Err(e) => format!("error: {e}"),
         }
     });
     let (report, _) = as_root
         .split_once("\n-- paths\n")
         .unwrap_or_else(|| panic!("{as_root}"));
-    assert_eq!(report, expected(false));
+    assert_eq!(report, expected(false, selinux));
 
     chown(tmp.path(), Some(uid), Some(gid)).unwrap();
     let state = tmp.path().join("state");
     fs::create_dir(&state).unwrap();
     chown(&state, Some(uid), Some(UNMAPPED_GID)).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o2700)).unwrap();
-    let out = extract_in_namespace(&state, Some((uid, gid)));
+    let out = extract_in_namespace(&state, Some((uid, gid)), selinux);
     if restricted {
         assert!(
             out.starts_with("refused\tno user namespace for the build: "),
@@ -697,7 +713,7 @@ fn a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them() {
     }
     let (map, report, [lower, upper]) = split(&out);
     assert_eq!(map, "newuidmap", "{out}");
-    assert_eq!(report, expected(true));
+    assert_eq!(report, expected(true, selinux));
     // Outside, the owners are the subordinate ids, from the second one on.
     let sub = crate::subids::lookup(uid)
         .unwrap()

@@ -60,7 +60,20 @@ fn alone_in(module: &str, name: &str) -> bool {
         out.status.success() && text.contains("test result: ok. 1 passed"),
         "{text}"
     );
+    // The child's notes, which its capture let through, reach the lanes'
+    // logs as this test's own.
+    for line in text.lines().filter_map(|l| l.strip_prefix("measured: ")) {
+        measured(line);
+    }
     false
+}
+
+/// Writes `measured: <line>` to stderr past libtest's capture: the lanes
+/// keep such lines of a test that passed.
+fn measured(line: &str) {
+    use std::io::Write as _;
+    // A lost line loses only a note: the assertions stand.
+    let _ = writeln!(std::io::stderr().lock(), "measured: {line}");
 }
 
 /// This process's user and mount namespaces.

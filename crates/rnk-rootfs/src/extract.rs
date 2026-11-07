@@ -67,7 +67,7 @@ pub enum DeviceNodes {
     /// still made. A link to a device whose name came past a budget for the
     /// names remembered (ADR-0128), or to one a lower layer left out
     /// (ADR-0131), is linked to what the layer has at that name, else
-    /// copied from the nearest lower layer that shows it (`ADR-0012`), else
+    /// copied from the nearest lower layer that shows it (ADR-0012), else
     /// refused.
     Skip,
 }
