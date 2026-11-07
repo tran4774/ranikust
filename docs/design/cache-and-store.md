@@ -75,7 +75,10 @@ is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
 uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
 one copy per map, and no such key is a chain ID
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
-#77). `rnk-snapshot` makes the key and the store keeps it as a chain ID; how
+#77). The maps are relative to the parent namespace, so nested namespaces
+with the same maps under parents with different ones share a key.
+`rnk-snapshot` makes the key and the store takes it as it takes a chain ID,
+an opaque digest; how
 [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep
 the map.
 

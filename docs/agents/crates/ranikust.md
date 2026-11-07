@@ -411,7 +411,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   owners and modes); `red_team_a_home_of_another_user_gives_no_state_directory`
   (as uid 3000: a `$HOME` of another uid, a sticky one of another uid or
   of its own, a group-writable one and `/` give a default state directory
-  refused with nothing made; its own home gets one, `0700`).
+  refused with nothing made; its own home gets one, `0700`);
+  `setup/tests/userns/layers.rs`
+  `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`
+  (owners, modes, xattrs, whiteouts and opaque directories as overlay as
+  root makes them, `0555` roots published, devices skipped and counted,
+  keys apart from chain IDs, an owner outside the map refused) and
+  `a_killed_extraction_in_the_user_namespace_publishes_nothing`.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
@@ -451,7 +457,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   user who ran sudo: where AppArmor restricts user namespaces, Ubuntu
   24.04, refused before the store with the guidance; elsewhere, 22.04, a
   dead build's files of subordinate ids, which the user cannot remove
-  outside, removed by the next store in the namespace).
+  outside, removed by the next store in the namespace);
+  `setup/tests/userns/layers.rs`
+  `a_regular_user_s_base_layers_extract_as_overlay_as_root_extracts_them`
+  and `a_regular_user_s_killed_extraction_publishes_nothing` (the same
+  layers as real root, then as the sudo user from a setgid state directory
+  of a gid no map holds: refused on 24.04; on 22.04 as root makes them,
+  devices aside, owned outside by subordinate ids; a `SIGKILL`ed extraction
+  publishes nothing).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
   ranikust build is using / in this container"); `exposure.rs`, profile

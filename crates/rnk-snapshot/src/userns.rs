@@ -1,7 +1,9 @@
 //! The user namespace this process runs in, when it is not the initial one:
 //! extraction there makes no device node (ADR-0106) and keys the layers it
 //! extracts by the namespace's id map (ADR-0104), so a layer extracted with
-//! one set of ids is never a lower under another.
+//! one map is never a lower under another. The map is relative to the parent
+//! namespace: nested namespaces with one map under parents with different
+//! ones share keys.
 
 use std::fs::File;
 use std::io::{self, Read as _};
@@ -23,8 +25,9 @@ const NSFS_MAGIC: FsWord = 0x6e73_6673;
 /// Read no more of a map: the kernel writes at most 340 lines.
 const MAP_MAX: u64 = 64 * 1024;
 
-/// Puts a mapped layer's key in a space of its own: no chain ID, the text
-/// `<digest> <digest>` hashed or a tar's hash, starts with it.
+/// Puts a mapped layer's key in a space of its own: no chain ID's input
+/// (`<digest> <digest>`) or tar starts with these bytes, so a mapped key is
+/// never a chain ID.
 const KEY_DOMAIN: &[u8] = b"ranikust layer extracted in a user namespace, v1\0";
 
 /// A user namespace other than the initial one, with its maps as this
