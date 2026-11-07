@@ -8,10 +8,10 @@ decision-makers: Tran Nguyen (maintainer)
 
 ## Context and Problem Statement
 
-ADR-0126 lets an operator allow, with `--allow proc.rbind`, an rbind of the
+[ADR-0126](0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) lets an operator allow, with `--allow proc.rbind`, an rbind of the
 container's `/proc` for each `RUN` of a rootless build that cannot mount a new
 `proc`. The rbind is bound `nosuid`, `nodev` and `noexec`, but not read-only; the
-rbind of `/sys` in the same place already is. ADR-0130 measured what such a `RUN`
+rbind of `/sys` in the same place already is. [ADR-0130](0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) measured what such a `RUN`
 reaches, and found reads: command lines, status, mount tables and network tables;
 the ptrace-gated files are refused across the user-namespace boundary. It tested
 no write. A review of the rbind then found that some `/proc/<pid>` files are
@@ -89,36 +89,44 @@ outside the build, at the cost that a `RUN` cannot write `/proc/self/*`.
 
 ## Evidence
 
-- **[code]** `rnk-sandbox` on the unmerged branch `feat/sandbox-rootless-run`
-  (`crates/rnk-sandbox/src/child.rs`, `mount_one`): the `/proc` rbind is made with
-  `MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC`; the `/sys` rbind
-  adds `MOUNT_ATTR_RDONLY`.
+- **[code]** `rnk-sandbox` (`crates/rnk-sandbox/src/child.rs`, `mount_one`):
+  before this ADR the `/proc` rbind was made with
+  `MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC`, and the `/sys` rbind
+  added `MOUNT_ATTR_RDONLY`; with it, the `/proc` rbind adds it too.
 - **[inferred]** From a review of the rbind, not from a test: some `/proc/<pid>`
   files are checked by file ownership against the kernel uid and not by ptrace
   access, so the user-namespace refusal that ADR-0130 measured for the ptrace-gated
   files does not cover them. The details of the review are not recorded here.
-- **[inferred]** That a read-only bind makes each write above fail with `EROFS`,
-  and leaves writes through magic links alone (the check falls on the target's
-  mount), from how the mount flag is checked; nothing measures them yet. The tests
-  belong to the pull request that makes the change.
+- **[measured]** T1 `runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose`
+  and `runs_below_one_id_skip_setgroups_and_the_tty_gid`
+  (`crates/rnk-sandbox/src/userns/build/run_tests.rs`; root of rootless Podman,
+  `just test-rootless`, 2026-11-07): under the read-only rbind every mount below
+  `/proc` is read-only, a `RUN`'s write of its own `oom_score_adj` fails with
+  `EROFS`, and a write through `/dev/stderr` reaches its file; the first test also
+  finds a write of the `oom_score_adj` of a process outside the build, of the
+  `RUN`'s kernel uid, failing with `EROFS`. Run without `MOUNT_ATTR_RDONLY`, both
+  tests fail: `/proc` is read-write and both writes succeed.
+- **[inferred]** That the other writes above (`attr/*`, `comm`, a nested
+  `uid_map`) fail with `EROFS` too, from the same mount check; not measured one by
+  one.
 - **[inferred]** That Docker leaves `/proc/self/*` writable and makes `/proc/sys`
   and a few other paths read-only: the threat model's T17 lists those read-only
   paths from moby's defaults, and says nothing about `/proc/self`.
 
 ## More Information
 
-Refines ADR-0126 (the rbind's flags: read-only is added to its `nosuid`, `nodev`
-and `noexec`) and ADR-0130 (its residual of reads holds for writes too). Neither
-is rewritten, and both stay `accepted`. ADR-0126 and ADR-0130 are on the unmerged
-branch `feat/sandbox-rootless-run`, so they are named here, not linked.
+Refines [ADR-0126](0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) (the rbind's flags: read-only is added to its
+`nosuid`, `nodev` and `noexec`) and [ADR-0130](0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) (its residual of reads
+holds for writes too). Neither is rewritten, and both stay `accepted`.
 
 Answers a question put to the maintainer in the question window; it has no
 `question` issue, so this pull request closes nothing. The code and the docs
-that say what an rbind `RUN` can do (the threat model's section 6 entry and its
-T12 row, `docs/design/sandbox.md`, the `rnk-sandbox` card, the doc comment of
-`Fallbacks::allow_proc_rbind`) change in the pull request of
+that say what an rbind `RUN` can do (the threat model's rootless row, section 6
+entry and T17 evidence, `docs/design/sandbox.md`, the `rnk-sandbox` card, the
+book's row for rootless Podman, the doc comment of `Fallbacks::allow_proc_rbind`
+and the sandbox's guidance and warning) change in the pull request of
 [#78](https://github.com/tran4774/ranikust/issues/78), which this branch is merged
-into; the flag's help and warning, with the `## Changelog` entry, come with the
-pull request that builds the flag
+into; the flag's help, with the `## Changelog` entry, comes with the pull request
+that builds the flag
 ([#79](https://github.com/tran4774/ranikust/issues/79)). Revisit only if a measurement shows that a build
 needs a write under `/proc/self`.
