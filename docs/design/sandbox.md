@@ -300,11 +300,11 @@ The steps, in order:
       stages still schedule in parallel
       ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
       The rest is an accepted residual
-      ([threat model, section 6](../security/threat-model.md#6-accepted-risks)):
-      no secrets in other processes' command lines, ranikust's included;
-      give the build container a PID namespace of its own. With the flag,
-      #79 also refuses a PID namespace shared with a process of another
-      mount namespace, as T21
+      ([threat model, section 6](../security/threat-model.md#6-accepted-risks));
+      against it, keep no secrets in other processes' command lines,
+      ranikust's included, and give the build container a PID namespace of
+      its own. With the flag, #79 also refuses a PID namespace shared with
+      a process of another mount namespace, as T21
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
       the build keeps the persistent store
       ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).

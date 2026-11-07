@@ -170,8 +170,9 @@ macro_rules! proc_rbind_exposure {
 macro_rules! proc_rbind_mitigation {
     () => {
         "This matters where RUNs run code you do not trust (an untrusted base image or \
-         Dockerfile). Keep no secrets in other processes' command lines, ranikust's \
-         included, and give the container a PID namespace of its own."
+         Dockerfile, or what a RUN downloads and runs). Keep no secrets in other \
+         processes' command lines, ranikust's included, and give the container a PID \
+         namespace of its own."
     };
 }
 
@@ -531,6 +532,7 @@ mod tests {
             "one at a time",
             "PID namespace of its own",
             "code you do not trust",
+            "what a RUN downloads and runs",
             "no secrets in other processes' command lines, ranikust's included",
         ] {
             assert!(guidance.contains(advice), "{guidance}");

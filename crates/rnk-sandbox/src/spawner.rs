@@ -58,7 +58,8 @@ pub struct Sandbox {
     running: Running,
     requests: Option<mpsc::Sender<Request>>,
     thread: Option<JoinHandle<()>>,
-    // [`TURNS`]; a test's own, so that its failure breaks no other test's.
+    // `TURNS`, or in a test a lock of its own, so a failed test breaks no
+    // other test's turns.
     turns: &'static Turns,
 }
 
@@ -1816,8 +1817,8 @@ static TURNS: Turns = Turns::new();
 #[derive(Debug)]
 struct Turns {
     lock: RwLock<()>,
-    // Set by a panic during a turn, which a shared one does not poison
-    // `lock` with, or by a spawner thread lost during one.
+    // Set by a panic during a turn (a shared turn's panic does not poison
+    // `lock`) or by a spawner thread lost during one.
     broken: AtomicBool,
 }
 
@@ -5438,7 +5439,8 @@ mod tests {
         let empty = tempfile::tempdir().unwrap();
         let missing = empty.path().canonicalize().unwrap().join("missing");
         let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
-        let turns: &'static Turns = Box::leak(Box::new(Turns::new()));
+        static OWN_TURNS: Turns = Turns::new();
+        let turns = &OWN_TURNS;
         // Without `Sandbox::start`'s cgroups and profile. Kept here, so that a
         // waiting thread's only sleep is its turn, not the drop of its `Sandbox`.
         let [fresh, rbind] =
@@ -5456,6 +5458,10 @@ mod tests {
             detached(move || sandbox.run(spec))
         };
 
+        assert!(matches!(
+            turns.take(KernelFs::Rbind, Isolation::Direct),
+            Err(Error::InvalidSpec(_))
+        ));
         let shared = turns.take(KernelFs::Fresh, Isolation::Full).unwrap();
         let side_by_side = refusal(&run(&fresh, empty_argv()).1);
         assert!(side_by_side.contains("argv is empty"), "{side_by_side}");
@@ -5515,7 +5521,8 @@ mod tests {
         let (requests, received) = mpsc::channel::<Request>();
         // Takes the job and drops it unanswered, as a spawner that died.
         let lost = std::thread::spawn(move || drop(received.recv()));
-        let turns: &'static Turns = Box::leak(Box::new(Turns::new()));
+        static OWN_TURNS: Turns = Turns::new();
+        let turns = &OWN_TURNS;
         let sandbox = Sandbox {
             runner,
             running: Running::default(),

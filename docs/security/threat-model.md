@@ -280,8 +280,8 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   its PID namespace before the next starts
   ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
   The residual matters when `RUN`s run code you do not trust (an
-  untrusted base image or Dockerfile): such code reads the command lines,
-  status, mount tables and network tables of the container's processes.
+  untrusted base image or Dockerfile, or what a `RUN` downloads and
+  runs).
   Mitigation: no secrets in other processes' command lines, ranikust's
   included; give the build container a PID namespace of its own. Rated
   Low (CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:L/I:N/A:N): what is left is the
