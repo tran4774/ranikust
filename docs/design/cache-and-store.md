@@ -219,10 +219,12 @@ marker is a state directory. Both emptying scripts first check that
 walk they rely on, and otherwise stop before changing anything, saying
 so (Alpine: `apk add findutils`); the behaviour below is that `find`'s.
 Root's emptying of a directory another user owns deletes only that
-user's entries and entries of no account (`find -uid UID -o -nouser`:
-the user's subordinate ids have no account), then checks that nothing is
-left; what other accounts own stays, and it stops, saying so, before
-the `rmdir`. A directory root owns has every entry deleted: root's store
+user's entries and those of its subordinate ids: its uid and its first
+`/etc/subuid` range (`subids::lookup`), the only uids its builds' user
+namespace maps, or its uid alone where it has none, then checks that
+nothing is left; what other uids own stays (a range changed since the
+build included), and it stops, saying which uids it kept, before the
+`rmdir`. A directory root owns has every entry deleted: root's store
 holds image ids that may match host accounts.
 In the directory, the emptying names only `.`, so the lock, the marker's
 check and the deletion act on it whatever is put at its path meanwhile;

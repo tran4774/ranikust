@@ -93,19 +93,23 @@ and its identity in place of `'DIR'`, `'PARENT'`, `'./NAME'` and `ID`:
   rmdir -- './NAME' )
 ```
 
-For a directory another user owns, uid `UID`, the emptying's last line is
-instead:
+For a directory another user owns, uid `UID`, whose first `/etc/subuid`
+range runs from `FIRST` to `LAST`, the emptying's last line is instead,
+with `BEFORE` and `AFTER` the uids just outside the range (`find`'s `+n`
+and `-n` are strict):
 
 ```sh
-  { find . -xdev -mindepth 1 \( -uid UID -o -nouser \) -delete &&
+  { find . -xdev -mindepth 1 \( -uid UID -o \( -uid +BEFORE -uid -AFTER \) \) -delete &&
   test -z "$(find . -mindepth 1 -maxdepth 1)" ||
-  { echo "not emptied: entries of accounts other than uid UID are left in place, as is anything find names above" >&2;
+  { echo "not emptied: entries of uids other than UID and its subordinate range FIRST-LAST are left in place, as is anything find names above" >&2;
   exit 1; }; }' )
 ```
 
-It deletes only that user's entries and entries of no account, as the
-user's subordinate ids are; what other accounts own is left in place, and
-the emptying then stops, saying so, so the directory is not removed.
+It deletes only that user's entries and those of its subordinate ids, the
+only ids its builds' user namespace maps; what other uids own is left in
+place, and the emptying then stops, saying so, so the directory is not
+removed. Where the user has no range, or it cannot be read, the line
+names `UID` alone.
 
 The error gives no commands for an empty directory (ranikust gives
 commands only for one that holds its marker), for a path that ends in `..` (give the

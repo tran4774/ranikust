@@ -55,8 +55,10 @@ writer) before `unshare`, the probes and the state directory's checks.
   and fail while a build holds it; the emptying scripts first check that
   `find --version` names GNU findutils and lists `FTS(FTS_CWDFD)`, and
   otherwise stop, changing nothing; root's, for a directory another user
-  owns (`prune::root_script`), deletes only that user's entries and
-  entries of no account, and stops, saying so, where others are left. No
+  owns (`prune::root_script`), deletes only that user's entries and those
+  of its subordinate ids (`prune::Owner`: its uid and its first
+  `/etc/subuid` range, from `subids::lookup`), and stops, saying so, where
+  others are left. No
   commands where the check fails (for a symbolic link on the path, give
   the path with none, and, to root only, for a user's directory,
   `prune --all` as that user; else the check's reason), for a path
@@ -383,9 +385,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   refused before anything is opened, and each script changing nothing
   with a `find` that answers `--version` as BusyBox's does, not at all,
   or as GNU's without `FTS(FTS_CWDFD)`; root's script for a user's
-  directory emptying it when run for that user and, run for any other
-  account, removing only the marker and stopping before `rmdir`, saying
-  so, `find` given the owner predicate for every owner but root; the ways
+  directory giving `find` the owner's uid and its range's strict bounds,
+  or the uid alone without a range or with one holding root's uid,
+  emptying it of the owner's files and, with them just outside the
+  range, removing only the marker and stopping before `rmdir`, saying
+  so; the ways
   out only in `prune`'s refusal of a prune that could not finish),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
