@@ -95,6 +95,8 @@ fn red_team_printed_paths_act_only_on_the_checked_directory_in_any_shell() {
             let cwd = base.join("cwd");
             let outside = base.join("outside");
             fs::create_dir_all(&cwd).unwrap();
+            // Private whatever the umask, as a build requires.
+            fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
             fs::create_dir_all(&outside).unwrap();
             fs::write(outside.join("keep"), b"x").unwrap();
             let state = base.join(OsStr::from_bytes(p)).join(OsStr::from_bytes(n));
@@ -378,6 +380,7 @@ fn bash(command: &str, cwd: &Path) -> Output {
 fn owners_state(state: &Path, ids: &[u32], outside: &Path) {
     let layer = state.join("layers/v3/sha256/x");
     fs::create_dir_all(&layer).unwrap();
+    fs::set_permissions(state, fs::Permissions::from_mode(0o700)).unwrap();
     fs::create_dir_all(state.join("caches/c")).unwrap();
     fs::write(state.join(rnk_store::STATE_MARKER), b"").unwrap();
     for id in ids {
@@ -464,6 +467,7 @@ fn red_team_roots_commands_take_only_the_owners_ids_and_nothing_outside() {
     let nlink = |name: &str| fs::symlink_metadata(outside.join(name)).unwrap().nlink();
     let parent = tmp.path().join("p a'r\nent");
     fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
     // With entries of other ids too: of root, of nobody, just outside the
     // range; a hardlink to a file of root's; a directory of root's
     // holding one of the owner's.

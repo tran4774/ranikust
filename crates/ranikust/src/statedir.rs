@@ -139,6 +139,53 @@ pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
     }
 }
 
+/// The build's rule for the state directory at `state_dir`, which `check`
+/// describes, before a refusal prints commands that act on it: opened
+/// again without following a symlink, it is that directory; it and its
+/// parents pass [`check_chain`] with its owner as the user; and it is none
+/// of [`SYSTEM_DIRS`], marked or not. Returns its permission bits, which
+/// the commands check too.
+///
+/// # Errors
+///
+/// [`Refused`] naming the rule it breaks.
+pub(crate) fn check_for_commands(
+    state_dir: &Path,
+    check: &rnk_store::PruneCheck,
+) -> Result<u32, Refused> {
+    let system: Vec<&Path> = SYSTEM_DIRS.iter().map(Path::new).collect();
+    check_for_commands_beside(state_dir, check, &system)
+}
+
+/// [`check_for_commands`] with `system` as the system directories.
+fn check_for_commands_beside(
+    state_dir: &Path,
+    check: &rnk_store::PruneCheck,
+    system: &[&Path],
+) -> Result<u32, Refused> {
+    let fd = open_dir(state_dir, OFlags::PATH)?;
+    let st = rustix::fs::fstat(&fd).map_err(|e| stat_err(state_dir, e))?;
+    if (st.st_dev, st.st_ino, st.st_uid) != (check.dev, check.ino, check.uid) {
+        return Err(Refused(format!(
+            "{} changed while ranikust checked it",
+            state_dir.display()
+        )));
+    }
+    check_chain(&walk(&fd, state_dir)?, check.uid, true)?;
+    let me = (st.st_dev, st.st_ino);
+    let found = system
+        .iter()
+        .find(|sys| rustix::fs::stat(**sys).is_ok_and(|s| (s.st_dev, s.st_ino) == me));
+    if let Some(sys) = found {
+        return Err(Refused(format!(
+            "{} is the system directory {}",
+            state_dir.display(),
+            sys.display()
+        )));
+    }
+    Ok(st.st_mode & 0o7777)
+}
+
 /// Creates what is missing of `state_dir` below `existing`, its nearest
 /// existing directory, open as `parent` and already checked; returns the
 /// state directory, opened for reading.

@@ -105,6 +105,7 @@ fn pin_of(dir: &Path) -> Pin {
         dev: m.dev(),
         ino: m.ino(),
         uid: m.uid(),
+        mode: m.mode() & 0o7777,
     }
 }
 
@@ -151,6 +152,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     let before = listing(&state);
     let empty_dir = tmp.path().join("empty");
     fs::create_dir(&empty_dir).unwrap();
+    fs::set_permissions(&empty_dir, fs::Permissions::from_mode(0o700)).unwrap();
     let missing = tmp.path().join("missing");
     for dir in [&state, &empty_dir, &missing] {
         let refusal = prune_all(0, dir).unwrap_err();
@@ -167,12 +169,17 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     // interrupted removal leaves is unmarked, and a directory without one
     // stays.
     let refusal = prune_all(0, &state).unwrap_err();
-    let Pin { dev, ino, uid } = pin_of(&state);
+    let Pin {
+        dev,
+        ino,
+        uid,
+        mode,
+    } = pin_of(&state);
     let (d, p) = (
         shell_word(state.as_os_str()),
         shell_word(tmp.path().as_os_str()),
     );
-    let marker_first = r#"'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && "#;
+    let marker_first = r#"'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet)" >&2; exit 1; }; { test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; } || { echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2; exit 1; }; } && "#;
     // In a directory a user owns, only the entries of its uid and of its
     // subordinate range go.
     let (only, emptying) = match (uid, Owner::of(uid).range) {
@@ -183,7 +190,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
                  where another uid owns any"
             ),
             format!(
-                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of uids other than {uid} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
+                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1 || echo failed)" || {{ echo "not emptied: entries of uids other than {uid} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
             ),
         ),
         (_, Some(IdRange { start, count })) => (
@@ -193,7 +200,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
                 start + count - 1
             ),
             format!(
-                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} -o \( -uid +{} -uid -{} \) \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of uids other than {uid} and its subordinate range {start}-{} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#,
+                r#"{{ find . -xdev -mindepth 1 \( -uid {uid} -o \( -uid +{} -uid -{} \) \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1 || echo failed)" || {{ echo "not emptied: entries of uids other than {uid} and its subordinate range {start}-{} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#,
                 start - 1,
                 start + count,
                 start + count - 1
@@ -202,7 +209,7 @@ fn root_is_refused_naming_phase_5_with_nothing_changed() {
     };
     let script = format!("{marker_first}{emptying}'");
     let want = format!(
-        "; the emptying needs GNU findutils (Alpine: apk add findutils){only}: ( CDPATH= cd -P -- {d} && stat -c %d:%i:%u . | grep -qxF {dev}:{ino}:{uid} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && stat -c %d:%i:%u ./state | grep -qxF {dev}:{ino}:{uid} && rmdir -- ./state )"
+        "; the emptying needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet){only}: ( CDPATH= cd -P -- {d} && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:{mode:o} && exec flock -xn . sh -c {script} ), then ( CDPATH= cd -P -- {p} && stat -c %d:%i:%u:%a ./state | grep -qxF {dev}:{ino}:{uid}:{mode:o} && rmdir -- ./state )"
     );
     assert!(refusal.guidance.contains(&want), "{refusal}");
     assert!(refusal.guidance.contains("nothing is mounted below it"));
@@ -302,7 +309,135 @@ fn root_gets_no_commands_for_a_path_through_a_symlink() {
     assert_eq!(listing(tmp.path()), before);
 }
 
-/// The pin ranikust takes is what `stat -c %d:%i:%u` prints for the
+/// Root's emptying stops, saying so, before changing anything where there
+/// is no regular marker; each script counts a listing that fails as
+/// entries left: root's stops, saying so, and the user's keeps its
+/// marker.
+#[test]
+fn the_scripts_say_why_they_stop() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    let me = pin_of(tmp.path()).uid;
+    let roots = [ROOT_SCRIPT.to_owned(), root_script(Owner::of(me))];
+    let run = |script: &str, bin: Option<&Path>| {
+        let mut bash = std::process::Command::new("bash");
+        bash.args(["-c", &in_dir(&state, pin_of(&state), script)])
+            .current_dir(tmp.path());
+        if let Some(bin) = bin {
+            bin_first(&mut bash, bin);
+        }
+        bash.output().unwrap()
+    };
+    fs::create_dir(&state).unwrap();
+    fs::write(state.join("keep"), b"x").unwrap();
+    let before = listing(tmp.path());
+    for script in &roots {
+        let out = run(script, None);
+        assert!(!out.status.success(), "{script}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(
+                "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or \
+                 an emptying already started; finish it by hand"
+            ),
+            "{err}"
+        );
+        assert_eq!(listing(tmp.path()), before, "{script}");
+    }
+    fs::remove_dir_all(&state).unwrap();
+    // A `find` whose listing of the directory fails, printing nothing.
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        bin.join("find"),
+        "#!/bin/sh\ncase \" $* \" in *\" -maxdepth 1 \"*) exit 1;; esac\nexec env \
+         PATH=\"$REAL_PATH\" find \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("find"), fs::Permissions::from_mode(0o755)).unwrap();
+    for script in &roots[1..] {
+        marked_state(&state);
+        let out = run(script, Some(&bin));
+        assert!(!out.status.success(), "{script}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("not emptied: "), "{err}");
+        fs::remove_dir_all(&state).unwrap();
+    }
+    marked_state(&state);
+    let out = run(USER_SCRIPT, Some(&bin));
+    assert!(!out.status.success(), "{out:?}");
+    assert!(state.join(".ranikust-pruning").is_file());
+}
+
+/// Root gets no commands, saying why, for a marked directory a build
+/// would refuse: writable by group or others, or below a parent that is;
+/// nor does a prune that could not finish give its ways out there. The
+/// commands given for one a build accepts check its mode too: changed
+/// after printing, they fail with nothing changed.
+#[test]
+fn root_gets_no_commands_for_a_directory_a_build_would_refuse() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    marked_state(&state);
+    let before = listing(tmp.path());
+    let refused = |dir: &Path, why: &str| {
+        let guidance = prune_all(0, dir).unwrap_err().guidance;
+        for guidance in [&*guidance, &cut_short(dir, 0)] {
+            assert!(!guidance.contains("cd -P"), "{guidance}");
+            assert!(
+                guidance.starts_with(&format!(
+                    "ranikust gives no commands for {}: ",
+                    shell_word(dir.as_os_str())
+                )) && guidance.contains(why),
+                "{guidance}"
+            );
+        }
+        let check = Store::check_prune(dir).unwrap();
+        let pin = Pin::of(dir, &check);
+        assert!(
+            matches!(&pin, Err(NoPin::Refused(r)) if r.contains(why)),
+            "{pin:?}"
+        );
+        let ways = unfinished(dir, pin);
+        assert!(!ways.contains("cd -P"), "{ways}");
+    };
+    for mode in [0o1777, 0o777, 0o770] {
+        fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
+        refused(&state, "is writable by group or others");
+    }
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let parent = tmp.path().join("parent");
+    marked_state(&parent.join("state"));
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o770)).unwrap();
+    refused(
+        &parent.join("state"),
+        "parent is writable by group or others",
+    );
+    fs::remove_dir_all(&parent).unwrap();
+    assert_eq!(listing(tmp.path()), before);
+    // Accepted, with its mode in the pin; then made group-readable, which
+    // a build accepts, before the commands run.
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o750)).unwrap();
+    let guidance = prune_all(0, &state).unwrap_err().guidance;
+    let Pin { dev, ino, uid, .. } = pin_of(&state);
+    let pinned = format!("stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:750 && ");
+    assert!(guidance.contains(&pinned), "{guidance}");
+    let (pin, _) = pin(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let before = listing(tmp.path());
+    for command in [
+        in_dir(&state, pin, &root_script(Owner::of(uid))),
+        remove_dir(&state, pin),
+    ] {
+        assert!(
+            !run_command(&command, tmp.path(), None).success(),
+            "{command}"
+        );
+        assert_eq!(listing(tmp.path()), before, "{command}");
+    }
+}
+
+/// The pin ranikust takes is what `stat -c %d:%i:%u:%a` prints for the
 /// directory, so each printed command runs with it: root's emptying, of a
 /// directory root owns and of one its owner's, and `rmdir`, the user's,
 /// and the move aside.
@@ -315,14 +450,19 @@ fn the_printed_commands_run_on_the_directory_ranikust_checked() {
     assert!(entries);
     assert_eq!(taken, pin_of(&state));
     let out = std::process::Command::new("stat")
-        .args(["-c", "%d:%i:%u"])
+        .args(["-c", "%d:%i:%u:%a"])
         .arg(&state)
         .output()
         .unwrap();
-    let Pin { dev, ino, uid } = taken;
+    let Pin {
+        dev,
+        ino,
+        uid,
+        mode,
+    } = taken;
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        format!("{dev}:{ino}:{uid}\n")
+        format!("{dev}:{ino}:{uid}:{mode:o}\n")
     );
     let scripts = [
         ROOT_SCRIPT.to_owned(),
@@ -400,6 +540,10 @@ fn the_printed_commands_change_nothing_in_another_directory() {
             },
             Pin {
                 uid: right.uid + 1,
+                ..right
+            },
+            Pin {
+                mode: right.mode ^ 0o010,
                 ..right
             },
         ];
@@ -495,17 +639,18 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
         dev: 1,
         ino: 2,
         uid: 3,
+        mode: 0o2750,
     };
     let guidance = no_user_namespace(dir, Ok(pin));
     assert!(
         guidance.contains(
-            r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils)" >&2; exit 1; }; { "#
+            r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:3:2750 && exec flock -xn . sh -c 'find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo "needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet)" >&2; exit 1; }; { "#
         ),
         "{guidance}"
     );
     assert!(
         guidance.contains(
-            "' ), which needs GNU findutils (Alpine: apk add findutils), renames its marker"
+            "' ), which needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet), renames its marker"
         ),
         "{guidance}"
     );
@@ -516,7 +661,7 @@ fn without_a_user_namespace_the_marker_is_renamed_before_anything_goes() {
     );
     let removed = at(r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && "#);
     let marker = at(
-        r#"test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning'"#,
+        r#"test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning && rm .ranikust-pruning'"#,
     );
     assert!(
         matches!((renamed, removed, marker), (Some(m), Some(r), Some(l)) if m < r && r < l),
@@ -1035,12 +1180,12 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
         dev: 1,
         ino: 2,
         uid: 3,
+        mode: 0o700,
     };
     let ways = unfinished(dir, Ok(pin));
     let owner = Owner::of(3);
     let root = format!(
-        "; or, as root, empty it in place, which needs GNU findutils (Alpine: apk add \
-         findutils){}, {}, then ",
+        "; or, as root, empty it in place, which {NEEDS_GNU_FIND}{}, {}, then ",
         owner_only(owner),
         in_dir(dir, pin, &root_script(owner))
     );
@@ -1050,10 +1195,10 @@ fn a_prune_that_could_not_finish_names_the_ways_out() {
         "subordinate ids",
         "unmount anything below '/home/u/my state'",
         "with newuidmap installed and ranges for this user in /etc/subuid and /etc/subgid",
-        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, which needs GNU findutils (Alpine: apk add findutils) and deletes only the entries of uid 3, the directory's owner,"#,
-        r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u . | grep -qxF 1:2:3 && exec flock -xn . sh -c 'find --version "#,
+        r#"; or move the directory aside and remove it, ( CDPATH= cd -P -- /home/u && test -d './my state' && ! test -h './my state' && stat -c %d:%i:%u:%a './my state' | grep -qxF 1:2:3:700 && mv -T -- './my state' './my state.old' && podman unshare rm -rf --one-file-system -- './my state.old' ); or, as root, empty it in place, which needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet) and deletes only the entries of uid 3, the directory's owner,"#,
+        r#"( CDPATH= cd -P -- '/home/u/my state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:3:700 && exec flock -xn . sh -c 'find --version "#,
         r#" \( -uid 3"#,
-        r#"), then ( CDPATH= cd -P -- /home/u && stat -c %d:%i:%u './my state' | grep -qxF 1:2:3 && rmdir -- './my state' )"#,
+        r#"), then ( CDPATH= cd -P -- /home/u && stat -c %d:%i:%u:%a './my state' | grep -qxF 1:2:3:700 && rmdir -- './my state' )"#,
     ] {
         assert!(ways.contains(want), "{want}: {ways}");
     }

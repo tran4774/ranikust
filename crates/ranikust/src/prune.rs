@@ -61,7 +61,7 @@ const DOTDOT: &str = "ends in ..: give the state directory's own path";
 /// What the scripts need, as a literal: `concat!` takes no constant.
 macro_rules! needs_gnu_find {
     () => {
-        "needs GNU findutils (Alpine: apk add findutils)"
+        "needs GNU findutils (Alpine: apk add findutils; a BusyBox sh may run its own find applet)"
     };
 }
 
@@ -86,19 +86,21 @@ macro_rules! gnu_find_first {
 /// The start of root's emptying, after [`gnu_find_first`]: its regular
 /// marker first, `.ranikust-state` or else the `.ranikust-pruning` a prune
 /// that did not finish left, so that what an interrupted removal leaves is
-/// unmarked, and nothing where there is neither.
+/// unmarked, and nothing where there is neither, saying so.
 macro_rules! root_marker_first {
     () => {
-        "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && "
+        r#"{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; } || { echo "no regular .ranikust-state or .ranikust-pruning here: not a state directory, or an emptying already started; finish it by hand" >&2; exit 1; }; } && "#
     };
 }
 
 /// Root's emptying of a state directory root owns, for [`in_dir`]: with
 /// GNU `find` only ([`gnu_find_first`]), the marker first
 /// ([`root_marker_first`]), then everything, with no top-level entry an
-/// operand and `find -xdev` entering no other filesystem, so a mount point
-/// is left (`find` then fails). Root's store may hold files of image ids
-/// that are host accounts' too, so every owner's go.
+/// operand. `find -xdev` stops at a mount of another filesystem (`find`
+/// then fails), not at a bind mount of the same one, whose contents go:
+/// hence the guidance's "nothing is mounted below it". Root's store may
+/// hold files of image ids that are host accounts' too, so every owner's
+/// go.
 const ROOT_SCRIPT: &str = gnu_find_first!(concat!(
     root_marker_first!(),
     "find . -xdev -mindepth 1 -delete"
@@ -164,7 +166,7 @@ fn root_script(owner: Owner) -> String {
     };
     let mut script = String::from(gnu_find_first!(root_marker_first!()));
     script.push_str(&format!(
-        r#"{{ find . -xdev -mindepth 1 \( -uid {uid}{or_range} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of uids other than {uid}{and_range} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
+        r#"{{ find . -xdev -mindepth 1 \( -uid {uid}{or_range} \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1 || echo failed)" || {{ echo "not emptied: entries of uids other than {uid}{and_range} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
     ));
     script
 }
@@ -193,7 +195,7 @@ fn owner_only(owner: Owner) -> String {
 /// it, as [`ROOT_SCRIPT`] does; it last, once a listing shows nothing else
 /// left, since not every `find` fails when a removal does.
 const USER_SCRIPT: &str = gnu_find_first!(
-    r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1)" = ./.ranikust-pruning && rm .ranikust-pruning"#
+    r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning && rm .ranikust-pruning"#
 );
 
 /// How root empties the state directory `dir`, pinned as `pin`, which
@@ -213,7 +215,8 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
 
 /// What root may do with the state directory `dir`, for root's refusal
 /// and a build's: the commands of [`root_empties`] for a directory [`pin`]
-/// checks at the path as given and finds a marker in, else none.
+/// checks at the path as given, a build would accept, and finds a marker
+/// in, else none.
 fn root_commands(dir: &Path) -> String {
     match pin(dir) {
         Ok((pin, true)) => root_empties(dir, pin),
@@ -354,39 +357,53 @@ pub(crate) enum Unfinished {
     CutShort,
 }
 
-/// The state directory a printed command acts on, as `stat -c %d:%i:%u`
-/// prints it (GNU and BusyBox): each command checks it right after
-/// entering a directory, before anything else, so one run after the path
-/// changed, a parent swapped for a symlink included, fails there.
+/// The state directory a printed command acts on, as `stat -c
+/// %d:%i:%u:%a` prints it (GNU and BusyBox): each command checks it right
+/// after entering a directory, before anything else, so one run after the
+/// path changed, a parent swapped for a symlink included, or after its
+/// owner or mode changed, fails there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Pin {
     dev: u64,
     ino: u64,
     uid: u32,
+    /// The permission bits, special ones included, as `%a` prints them in
+    /// octal.
+    mode: u32,
 }
 
 impl Pin {
     /// The pin of the state directory `dir` that `check` describes, for
     /// commands that name it: `dir` must end in a name, which they enter
-    /// its parent to act on. [`pin`] and [`empty`] turn away a path ending
-    /// in `..` first, so only `/`, which their checks refuse, has none.
+    /// its parent to act on, and pass the build's rule with its owner as
+    /// the user ([`statedir::check_for_commands`]), so that no command acts
+    /// on a directory a build would refuse. [`pin`] and [`empty`] turn away
+    /// a path ending in `..` first, so only `/`, which their checks refuse,
+    /// has no name.
     pub(crate) fn of(dir: &Path, check: &rnk_store::PruneCheck) -> Result<Self, NoPin> {
-        match (dir.parent(), dir.file_name()) {
-            (Some(_), Some(_)) => Ok(Self {
-                dev: check.dev,
-                ino: check.ino,
-                uid: check.uid,
-            }),
-            _ => Err(NoPin::NoName),
+        if dir.parent().is_none() || dir.file_name().is_none() {
+            return Err(NoPin::NoName);
         }
+        let mode = statedir::check_for_commands(dir, check).map_err(|r| NoPin::Refused(r.0))?;
+        Ok(Self {
+            dev: check.dev,
+            ino: check.ino,
+            uid: check.uid,
+            mode,
+        })
     }
 
     /// The check of the entry `entry`, one shell word, against the pin;
     /// piped rather than compared in a quoted command substitution, so an
     /// interactive shell's history expansion or quoting does not touch it.
     fn test(self, entry: &str) -> String {
-        let Self { dev, ino, uid } = self;
-        format!("stat -c %d:%i:%u {entry} | grep -qxF {dev}:{ino}:{uid}")
+        let Self {
+            dev,
+            ino,
+            uid,
+            mode,
+        } = self;
+        format!("stat -c %d:%i:%u:%a {entry} | grep -qxF {dev}:{ino}:{uid}:{mode:o}")
     }
 }
 

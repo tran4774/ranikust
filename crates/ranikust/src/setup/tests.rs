@@ -628,7 +628,7 @@ fn a_store_refusal_names_its_state_directory_once() {
 fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     use rnk_store::Error;
     // Paths that do not exist, below no host directory a symlink may be.
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let given = &tmp.path().join("link");
     let real = &tmp.path().join("gone/my state");
     let cut_short = || Error::PruneCutShort {
@@ -662,6 +662,9 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
     assert!(!root.guidance.contains("cd -P"), "{root}");
     let left = tmp.path().join("my state");
     std::fs::create_dir_all(left.join("blobs")).unwrap();
+    // Private whatever the umask: root gets commands only for a directory
+    // a build accepts.
+    std::fs::set_permissions(&left, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(left.join(rnk_store::PRUNING_MARKER), b"").unwrap();
     let e = Error::PruneCutShort { path: left.clone() };
     let root = store_refusal(&e, &left, 0);
@@ -671,7 +674,7 @@ fn a_build_refused_by_an_unfinished_prune_is_shown_the_next_step() {
         (m.dev(), m.ino(), m.uid())
     };
     let commands = format!(
-        "( CDPATH= cd -P -- '{}' && stat -c %d:%i:%u . | grep -qxF {dev}:{ino}:{uid} && exec flock -xn . sh -c '",
+        "( CDPATH= cd -P -- '{}' && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:700 && exec flock -xn . sh -c '",
         left.display()
     );
     assert!(root.guidance.contains(&commands), "{root}");

@@ -150,6 +150,51 @@ fn the_advice_names_the_default_of_the_effective_user() {
     }
 }
 
+/// What the commands a refusal prints require of a state directory: the
+/// one checked, the build's rule with its owner as the user, and no system
+/// directory, marked or not, even by another name; its mode is returned.
+#[test]
+fn the_commands_take_only_a_directory_a_build_accepts() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o750)).unwrap();
+    fs::write(state.join(rnk_store::STATE_MARKER), b"").unwrap();
+    let check = rnk_store::Store::check_prune(&state).unwrap();
+    let other = tmp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let mode = check_for_commands_beside(&state, &check, &[other.as_path()]).unwrap();
+    assert_eq!(mode, 0o750);
+    assert_eq!(check_for_commands(&state, &check).unwrap(), 0o750);
+    let link = tmp.path().join("link");
+    symlink(&state, &link).unwrap();
+    let why = check_for_commands_beside(&state, &check, &[other.as_path(), link.as_path()])
+        .unwrap_err()
+        .0;
+    assert!(
+        why.contains(&format!("is the system directory {}", link.display())),
+        "{why}"
+    );
+    for changed in [
+        rnk_store::PruneCheck {
+            ino: check.ino + 1,
+            ..check
+        },
+        rnk_store::PruneCheck {
+            uid: check.uid + 1,
+            ..check
+        },
+    ] {
+        let why = check_for_commands(&state, &changed).unwrap_err().0;
+        assert!(why.contains("changed while ranikust checked it"), "{why}");
+    }
+    for mode in [0o1777, 0o770, 0o702] {
+        fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
+        let why = check_for_commands(&state, &check).unwrap_err().0;
+        assert!(why.contains("is writable by group or others"), "{why}");
+    }
+}
+
 #[test]
 fn prepare_refuses_without_creating_anything() {
     let tmp = private_tempdir();
