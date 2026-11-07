@@ -1798,7 +1798,7 @@ fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
 }
 
 /// The turns of the process's `RUN`s (ADR-0127). One that gets the outer
-/// `/proc` runs alone: through it `RUN`s sharing a kernel uid could reach
+/// `/proc` runs alone: through it `RUN`s of one user namespace could reach
 /// each other's processes, whichever [`Sandbox`] runs them. The others
 /// share theirs.
 static TURNS: Turns = Turns::new();

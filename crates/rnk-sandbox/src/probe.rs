@@ -85,24 +85,22 @@ impl Fallbacks {
     /// Also allows an rbind of `/proc` where a new `proc` is refused, at the
     /// operator's request only (ADR-0126). Through it a `RUN` sees every
     /// process of the PID namespace ranikust runs in (the container's, or
-    /// one it shares with the host or other containers), reads the command
-    /// line, mount table and network tables of each, ranikust's included
-    /// (its build arguments, its secret paths), and reaches the environment
-    /// and files of those of its kernel uid, such as a shell that started
-    /// ranikust; ranikust itself, not dumpable (ADR-0051), stays closed to
-    /// it. [`crate::Sandbox`] then runs `RUN`s one at a time, so that none
-    /// reaches another's processes directly; one that reaches another
-    /// process of its uid can still act through it, and through the files
-    /// it sees, after its turn (ADR-0127). That and the rest are an accepted
-    /// residual: give the build container a PID namespace of its own, start
-    /// ranikust as its PID 1 with no other process of its uid during the
-    /// build, keep its secrets in its environment, not on its command line
-    /// or in a shell left running, and ask for this only where the base
-    /// images are trusted. The `ranikust` binary has no flag for it before
-    /// #79. This crate neither scans for a PID namespace shared with a
-    /// process of another mount namespace nor chooses the store: its caller
-    /// runs ADR-0101's peer scan and uses an anonymous store (ADR-0129), as
-    /// the binary does from #79.
+    /// one it shares with the host or other containers), and reads the
+    /// command line, status, mount table and network tables of each,
+    /// ranikust's included (its build arguments, its secret paths). Their
+    /// environment, files and memory stay closed to it: they need
+    /// `CAP_SYS_PTRACE` in the process's user namespace, which a `RUN` in
+    /// the build's lacks for every process outside it, whatever its kernel
+    /// uid (ADR-0130; measured on Linux 5.15 and 6.8, not yet through
+    /// ranikust end to end). Inside it are ranikust, not dumpable
+    /// (ADR-0051), and the other `RUN`s, which [`crate::Sandbox`] then runs
+    /// one at a time (ADR-0127). The rest is an accepted residual: no
+    /// secrets in other processes' command lines, ranikust's included; give
+    /// the build container a PID namespace of its own. The `ranikust`
+    /// binary has no flag for it before #79. This crate does not scan for a
+    /// PID namespace shared with a process of another mount namespace: its
+    /// caller runs ADR-0101's peer scan (ADR-0129), as the binary does from
+    /// #79.
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -158,24 +156,21 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
 }
 
 /// What a `RUN` reaches through an rbind of `/proc`, in the guidance and
-/// the warning alike (ADR-0127, ADR-0129).
+/// the warning alike (ADR-0127, ADR-0130).
 macro_rules! proc_rbind_exposure {
     () => {
-        "each RUN sees every process of this PID namespace (the host's or other \
-         containers' too where the container shares one), reads their command lines, \
-         mount tables and network tables, ranikust's included, and reaches the \
-         environment and files of those of its own kernel uid (ranikust's, for a RUN as \
-         root); RUNs then run one at a time, though one that reaches another process of \
-         that uid can still act through it, and through the files it sees, after its turn"
+        "RUNs run one at a time, and each sees every process of this PID namespace (the \
+         host's or other containers' too where the container shares one) and reads their \
+         command lines, status, mount tables and network tables, ranikust's included, \
+         though not their environment, files or memory"
     };
 }
 
 /// How to run ranikust where its `RUN`s get an rbind of `/proc`.
 macro_rules! proc_rbind_mitigation {
     () => {
-        "give the container a PID namespace of its own, start ranikust as its PID 1 with \
-         no other process of ranikust's uid during the build, and keep secrets in its \
-         environment, not on its command line or in a shell left running"
+        "keep no secrets in other processes' command lines, ranikust's included, and give \
+         the container a PID namespace of its own"
     };
 }
 
@@ -186,9 +181,8 @@ fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
     (is_proc_refusal(e) && !allowed.proc).then_some(concat!(
         "rnk-sandbox: a RUN needs a new proc, which this user namespace may not mount \
          (a container whose /proc has masked paths): build as a regular user on a host \
-         that allows user namespaces, or in a container where ranikust may mount, or, \
-         only with trusted base images, allow an rbind of /proc (--allow proc.rbind), \
-         through which ",
+         that allows user namespaces, or in a container where ranikust may mount, or \
+         allow an rbind of /proc (--allow proc.rbind), through which ",
         proc_rbind_exposure!(),
         ": then ",
         proc_rbind_mitigation!(),
@@ -281,7 +275,7 @@ fn log_rbinds(caps: Caps) {
         KernelFs::Rbind => tracing::warn!(concat!(
             "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so ",
             proc_rbind_exposure!(),
-            ". Allow this only with trusted base images; then ",
+            "; against that, ",
             proc_rbind_mitigation!(),
         )),
     }
@@ -530,18 +524,12 @@ mod tests {
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
         for advice in [
             "every process of this PID namespace",
+            "status",
             "network tables",
-            "trusted base images",
-            "PID namespace of its own",
-            "PID 1",
-            "no other process of ranikust's uid",
-            "its own kernel uid",
+            "not their environment, files or memory",
             "one at a time",
-            "after its turn",
-            "through the files it sees",
-            "secrets in its environment",
-            "not on its command line",
-            "shell left running",
+            "PID namespace of its own",
+            "no secrets in other processes' command lines, ranikust's included",
         ] {
             assert!(guidance.contains(advice), "{guidance}");
         }
