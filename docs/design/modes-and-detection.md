@@ -280,8 +280,9 @@ cannot leave the namespace once it is in:
 The mode line, logged once the set-up can no longer fail, so a fallback
 logs kaniko mode's alone, says what the build got: `overlay mode, rootless, in the
 build's user namespace, RUN enters its root with pivot_root, proc: a new
-instance, sysfs: a read-only rbind (a new instance for a RUN with
---network=none where it mounts), overlay mounts with fsconfig(lowerdir+)`;
+instance, sysfs: a read-only rbind (for a RUN with --network=none, a new
+instance where it mounts, else the rbind with no network device), overlay
+mounts with fsconfig(lowerdir+)`;
 `proc: a read-only rbind` is the one that needs the flag.
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode

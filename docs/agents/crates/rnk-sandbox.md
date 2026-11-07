@@ -271,7 +271,14 @@ What a change here must keep, with where it lives:
   (`/proc`'s read-only: a `RUN` writes nothing there, not even its own
   `oom_score_adj` as a new `proc` lets it, [ADR-0132](../../adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md));
   a refusal fails the `RUN`, never leaves a mount without them. The masks
-  and read-only paths then go on top as for a new one.
+  and read-only paths then go on top as for a new one. A `RUN` with a
+  network namespace of its own tries a new `sysfs` first; where only the
+  rbind mounts, the network devices of the namespace it was mounted in are
+  hidden from it (`hide_network_devices`): an empty read-only tmpfs over
+  `devices/virtual/net`, over the directory of each device that a link of
+  `class/net`, `class/ieee80211`, `class/macvtap` or `class/ipvtap` names,
+  and over those class directories, each found below the rbind by
+  descriptor; its `/sys/class/net` is then empty, its own `lo` not shown.
   Then `pivot_root(".", ".")` + `umount2(MNT_DETACH)`; where seccomp refuses
   it and `/` is a mount root, `MS_MOVE` + `chroot(".")`.
 - **Seccomp**
@@ -542,7 +549,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   or whiteout where a directory is needed or as the target; stubs a `RUN`
   swaps for symlinks out of the root or for nodes; planted stub records
   aimed outside, naming `/` or ending in `..`), `Direct` children that fail
-  before executing, mount sources and remount flags, `Direct` refusals
+  before executing, mount sources and remount flags, the directories
+  hidden from a `RUN` with a network namespace of its own under the rbind
+  of `/sys`, in a tree laid out as sysfs
+  (`the_network_directories_of_a_sysfs_are_each_hidden`), `Direct` refusals
   whatever the root entry
   (`direct_is_refused_where_runs_get_an_rbind_of_proc`), the turns: under
   an rbind of `/proc` a `RUN` alone, whichever `Sandbox` runs it, the
@@ -678,7 +688,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   its kernel uid, fails with `EROFS`, one through `/dev/stderr` works
   (without the read-only flag, both writes succeed); `USER _apt` gets
   42:65534 through `setgroups`; `--network=none` has `lo` up in a network
-  namespace of its own;
+  namespace of its own, and its `/sys` shows no network device or
+  address, its new `sysfs` refused below Podman's masks;
   `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
   _apt` refused at `setgid`; `an_rbind_of_proc_needs_a_request`: unasked,

@@ -360,7 +360,14 @@ The steps, in order:
       namespace owns, still tries a new one first, so that
       `/sys/class/net` shows its own devices and `/sys/fs/cgroup` is empty,
       as for root; only `EPERM` (such as below an outer runtime's masks of
-      `/sys`) gives it the rbind. Otherwise a refused `sysfs` mount fails
+      `/sys`) gives it the rbind, with the network devices of the namespace
+      it was mounted in hidden: an empty read-only tmpfs over
+      `devices/virtual/net`, over the directory of each device a link of
+      `class/net`, `class/ieee80211`, `class/macvtap` or `class/ipvtap`
+      names (a physical device's `net`), and over those class directories,
+      each found below the rbind by descriptor before the `RUN` starts
+      (`Step::MaskPath`). Its `/sys/class/net` is then empty: its own `lo`
+      shows only in a new `sysfs`. Otherwise a refused `sysfs` mount fails
       the `RUN` (`Step::MountSys`).
    4. A `nodev` tmpfs on `/dev`, with `null`, `zero`, `full`, `random`,
       `urandom` and `tty` bind-mounted from the outer `/dev` (`mknod` needs

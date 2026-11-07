@@ -1401,23 +1401,141 @@ fn try_mount_kernel_fs(
 /// user namespace may mount for a network namespace it owns, so that
 /// `/sys/class/net` shows the `RUN`'s own devices; the rbind only where the
 /// kernel still refuses a new one (`EPERM`, such as below an outer
-/// runtime's masks of `/sys`).
+/// runtime's masks of `/sys`), its network devices hidden
+/// ([`hide_network_devices`]).
 fn sysfs_of_own_network(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> OwnedFd {
     let step = Step::MountSys;
     let flags = MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
     match try_mount_kernel_fs(err, step, root, target, c"sysfs", flags, SYSFS_MAGIC) {
         Ok(made) => made,
-        Err(Errno::PERM) => rbind_kernel_fs(
-            err,
-            step,
-            root,
-            target,
-            c"/sys",
-            MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
-            SYSFS_MAGIC,
-        ),
+        Err(Errno::PERM) => {
+            let sys = rbind_kernel_fs(
+                err,
+                step,
+                root,
+                target,
+                c"/sys",
+                MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
+                SYSFS_MAGIC,
+            );
+            hide_network_devices(err, &sys);
+            sys
+        }
         Err(e) => fail(err, step, e),
     }
+}
+
+/// The class directories of a sysfs that list only the devices of the
+/// network namespace it was mounted in (the kernel tags them so): a new
+/// sysfs of a `RUN`'s own network namespace lists its devices alone there.
+const NETWORK_CLASSES: [&CStr; 4] = [
+    c"class/net",
+    c"class/ieee80211",
+    c"class/macvtap",
+    c"class/ipvtap",
+];
+
+/// Room for the longest `<class>/<name>/..` [`link_parent`] writes: a
+/// class of [`NETWORK_CLASSES`], a name of 255 bytes, and the NUL.
+const LINK_PARENT_MAX: usize = 288;
+
+/// Hides, in the rbind of `/sys` `sys`, the devices of the network
+/// namespace it was mounted in from a `RUN` with a network namespace of
+/// its own, which a new sysfs of the `RUN`'s namespace would not list: an
+/// empty read-only tmpfs over `devices/virtual/net`, over the directory
+/// that holds each device a link of [`NETWORK_CLASSES`] names (a physical
+/// device's `net`, say), and over those class directories. Each is found
+/// under `sys` by descriptor, never above it and through no magic link,
+/// before the `RUN` starts. The `RUN`'s own devices, which only a new
+/// sysfs lists, are not shown either: its `/sys/class/net` is empty.
+fn hide_network_devices(err: RawFd, sys: &OwnedFd) {
+    let step = Step::MaskPath;
+    each_network_dir(err, step, sys.as_fd(), &mut |sys, path, how| {
+        mask_sysfs_dir(err, step, sys, path, how);
+    });
+}
+
+/// Gives `mask`, in the order [`hide_network_devices`] hides them, each
+/// directory of `sys` it hides: by its path below `sys` and the
+/// `ResolveFlags` that find it there besides `RESOLVE_BENEATH`. A device
+/// directory is given before its class, while the class's links still
+/// lead to it.
+fn each_network_dir(
+    err: RawFd,
+    step: Step,
+    sys: BorrowedFd<'_>,
+    mask: &mut dyn FnMut(BorrowedFd<'_>, &CStr, ResolveFlags),
+) {
+    mask(sys, c"devices/virtual/net", ResolveFlags::NO_SYMLINKS);
+    for class in NETWORK_CLASSES {
+        let how = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
+        let Some(at) = lookup(err, step, sys, class, OFlags::DIRECTORY, how) else {
+            continue;
+        };
+        let dir = check(
+            err,
+            step,
+            rustix::fs::openat(
+                &at,
+                c".",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ),
+        );
+        let mut buf = [const { MaybeUninit::<u8>::uninit() }; 4096];
+        let mut entries = RawDir::new(&dir, &mut buf);
+        while let Some(entry) = entries.next() {
+            let entry = check(err, step, entry);
+            if entry.file_type() != FileType::Symlink {
+                continue;
+            }
+            let mut path = [0_u8; LINK_PARENT_MAX];
+            let Some(parent) = link_parent(&mut path, class, entry.file_name()) else {
+                fail(err, step, Errno::NAMETOOLONG);
+            };
+            // A device below a mask made already is not found: skipped.
+            mask(sys, parent, ResolveFlags::empty());
+        }
+        drop((dir, at));
+        mask(sys, class, ResolveFlags::NO_SYMLINKS);
+    }
+}
+
+/// `<class>/<name>/..` written into `buf` with its NUL, without
+/// allocating: the directory that holds the device the class link `name`
+/// names. `None` where it does not fit.
+fn link_parent<'a>(buf: &'a mut [u8], class: &CStr, name: &CStr) -> Option<&'a CStr> {
+    let mut n = 0;
+    for part in [class.to_bytes(), b"/", name.to_bytes(), b"/..\0"] {
+        buf.get_mut(n..n + part.len())?.copy_from_slice(part);
+        n += part.len();
+    }
+    CStr::from_bytes_with_nul(buf.get(..n)?).ok()
+}
+
+/// An empty read-only tmpfs over the directory `path` below `sys`, found
+/// with `how` besides `RESOLVE_BENEATH`, where it is still sysfs's: one
+/// missing, or below a mask already, is left.
+fn mask_sysfs_dir(err: RawFd, step: Step, sys: BorrowedFd<'_>, path: &CStr, how: ResolveFlags) {
+    let how = ResolveFlags::BENEATH | how;
+    let Some(t) = lookup(err, step, sys, path, OFlags::DIRECTORY, how) else {
+        return;
+    };
+    if check(err, step, rustix::fs::fstatfs(&t)).f_type != SYSFS_MAGIC {
+        return;
+    }
+    let flags = MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
+    check(
+        err,
+        step,
+        rustix::mount::mount(
+            c"tmpfs",
+            fd_path(err, &t).path(),
+            c"tmpfs",
+            flags,
+            None::<&CStr>,
+        ),
+    );
 }
 
 /// [`mount_kernel_fs`] where a new instance is refused: binds `source`,
@@ -3699,6 +3817,97 @@ mod tests {
         assert_eq!(parse_fd(b".."), None);
         assert_eq!(parse_fd(b""), None);
         assert_eq!(parse_fd(b"99999999999"), None);
+    }
+
+    /// The directory of the device a network class link names is written
+    /// in place for every class and the longest name; what does not fit
+    /// is `None`, never a cut path.
+    #[test]
+    fn a_class_links_device_directory_is_named_in_place() {
+        let mut buf = [0_u8; LINK_PARENT_MAX];
+        assert_eq!(
+            link_parent(&mut buf, c"class/net", c"lo"),
+            Some(c"class/net/lo/..")
+        );
+        let longest = CString::new(vec![b'n'; 255]).unwrap();
+        for class in NETWORK_CLASSES {
+            let parent = link_parent(&mut buf, class, &longest).map(CStr::to_bytes);
+            assert!(
+                parent.is_some_and(|p| p.starts_with(class.to_bytes()) && p.ends_with(b"n/..")),
+                "{class:?}"
+            );
+        }
+        let mut small = [0_u8; 15];
+        assert_eq!(link_parent(&mut small, c"class/net", c"lo"), None);
+    }
+
+    /// In a tree laid out as sysfs, the directories hidden from a `RUN`
+    /// with a network namespace of its own under the rbind of `/sys`: the
+    /// virtual devices', the one holding each device a network class
+    /// links to, before its class, and the network classes; nothing else.
+    #[test]
+    fn the_network_directories_of_a_sysfs_are_each_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let pci = "devices/pci0000:00";
+        for dir in [
+            "devices/virtual/net/lo".to_owned(),
+            format!("{pci}/0000:00:1f.6/net/eth0"),
+            format!("{pci}/0000:00:14.3/net/wlan0"),
+            format!("{pci}/0000:00:14.3/ieee80211/phy0"),
+            "class/net".to_owned(),
+            "class/ieee80211".to_owned(),
+            "class/block/sda".to_owned(),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        for (link, to) in [
+            ("class/net/lo", "devices/virtual/net/lo".to_owned()),
+            ("class/net/eth0", format!("{pci}/0000:00:1f.6/net/eth0")),
+            ("class/net/wlan0", format!("{pci}/0000:00:14.3/net/wlan0")),
+            (
+                "class/ieee80211/phy0",
+                format!("{pci}/0000:00:14.3/ieee80211/phy0"),
+            ),
+        ] {
+            std::os::unix::fs::symlink(format!("../../{to}"), root.join(link)).unwrap();
+        }
+        // Not a link: no device.
+        std::fs::write(root.join("class/net/bonding_masters"), "").unwrap();
+        let sys = rustix::fs::open(
+            &root,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let (_r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let err = w.as_raw_fd();
+        let mut hidden = Vec::new();
+        each_network_dir(err, Step::MaskPath, sys.as_fd(), &mut |sys, path, how| {
+            // As `mask_sysfs_dir` finds it.
+            let how = ResolveFlags::BENEATH | how;
+            if let Some(t) = lookup(err, Step::MaskPath, sys, path, OFlags::DIRECTORY, how) {
+                let at = std::fs::read_link(format!("/proc/self/fd/{}", t.as_raw_fd())).unwrap();
+                hidden.push(at.strip_prefix(&root).unwrap().to_str().unwrap().to_owned());
+            }
+        });
+        let set: std::collections::BTreeSet<_> = hidden.iter().map(String::as_str).collect();
+        let want = [
+            "class/ieee80211".to_owned(),
+            "class/net".to_owned(),
+            format!("{pci}/0000:00:14.3/ieee80211"),
+            format!("{pci}/0000:00:14.3/net"),
+            format!("{pci}/0000:00:1f.6/net"),
+            "devices/virtual/net".to_owned(),
+        ];
+        assert_eq!(set, want.iter().map(String::as_str).collect(), "{hidden:?}");
+        let at = |p: &str| hidden.iter().rposition(|h| h == p).unwrap();
+        assert!(
+            at(&format!("{pci}/0000:00:1f.6/net")) < at("class/net"),
+            "{hidden:?}"
+        );
+        let phy = format!("{pci}/0000:00:14.3/ieee80211");
+        assert!(at(&phy) < at("class/ieee80211"), "{hidden:?}");
     }
 
     /// Every read-only and masked path is found under `proc` or `sysfs`,

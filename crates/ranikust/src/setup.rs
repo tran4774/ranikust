@@ -76,7 +76,10 @@ impl fmt::Display for Outcome {
             write!(f, ", proc: {}, sysfs: {}", sandbox.proc(), sandbox.sysfs())?;
             if sandbox.sysfs() == rnk_sandbox::KernelFs::Rbind {
                 // What the spawner does for such a RUN (`rnk_sandbox`).
-                f.write_str(" (a new instance for a RUN with --network=none where it mounts)")?;
+                f.write_str(
+                    " (for a RUN with --network=none, a new instance where it mounts, else the \
+                     rbind with no network device)",
+                )?;
             }
         }
         write!(f, ", overlay mounts with {}", mount_api_name(overlay.api))

@@ -20,7 +20,8 @@
 //! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
 //! `/sys` where the user-namespace probe found a new `sysfs` refused
 //! ([`UsernsReport::fallbacks`]), a `RUN` with a network namespace of its
-//! own still trying a new one first, and a read-only rbind of `/proc` only
+//! own still trying a new one first (the rbind with no network device
+//! where it does not mount), and a read-only rbind of `/proc` only
 //! at the operator's request ([`Fallbacks::allow_proc_rbind`], ADR-0126,
 //! ADR-0132).
 //!

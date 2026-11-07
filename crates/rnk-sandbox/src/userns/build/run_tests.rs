@@ -51,14 +51,23 @@ echo stderr=written >>/dev/stderr
 const IDS: &str = r#"echo "ids=$(id -u):$(id -g):$(id -G)""#;
 
 /// What a `--network=none` `RUN` prints: whether `lo` is up (its
-/// `127.0.0.1` local route exists only then), its network namespace, and
-/// the devices its `/sys/class/net` shows, comma-separated.
+/// `127.0.0.1` local route exists only then), its network namespace, the
+/// devices its `/sys/class/net` and `/sys/devices/virtual/net` show, and
+/// the addresses it reads there, each comma-separated.
 const NETWORK: &str = r#"
 if grep -q 127.0.0.1 /proc/net/fib_trie; then echo lo=up; else echo lo=down; fi
 echo "net=$(readlink /proc/self/ns/net)"
 n=
-for d in /sys/class/net/*; do n="$n${n:+,}${d##*/}"; done
+for d in /sys/class/net/*; do if [ -e "$d" ]; then n="$n${n:+,}${d##*/}"; fi; done
 echo "netdevs=$n"
+v=
+for d in /sys/devices/virtual/net/*; do if [ -e "$d" ]; then v="$v${v:+,}${d##*/}"; fi; done
+echo "virtual=$v"
+a=
+for f in /sys/class/net/*/address /sys/devices/virtual/net/*/address; do
+  if [ -r "$f" ] && read -r m <"$f"; then a="$a${a:+,}$m"; fi
+done
+echo "macs=$a"
 "#;
 
 /// One `RUN`: its `USER`, network and script.
@@ -470,15 +479,44 @@ fn check_proc(out: &str, how: KernelFs) {
     }
 }
 
-/// `--network=none`: `lo` up in a network namespace the `RUN` alone has.
+/// `--network=none`: `lo` up in a network namespace the `RUN` alone has,
+/// whose `/sys` shows its own `lo` (a new `sysfs`) or no device (the
+/// rbind, its network devices hidden), and no device or address of the
+/// network namespace outside.
 fn check_network(out: &str) {
     assert_eq!(value(out, "run2"), "exit 0", "{out}");
     assert_eq!(value(out, "2:lo"), "up", "{out}");
     assert_ne!(value(out, "2:net"), value(out, "0:net"), "{out}");
-    assert!(
-        value(out, "2:netdevs").split(',').any(|d| d == "lo"),
-        "{out}"
+    let (devs, virt, macs) = (
+        value(out, "2:netdevs"),
+        value(out, "2:virtual"),
+        value(out, "2:macs"),
     );
+    assert!(devs.is_empty() || devs == "lo", "{out}");
+    assert!(virt.is_empty() || virt == "lo", "{out}");
+    for (name, mac) in outer_network() {
+        let seen = |list: &str| list.split(',').any(|d| d == name);
+        assert!(!seen(devs) && !seen(virt), "{name} seen:\n{out}");
+        let real = !mac.is_empty() && mac != "00:00:00:00:00:00";
+        assert!(!real || !macs.contains(&mac), "{name}'s {mac} read:\n{out}");
+    }
+}
+
+/// The devices of this process's network namespace but `lo`, with their
+/// addresses, as its `/sys/class/net` shows them.
+fn outer_network() -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/sys/class/net").unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        let mac = fs::read_to_string(format!("/sys/class/net/{name}/address"))
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if name != "lo" {
+            found.push((name, mac));
+        }
+    }
+    found
 }
 
 /// The [`Caps`] line's kernel filesystems.
@@ -508,7 +546,8 @@ fn leg_dir() -> tempfile::TempDir {
 /// there, not even the `oom_score_adj` of a process outside it of its
 /// kernel uid. `USER _apt` gets its ids through `setgroups`;
 /// `--network=none` brings `lo` up in a network namespace the build owns,
-/// with no helper (ADR-0033).
+/// with no helper (ADR-0033), and, its new `sysfs` refused below Podman's
+/// masks, gets the rbind with no network device shown.
 #[test]
 #[ignore = "T1: default: RUNs in the build's user namespace of root in a rootless Podman container"]
 fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
@@ -542,6 +581,11 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
+    // A new `sysfs` is refused below Podman's masks of `/sys`: the rbind,
+    // its network devices hidden.
+    for key in ["2:netdevs", "2:virtual", "2:macs"] {
+        assert_eq!(value(&out, key), "", "{out}");
+    }
     assert_eq!(value(&out, "run3"), "exit 0", "{out}");
     assert_ne!(
         value(&out, "3:outer"),
