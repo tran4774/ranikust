@@ -113,10 +113,12 @@ is rewritten, and both stay `accepted`. ADR-0126 and ADR-0130 are on the unmerge
 branch `feat/sandbox-rootless-run`, so they are named here, not linked.
 
 Answers a question put to the maintainer in the question window; it has no
-`question` issue, so this pull request closes nothing. The code, and the docs that
-say what an rbind `RUN` can do (the threat model's section 6 entry and its T12
-row, `docs/design/sandbox.md`, the `rnk-sandbox` card, the doc comment of
-`Fallbacks::allow_proc_rbind`, and the flag's help and warning), follow in the pull
-request that builds the flag ([#79](https://github.com/tran4774/ranikust/issues/79)),
-with its `## Changelog` entry. Revisit only if a measurement shows that a build
+`question` issue, so this pull request closes nothing. The code and the docs
+that say what an rbind `RUN` can do (the threat model's section 6 entry and its
+T12 row, `docs/design/sandbox.md`, the `rnk-sandbox` card, the doc comment of
+`Fallbacks::allow_proc_rbind`) change in the pull request of
+[#78](https://github.com/tran4774/ranikust/issues/78), which this branch is merged
+into; the flag's help and warning, with the `## Changelog` entry, come with the
+pull request that builds the flag
+([#79](https://github.com/tran4774/ranikust/issues/79)). Revisit only if a measurement shows that a build
 needs a write under `/proc/self`.
