@@ -280,9 +280,16 @@ that found a bug stay as its regression test.
   symlink out while the layer lands keeps it in the root (T3); an oversized
   tar header is refused, breaking a per-stage root; a bad blob on `/` touches no
   ignored path. On `/` a streamed layer whose tar has a header every extraction
-  refuses, or one over `--limit`, after a good first entry, changes nothing and
+  refuses (a value over the kernel's limits included, #179), or one over
+  `--limit`, after a good first entry, changes nothing and
   leaves `/` usable, and a body its source refuses reports the source's error
   first; the same layer from the store breaks `/` (the control). Red team of
+  #179 on `/`: each value over the kernel's limits, in the encoding that
+  hides it best, is refused before `/` changes, and `/` stays usable; a
+  layer that fails for where its entries land (below a symlink to a
+  directory at the limit, a loop, below a file, a hardlink to a directory)
+  breaks `/` with nothing written past the limit or outside, until the next
+  `prepare` empties it. Red team of
   that check on `/` (ADR-0123): a name out of the root is refused before `/`
   changes whether the blob is plain, gzip or zstd, in a second gzip member or
   zstd frame included; entries past the end-of-archive block reach nothing; a

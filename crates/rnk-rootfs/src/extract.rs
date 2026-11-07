@@ -21,7 +21,7 @@ use crate::delete::{self, Counts, Keep};
 use crate::error::{Error, Result, io_err};
 use crate::ignore::IgnoreList;
 use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
-use crate::path;
+use crate::path::{self, PATH_MAX};
 use crate::root::{self, Mounts, RootPath};
 
 mod created;
@@ -92,6 +92,25 @@ const SKIPPED_NAMES_MAX: usize = 1 << 20;
 const SKIPPED_NAME_COST: usize = 64;
 /// Mode of missing parent directories the layer does not list.
 const PARENT_MODE: u32 = 0o755;
+/// The kernel's `NAME_MAX`: the longest name in a directory.
+const NAME_MAX: usize = 255;
+/// The kernel's `XATTR_NAME_MAX`: the longest xattr name.
+const XATTR_NAME_MAX: usize = 255;
+/// The longest directory path [`check_headers`] takes: what a live root at
+/// `/` reads back of it.
+const SLASH_DIR_MAX: usize = live_dir_max(b"/");
+/// Why a directory's path is refused: one reason for every root, so the
+/// check and each extraction say the same.
+const DIR_PAST_PATH_MAX: &str =
+    "past PATH_MAX (4096 bytes with its NUL and, in a live root such as /, the root's own path)";
+/// The namespace only regular files and directories take (`xattr(7)`).
+const USER_XATTR: &[u8] = b"user.";
+/// A file capability, whose value the kernel checks before it is set.
+const CAPABILITY_XATTR: &[u8] = b"security.capability";
+/// The POSIX ACLs, whose values the kernel's VFS checks before a
+/// filesystem sees them.
+const ACL_ACCESS: &[u8] = b"system.posix_acl_access";
+const ACL_DEFAULT: &[u8] = b"system.posix_acl_default";
 
 /// Extracts the plain tar stream `tar` into `dst`.
 ///
@@ -146,10 +165,19 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// An opaque whiteout empties its directory of everything the layer did not
 /// put there, except ignored paths and mounts.
 ///
+/// Where a directory lies is read through `/proc/self/fd`, which shows at
+/// most `PATH_MAX` bytes with the root's own path: an entry in a directory
+/// whose path in the layer is longer is refused before anything of it is
+/// written (on `/`, past 4094 bytes, as [`check_headers`] refuses it), and
+/// so is one that names a directory a symlink puts past that (its own, a
+/// whiteout's or a hardlink target's), before anything of it is made or
+/// removed.
+///
 /// # Errors
 ///
 /// As [`extract`]; [`Error::Entry`] when the physical path of a directory
-/// cannot be told (`/proc/self/fd` gives a path outside the root).
+/// cannot be told (`/proc/self/fd` gives a path outside the root, or none
+/// past what it shows).
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
     extract_with(
         dst,
@@ -232,21 +260,32 @@ pub struct Extracted {
 
 /// Refuses what an extraction that applies whiteouts would refuse from
 /// the headers of the plain tar stream `tar` alone, and writes nothing.
-/// Values only the kernel refuses (a NUL byte or an over-long name, an
-/// xattr it does not take) still fail at write time (#179).
 ///
 /// It reads as [`extract`], [`extract_live`] and [`extract_overlay`] do:
 /// the same framing, up to the end-of-archive block, and the same
 /// `tar-header` limit (ADR-0079). It refuses a name or hardlink target that
 /// leaves the root, a hardlink to itself or whose target is the layer's
-/// root, a link whose header names no target (an empty ustar link field
-/// and no PAX `linkpath` or GNU long link), a GNU sparse or unknown entry
-/// type, a whiteout that names nothing, a file or symlink as the layer's
-/// root, and ids, modes, device numbers and times that do not parse or are
-/// out of range.
-/// It refuses nothing such an extraction takes: what depends on the root
-/// or the ignore list (where an entry lands, a hardlink's target, a
-/// hardlink or device node as the layer's root) is left to the extraction.
+/// root, a link with an empty target, a GNU sparse or unknown entry type,
+/// a whiteout that names nothing, a file or symlink as the layer's root,
+/// ids, modes, device numbers and times that do not parse or are out of
+/// range, and values the kernel refuses: a name or link target with a NUL
+/// byte, a component over 255 bytes (`NAME_MAX`; a FUSE filesystem may
+/// take a longer one, refused all the same), a symlink target over
+/// `PATH_MAX` less its NUL, and on a directory, file or symlink an xattr
+/// whose name is empty, over `XATTR_NAME_MAX` or holds a NUL byte, whose
+/// value is over `XATTR_SIZE_MAX`, a file capability or POSIX ACL the
+/// kernel never sets (a default ACL on anything but a directory included),
+/// or a `user.*` one on a symlink; also where the root
+/// would have the entry skipped (an ignored path, a whiteout whose
+/// directory is missing), which a header does not show. It holds a
+/// directory path to 4094 bytes, as [`extract_live`] on `/` does, which
+/// reads where a directory lies through `/proc/self/fd`, `/` and the path
+/// within `PATH_MAX`: [`extract`] and [`extract_overlay`] take 4095.
+/// Apart from that, it refuses nothing such an extraction takes: what
+/// depends on the root or the ignore list (where an entry lands, a
+/// hardlink's target, a hardlink or device node as the layer's root) is
+/// left to the extraction, and so are the name and xattrs of a device node
+/// or FIFO, which a live root never makes.
 /// What follows the end-of-archive block is the caller's to read.
 ///
 /// Public for `rnk-snapshot`'s spool pass on `/` (ADR-0123): the pass that
@@ -261,9 +300,21 @@ pub struct Extracted {
 /// [`Error::ExtensionHeader`] past the `tar-header` limit, [`Error::Entry`]
 /// for a refused entry.
 pub fn check_headers(tar: impl Read) -> Result<()> {
+    check_headers_within(tar, SLASH_DIR_MAX)
+}
+
+/// [`check_headers`], directory paths held to `dir_max` bytes.
+fn check_headers_within(tar: impl Read, dir_max: usize) -> Result<()> {
     let (mut skipped, mut first_skipped) = (0, None);
     for_each_entry(tar, |entry| {
-        read_header(entry, Whiteouts::Apply, &mut skipped, &mut first_skipped).map(drop)
+        read_header(
+            entry,
+            Whiteouts::Apply,
+            dir_max,
+            &mut skipped,
+            &mut first_skipped,
+        )
+        .map(drop)
     })
 }
 
@@ -302,11 +353,15 @@ fn extract_with(
         Some(keep) => Some(Live::new(dst, keep)?),
         None => None,
     };
+    let dir_max = live
+        .as_ref()
+        .map_or(PATH_MAX, |l| live_dir_max(&l.root_host));
     let mut ex = Extractor {
         root: dst,
         wh,
         lowers,
         live,
+        dir_max,
         devices,
         dirs: BTreeMap::new(),
         created: Created::default(),
@@ -391,6 +446,9 @@ struct Extractor<'r> {
     lowers: &'r [&'r RootPath],
     /// [`extract_live`]: the ignore list and physical paths.
     live: Option<Live<'r>>,
+    /// The longest directory path the root takes: [`PATH_MAX`], less a
+    /// live root's own path ([`live_dir_max`]).
+    dir_max: usize,
     /// Whether block and character device nodes are made.
     devices: DeviceNodes,
     /// Lower inodes copied for a hardlink, by index in `lowers`, device and
@@ -478,16 +536,21 @@ fn for_each_entry<R: Read>(
 /// Reads `entry`'s header and PAX records, and refuses what no root can
 /// make right: a GNU sparse entry, a name or hardlink target that leaves
 /// the root, a hardlink to itself or whose target is the layer's root, a
-/// link whose header names no target (an empty ustar link field and no PAX
-/// `linkpath` or GNU long link), a whiteout that names nothing, an unknown
-/// entry type, a file or symlink as the layer's root, and ids, modes,
-/// device numbers and times that do not parse or are out of range. The
-/// first step of every extraction, and all of [`check_headers`]. `wh` tells
-/// what a whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`])
-/// are counted in `skipped`, the first of them kept in `first_skipped`.
+/// link with an empty target (in its ustar field, PAX `linkpath` or GNU
+/// long link), a whiteout that names nothing, an unknown entry type, a
+/// file or symlink as the layer's root, ids, modes, device numbers and
+/// times that do not parse or are out of range, and the values the kernel
+/// refuses ([`kernel_refuses_name`], [`kernel_refuses_xattrs`]), for every
+/// name the extraction hands it but a node's, every link target, and the
+/// xattrs of a directory, file or symlink (a node's are checked where it is
+/// made). The first step of every extraction, and all of [`check_headers`].
+/// `wh` tells what a whiteout is, `dir_max` the longest directory path the
+/// root takes; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`]) are
+/// counted in `skipped`, the first of them kept in `first_skipped`.
 fn read_header<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     wh: Whiteouts,
+    dir_max: usize,
     skipped: &mut u64,
     first_skipped: &mut Option<(PathBuf, OsString)>,
 ) -> Result<Header> {
@@ -507,13 +570,34 @@ fn read_header<R: Read>(
         return Err(refuse("GNU sparse entries are not supported"));
     }
     let path = path::clean(&raw).ok_or_else(|| refuse("the name leaves the root"))?;
+    let dir = path.parent().unwrap_or(Path::new(""));
 
     if let Some(name) = path.file_name()
         && wh != Whiteouts::Literal
         && name.as_bytes().starts_with(WHITEOUT_PREFIX)
     {
         let name = whiteout_name(name.as_bytes(), &raw)?;
+        // The kernel gets the name a whiteout hides, never `.wh.<name>`;
+        // AUFS metadata it never gets.
+        let named = match &name {
+            WhiteoutName::Hides(hidden) => Some(hidden.as_os_str()),
+            WhiteoutName::Opaque => path.file_name(),
+            WhiteoutName::Meta => None,
+        };
+        if let Some(why) = named.and_then(|n| kernel_refuses_name("the name", dir, n, dir_max)) {
+            return Err(refuse(&why));
+        }
         return Ok(Header::Whiteout { raw, path, name });
+    }
+    // A node's name is checked where it is made ([`Extractor::entry`]): a
+    // live root makes no node, a user namespace no device.
+    let node = matches!(etype, EntryType::Char | EntryType::Block | EntryType::Fifo);
+    if !node
+        && let Some(why) = path
+            .file_name()
+            .and_then(|n| kernel_refuses_name("the name", dir, n, dir_max))
+    {
+        return Err(refuse(&why));
     }
 
     let kind = match etype {
@@ -526,17 +610,38 @@ fn read_header<R: Read>(
             return Err(refuse("GNU sparse entries are not supported"));
         }
         EntryType::Symlink | EntryType::Link => {
+            // An empty PAX `linkpath` or GNU long link stands for the
+            // target as an empty ustar field does: none.
             let link = entry
                 .link_name_bytes()
+                .filter(|l| !l.is_empty())
                 .ok_or_else(|| refuse("a link entry without a target"))?;
             let link = PathBuf::from(OsStr::from_bytes(&link));
             if etype == EntryType::Symlink {
+                // `symlinkat` stores the target as given: only its NUL and
+                // its length matter, not its names.
+                let target = link.as_os_str().as_bytes();
+                if target.contains(&0) {
+                    return Err(refuse("the symlink target holds a NUL byte"));
+                }
+                if target.len() > PATH_MAX {
+                    return Err(refuse(&format!(
+                        "the symlink target is over {PATH_MAX} bytes (PATH_MAX less its NUL)"
+                    )));
+                }
                 Kind::Symlink(link)
             } else {
                 let target = path::clean(&link)
                     .ok_or_else(|| refuse("the hardlink target leaves the root"))?;
                 if target == path || target.as_os_str().is_empty() {
                     return Err(refuse("a hardlink to itself or to the root"));
+                }
+                let tdir = target.parent().unwrap_or(Path::new(""));
+                if let Some(why) = target
+                    .file_name()
+                    .and_then(|n| kernel_refuses_name("the hardlink target", tdir, n, dir_max))
+                {
+                    return Err(refuse(&why));
                 }
                 Kind::Hardlink(target)
             }
@@ -564,6 +669,18 @@ fn read_header<R: Read>(
     // skip it first.
     if path.as_os_str().is_empty() && matches!(kind, Kind::File | Kind::Symlink(_)) {
         return Err(refuse(ROOT_NOT_DIR));
+    }
+    // What the entry's xattrs are set on, when they are checked here: no
+    // extraction sets a hardlink's, and a node's are checked where it is
+    // made, as its name.
+    let on = match &kind {
+        Kind::Dir => Some(XattrsOn::Dir),
+        Kind::File => Some(XattrsOn::File),
+        Kind::Symlink(_) => Some(XattrsOn::Other),
+        Kind::Hardlink(_) | Kind::Node(..) => None,
+    };
+    if let Some(why) = on.and_then(|on| kernel_refuses_xattrs(&meta.xattrs, on)) {
+        return Err(refuse(&why));
     }
     Ok(Header::Entry {
         raw,
@@ -650,6 +767,195 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
     }
 }
 
+/// Why the kernel refuses the name `name` in the directory `dir` (both
+/// cleaned), `what` naming it in the reason: a NUL byte, a component of
+/// either over [`NAME_MAX`] (which a FUSE filesystem may lift, held to
+/// all the same), or a `dir` over `dir_max` ([`PATH_MAX`], less a live
+/// root's own path). An extraction hands the kernel `dir` whole, then
+/// `name` relative to it, so the whole path may be longer.
+fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr, dir_max: usize) -> Option<String> {
+    let path = dir.as_os_str().as_bytes();
+    if path.contains(&0) || name.as_bytes().contains(&0) {
+        return Some(format!("{what} holds a NUL byte"));
+    }
+    if dir.iter().chain([name]).any(|n| n.len() > NAME_MAX) {
+        return Some(format!(
+            "{what} has a component over {NAME_MAX} bytes (NAME_MAX)"
+        ));
+    }
+    if path.len() > dir_max {
+        return Some(format!(
+            "{what} lies in a directory whose path is {DIR_PAST_PATH_MAX}"
+        ));
+    }
+    None
+}
+
+/// What an entry's xattrs are set on, for [`kernel_refuses_xattrs`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum XattrsOn {
+    Dir,
+    File,
+    /// A symlink, device node or FIFO.
+    Other,
+}
+
+/// Why the kernel refuses one of `xattrs` (as they are set, escaped in the
+/// overlay form) on any filesystem, set `on` an entry of that kind: a name
+/// empty, over [`XATTR_NAME_MAX`] or holding a NUL byte, a value over
+/// [`meta::XATTR_MAX`] (`XATTR_SIZE_MAX`), a file capability it never sets,
+/// a POSIX ACL its VFS refuses ([`posix_acl_refusal`]), or a `user.*` name
+/// on an entry that is neither a regular file nor a directory. Which names
+/// a filesystem takes is its own: a FUSE or Ceph one may take any.
+fn kernel_refuses_xattrs(xattrs: &[(OsString, Vec<u8>)], on: XattrsOn) -> Option<String> {
+    for (name, value) in xattrs {
+        let n = name.as_bytes();
+        if n.is_empty() {
+            return Some("an xattr has an empty name".to_owned());
+        }
+        if n.len() > XATTR_NAME_MAX {
+            return Some(format!(
+                "an xattr name is over {XATTR_NAME_MAX} bytes (XATTR_NAME_MAX)"
+            ));
+        }
+        let shown = name.to_string_lossy();
+        let shown = shown.escape_debug();
+        if n.contains(&0) {
+            return Some(format!("the xattr name {shown} holds a NUL byte"));
+        }
+        if value.len() > meta::XATTR_MAX {
+            return Some(format!(
+                "the value of the xattr {shown} is over {} bytes (XATTR_SIZE_MAX)",
+                meta::XATTR_MAX
+            ));
+        }
+        if n == CAPABILITY_XATTR && !value.is_empty() && !is_file_capability(value) {
+            return Some(format!(
+                "the xattr {shown} is no file capability the kernel sets (revision 2 in 20 bytes, or 3 in 24 with a root id other than -1)"
+            ));
+        }
+        let default = n == ACL_DEFAULT;
+        if (default || n == ACL_ACCESS)
+            && let Some(why) = posix_acl_refusal(value, default, on == XattrsOn::Dir)
+        {
+            return Some(format!(
+                "the xattr {shown} is no POSIX ACL the kernel sets: {why}"
+            ));
+        }
+        if on == XattrsOn::Other && n.starts_with(USER_XATTR) {
+            return Some(format!(
+                "the xattr {shown}: only regular files and directories take user.* xattrs"
+            ));
+        }
+    }
+    None
+}
+
+/// Whether `value` is a file capability the kernel may set
+/// (`cap_convert_nscap` in `security/commoncap.c`): 20 bytes of revision 2,
+/// or 24 of revision 3 whose root id is not -1, its magic and root id
+/// little-endian, the effective flag aside.
+fn is_file_capability(value: &[u8]) -> bool {
+    const REVISION_2: u32 = 0x0200_0000;
+    const REVISION_3: u32 = 0x0300_0000;
+    const EFFECTIVE: u32 = 0x0000_0001;
+    // No user namespace maps it.
+    const NO_ROOT: [u8; 4] = u32::MAX.to_le_bytes();
+    let Some(magic) = value.first_chunk::<4>() else {
+        return false;
+    };
+    match (value.len(), u32::from_le_bytes(*magic) & !EFFECTIVE) {
+        (20, REVISION_2) => true,
+        (24, REVISION_3) => value.last_chunk::<4>() != Some(&NO_ROOT),
+        _ => false,
+    }
+}
+
+/// Why the kernel's VFS refuses `value` as a POSIX ACL, the default one
+/// if `default`, on a directory if `dir`, wherever ACLs are taken: as
+/// `do_set_acl`, `posix_acl_from_xattr`, `set_posix_acl` and
+/// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order; which
+/// kernels and filesystems do: `docs/design/rootfs.md#extraction`. Not an
+/// id the user namespace does not map, nor ACLs on a filesystem without
+/// them: those fail where it is set.
+fn posix_acl_refusal(value: &[u8], default: bool, dir: bool) -> Option<&'static str> {
+    // `posix_acl_xattr_header` (version) and `posix_acl_xattr_entry`
+    // (tag, permissions, id), little-endian.
+    const VERSION: u32 = 2;
+    const USER_OBJ: u16 = 0x01;
+    const USER: u16 = 0x02;
+    const GROUP_OBJ: u16 = 0x04;
+    const GROUP: u16 = 0x08;
+    const MASK: u16 = 0x10;
+    const OTHER: u16 = 0x20;
+    // `posix_acl_valid`'s state once `ACL_OTHER` ends the ACL.
+    const DONE: u16 = 0;
+    const RWX: u16 = 0o7;
+    // `ACL_UNDEFINED_ID`, which no user namespace maps.
+    const UNDEFINED: u32 = u32::MAX;
+    const ORDER: &str = "its entries are not the owner, named users, the group, named groups, a mask (needed with a named one) and others, each once and in that order";
+    let parse = |&[t0, t1, p0, p1, i0, i1, i2, i3]: &[u8; 8]| {
+        (
+            u16::from_le_bytes([t0, t1]),
+            u16::from_le_bytes([p0, p1]),
+            u32::from_le_bytes([i0, i1, i2, i3]),
+        )
+    };
+    // `do_set_acl`: an empty value removes the ACL, as every extraction
+    // does on an older kernel too.
+    if value.is_empty() {
+        return None;
+    }
+    let Some((version, entries)) = value.split_first_chunk::<4>() else {
+        return Some("it is shorter than its 4-byte header");
+    };
+    if u32::from_le_bytes(*version) != VERSION {
+        return Some("its version is not 2");
+    }
+    let (entries, rest) = entries.as_chunks::<8>();
+    if !rest.is_empty() {
+        return Some("its size is not its 4-byte header and 8 bytes per entry");
+    }
+    // No entry removes it as well.
+    if entries.is_empty() {
+        return None;
+    }
+    for (tag, _, id) in entries.iter().map(parse) {
+        match tag {
+            USER_OBJ | GROUP_OBJ | MASK | OTHER => {}
+            USER | GROUP if id == UNDEFINED => {
+                return Some("a named user or group has the id -1");
+            }
+            USER | GROUP => {}
+            _ => return Some("an entry has an unknown tag"),
+        }
+    }
+    // `set_posix_acl`
+    if default && !dir {
+        return Some("only a directory takes a default ACL");
+    }
+    // `posix_acl_valid`
+    let (mut state, mut needs_mask) = (USER_OBJ, false);
+    for (tag, perm, _) in entries.iter().map(parse) {
+        if perm & !RWX != 0 {
+            return Some("an entry has permissions other than read, write and execute");
+        }
+        state = match (tag, state) {
+            (USER_OBJ, USER_OBJ) => USER,
+            (USER, USER) | (GROUP, GROUP) => {
+                needs_mask = true;
+                state
+            }
+            (GROUP_OBJ, USER) => GROUP,
+            (MASK, GROUP) => OTHER,
+            (OTHER, OTHER) => DONE,
+            (OTHER, GROUP) if !needs_mask => DONE,
+            _ => return Some(ORDER),
+        };
+    }
+    (state != DONE).then_some(ORDER)
+}
+
 /// What a whiteout's name (`.wh.` and more) stands for.
 enum WhiteoutName {
     /// The opaque marker: what the layers below have in its directory is
@@ -693,6 +999,7 @@ impl Extractor<'_> {
         let header = read_header(
             entry,
             self.wh,
+            self.dir_max,
             &mut self.stats.xattrs_skipped,
             &mut self.first_skipped,
         )?;
@@ -758,6 +1065,19 @@ impl Extractor<'_> {
                     Err(refuse(ROOT_NOT_DIR))
                 }
             };
+        }
+        // `read_header` leaves a node's name and xattrs to the extraction
+        // that makes it: refused before its parents or the node are made.
+        if let Kind::Node(..) = kind
+            && let Some(why) = path
+                .file_name()
+                .and_then(|n| {
+                    let dir = path.parent().unwrap_or(Path::new(""));
+                    kernel_refuses_name("the name", dir, n, self.dir_max)
+                })
+                .or_else(|| kernel_refuses_xattrs(&meta.xattrs, XattrsOn::Other))
+        {
+            return Err(refuse(&why));
         }
         // As root this links the device: nothing at its name now, such as a
         // lower layer's file, is what it names.
@@ -1298,7 +1618,7 @@ impl Extractor<'_> {
                 };
                 let target = match &self.live {
                     Some(live) => {
-                        let t = live.physical(pfd.as_fd(), &dir)?.join(hidden);
+                        let t = live.physical(pfd.as_fd(), &dir, raw)?.join(hidden);
                         if live.keep.covers(&t) || live.keep.has_below(&t) {
                             self.stats.ignored += 1;
                             return Ok(());
@@ -1356,7 +1676,7 @@ impl Extractor<'_> {
         let physical;
         let (dir, keep) = match &self.live {
             Some(live) => {
-                physical = live.physical(start.as_fd(), dir)?;
+                physical = live.physical(start.as_fd(), dir, raw)?;
                 if live.keep.covers(&physical) {
                     self.stats.ignored += 1;
                     return Ok(());
@@ -1404,6 +1724,7 @@ impl Extractor<'_> {
         name: &OsStr,
         raw: &Path,
     ) -> Result<Option<(OwnedFd, PathBuf)>> {
+        let dir_max = self.dir_max;
         let Some(live) = &mut self.live else {
             let pfd = self
                 .root
@@ -1438,7 +1759,7 @@ impl Extractor<'_> {
                 Err(e) => return Err(e),
             }
         };
-        let mut physical = live.physical(cur.as_fd(), &existing)?;
+        let mut physical = live.physical(cur.as_fd(), &existing, raw)?;
         missing.reverse();
         let full: PathBuf = physical
             .iter()
@@ -1446,6 +1767,11 @@ impl Extractor<'_> {
             .collect();
         if live.keep.covers(full.join(name)) {
             return Ok(None);
+        }
+        // A symlink in `parent` may put it past what `/proc/self/fd` shows,
+        // which the names it lacks would then be made in.
+        if full.as_os_str().len() > dir_max {
+            return Err(past_proc(raw));
         }
         let mode = Mode::from_raw_mode(PARENT_MODE);
         for n in &missing {
@@ -1485,7 +1811,7 @@ impl Extractor<'_> {
             Err(e) if is_xdev(&e) => return Ok(None),
             Err(e) => return Err(on_mount(e, raw)),
         };
-        let t = live.physical(fd.as_fd(), &tparent)?.join(tname);
+        let t = live.physical(fd.as_fd(), &tparent, raw)?.join(tname);
         if live.keep.covers(&t) {
             return Ok(None);
         }
@@ -1521,8 +1847,14 @@ impl Extractor<'_> {
                 continue;
             };
             let pfd = self.root.resolve_dir_in(parent, Mounts::Stay)?;
-            if live.physical(pfd.as_fd(), parent)? != parent {
-                return Err(Error::Changed { path: path.clone() });
+            // No layer puts a parent made here outside the root or past what
+            // `/proc/self/fd` shows: a swap did.
+            match live.physical(pfd.as_fd(), parent, path) {
+                Ok(p) if p == parent => {}
+                Ok(_) | Err(Error::Entry { .. }) => {
+                    return Err(Error::Changed { path: path.clone() });
+                }
+                Err(e) => return Err(e),
             }
             root::set_meta_at(pfd.as_fd(), name, m, Some(FileType::Directory), path)?;
         }
@@ -1580,9 +1912,14 @@ impl<'r> Live<'r> {
     }
 
     /// The physical path inside the root of the directory `fd` (reached
-    /// as `at`), from the kernel's own name for it: `""` for the root.
-    fn physical(&self, fd: BorrowedFd<'_>, at: &Path) -> Result<PathBuf> {
-        let link = read_fd_link(self.proc.as_fd(), fd, at)?;
+    /// as `at` by the entry `raw`), from the kernel's own name for it: `""`
+    /// for the root.
+    fn physical(&self, fd: BorrowedFd<'_>, at: &Path, raw: &Path) -> Result<PathBuf> {
+        let link = match read_fd_link(self.proc.as_fd(), fd, at) {
+            Ok(link) => link,
+            Err(e) if is_name_too_long(&e) => return Err(past_proc(raw)),
+            Err(e) => return Err(e),
+        };
         let rel = if self.root_host == b"/" {
             link.strip_prefix(b"/")
         } else {
@@ -1596,10 +1933,23 @@ impl<'r> Live<'r> {
         };
         rel.and_then(|r| path::clean(Path::new(OsStr::from_bytes(r))))
             .ok_or_else(|| Error::Entry {
-                path: at.to_owned(),
-                reason: "cannot tell where this directory lies in the root".to_owned(),
+                path: raw.to_owned(),
+                reason: "cannot tell where its directory lies in the root".to_owned(),
             })
     }
+}
+
+/// The longest directory path in a live root at `root_host` whose physical
+/// path [`Live::physical`] reads: `/proc/self/fd` shows at most
+/// [`PATH_MAX`] bytes, the root's own path and a `/` included (4094 on
+/// `/`).
+const fn live_dir_max(root_host: &[u8]) -> usize {
+    let prefix = if matches!(root_host, [b'/']) {
+        1
+    } else {
+        root_host.len() + 1
+    };
+    PATH_MAX.saturating_sub(prefix)
 }
 
 /// The target of `/proc/self/fd/<fd>`: the kernel's path of `fd`.
@@ -1707,6 +2057,21 @@ fn is_whiteout(st: &Stat) -> bool {
 
 fn is_noent(e: &Error) -> bool {
     e.raw_os_error() == Some(Errno::NOENT.raw_os_error())
+}
+
+fn is_name_too_long(e: &Error) -> bool {
+    e.raw_os_error() == Some(Errno::NAMETOOLONG.raw_os_error())
+}
+
+/// The entry `raw` names, through a symlink, a directory of a live root
+/// past what `/proc/self/fd` shows of it.
+fn past_proc(raw: &Path) -> Error {
+    Error::Entry {
+        path: raw.to_owned(),
+        reason: format!(
+            "it names, through a symlink, a directory whose path is {DIR_PAST_PATH_MAX}"
+        ),
+    }
 }
 
 /// The name, or a directory on the way to it, is no longer there.

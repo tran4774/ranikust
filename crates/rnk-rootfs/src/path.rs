@@ -9,6 +9,11 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Error, Result};
 
+/// The longest path the kernel takes (`PATH_MAX` less the NUL): below a
+/// root, the longest a path-based operation reaches, as `rnk-snapshot`'s
+/// exporter and walk use.
+pub(crate) const PATH_MAX: usize = 4095;
+
 /// The path handed to `openat2(RESOLVE_IN_ROOT)`: the path as given, which
 /// the kernel takes relative to the root even when absolute and clamps at
 /// the root on `..`; `.` for the empty path. Not normalized: `file/.` and
