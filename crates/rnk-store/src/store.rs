@@ -390,6 +390,31 @@ impl Store {
     /// it cannot be created or opened (including
     /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8).
     pub fn open(paths: &BuildPaths) -> Result<Self> {
+        Self::open_with(paths, None::<fn()>, |_| Ok(()))
+    }
+
+    /// As [`Store::open`], for a set-up that falls back to kaniko mode on
+    /// `/` when it fails (ADR-0136), which takes only an empty state
+    /// directory: where this open made the directory a store (it wrote
+    /// [`STATE_MARKER`]) and then fails, it calls `undoing`, for what must
+    /// let go of the directory or not be cut short first, then empties the
+    /// directory as [`Store::abandon`] does, logging what it cannot, and
+    /// returns the error.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::open`].
+    pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self> {
+        Self::open_with(paths, Some(undoing), |_| Ok(()))
+    }
+
+    /// [`Store::open`], with `undoing` as [`Store::open_or_abandon`] takes
+    /// it, and `marked` run once the marker is checked: a test's failure.
+    fn open_with(
+        paths: &BuildPaths,
+        undoing: Option<impl FnOnce()>,
+        marked: impl FnOnce(&RootPath) -> Result<()>,
+    ) -> Result<Self> {
         let host_err = |op, source| Error::Io {
             op,
             path: paths.state.clone(),
@@ -416,12 +441,25 @@ impl Store {
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
         let made = check_marker(&state, &state_path)?;
-        for d in DIRS {
-            state.create_dir_all(d, DIR_MODE)?;
-            own_group(&state, d)?;
-        }
-        warn_if_shared(&state, &state_path);
-        let (id, build_lock) = register(&state, &state_path)?;
+        let filled = marked(&state).and_then(|()| {
+            for d in DIRS {
+                state.create_dir_all(d, DIR_MODE)?;
+                own_group(&state, d)?;
+            }
+            warn_if_shared(&state, &state_path);
+            register(&state, &state_path)
+        });
+        let (id, build_lock) = match filled {
+            Ok(registered) => registered,
+            Err(e) => {
+                if made && let Some(undoing) = undoing {
+                    undoing();
+                    let abandoned = abandon_made(&state, state_path.clone(), &state_lock);
+                    log_abandoned(&state_path, abandoned);
+                }
+                return Err(e);
+            }
+        };
         let store = Self {
             build_dir: state_path.join("builds").join(&id),
             state,
@@ -437,7 +475,14 @@ impl Store {
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
         };
-        store.cleanup()?;
+        if let Err(e) = store.cleanup() {
+            if made && let Some(undoing) = undoing {
+                undoing();
+                let state_path = store.state_path.clone();
+                log_abandoned(&state_path, store.abandon());
+            }
+            return Err(e);
+        }
         remove_probe_leftovers(&store.state, &store.state_path);
         Ok(store)
     }
@@ -1382,22 +1427,7 @@ impl Store {
         let Some(lock) = state_lock else {
             return Ok(false);
         };
-        let span = tracing::info_span!("rnk_store.prune");
-        let _entered = span.enter();
-        rnk_rootfs::refuse_own_root(&state, &state_path)?;
-        // A conversion: the shared lock goes, and the exclusive one comes
-        // only where no other descriptor holds the directory.
-        match lock::try_lock(&lock) {
-            Ok(true) => {}
-            Ok(false) => return Ok(false),
-            Err(source) => {
-                return Err(Error::NoFlock {
-                    path: state_path,
-                    source,
-                });
-            }
-        }
-        empty_locked(&state, state_path, &lock)
+        abandon_made(&state, state_path, &lock)
     }
 
     /// Empties the state directory `state`, for `ranikust prune --all`
@@ -1950,6 +1980,50 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
         }),
         Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(()),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Empties the state directory `state` an open made a store, whose shared
+/// `flock` `lock` holds, as [`Store::abandon`] does: `false` where another
+/// build holds it too.
+fn abandon_made(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<bool> {
+    let span = tracing::info_span!("rnk_store.prune");
+    let _entered = span.enter();
+    rnk_rootfs::refuse_own_root(state, &state_path)?;
+    // A conversion: the shared lock goes, and the exclusive one comes only
+    // where no other descriptor holds the directory.
+    match lock::try_lock(lock) {
+        Ok(true) => {}
+        Ok(false) => return Ok(false),
+        Err(source) => {
+            return Err(Error::NoFlock {
+                path: state_path,
+                source,
+            });
+        }
+    }
+    empty_locked(state, state_path, lock)
+}
+
+/// Logs what a failed [`Store::open_or_abandon`] did with the store it
+/// made in `state_path`.
+fn log_abandoned(state_path: &Path, abandoned: Result<bool>) {
+    match abandoned {
+        Ok(true) => tracing::debug!(
+            target: "rnk_store",
+            "state directory {}: the store this open made is removed",
+            state_path.display()
+        ),
+        Ok(false) => tracing::warn!(
+            target: "rnk_store",
+            "state directory {}: the store this open made is kept, another build holds it",
+            state_path.display()
+        ),
+        Err(e) => tracing::warn!(
+            target: "rnk_store",
+            "state directory {}: the store this open made is not removed: {e}",
+            state_path.display()
+        ),
     }
 }
 

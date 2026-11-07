@@ -483,3 +483,45 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
         "{e}"
     );
 }
+
+/// An open that fails once it made the state directory a store empties it
+/// again where asked, after `undoing` (ADR-0136): kaniko mode on `/`, which
+/// follows, takes only an empty directory. A plain open leaves its marker,
+/// and a store found is never emptied.
+#[test]
+fn an_open_that_fails_once_it_made_the_store_empties_it_where_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let fail = |_: &RootPath| Err(Error::Cancelled);
+    let failed = |r: Result<Store>| matches!(r, Err(Error::Cancelled));
+
+    let state = dir.path().join("plain");
+    let paths = BuildPaths::new(&state, &state);
+    assert!(failed(Store::open_with(&paths, None::<fn()>, fail)));
+    assert!(state.join(STATE_MARKER).is_file());
+
+    let state = dir.path().join("made");
+    fs::create_dir(&state).unwrap();
+    fs::create_dir(state.join(format!("{USERNS_PROBE_PREFIX}1-2"))).unwrap();
+    let paths = BuildPaths::new(&state, &state);
+    let mut undone = false;
+    assert!(failed(Store::open_with(
+        &paths,
+        Some(|| undone = true),
+        fail
+    )));
+    assert!(undone);
+    assert_eq!(fs::read_dir(&state).unwrap().count(), 0);
+    Store::open_anonymous(&state).unwrap().close().unwrap();
+
+    let state = dir.path().join("found");
+    let paths = BuildPaths::new(&state, &state);
+    Store::open(&paths).unwrap().close().unwrap();
+    let mut undone = false;
+    assert!(failed(Store::open_with(
+        &paths,
+        Some(|| undone = true),
+        fail
+    )));
+    assert!(!undone);
+    assert!(state.join(STATE_MARKER).is_file());
+}

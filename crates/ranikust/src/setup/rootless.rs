@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rnk_sandbox::{Fallbacks, KernelFs, MountResult, Sandbox, SubordinateIds};
+use rnk_store::{BuildPaths, Store};
 
 use super::{Kind, Outcome, Refusal, Setup};
 use crate::config::Seccomp;
@@ -217,9 +218,11 @@ pub(crate) struct Then<'a> {
     /// A `RUN` with `--network=none` may get a network namespace of its own
     /// (`--allow network.none-userns`), as for [`super::set_up`].
     pub(crate) userns_network: bool,
-    /// The child that falls back (ADR-0136): a failure once the store is
-    /// open abandons the store ([`rnk_store::Store::abandon`]), a forwarded
-    /// stop ignored meanwhile ([`rnk_sandbox::Supervised::undoing`]).
+    /// The child that falls back (ADR-0136): a failure once the store's
+    /// open made the directory a store abandons the store
+    /// ([`rnk_store::Store::open_or_abandon`], [`rnk_store::Store::abandon`]),
+    /// a forwarded stop ignored meanwhile
+    /// ([`rnk_sandbox::Supervised::undoing`]).
     pub(crate) child: Option<&'a rnk_sandbox::Supervised>,
     /// The test hook's variable where its `rootless-broken` fails the
     /// set-up at its last step, once the sandbox started.
@@ -259,7 +262,18 @@ pub(crate) fn set_up(
     let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
         .map_err(|e| super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into()))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
-    let store = super::open_store(state_dir, state_dir, euid).map_err(super::inside_userns)?;
+    let mut held = Some(held);
+    let opened = match then.child {
+        // An open that made the store and then fails empties it again, its
+        // own lock the only one left: kaniko mode follows.
+        Some(child) => Store::open_or_abandon(&BuildPaths::new(state_dir, state_dir), || {
+            drop(held.take());
+            undoing(child);
+        })
+        .map_err(|e| super::store_refusal(&e, state_dir, euid)),
+        None => super::open_store(state_dir, state_dir, euid),
+    };
+    let store = opened.map_err(super::inside_userns)?;
     // The store holds the directory now.
     drop(held);
     match in_store(state_dir, &store, fallbacks, scanned, seccomp, then) {
@@ -271,9 +285,7 @@ pub(crate) fn set_up(
         }),
         Err(refusal) => {
             if let Some(child) = then.child {
-                if let Err(e) = child.undoing() {
-                    tracing::debug!("a stop may cut the store's removal short: {e}");
-                }
+                undoing(child);
                 abandon(store);
             }
             Err(refusal)
@@ -322,6 +334,14 @@ fn in_store(
     // Once nothing is left to fail, so that a fallback logs one mode.
     tracing::info!("ranikust: {outcome}");
     Ok((outcome, sandbox))
+}
+
+/// What the fallback's child does before it undoes a failed set-up
+/// ([`rnk_sandbox::Supervised::undoing`]).
+fn undoing(child: &rnk_sandbox::Supervised) {
+    if let Err(e) = child.undoing() {
+        tracing::debug!("a stop may cut the store's removal short: {e}");
+    }
 }
 
 /// Closes the store of a set-up that failed, and empties the state

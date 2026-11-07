@@ -81,6 +81,7 @@ impl Store {
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
+    pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it wrote the marker and then fails, undoing() then the directory emptied as abandon does (logged where it cannot be), the error returned
     pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then, only where this open wrote the marker, the shared state lock turned exclusive without waiting on the same descriptor and the directory emptied as prune_all does; true: emptied; false: another build holds it, or the store was there before
     pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), check_prune's checks, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     pub fn check_prune(state: &Path) -> Result<PruneCheck>; // prune_all's checks, read-only and without its lock, on state as given with no symlink followed: else prune_all's error; ranikust's prune runs it before the namespace and pins the commands it prints with it
@@ -278,7 +279,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   by both until removed; `abandon` empties a store only where its own
   open made it and no other build holds it, and otherwise leaves it as
   `close` does
-  (`abandon_empties_only_a_store_its_open_made_and_no_build_holds`);
+  (`abandon_empties_only_a_store_its_open_made_and_no_build_holds`), as
+  `open_or_abandon` does for an open that fails once it wrote the marker,
+  after its `undoing`, and never one it found
+  (`src/store/tests.rs`:
+  `an_open_that_fails_once_it_made_the_store_empties_it_where_asked`);
   `check_prune`'s refusal of a path with a
   symlink on it, last or not, told apart (`is_symlink_on`) from a
   missing, unmarked or symlinked-marker one; in a cache mount, symlinks out

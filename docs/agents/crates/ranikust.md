@@ -58,7 +58,7 @@ writer) before `unshare`, the probes and the state directory's checks.
   spawner. A failure from the entry on is `Kind::Broken`. Root's
   `--mode=auto` (`Via::AutoRoot`) runs `set_up` and the build in a child
   (`rnk_sandbox::fork_to_wait`, ADR-0136): its failure abandons the store
-  (`Store::abandon`) and sends the reason, and the parent, which never
+  (`Store::abandon`; `Store::open_or_abandon`, its open failing) and sends the reason, and the parent, which never
   entered the namespace, returns `Rootless::FellBack` and builds in kaniko
   mode; once set up, `Supervised::proceed` closes that way back and the
   build stops on the forwarded `SIGUSR1` (`build::Stops::Forwarded`); a

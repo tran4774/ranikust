@@ -56,8 +56,9 @@ its properties, stood for this.
   set-up (entering the namespace, the store, the sandbox probe, the overlay
   probe, the spawner) it closes its store and, where that store's open made
   the state directory a store and no other build holds it, empties the
-  directory (`Store::abandon`), then sends the reason through a pipe and
-  exits. Once set up, it closes the pipe before the build: from then on the
+  directory (`Store::abandon`; an open that fails once it wrote the marker
+  empties it too, `Store::open_or_abandon`), then sends the reason through
+  a pipe and exits. Once set up, it closes the pipe before the build: from then on the
   run ends as the child does.
 - **The parent** drops its copy of the state directory's hold right after
   the fork, waits, and on a fallback with no stop signal received logs the
@@ -117,7 +118,8 @@ its properties, stood for this.
 - Tests **[code]**: `rnk-sandbox` `supervise::tests` (what the parent does
   for each end of the child), `ranikust`
   `only_roots_auto_mode_falls_back_to_kaniko_mode`, `rnk-store`
-  `abandon_empties_only_a_store_its_open_made_and_no_build_holds`; T1 smoke
+  `abandon_empties_only_a_store_its_open_made_and_no_build_holds` and
+  `an_open_that_fails_once_it_made_the_store_empties_it_where_asked`; T1 smoke
   case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken`, the
   set-up's last step once its sandbox started, builds in kaniko mode with
   the note and kaniko mode's line alone and leaves the state directory empty;
@@ -134,5 +136,5 @@ Refines [ADR-0107](0107-rootless-podman-without-a-volume-builds-on-slash-and-unm
 are unchanged. Implemented in `crates/rnk-sandbox/src/supervise.rs`,
 `crates/ranikust/src/main.rs` (`rootless`, `Via`),
 `crates/ranikust/src/setup/rootless.rs` and `crates/rnk-store/src/store.rs`
-(`Store::abandon`); described in
+(`Store::abandon`, `Store::open_or_abandon`); described in
 [`design/modes-and-detection.md`](../design/modes-and-detection.md#probe-order---modeauto).

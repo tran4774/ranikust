@@ -191,8 +191,10 @@ directory, ends with `Store::abandon`
 ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)):
 the store closes, and where its open wrote the marker, the directory is
 emptied as `prune --all` empties it, under the lock turned exclusive
-without waiting, so never while another build holds it. A directory that
-held a store before is kept, and kaniko mode refuses it.
+without waiting, so never while another build holds it. An open that
+fails once it wrote the marker empties the directory the same way
+(`Store::open_or_abandon`). A directory that held a store before is kept,
+and kaniko mode refuses it.
 
 ## Prune
 
