@@ -417,7 +417,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
   directories as overlay as root makes them, `0555` roots published, devices
   skipped and counted, keys other than the chain IDs, an owner outside the map
-  failing the extraction) and
+  and a `security.selinux` xattr each failing the extraction) and
   `a_killed_extraction_in_the_user_namespace_publishes_nothing`.
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
@@ -465,8 +465,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   layers as real root, then as the sudo user from a setgid state directory
   of a gid no map holds: refused on 24.04; on 22.04 as root makes them,
   devices aside, owned outside by the user and by subordinate ids, a `0555`
-  root of a subordinate id the user cannot move outside, and a layer of an
-  owner outside the map, which real root publishes, refused; a `SIGKILL`ed
+  root of a subordinate id the user cannot move outside, and the layers of an
+  owner outside the map and of a `security.selinux` xattr, which real root
+  publishes, refused; a `SIGKILL`ed
   extraction publishes nothing).
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another

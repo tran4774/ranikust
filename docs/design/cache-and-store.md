@@ -75,9 +75,8 @@ is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
 uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
 one copy per map
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
-#77). The tag puts the keys in a space of their own: no chain ID of several
-layers hashes an input starting with it, and one of a single layer equals a
-key only for a tar whose bytes are the key's input. The maps are relative to
+#77). The tag keeps the keys apart from every chain ID (`KEY_DOMAIN` in
+[`userns.rs`](../../crates/rnk-snapshot/src/userns.rs)). The maps are relative to
 the parent namespace, so nested namespaces with the same maps under parents
 with different ones share a key, and a build in one sees the owners of a
 layer the other extracted through its own maps: the overflow id for ids it

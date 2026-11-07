@@ -61,9 +61,13 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   overlay root as an upper directory, and ranikust says so.
 - **In a user namespace** that may mount, a base layer's block and character
   devices are left out, as the namespace's root may not make them; FIFOs and
-  whiteouts are kept ([ADR-0106]). A crafted layer with more device nodes
-  than a budget allows (about 14 000) can be refused, with a warning
-  ([ADR-0128]).
+  whiteouts are kept ([ADR-0106]), and `RUN` and `COPY --from` see what a
+  lower layer has at a left-out device's path. Past a budget for their
+  names (1 MiB, about 14 000 short ones), with a warning, a hardlink to a
+  later one is linked or copied from what this layer or a lower one has at
+  its name, or the layer is refused ([ADR-0128]). A layer with a
+  `security.*` xattr other than `security.capability`, such as an SELinux
+  label, is refused, as the namespace may not set one.
 - kaniko's `--snapshot-mode` is accepted and ignored with a warning: there is
   no filesystem walk to tune.
 

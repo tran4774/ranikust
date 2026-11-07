@@ -69,6 +69,7 @@ impl RootPath {
     pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, no `..`, root's mount only (the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
     pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
+    pub fn set_meta_if(&self, p, decide: impl FnOnce(&Stat) -> Option<Meta>) -> Result<bool>; // p pinned O_PATH|O_NOFOLLOW once, read and changed through that fd, only when decide returns a Meta (rnk-store's directories)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device
     // create_dir, create_dir_all, symlink, read_link, hard_link, rename, remove_file, remove_dir; mnt_id()
 }
@@ -76,7 +77,7 @@ pub struct Pinned;   // stat(), read_link(), xattrs(), open_regular() (reopen of
 pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()>;  // plain tar; Whiteouts::{Apply, Overlay}
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()>; // kaniko mode's base into a live root; ignored paths and mounts skipped at their physical path; no device node or FIFO (ADR-0041)
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
-pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped, a link to one whose name came past a 1 MiB budget for the names remembered copied from a lower layer or refused, with one warning (ADR-0128), FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
+pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped; a link to one the same layer left out past a 1 MiB budget for the names remembered (one warning), or that a lower layer left out, is linked to what the layer has at that name, else copied from the nearest lower layer that shows it, else refused (ADR-0128); FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
 pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, with their errors, except values only the kernel refuses (#179); what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
@@ -110,8 +111,10 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   (`a_hardlinked_file_past_path_max_is_refused_by_the_copy`). The names of
   devices `DeviceNodes::Skip` leaves out, which take no room on disk, are
   remembered within about 1 MiB a layer
-  (`devices_left_out_cost_a_bounded_heap_whatever_their_names`); past it, a
-  link to one is copied from a lower layer or refused, with one warning
+  (`devices_left_out_cost_a_bounded_heap_whatever_their_names`); past it,
+  with one warning, no further name is remembered, and a link to one of
+  those is linked to what the layer has at that name, else copied from the
+  nearest lower layer that shows it, else refused
   (`past_the_names_budget_a_link_to_a_device_is_copied_or_refused`,
   [ADR-0128](../../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
 - Deletion: `openat(O_DIRECTORY | O_NOFOLLOW)`, compare `ino` and `mnt_id`
@@ -152,9 +155,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   module, with the same racing swap under `extract`, `delete_contents` and
   `copy`; `extract_overlay` against whiteouts, opaque directories and
   symlinks in the lowers, and with `DeviceNodes::Skip` (devices and links to
-  them left out, never copied from a lower within the budget for their
-  names, FIFOs, whiteouts and opaque markers made, a device root refused;
-  past the budget `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`).
+  them left out, never copied from a lower while their names are
+  remembered, an earlier entry at a device's name kept, FIFOs, whiteouts
+  and opaque markers made, a device root refused; past the budget
+  `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`; a device
+  a lower layer left out
+  `a_link_to_a_device_a_lower_layer_left_out_is_refused`).
   `tests/model.rs`: `open_at` against a model
   resolver on 150 random trees. `tests/spans.rs`: the metrics.
   `tests/limits.rs`: a 64 MiB GNU long name, long link or PAX set refused at

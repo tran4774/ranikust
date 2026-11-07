@@ -47,6 +47,7 @@ Boundaries: `crates/rnk-store/src/lib.rs`. In short:
 
 ```rust
 pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
+pub fn in_user_namespace() -> Result<bool>;  // told by the inode of /proc/self/ns/user (procfs, nsfs checked), not by the map; rnk-snapshot asks it too
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
@@ -110,7 +111,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (`blobs/`, `layers/`, `tmp/`...) of the user's take the process's gid and
   no setgid bit, whatever a setgid state directory or a `grpid` mount gave
   them, so what the store makes has a gid a user namespace maps
-  (ADR-0099).
+  (ADR-0099). Each is pinned once and read and changed through that
+  descriptor (`RootPath::set_meta_if`), only when it needs it; a refusal is
+  a warning outside a user namespace, where the store opened before it did
+  this, and an error in one.
 - The per-digest lock holds twice: an in-process lock among the store's
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
@@ -176,7 +180,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   directory between `statx` and open. A setgid state directory of another
   group passes neither its gid nor the bit to a directory of the store,
   and a store directory of another group takes the process's gid (the gid
-  checks skipped for a user of one group).
+  checks skipped for a user of one group), while one already the
+  process's keeps its ctime; a refused change fails only in a user
+  namespace (`a_refused_group_change_fails_only_in_a_user_namespace`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).

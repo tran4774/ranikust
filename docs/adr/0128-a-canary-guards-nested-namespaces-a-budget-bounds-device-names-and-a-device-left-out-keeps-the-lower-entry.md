@@ -97,14 +97,15 @@ câu vào docs (khuyến nghị)", "Keep, put one sentence in the docs (recommen
   [ADR-0105](0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md)).
   Until #183 is built, #77 merges with the limit documented.
 - **Point 2: the budget.** A layer's remembered names of devices left out cost
-  their length plus 64 bytes each, within 1 MiB, about 14 000 devices in one
-  layer; real images hold none to a few dozen. Past it, one warning that names
-  the budget, and a hardlink to a device no longer remembered takes the normal
-  hardlink path: with nothing at its target in a lower layer the extraction
-  fails and nothing is published; with a file or a symlink there the link becomes
-  a copy of it. The result is deterministic, since the budget counts names alone
-  and depends on the layer only, and is what BuildKit rootless always does. Only
-  a crafted image reaches it.
+  their length plus 64 bytes each, within 1 MiB, about 14 000 devices with
+  short names in one layer; real images hold none to a few dozen. Past it, one
+  warning that names the budget, and a hardlink to a device whose name came past
+  the budget takes the normal hardlink path: it is linked to what the layer has
+  at that name, else it becomes a copy of the nearest lower layer's entry there,
+  else the extraction fails and nothing is published. The result is
+  deterministic, since the budget counts names alone and depends on the layer
+  only, and is what BuildKit rootless always does. Only a crafted image reaches
+  it.
 - **Point 2, a budget and not a `--limit`.** No real image reaches the budget,
   and [ADR-0079](0079-resource-limits-with-a-limit-flag.md)'s limits are for
   inputs real images can reach, so an operator never needs to raise it; the
@@ -137,27 +138,33 @@ câu vào docs (khuyến nghị)", "Keep, put one sentence in the docs (recommen
   differs.
 - Bad, because in the build's root such a path differs from the image, which
   keeps the device: a `RUN` or a `COPY --from` sees the lower entry there.
+- Bad, because the names are remembered per layer: a hardlink to a device a
+  lower layer left out takes the normal hardlink path too, so it copies a deeper
+  layer's entry at that name, or the layer is refused. Only a crafted layer
+  links into a lower one.
 
 ## Evidence
 
 Nothing is measured here.
 
 - **[external]** BuildKit rootless keys unpacked snapshots by chain ID alone
-  (`cache/refs.go:1420-1447`, `snapshot/snapshotid.go:16-18` at BuildKit
-  `cd8ee244`), so the staleness of point 1 is not ranikust's alone.
+  (`buildkit@cd8ee244 cache/refs.go:1420-1447`, `snapshot/snapshotid.go:16-18`),
+  so the staleness of point 1 is not ranikust's alone.
 - **[external]** containerd's archive apply, as BuildKit vendors it, remembers no
-  names of skipped devices (`pkg/archive/tar.go:795-807`), so a hardlink to a
-  device past ranikust's budget is handled as BuildKit rootless always handles
-  one. It skips block and character devices before clearing the path
-  (`pkg/archive/tar.go:251-262`, `:307-313`), so the lower entry stays.
+  names of skipped devices
+  (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:795-807`),
+  so a hardlink to a device past ranikust's budget is handled as BuildKit
+  rootless always handles one. It skips block and character devices before
+  clearing the path (`tar.go:251-262`, `:307-313` there), so the lower entry
+  stays.
 - **[external]** kaniko's `ExtractFile` has no case for character, block or FIFO
-  entries (`pkg/util/fs_util.go:439-581`), so the lower entry stays. Read on a
-  fork branch, unconfirmed against upstream.
+  entries (`kaniko@44aa7ddc0 pkg/util/fs_util.go:439-581`), so the lower entry
+  stays.
 - **[code]** kaniko mode skips a device before it clears the path
   ([ADR-0041](0041-live-root-extraction-skips-device-nodes.md)).
 - **[code]** The budget is `SKIPPED_NAMES_MAX` (1 MiB) and `SKIPPED_NAME_COST`
-  (64 bytes a name) in `crates/rnk-rootfs/src/extract.rs:84-87`, charged in
-  `remember_skipped` (`:849-868`), at `a13d5396` of `feat/userns-layer-extraction`.
+  (64 bytes a name), charged in `Extractor::remember_skipped`, all in
+  `crates/rnk-rootfs/src/extract.rs`.
 - **[inferred]** That a process cannot read the maps above its parent, and that
   real images hold none to a few dozen devices, come from the question as put to
   the maintainer; nothing measures them.

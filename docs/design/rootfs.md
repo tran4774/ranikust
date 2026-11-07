@@ -149,7 +149,12 @@ never called.
   set, in every mode, as BuildKit's containerd extraction: a filesystem may
   leave its checks to the privileged caller, as XFS does for the raw ACLs
   `trusted.SGI_ACL_*`; counted as `xattrs_skipped`, one warning per layer,
-  `ADR-0075`), PAX `mtime`/`atime` with
+  `ADR-0075`; in a user namespace, any other `security.*` than
+  `security.capability` needs `CAP_SYS_ADMIN` over the filesystem's
+  namespace (`cap_inode_setxattr`), so the kernel refuses it and the layer
+  fails, as in BuildKit rootless,
+  `buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:419-436`;
+  T1 `extract_layers`), PAX `mtime`/`atime` with
   nanoseconds (else the header's seconds; `atime` defaults to `mtime`), in
   the order of [Metadata](#metadata); a regular file gets them through its
   open fd. Directories are created `0700` and get their mode and times last,
@@ -212,18 +217,23 @@ never called.
   `CAP_MKNOD` in the initial user namespace (T2): `extract_overlay` with
   `DeviceNodes::Skip`, as a build in a user namespace extracts, makes no
   block or character device and counts each in `nodes_skipped`, as
-  `extract_live` does (ADR-0106). A lower layer's entry at a device's name
-  then stays visible, as in kaniko mode, in kaniko, whose `ExtractFile` has
-  no case for a device (`kaniko@44aa7ddc0 pkg/util/fs_util.go:439-581`), and
-  in BuildKit rootless, which skips one before it clears the path
+  `extract_live` does (ADR-0106). The entry already at a device's name (a
+  lower layer's, or an earlier one of this layer) then stays, as in kaniko
+  mode, in kaniko, whose `ExtractFile` has no case for a device
+  (`kaniko@44aa7ddc0 pkg/util/fs_util.go:439-581`), and in BuildKit
+  rootless, which skips one before it clears the path
   (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:251-262`;
   [ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
-  A hardlink to a device left out is left out with it, rather than link
-  what a lower layer has at its name, while the names remembered fit a
-  budget of about 1 MiB a layer; past it, with one warning, such a link is
-  copied from the nearest lower layer that has its name, or the layer is
-  refused (ADR-0128). A device as the layer's root is refused either way.
-  Foreign owners need root or a user namespace (T1).
+  A hardlink to a device left out by the same layer is left out with it
+  while its name is remembered. Names are remembered within a budget of
+  about 1 MiB a layer; once a name passes it, with one warning, no further
+  name is remembered, and a link to one of those takes the normal hardlink
+  path: linked to what the layer has at that name, else copied from the
+  nearest lower layer that shows it, else refused (ADR-0128). A link to a
+  device a lower layer left out takes that path too, as the names are
+  remembered per layer: a deeper layer's entry at that name is copied, and
+  with none the layer is refused. A device as the layer's root is refused
+  either way. Foreign owners need root or a user namespace (T1).
 
 ## Copy
 
