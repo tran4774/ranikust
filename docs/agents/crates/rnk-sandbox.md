@@ -631,10 +631,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/userns/build/run_tests.rs`): root of rootless Podman, after both
   probes, gets an rbind of `/proc` (asked for) and of `/sys` with every mount
   `nosuid`, `nodev`, `noexec` and read-only, `/proc/kcore` masked: a write
-  of its own `oom_score_adj`, or of a process's outside it of its kernel
-  uid, fails with `EROFS`, one through `/dev/stderr` works (without the
-  read-only flag, both writes succeed); `USER _apt` gets 42:65534 through `setgroups`;
-  `--network=none` has `lo` up in a network namespace of its own;
+  of its own `oom_score_adj`, or of that of a process outside the build of
+  its kernel uid, fails with `EROFS`, one through `/dev/stderr` works
+  (without the read-only flag, both writes succeed); `USER _apt` gets
+  42:65534 through `setgroups`; `--network=none` has `lo` up in a network
+  namespace of its own;
   `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
   _apt` refused at `setgid`; `an_rbind_of_proc_needs_a_request`: unasked,
