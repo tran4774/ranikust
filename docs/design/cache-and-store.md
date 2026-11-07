@@ -49,7 +49,7 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 <state-dir>/
 ├── .ranikust-state
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
-├── layers/v3/sha256/<hex>/     extracted layers by chain ID, immutable [open: #1]
+├── layers/v3/sha256/<hex>/     extracted layers by chain ID (and id map), immutable [open: #1]
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
@@ -69,12 +69,28 @@ ranikust, `0700`, below directories only root or that user may write
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
 
-Planned, Phase 3 (rootless mode and `--userns`, nothing built): an extracted
-layer's key includes the digest of the build's id map, so one state directory
-holds one copy per map
-([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md);
-how [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must
-include the map).
+In a user namespace other than the initial one (a rootless or `--userns`
+build, or ranikust started in a rootless container), an extracted layer's key
+is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
+uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
+one copy per map
+([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
+#77). The tag puts the keys in a space of their own (`KEY_DOMAIN` in
+[`userns.rs`](../../crates/rnk-snapshot/src/userns.rs)). The maps are relative to
+the parent namespace, so nested namespaces with the same maps under parents
+with different ones share a key, and a build in one sees the owners of a
+layer the other extracted through its own maps: the overflow id for ids it
+does not map, other owners where the ranges overlap. This happens, for
+example, to a namespace ranikust makes in a rootless Podman container whose
+state directory is on a volume, after the user's ranges in `/etc/subuid`
+change: the moved range of the enclosing container is not seen. A canary per
+state directory and map will refuse such layers
+([#183](https://github.com/tran4774/ranikust/issues/183),
+[ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
+`rnk-snapshot` makes the key and the store takes it as it takes a chain ID,
+an opaque digest; how
+[#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep
+the map.
 
 - **Overlay mode:** stage roots are overlay mounts in
   `builds/<id>/stages/<n>/rootfs` ([overlay-snapshot](overlay-snapshot.md)),
@@ -134,12 +150,21 @@ process dies (a T0 test kills with `SIGKILL`).
    not synced, as containerd's defaults under BuildKit
    ([ADR-0032](../adr/0032-observable-behaviour-follows-buildkit.md)).
 
-Planned, Phase 3 (rootless mode, nothing built): the same steps, with every
-operation on extracted layers run inside the build's user namespace, since the
-user cannot rename, `chmod` or unlink entries of subordinate ids from outside it
-([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
+In a build's user namespace (rootless mode, #77), the same steps, with every
+operation on extracted layers run inside it as its mapped root, since the store
+is opened there and the user cannot rename, `chmod` or unlink entries of
+subordinate ids from outside it
+([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)):
+a killed extraction leaves its entry in `tmp/`, which the next build removes.
 Every directory the store creates has a mapped uid and gid, since an unmapped
-gid alone stops the rename of a `0555` directory.
+gid alone stops the rename of a `0555` directory and the `chown` of what is
+written below it: `Store::open` gives its own directories the process's gid
+and no setgid bit, whatever a setgid state directory or a `grpid` mount gave
+them. Outside a user namespace no map needs the gid, so a `chown` the
+filesystem refuses (`EPERM`) is a warning and the directory keeps its group
+and mode; in one, or where the namespace cannot be told, it is an error, as
+is any other failure, a refused `chmod` included (the `chown` before it
+needs the same ownership).
 
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular

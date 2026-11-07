@@ -29,12 +29,16 @@ const ALONE: &str = "RNK_USERNS_TEST_ALONE";
 /// [`in_child`]'s fork, no other thread is inside mimalloc, which has no
 /// fork handler.
 fn alone(name: &str) -> bool {
+    alone_in(module_path!(), name)
+}
+
+/// [`alone`] for the test `name` of the module `module`, its
+/// `module_path!()`.
+fn alone_in(module: &str, name: &str) -> bool {
     if std::env::var_os(ALONE).is_some() {
         return true;
     }
-    let module = module_path!()
-        .split_once("::")
-        .map_or(module_path!(), |(_, m)| m);
+    let module = module.split_once("::").map_or(module, |(_, m)| m);
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             &format!("{module}::{name}"),
@@ -56,7 +60,20 @@ fn alone(name: &str) -> bool {
         out.status.success() && text.contains("test result: ok. 1 passed"),
         "{text}"
     );
+    // `output` keeps the child's streams: its notes reach the lanes' logs
+    // only when written again here.
+    for line in text.lines().filter_map(|l| l.strip_prefix("measured: ")) {
+        measured(line);
+    }
     false
+}
+
+/// Writes `measured: <line>` to stderr past libtest's capture: the lanes
+/// keep such lines of a test that passed.
+fn measured(line: &str) {
+    use std::io::Write as _;
+    // A lost line loses only a note: the assertions stand.
+    let _ = writeln!(std::io::stderr().lock(), "measured: {line}");
 }
 
 /// This process's user and mount namespaces.
@@ -83,6 +100,32 @@ fn moved(before: &[String; 2]) -> &'static str {
 /// forks. Returns what `f` printed, or an `error:` line. Only in a test
 /// that runs [`alone`].
 fn in_child(user: Option<(u32, u32)>, f: impl FnOnce() -> String) -> String {
+    let (pid, mut r) = spawn_child(user, |_| f());
+    let mut out = String::new();
+    r.read_to_string(&mut out).unwrap();
+    let waited = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty());
+    let Ok(Some((_, status))) = waited else {
+        panic!("waitpid: {waited:?}: {out}");
+    };
+    assert!(status.exited(), "{status:?}: {out}");
+    out
+}
+
+/// Writes as much of `text` to `fd` as it takes: the reader may be gone.
+fn send(fd: std::os::fd::BorrowedFd<'_>, text: &str) {
+    let mut rest = text.as_bytes();
+    while let Ok(n @ 1..) = rustix::io::write(fd, rest) {
+        rest = &rest[n..];
+    }
+}
+
+/// [`in_child`]'s child, left running: its pid and the read end of the
+/// pipe it writes to. `f` gets the write end, to report as it goes; what
+/// it returns is written last. The caller waits for the child.
+fn spawn_child(
+    user: Option<(u32, u32)>,
+    f: impl FnOnce(std::os::fd::BorrowedFd<'_>) -> String,
+) -> (rustix::process::Pid, fs::File) {
     assert!(
         std::env::var_os(ALONE).is_some(),
         "only in a test run alone"
@@ -114,26 +157,16 @@ fn in_child(user: Option<(u32, u32)>, f: impl FnOnce() -> String) -> String {
             format!("error: PR_SET_CHILD_SUBREAPER: {e}")
         } else {
             // A panic must not unwind into the harness's copy here.
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(w.as_fd())))
                 .unwrap_or_else(|_| "error: panicked".to_owned())
         };
-        let mut rest = text.as_bytes();
-        while let Ok(n @ 1..) = rustix::io::write(w.as_fd(), rest) {
-            rest = &rest[n..];
-        }
+        send(w.as_fd(), &text);
         // SAFETY: `_exit` ends this process at once.
         unsafe { libc::_exit(0) }
     }
     let pid = rustix::process::Pid::from_raw(pid).expect("fork");
     drop(w);
-    let mut out = String::new();
-    fs::File::from(r).read_to_string(&mut out).unwrap();
-    let waited = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty());
-    let Ok(Some((_, status))) = waited else {
-        panic!("waitpid: {waited:?}: {out}");
-    };
-    assert!(status.exited(), "{status:?}: {out}");
-    out
+    (pid, fs::File::from(r))
 }
 
 /// Files and a read-only directory of [`OWNERS`] in `dir`, as a `RUN`
@@ -654,3 +687,5 @@ fn red_team_a_home_of_another_user_gives_no_state_directory() {
     let st = fs::metadata(&state).unwrap();
     assert_eq!((st.uid(), st.mode() & 0o7777), (ME, 0o700));
 }
+
+mod layers;

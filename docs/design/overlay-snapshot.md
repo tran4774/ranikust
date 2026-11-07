@@ -51,9 +51,12 @@ is extracted again. Each layout is a new directory, so nothing extracted by an
 earlier rule is reused: `v2` layers may hold an image's `trusted.*` xattrs,
 which `v3` never sets, from the tar or copied up from a lower layer
 (ADR-0075). Earlier layouts stay on disk until `prune` (Phase 5) or the
-operator removes them. Planned, Phase 3: a rootless or `--userns` build's key
-also includes the digest of its id map
-([cache-and-store](cache-and-store.md#store-layout)).
+operator removes them. In a user namespace other than the initial one (a
+rootless or `--userns` build, or ranikust started in a rootless container) the
+key also holds the namespace's id map (ADR-0104,
+[cache-and-store](cache-and-store.md#store-layout)): a layer extracted with one
+map, as `/proc/self` shows it relative to the parent namespace, is never a
+lower under another.
 
 ## One layer per instruction
 
@@ -223,13 +226,22 @@ entry that `rnk-store` renames into place; it gets the layers below, so
 that a hardlink into one of them is copied from it
 ([rootfs](rootfs.md#extraction)).
 
-Planned, Phase 3 (rootless mode, nothing built): extraction, publication and
-clean-up of extracted layers run inside the build's user namespace as its mapped
-root, and publication stays a rename
+In a build's user namespace (rootless mode, #77; the rest of rootless overlay
+mode is still to come), extraction, publication and clean-up of extracted
+layers run inside the namespace as its mapped root, since the store is opened
+there, and publication stays a rename, a `0555` layer root included
 ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md),
-[cache-and-store](cache-and-store.md#atomic-publication));
-device nodes of a base layer are skipped and counted as `nodes_skipped`
-([ADR-0106](../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)).
+[cache-and-store](cache-and-store.md#atomic-publication)). `Overlay::new` tells
+from `/proc/self/ns/user` whether it runs in a namespace other than the
+initial one; there, block and character devices of a base layer are left out
+and counted as `nodes_skipped`
+([ADR-0106](../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md)):
+at a path holding one, a `RUN` sees, and a `COPY --from` copies, the entry
+already at its name (a lower layer's, or an earlier one of the same layer),
+or nothing, as in kaniko mode, kaniko and BuildKit rootless, and the image,
+built on the base blobs unchanged, keeps the device
+([rootfs](rootfs.md#extraction),
+[ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
 
 ## Lazy export
 

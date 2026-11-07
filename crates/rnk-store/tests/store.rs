@@ -50,6 +50,104 @@ fn open_creates_the_layout_and_the_marker() {
     assert_eq!(store.build_dir().parent().unwrap(), state.join("builds"));
 }
 
+/// ADR-0099: a setgid state directory, as a shared directory makes it,
+/// gives its gid and the bit to no directory of the store, so what the
+/// store makes has the gid of the process that makes it; nor does a store
+/// directory of another gid keep it. The gid is another group of this
+/// user's, or any other for root; for a user of one group only the bit is
+/// checked. One already the process's is left unchanged.
+#[test]
+fn a_setgid_state_directory_passes_its_gid_to_no_store_directory() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let egid = rustix::process::getegid().as_raw();
+    // Another group the user is in; root may take any.
+    let group = rustix::process::getgroups()
+        .unwrap()
+        .into_iter()
+        .map(rustix::process::Gid::as_raw)
+        .find(|&g| g != egid)
+        .or_else(|| rustix::process::geteuid().is_root().then_some(egid ^ 1))
+        .unwrap_or(egid);
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join(".ranikust");
+    fs::create_dir(&state).unwrap();
+    match std::os::unix::fs::chown(&state, None, Some(group)) {
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => {
+            eprintln!("skipped: that group is not mapped here");
+            return;
+        }
+        r => r.unwrap(),
+    }
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o2700)).unwrap();
+    // The control: the kernel gives a new directory there the gid and bit.
+    fs::create_dir(state.join("probe")).unwrap();
+    let probe = fs::metadata(state.join("probe")).unwrap();
+    assert_eq!((probe.gid(), probe.mode() & 0o2000), (group, 0o2000));
+    fs::remove_dir(state.join("probe")).unwrap();
+
+    let store = Store::open(&paths(dir.path())).unwrap();
+    let layer = store
+        .fill(
+            &EntryKey::Layer(digest(1)),
+            |e| -> rnk_rootfs::Result<u64> {
+                e.root().unwrap().create_dir_all("etc", 0o755)?;
+                Ok(0)
+            },
+        )
+        .unwrap();
+    let mut made: Vec<PathBuf> = ["blobs", "layers", "caches", "locks", "tmp", "builds"]
+        .iter()
+        .map(|d| state.join(d))
+        .collect();
+    made.extend([
+        store.build_dir().to_owned(),
+        layer.parent().unwrap().to_owned(),
+        layer.clone(),
+        layer.join("etc"),
+    ]);
+    for d in made {
+        let m = fs::metadata(&d).unwrap();
+        assert_eq!((m.gid(), m.mode() & 0o2000), (egid, 0), "{}", d.display());
+    }
+    // The state directory itself is left as it is.
+    let m = fs::metadata(&state).unwrap();
+    assert_eq!((m.gid(), m.mode() & 0o7777), (group, 0o2700));
+    // A store directory already the process's is not changed again: its
+    // ctime stays, once a change would get a later one.
+    drop(store);
+    let ctime = |p: &Path| {
+        let m = fs::metadata(p).unwrap();
+        (m.ctime(), m.ctime_nsec())
+    };
+    let before = ctime(&state.join("layers"));
+    let control = dir.path().join("control");
+    fs::write(&control, b"").unwrap();
+    for mode in [0o600, 0o644].into_iter().cycle().take(1000) {
+        if ctime(&control) > before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+        fs::set_permissions(&control, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    assert!(ctime(&control) > before, "the ctime clock never moved");
+    let store = Store::open(&paths(dir.path())).unwrap();
+    assert_eq!(ctime(&state.join("layers")), before);
+
+    // A store directory of another gid without the bit, as a `grpid`
+    // mount gives one, takes the effective gid at the next open.
+    if group == egid {
+        eprintln!("skipped: the gid checks (the user has one group)");
+        return;
+    }
+    drop(store);
+    let tmp = state.join("tmp");
+    std::os::unix::fs::chown(&tmp, None, Some(group)).unwrap();
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o700)).unwrap();
+    let _store = Store::open(&paths(dir.path())).unwrap();
+    let m = fs::metadata(&tmp).unwrap();
+    assert_eq!((m.gid(), m.mode() & 0o7777), (egid, 0o700));
+}
+
 #[test]
 fn open_refuses_a_non_empty_directory_without_the_marker() {
     let dir = tempfile::tempdir().unwrap();
@@ -1137,4 +1235,111 @@ fn a_kaniko_build_on_slash_cut_short_keeps_persistent_stores_off_its_directory()
     drop(store);
     let e = Store::open(&paths).unwrap_err();
     assert!(matches!(e, Error::UsedOnSlash { .. }), "{e}");
+}
+
+/// What a test sees of the tree at `dir`: each entry's type and mode,
+/// owner, ctime and size, without following symlinks.
+fn tree(dir: &Path) -> Vec<(PathBuf, u32, u32, u32, i64, i64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_owned()];
+    while let Some(p) = todo.pop() {
+        let m = fs::symlink_metadata(&p).unwrap();
+        if m.is_dir() {
+            todo.extend(fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+        }
+        out.push((
+            p.strip_prefix(dir).unwrap().to_owned(),
+            m.mode(),
+            m.uid(),
+            m.gid(),
+            m.ctime(),
+            m.ctime_nsec(),
+            m.len(),
+        ));
+    }
+    out.sort();
+    out
+}
+
+/// Red team: a store directory planted as a symlink out never has its target changed (T13).
+#[test]
+fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let egid = rustix::process::getegid().as_raw();
+    let group = rustix::process::getgroups()
+        .unwrap()
+        .into_iter()
+        .map(rustix::process::Gid::as_raw)
+        .find(|&g| g != egid)
+        .unwrap_or(egid);
+    let mut opened = 0;
+    for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
+        for absolute in [false, true] {
+            for twin in [false, true] {
+                // Not under /tmp: the twin of an absolute target would be in
+                // the store's own tmp/.
+                let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+                let base = fs::canonicalize(dir.path()).unwrap();
+                let state = base.join(".ranikust");
+                Store::open(&paths(&base)).unwrap().close().unwrap();
+                let outside = base.join("outside");
+                fs::create_dir_all(outside.join("sub")).unwrap();
+                fs::write(outside.join("sub/file"), b"kept").unwrap();
+                for p in [outside.join("sub"), outside.clone()] {
+                    std::os::unix::fs::chown(&p, None, Some(group)).unwrap();
+                    // The bit and gid `own_group` takes off a store directory.
+                    fs::set_permissions(&p, fs::Permissions::from_mode(0o2750)).unwrap();
+                }
+                let (target, inside) = if absolute {
+                    (
+                        outside.clone(),
+                        state.join(outside.strip_prefix("/").unwrap()),
+                    )
+                } else {
+                    (PathBuf::from("../outside"), state.join("outside"))
+                };
+                if twin {
+                    fs::create_dir_all(&inside).unwrap();
+                }
+                fs::remove_dir_all(state.join(d)).unwrap();
+                std::os::unix::fs::symlink(&target, state.join(d)).unwrap();
+                let before = tree(&outside);
+
+                let case = format!("{d} -> {} (twin {twin})", target.display());
+                let mut seen = Vec::new();
+                if let Ok(store) = Store::open(&paths(&base)) {
+                    opened += 1;
+                    let layer = store.fill(
+                        &EntryKey::Layer(digest(1)),
+                        |e| -> rnk_rootfs::Result<u64> {
+                            e.root().unwrap().create_dir_all("etc", 0o755)?;
+                            Ok(0)
+                        },
+                    );
+                    let blob = store.fill(&EntryKey::Blob(digest(2)), |e| write_blob(e, b"x"));
+                    let cache = store
+                        .cache_lease("c", CacheSharing::Shared, None, &never)
+                        .map(|l| l.path().to_owned());
+                    seen.extend([layer, blob, cache].into_iter().filter_map(Result::ok));
+                    let _ = store.close();
+                }
+                assert_eq!(tree(&outside), before, "{case}");
+                // What the store hands out never resolves out of it.
+                for p in &seen {
+                    if let Ok(real) = fs::canonicalize(p) {
+                        assert!(real.starts_with(&state), "{case}: {}", real.display());
+                    }
+                }
+                // The twin, in the root, is what the symlink led to.
+                if twin && d == "layers" && !seen.is_empty() {
+                    assert!(
+                        inside.join("v3/sha256").join(digest(1).encoded()).is_dir(),
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(opened >= 8, "the store opened on {opened} plants only");
 }

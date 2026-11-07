@@ -17,6 +17,7 @@ use crate::export::{DiffCounts, LayerDiff};
 use crate::layer::{self, LayerDir};
 use crate::mount::{self, MountApi, Spec};
 use crate::probe::OverlayCaps;
+use crate::userns::UserNamespace;
 
 /// Mode of the stage directory and its work directories.
 const PRIVATE: u32 = 0o700;
@@ -245,15 +246,21 @@ pub struct Overlay {
     state: Arc<RootPath>,
     api: MountApi,
     next_stage: AtomicU64,
+    /// The user namespace the build runs in, when not the initial one.
+    userns: Option<UserNamespace>,
 }
 
 impl Overlay {
-    /// The overlay snapshotter of a build, with what the probe found.
+    /// The overlay snapshotter of a build, with what the probe found. Made
+    /// in the user namespace the build runs in, if any: base layers are
+    /// extracted for that namespace's ids ([`Snapshotter::base_layer`]).
     ///
     /// # Errors
     ///
     /// [`Error::UnsafePath`] when the state directory's path holds overlay
-    /// option syntax; [`Error::Rootfs`] when it cannot be opened.
+    /// option syntax; [`Error::Rootfs`] when it cannot be opened;
+    /// [`Error::Store`] or [`Error::Io`] when `/proc/self` cannot tell the
+    /// user namespace or its map.
     pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self> {
         mount::check_path(store.state_dir())?;
         let state = Arc::new(RootPath::open(store.state_dir())?);
@@ -262,6 +269,7 @@ impl Overlay {
             state,
             api: caps.api,
             next_stage: AtomicU64::new(0),
+            userns: UserNamespace::current()?,
         })
     }
 
@@ -283,7 +291,7 @@ impl Overlay {
         blob: impl std::io::Read,
         below: &[LayerDir],
     ) -> Result<LayerDir> {
-        layer::extract_layer(&self.store, diff_id, blob, below)
+        layer::extract_layer(&self.store, self.userns.as_ref(), diff_id, blob, below)
     }
 }
 
@@ -297,7 +305,7 @@ impl Snapshotter for Overlay {
             path: blob.to_owned(),
             source,
         })?;
-        layer::extract_layer(&self.store, diff_id, file, below)
+        layer::extract_layer(&self.store, self.userns.as_ref(), diff_id, file, below)
     }
 
     fn prepare(&self, base: Base<'_, OverlayStage, LayerDir>) -> Result<OverlayStage> {
