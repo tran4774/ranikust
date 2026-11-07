@@ -172,11 +172,12 @@ fn root_shown_as() -> rustix::io::Result<Option<u32>> {
 
 /// `uid`, the owner of a file of filesystem type `f_type` and mode `mode`
 /// that reads `content`, where it is the kernel's `ostype` sysctl: a
-/// regular file of a procfs that reads `Linux`, not another file of a
-/// procfs bound over it.
+/// regular file of a procfs, mode 0444, that reads `Linux`, not another
+/// file of a procfs bound over it.
 fn sysctl_owner(f_type: FsWord, mode: u32, content: &[u8], uid: u32) -> Option<u32> {
     (f_type == rustix::fs::PROC_SUPER_MAGIC
         && FileType::from_raw_mode(mode) == FileType::RegularFile
+        && mode & 0o7777 == 0o444
         && content == b"Linux\n")
         .then_some(uid)
 }

@@ -213,13 +213,14 @@ fn unique() -> String {
 }
 
 /// What [`set_up`] does besides its steps.
-pub(crate) struct Then {
+pub(crate) struct Then<'a> {
     /// A `RUN` with `--network=none` may get a network namespace of its own
     /// (`--allow network.none-userns`), as for [`super::set_up`].
     pub(crate) userns_network: bool,
-    /// A failure once the store is open abandons it
-    /// ([`rnk_store::Store::abandon`]): kaniko mode follows (ADR-0136).
-    pub(crate) abandon: bool,
+    /// The child that falls back (ADR-0136): a failure once the store is
+    /// open abandons it ([`rnk_store::Store::abandon`]), a forwarded stop
+    /// ignored meanwhile ([`rnk_sandbox::Supervised::undoing`]).
+    pub(crate) abandon: Option<&'a rnk_sandbox::Supervised>,
     /// The test hook's variable where its `rootless-broken` fails the
     /// set-up once the store is open.
     pub(crate) broken_by: Option<&'static str>,
@@ -246,7 +247,7 @@ pub(crate) fn set_up(
     plan: Plan,
     scanned: bool,
     seccomp: &Seccomp,
-    then: &Then,
+    then: &Then<'_>,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     let Plan {
@@ -269,7 +270,10 @@ pub(crate) fn set_up(
             sandbox,
         }),
         Err(refusal) => {
-            if then.abandon {
+            if let Some(child) = then.abandon {
+                if let Err(e) = child.undoing() {
+                    tracing::debug!("a stop may cut the store's removal short: {e}");
+                }
                 abandon(store);
             }
             Err(refusal)
@@ -285,7 +289,7 @@ fn in_store(
     fallbacks: Fallbacks,
     scanned: bool,
     seccomp: &Seccomp,
-    then: &Then,
+    then: &Then<'_>,
 ) -> Result<(Outcome, Sandbox), Refusal> {
     if let Some(env) = then.broken_by {
         return Err(broken(format!("refused by {env}=rootless-broken")));
@@ -310,12 +314,13 @@ fn in_store(
         sandbox: caps,
         overlay,
     };
-    tracing::info!("ranikust: {outcome}");
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| broken(e.to_string()))?;
     if then.userns_network {
         sandbox.allow_userns_network();
     }
     seccomp.apply(&mut sandbox);
+    // Once nothing is left to fail, so that a fallback logs one mode.
+    tracing::info!("ranikust: {outcome}");
     Ok((outcome, sandbox))
 }
 

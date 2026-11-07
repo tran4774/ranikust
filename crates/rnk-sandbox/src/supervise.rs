@@ -142,12 +142,14 @@ pub fn fork_to_wait() -> io::Result<Forked> {
     crate::setup::require_single_thread().map_err(|e| io::Error::other(e.to_string()))?;
     let (read, write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)?;
     rustix::fs::fcntl_setfl(&read, rustix::fs::OFlags::NONBLOCK)?;
+    // A failed flush costs at most output written twice.
     let _ = io::stdout().flush();
     let parent = rustix::process::getpid().as_raw_nonzero().get();
     let mask = set_mask(libc::SIG_BLOCK, &signal_set(&WAITED))?;
     let sigchld = match set_disposition(libc::SIGCHLD, libc::SIG_DFL) {
         Ok(old) => old,
         Err(e) => {
+            // The error returned is the one that counts.
             let _ = set_mask(libc::SIG_SETMASK, &mask);
             return Err(e);
         }
@@ -206,13 +208,14 @@ fn check_parent(parent: i32) -> io::Result<()> {
     }
 }
 
-/// The parent's mask and `SIGCHLD`'s disposition as before the fork.
+/// The parent's mask and `SIGCHLD`'s disposition as before the fork, as
+/// far as the calls allow: a mask left blocking the stop signals keeps them
+/// pending for kaniko mode, which blocks them itself, and `SIGCHLD` left
+/// at its default action is the usual one.
 fn restore(mask: &libc::sigset_t, sigchld: &libc::sigaction) {
     let _ = set_mask(libc::SIG_SETMASK, mask);
     // SAFETY: `sigaction` reads `sigchld`, alive across the call.
-    unsafe {
-        libc::sigaction(libc::SIGCHLD, sigchld, std::ptr::null_mut());
-    }
+    let _ = unsafe { libc::sigaction(libc::SIGCHLD, sigchld, std::ptr::null_mut()) };
 }
 
 impl Supervised {
@@ -232,15 +235,31 @@ impl Supervised {
         check_parent(self.parent)
     }
 
+    /// The set-up failed, and this process falls back next: a forwarded
+    /// stop is ignored from here, so that what the set-up made is undone
+    /// whole. The parent, which counted the stop, then ends by it.
+    ///
+    /// # Errors
+    ///
+    /// The disposition cannot be set: a stop still ends this process.
+    pub fn undoing(&self) -> io::Result<()> {
+        set_disposition(FORWARDED_STOP, libc::SIG_IGN).map(drop)
+    }
+
     /// Asks the parent to fall back, for `reason`, and exits: before the
     /// build, once what the set-up made is undone. The reason is cut to
-    /// 4000 bytes, so that it is written at once.
+    /// 4000 bytes, so that it is written at once; where it cannot be sent,
+    /// it is logged here, and the parent ends as for an error.
     pub fn fall_back(self, reason: &str) -> ! {
         let mut end = reason.len().min(MAX_REASON);
         while !reason.is_char_boundary(end) {
             end -= 1;
         }
-        let _ = rustix::io::write(&self.reason, &reason.as_bytes()[..end]);
+        if let Err(e) = rustix::io::write(&self.reason, &reason.as_bytes()[..end]) {
+            tracing::error!(
+                "ranikust: {reason} (the fallback to kaniko mode cannot be asked for: {e})"
+            );
+        }
         std::process::exit(FALLBACK_STATUS)
     }
 }
@@ -252,6 +271,8 @@ enum End {
     Exited(i32),
     /// By this signal.
     Killed(i32),
+    /// Unknown: reaped unseen.
+    Lost,
 }
 
 /// What the parent does once the child ended.
@@ -275,7 +296,8 @@ fn then(end: End, stop: Option<i32>, reason: Option<String>) -> Then {
         (End::Killed(FORWARDED_STOP), Some(sig), _) => Then::Raise(sig),
         (End::Exited(FALLBACK_STATUS), None, Some(reason)) => Then::FallBack(reason),
         (End::Exited(code), _, _) => Then::Exit(code),
-        (End::Killed(sig), _, _) => Then::Raise(sig),
+        (End::Killed(sig), _, _) | (End::Lost, Some(sig), _) => Then::Raise(sig),
+        (End::Lost, None, _) => Then::Exit(FALLBACK_STATUS),
     }
 }
 
@@ -298,10 +320,10 @@ impl Waiting {
             match sig {
                 libc::SIGINT | libc::SIGTERM => {
                     stop.get_or_insert(sig);
+                    // A child that ended already gets none: its `SIGCHLD`
+                    // comes next, and the stop counts all the same.
                     // SAFETY: a signal to the child, which is not reaped yet.
-                    unsafe {
-                        libc::kill(self.child, FORWARDED_STOP);
-                    }
+                    let _ = unsafe { libc::kill(self.child, FORWARDED_STOP) };
                 }
                 libc::SIGCHLD => {
                     if let Some(end) = reap(self.child) {
@@ -369,8 +391,7 @@ fn wait_blocking(child: i32) -> End {
             return end;
         }
         if pid < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            // Reaped unseen: the status is lost, so an error's.
-            return End::Exited(FALLBACK_STATUS + 1);
+            return End::Lost;
         }
     }
 }
@@ -392,6 +413,8 @@ fn read_reason(fd: &OwnedFd) -> Option<String> {
     let mut len = 0;
     while len < buf.len() {
         match rustix::io::read(fd, &mut buf[len..]) {
+            // `EAGAIN`: nothing more was written; any other error keeps
+            // what was read, and no reason is a plain error.
             Ok(0) | Err(_) => break,
             Ok(n) => len += n,
         }
@@ -403,6 +426,7 @@ fn read_reason(fd: &OwnedFd) -> Option<String> {
 /// with `128 + sig` where that does not end it: the kernel drops a signal a
 /// PID 1 sends itself with its default action.
 fn end_by(sig: i32) -> ! {
+    // The exit below ends the process whatever these do.
     let _ = set_disposition(sig, libc::SIG_DFL);
     let _ = set_mask(libc::SIG_UNBLOCK, &signal_set(&[sig]));
     // SAFETY: `raise` sends a signal to this thread.
@@ -454,5 +478,8 @@ mod tests {
             then(End::Killed(libc::SIGKILL), Some(int), why()),
             Then::Raise(libc::SIGKILL)
         );
+        // A status lost is an error's, never a fallback.
+        assert_eq!(then(End::Lost, None, why()), Then::Exit(1));
+        assert_eq!(then(End::Lost, Some(int), why()), Then::Raise(int));
     }
 }

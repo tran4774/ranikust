@@ -704,7 +704,8 @@ fn build(
                                     }
                                 }
                                 Rootless::FellBack(reason) => {
-                                    tracing::info!(
+                                    // A step its probe passed failed.
+                                    tracing::warn!(
                                         "ranikust: {reason}; kaniko mode instead, before \
                                          anything was built (ADR-0136)"
                                     );
@@ -901,7 +902,7 @@ fn rootless(
     };
     let then = setup::rootless::Then {
         userns_network: config.allow_network_none_userns,
-        abandon: child.is_some(),
+        abandon: child.as_ref(),
         broken_by: (fault == Some("rootless-broken")).then_some(DEBUG_FAULT_ENV),
     };
     let setup =

@@ -333,10 +333,12 @@ fn root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner() {
     // Overflow uid on both sides: cannot tell, so root.
     assert!(is_kernel_root(65534, ostype(65534), never));
     // Not on a procfs, not a regular file, or another procfs file bound
-    // over it: the map decides.
+    // over it (a process named `Linux` has a `comm` of mode 0644): the map
+    // decides.
     let tmpfs = 0x0102_1994;
     assert_eq!(sysctl_owner(tmpfs, file, b"Linux\n", 0), None);
     assert_eq!(sysctl_owner(proc, 0o040_555, b"Linux\n", 0), None);
+    assert_eq!(sysctl_owner(proc, 0o100_644, b"Linux\n", 1000), None);
     assert_eq!(sysctl_owner(proc, file, b"1000 (sh) S 1\n", 1000), None);
     assert_eq!(sysctl_owner(proc, file, b"Linux", 0), None);
     let podman = "         0       1000          1\n";
