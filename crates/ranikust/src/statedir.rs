@@ -5,10 +5,8 @@
 //! (ADR-0047's rule, moved here), and the store reaches its files by path,
 //! so no other user may rename a directory on the way to it.
 
-use std::ffi::OsStr;
 use std::fmt;
 use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags};
@@ -101,9 +99,7 @@ pub(crate) enum Found {
     Missing,
     /// An empty directory.
     Empty,
-    /// A directory holding what [`check_contents`] accepts: the store's
-    /// marker, or only what an anonymous store leaves, which the store
-    /// refuses itself; and no name the store does not make there.
+    /// A directory [`rnk_store::Store::prune_all`] empties.
     Entries,
 }
 
@@ -111,12 +107,11 @@ pub(crate) enum Found {
 /// whose mode is not changed, for `prune --all`, which makes nothing: when
 /// something is at `state_dir`, it must be a directory, opened without
 /// following a symlink anywhere on its path, not `/`, whose chain passes
-/// [`check_chain`]'s rule as the state directory, and empty or accepted by
-/// [`check_contents`], holding no name the store does not make there
-/// ([`rnk_store::foreign_names`]) and no `.ranikust-pruning` but a regular
-/// file, which [`rnk_store::Store::prune_all`] refuses too. [`SYSTEM_DIRS`]
-/// guard the mode [`prepare`] sets, so they are not refused here.
-/// `state_dir` must be absolute.
+/// [`check_chain`]'s rule as the state directory; then its contents are
+/// [`rnk_store::Store::check_prune`]'s, so that what `prune_all` would
+/// refuse is refused here, in its words. [`SYSTEM_DIRS`] guard the mode
+/// [`prepare`] sets, so they are not refused here. `state_dir` must be
+/// absolute.
 ///
 /// # Errors
 ///
@@ -136,28 +131,11 @@ pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
     let fd = open_dir(state_dir, OFlags::RDONLY)?;
     refuse_slash(&fd, state_dir, euid)?;
     check_chain(&walk(&fd, state_dir)?, euid, true)?;
-    let names = list_names(&fd, state_dir)?;
-    if names.is_empty() {
-        return Ok(Found::Empty);
+    match rnk_store::Store::check_prune(state_dir) {
+        Ok(false) => Ok(Found::Empty),
+        Ok(true) => Ok(Found::Entries),
+        Err(e) => Err(Refused(e.to_string())),
     }
-    check_names(&fd, state_dir, &names, PRUNE_ADVICE)?;
-    if let Some(why) = rnk_store::foreign_names(names.iter().map(|n| OsStr::from_bytes(n))) {
-        return Err(Refused(format!("{} {why}", state_dir.display())));
-    }
-    // A regular marker beside it passed: the store refuses it all the same.
-    let pruning = rnk_store::PRUNING_MARKER;
-    if names.iter().any(|n| n == pruning.as_bytes()) {
-        let st = rustix::fs::statat(&fd, pruning, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|e| stat_err(state_dir, e))?;
-        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
-            return Err(Refused(format!(
-                "{} holds {pruning}, which is not a regular file and which ranikust prune --all \
-                 neither takes nor removes: remove it, then run ranikust prune --all again",
-                state_dir.display()
-            )));
-        }
-    }
-    Ok(Found::Entries)
 }
 
 /// Creates what is missing of `state_dir` below `existing`, its nearest
@@ -324,17 +302,6 @@ fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refu
 /// The marker of a `prune --all` that did not finish counts: the store
 /// refuses a build there itself, saying so, and `prune --all` finishes.
 fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
-    check_names(fd, state_dir, &list_names(fd, state_dir)?, BUILD_ADVICE)
-}
-
-/// The advice a build's refusal of an unmarked directory ends with.
-const BUILD_ADVICE: &str = "pass an empty or new --state-dir";
-
-/// The advice `prune --all`'s refusal of one ends with.
-const PRUNE_ADVICE: &str = "ranikust prune --all empties only a state directory ranikust made";
-
-/// The names in the directory `fd`, `.` and `..` left out.
-fn list_names(fd: &OwnedFd, state_dir: &Path) -> Result<Vec<Vec<u8>>, Refused> {
     let err = |e: Errno| Refused(format!("cannot list {}: {e}", state_dir.display()));
     let mut names = Vec::new();
     for entry in rustix::fs::Dir::read_from(fd).map_err(err)? {
@@ -343,17 +310,6 @@ fn list_names(fd: &OwnedFd, state_dir: &Path) -> Result<Vec<Vec<u8>>, Refused> {
             names.push(name);
         }
     }
-    Ok(names)
-}
-
-/// [`check_contents`] on `names`, the names in `fd`; a refusal ends with
-/// `advice`.
-fn check_names(
-    fd: &OwnedFd,
-    state_dir: &Path,
-    names: &[Vec<u8>],
-    advice: &str,
-) -> Result<bool, Refused> {
     // Only what an anonymous store (kaniko mode on `/`) leaves when a
     // build is cut short: its marker and its unpacked names, which it
     // removes or heeds at its next start (ADR-0056, Q-360).
@@ -368,7 +324,7 @@ fn check_names(
     for m in [marker, rnk_store::PRUNING_MARKER] {
         if names.iter().any(|n| n == m.as_bytes()) {
             let st = rustix::fs::statat(fd, m, AtFlags::SYMLINK_NOFOLLOW)
-                .map_err(|e| stat_err(state_dir, e))?;
+                .map_err(|e| Refused(format!("cannot read {m} in {}: {e}", state_dir.display())))?;
             if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
                 return Ok(true);
             }
@@ -382,7 +338,7 @@ fn check_names(
     };
     Err(Refused(format!(
         "{} is not empty and has no regular file {marker}: it is not a state directory, \
-         and ranikust leaves it as it is{earlier}; {advice}",
+         and ranikust leaves it as it is{earlier}; pass an empty or new --state-dir",
         state_dir.display()
     )))
 }

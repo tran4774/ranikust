@@ -39,20 +39,22 @@ writer) before `unshare`, the probes and the state directory's checks.
   rootless overlay mode (#79) will; a user other than root is still
   refused before the state directory (`NEEDS_ROOT`).
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
-  in any user namespace), naming Phase 5's `prune`; then
-  `statedir::check` (a build's checks, outside, with nothing made and no
-  mode changed; no name the store does not make, `rnk_store::foreign_names`,
-  and no `.ranikust-pruning` but a regular file): a missing or empty state
-  directory left so; then `setup::enter_build_userns` (the namespace, no
-  store opened), with its
-  own guidance where the user gets no namespace
+  in any user namespace), naming Phase 5's `prune`; then `statedir::check`
+  (a build's checks, outside, with nothing made and no mode changed, then
+  `rnk_store::Store::check_prune`, so whatever `prune_all` refuses in the
+  directory is refused here): a missing or empty state directory left so;
+  then `setup::enter_build_userns` (the namespace, no store opened), with
+  its own guidance where the user gets no namespace
   (`prune::no_user_namespace`; the build's sends the user to root); in it,
   `RLIMIT_NOFILE` raised and `rnk_store::Store::prune_all`. The commands a
-  guidance gives name the state directory, shell-quoted, under
-  `flock -xn` on it, so they fail while a build holds it; a prune that did
-  not finish (`NotPruned`, and a build's `PruneCutShort`) gets the ways
-  out (`prune::unfinished`). Prints one line on stdout; a refusal exits 1,
-  `prune` without `--all` 2.
+  guidance gives enter the state directory once, shell-quoted, and then
+  name only `.`, under `flock -xn .`, so they act on the directory they
+  locked and fail while a build holds it. A prune that could not finish
+  (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
+  by one cut short (`PruneCutShort`) is told how to finish it
+  (`prune::cut_short`: `prune --all` for a user, root's commands for
+  root). Prints one line on stdout; a refusal exits 1, `prune` without
+  `--all` 2.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -335,26 +337,29 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   kaniko mode, a probe failure other than a refused mount never routes, nor
   a refusal once the process may be in the build's user namespace, no
   guidance sends a user back to the mode they used, the user-namespace
-  probe's line, which never reads as a mode line, the probe's directory kept when a child of the steps or of
-  the overlay probe was left, and only then, a store refusal naming its
-  state directory once; `setup/tests/userns.rs`: the
-  store opened inside the build's user namespace, as root of it, or the
-  set-up refused before the store, whatever the machine allows; `prune
-  --all` emptying a state directory there, or refused before it with the
-  directory unchanged, no process or mount left), `prune` (`--all` and
-  `--state-dir` parsed, `--kaniko-dir` refused; without `--all` a usage
-  error naming Phase 5; root refused before anything, a missing directory
-  left missing, an empty one left as it is, one without the marker or
-  holding a name the store does not make refused before the namespace,
-  modes unchanged; the guidance's commands:
-  paths quoted so bash reads them back byte for byte, the `flock` failing
-  while a store is open, nothing made at a missing path, the scripts run
-  as given emptying a marked directory, the user's again after a run cut
-  short, and leaving an unmarked one, the user's marker kept while
-  anything it may not remove is left, even by a `find` that does not fail
-  then; the ways out of a prune that did not
-  finish, in `prune`'s refusal and a build's),
-  `statedir`
+  probe's line, which never reads as a mode line, the probe's directory
+  kept when a child of the steps or of the overlay probe was left, and
+  only then, a store refusal naming its state directory once, and a
+  build's refusal of a prune cut short telling a user and root how to
+  finish it; `setup/tests/userns.rs`: the store opened inside the build's
+  user namespace, as root of it, or the set-up refused before the store,
+  whatever the machine allows; `prune --all` emptying a state directory
+  there, or refused before it with the directory unchanged, no process or
+  mount left), `prune` (`--all` and `--state-dir` parsed, `--kaniko-dir`
+  refused; without `--all` a usage error naming Phase 5; root refused
+  before anything, a missing directory left missing, an empty one left as
+  it is, one without the marker or holding a name the store does not make
+  or a `.ranikust-pruning` that is not a regular file refused before the
+  namespace, modes unchanged; the checks outside and `Store::prune_all`
+  taking or refusing the same directories, with the same words; the
+  guidance's commands: paths quoted so bash reads them back byte for byte,
+  the `flock` failing while a store is open, nothing made at a missing
+  path, the scripts run as given emptying a marked directory, the user's
+  again after a run cut short, and leaving an unmarked one, the user's
+  marker kept while anything it may not remove is left, even by a `find`
+  that does not fail then, and nothing outside the directory removed when
+  its path is swapped for a symlink while they run; the ways out only in
+  `prune`'s refusal of a prune that could not finish), `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's

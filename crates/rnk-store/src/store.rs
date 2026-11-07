@@ -1283,12 +1283,14 @@ impl Store {
     /// Before removing anything it refuses this process's own `/`, by
     /// device and inode as `rnk_rootfs::prune` does; as [`Store::open`]
     /// does, a non-empty directory without a regular [`STATE_MARKER`] and
-    /// one holding [`BUILDING_MARKER`]; and one whose top level holds a
-    /// name neither the store nor a build makes there (the markers, the
-    /// store's directories, [`SANDBOX_DIR`], an anonymous store's names).
-    /// It takes one holding the regular [`PRUNING_MARKER`] a prune that did
-    /// not finish leaves, which `open` refuses, and makes nothing in an
-    /// empty directory, not even the marker. Then it renames
+    /// one holding [`BUILDING_MARKER`]; one whose top level holds a name
+    /// neither the store nor a build makes there (the markers, the store's
+    /// directories, [`SANDBOX_DIR`], an anonymous store's names); and a
+    /// [`PRUNING_MARKER`] that is not a regular file ([`Store::check_prune`]
+    /// runs these checks alone). It takes one holding the regular
+    /// [`PRUNING_MARKER`] a prune that did not finish leaves, which `open`
+    /// refuses, and makes nothing in an empty directory, not even the
+    /// marker. Then it renames
     /// [`STATE_MARKER`] to [`PRUNING_MARKER`], or takes over the one an
     /// earlier prune left, and syncs the directory before deleting: entries
     /// are emptied in place, and a prune cut short or failed leaves a
@@ -1310,24 +1312,19 @@ impl Store {
     /// # Errors
     ///
     /// [`Error::InUse`] while a build holds the state directory;
-    /// [`Error::NotAStateDir`] for a name the store does not make, else as
+    /// [`Error::NotAStateDir`] for a name the store does not make or a
+    /// [`PRUNING_MARKER`] that is not a regular file, else as
     /// [`Store::open`], as are [`Error::UsedOnSlash`] and
     /// [`Error::NoFlock`]; [`Error::Rootfs`] for this process's own `/`;
     /// [`Error::NotPruned`] naming what is left when anything but
     /// [`PRUNING_MARKER`] stays (an entry on another mount, one this process
-    /// may not remove), or when [`PRUNING_MARKER`] is not a regular file;
-    /// [`Error::Io`] or [`Error::Rootfs`] when the directory cannot be
-    /// resolved, opened or synced, or the marker renamed.
+    /// may not remove); [`Error::Io`] or [`Error::Rootfs`] when the
+    /// directory cannot be resolved, opened or synced, or the marker
+    /// renamed.
     pub fn prune_all(state: &Path) -> Result<bool> {
         let span = tracing::info_span!("rnk_store.prune");
         let _entered = span.enter();
-        let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
-            op: "resolve",
-            path: state.to_owned(),
-            source,
-        })?;
-        let root = RootPath::open(&state_path)?;
-        rnk_rootfs::refuse_own_root(&root, &state_path)?;
+        let (state_path, root) = open_to_prune(state)?;
         let lock = root.open_at(".", &OpenHow::read().directory().no_follow())?;
         match lock::try_lock(&lock) {
             Ok(true) => {}
@@ -1339,47 +1336,11 @@ impl Store {
                 });
             }
         }
-        refuse_used_on_slash(&root, &state_path)?;
-        let names = list(&root, Path::new("."))?;
-        if names.is_empty() {
-            return Ok(false);
-        }
-        if let Some(why) = foreign_names(names.iter().map(OsString::as_os_str)) {
-            return Err(Error::NotAStateDir {
-                path: state_path,
-                why,
-            });
-        }
-        let not_pruned = |left: String| Error::NotPruned {
-            path: state_path.clone(),
-            left,
-        };
-        let regular = |name: &str| -> Result<Option<bool>> {
-            match root.statx(name) {
-                Ok(st) => Ok(Some(st.file_type() == FileType::Regular)),
-                Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(None),
-                Err(e) => Err(e.into()),
-            }
-        };
-        let renamed = match regular(PRUNING)? {
+        let renamed = match prune_check(&root, &state_path)? {
+            Prunable::Empty => return Ok(false),
             // A prune cut short: this one finishes it.
-            Some(true) => false,
-            Some(false) => {
-                return Err(not_pruned(format!(
-                    "{PRUNING:?}, which is not a regular file and which it does not remove: \
-                     remove it, then run ranikust prune --all again"
-                )));
-            }
-            None => {
-                if regular(MARKER)? != Some(true) {
-                    return Err(Error::NotAStateDir {
-                        path: state_path,
-                        why: "is not empty and has no regular file .ranikust-state, so ranikust \
-                              prune --all removes nothing: it empties only a state directory \
-                              ranikust made"
-                            .to_owned(),
-                    });
-                }
+            Prunable::CutShort => false,
+            Prunable::Marked => {
                 // No new inode, which a full disk or quota would refuse;
                 // not RENAME_NOREPLACE, which NFS refuses (the flock is ours).
                 root.rename(MARKER, PRUNING)?;
@@ -1421,7 +1382,10 @@ impl Store {
             (false, Ok(())) => Some(format!("{} (on another mount?)", shown_names(&left))),
         };
         if let Some(left) = left {
-            return Err(not_pruned(left));
+            return Err(Error::NotPruned {
+                path: state_path,
+                left,
+            });
         }
         // The removals on disk before the marker's, which a filesystem may
         // otherwise keep alone: an unmarked, non-empty directory.
@@ -1433,6 +1397,24 @@ impl Store {
         root.remove_file(PRUNING)?;
         drop(lock);
         Ok(true)
+    }
+
+    /// [`Store::prune_all`]'s checks of the state directory `state`, run
+    /// without its lock and changing nothing: `false` when it is empty,
+    /// `true` when `prune_all` would empty it, else the error `prune_all`
+    /// would return for it. For a caller that checks the directory before
+    /// entering the user namespace `prune_all` runs in; `prune_all` checks
+    /// again under its lock, since a build may change the directory
+    /// meanwhile. The caller has checked `state` as [`Store::prune_all`]
+    /// says.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::prune_all`], but for [`Error::InUse`], [`Error::NoFlock`]
+    /// and what deleting returns.
+    pub fn check_prune(state: &Path) -> Result<bool> {
+        let (state_path, root) = open_to_prune(state)?;
+        Ok(prune_check(&root, &state_path)? != Prunable::Empty)
     }
 
     /// Removes the `tmp/` and `builds/` directories of every build that no
@@ -1889,13 +1871,84 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
+/// The state directory `state` resolved and opened for
+/// [`Store::prune_all`], this process's own `/` refused.
+fn open_to_prune(state: &Path) -> Result<(PathBuf, RootPath)> {
+    let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
+        op: "resolve",
+        path: state.to_owned(),
+        source,
+    })?;
+    let root = RootPath::open(&state_path)?;
+    rnk_rootfs::refuse_own_root(&root, &state_path)?;
+    Ok((state_path, root))
+}
+
+/// What [`prune_check`] found in a state directory it accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Prunable {
+    /// Nothing.
+    Empty,
+    /// The store's regular [`MARKER`].
+    Marked,
+    /// The regular [`PRUNING`] a prune that did not finish leaves.
+    CutShort,
+}
+
+/// [`Store::prune_all`]'s checks of the state directory `root`, which
+/// change nothing, in one place for it and [`Store::check_prune`]: it
+/// refuses [`BUILDING`] in any form, a [`PRUNING`] that is not a regular
+/// file, a non-empty directory with neither [`PRUNING`] nor a regular
+/// [`MARKER`], and a top-level name neither the store nor a build makes
+/// there.
+fn prune_check(root: &RootPath, state_path: &Path) -> Result<Prunable> {
+    refuse_used_on_slash(root, state_path)?;
+    let names = list(root, Path::new("."))?;
+    if names.is_empty() {
+        return Ok(Prunable::Empty);
+    }
+    let refuse = |why: String| Error::NotAStateDir {
+        path: state_path.to_owned(),
+        why,
+    };
+    let regular = |name: &str| -> Result<Option<bool>> {
+        match root.statx(name) {
+            Ok(st) => Ok(Some(st.file_type() == FileType::Regular)),
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    };
+    // The markers first: a directory without one is no state directory,
+    // whatever else it holds.
+    let found = match (regular(PRUNING)?, regular(MARKER)?) {
+        (Some(true), _) => Prunable::CutShort,
+        (Some(false), _) => {
+            return Err(refuse(format!(
+                "holds {PRUNING}, which is not a regular file and which ranikust prune --all \
+                 neither takes nor removes: remove it, then run ranikust prune --all again"
+            )));
+        }
+        (None, Some(true)) => Prunable::Marked,
+        (None, Some(false) | None) => {
+            return Err(refuse(
+                "is not empty and has no regular file .ranikust-state, so ranikust prune --all \
+                 removes nothing: it empties only a state directory ranikust made"
+                    .to_owned(),
+            ));
+        }
+    };
+    match foreign_names(names.iter().map(OsString::as_os_str)) {
+        Some(why) => Err(refuse(why)),
+        None => Ok(found),
+    }
+}
+
 /// Why [`Store::prune_all`] refuses a state directory whose top-level
 /// `names` include one neither the store nor a build makes there (the
 /// markers, the store's directories, [`SANDBOX_DIR`], an anonymous store's
 /// names): the `why` of [`Error::NotAStateDir`], naming the first few.
-/// `None` when the store makes them all. For a caller that checks a
-/// directory before `prune_all`, with the same rule and words.
-pub fn foreign_names<'a>(names: impl IntoIterator<Item = &'a OsStr>) -> Option<String> {
+/// `None` when the store makes them all.
+fn foreign_names<'a>(names: impl IntoIterator<Item = &'a OsStr>) -> Option<String> {
     let foreign: Vec<OsString> = names
         .into_iter()
         .filter(|n| !is_store_name(n))

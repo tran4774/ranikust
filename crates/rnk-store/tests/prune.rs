@@ -373,7 +373,7 @@ fn a_journal_that_is_not_a_file_is_refused() {
     fs::create_dir(&journal).unwrap();
     let before = tree(&state);
     let e = Store::prune_all(&state).unwrap_err();
-    assert!(matches!(e, Error::NotPruned { .. }), "{e}");
+    assert!(matches!(e, Error::NotAStateDir { .. }), "{e}");
     let e = e.to_string();
     assert!(e.contains("not a regular file"), "{e}");
     assert!(

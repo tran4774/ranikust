@@ -69,13 +69,16 @@ error says how to get out, naming the directory.
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves
-([ADR-0105]), then removes it with `rmdir`. `flock` takes the lock builds
-hold, so the commands fail while one runs; the error gives them with the
-real directory in place of `'DIR'`:
+([ADR-0105]), then removes it with `rmdir`. The commands enter the
+directory once and work only inside it; `flock` takes the lock builds
+hold, so they fail while one runs. The error gives them with the real
+directory in place of `'DIR'`:
 
 ```sh
-test -d 'DIR' && flock -xn 'DIR' sh -c \
-  'rm "$1/.ranikust-state" && CDPATH= cd -- "${1:?}" && find . -xdev -mindepth 1 -delete' sh 'DIR'
+( CDPATH= cd -P -- 'DIR' && exec flock -xn . sh -c '{ test -f .ranikust-state &&
+  ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning &&
+  ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } &&
+  find . -xdev -mindepth 1 -delete' )
 rmdir 'DIR'
 ```
 

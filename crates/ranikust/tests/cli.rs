@@ -1094,16 +1094,19 @@ fn prune_all_as_a_user_empties_a_state_directory_or_changes_nothing() {
         Some(1) => {
             let err = stderr(&out);
             assert!(err.contains("no user namespace for the build: "), "{err}");
-            // The commands name the state directory (quoted when a shell
-            // needs it), under the builds' lock.
-            assert!(err.contains("flock -xn "), "{err}");
+            // The commands enter the state directory (quoted when a shell
+            // needs it) once, then work under the builds' lock on it.
+            assert!(err.contains(" && exec flock -xn . sh -c '"), "{err}");
             assert!(err.contains(&*state.to_string_lossy()), "{err}");
             let plain = state.to_str().is_some_and(|s| {
                 s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&b))
             });
             if plain {
-                let lock = format!("flock -xn {} sh -c '", state.display());
+                let lock = format!(
+                    "( CDPATH= cd -P -- {} && exec flock -xn . sh -c '",
+                    state.display()
+                );
                 assert!(err.contains(&lock), "{err}");
             }
             assert!(err.contains("find . -xdev"), "{err}");

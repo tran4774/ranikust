@@ -230,8 +230,10 @@ pub(crate) struct UsernsSetup {
 )]
 pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
     prepare_state_dir(state_dir)?;
+    // The user's, for the guidance: root of the namespace once in it.
+    let euid = rustix::process::geteuid().as_raw();
     let userns = enter_build_userns(NO_USER_NAMESPACE.into())?;
-    let store = open_store(state_dir, state_dir).map_err(inside_userns)?;
+    let store = open_store(state_dir, state_dir, euid).map_err(inside_userns)?;
     Ok(UsernsSetup { userns, store })
 }
 
@@ -336,7 +338,7 @@ pub(crate) fn set_up(
     }
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
-    let store = open_store(state_dir, state_dir)?;
+    let store = open_store(state_dir, state_dir, euid)?;
     // Before the overlay probe: a thread it joined may still be counted.
     if std::mem::take(userns_probe) {
         report_user_namespace(&store);
@@ -382,16 +384,18 @@ const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
      `-v ranikust-state:/var/lib/ranikust`, or pass --state-dir on one; outside a container \
      the default --mode=auto builds in kaniko mode there instead";
 
-/// Opens the store in `state_dir` for a build whose root is `root`.
-fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
-    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| store_refusal(&e, state_dir))
+/// Opens the store in `state_dir` for a build whose root is `root`, by the
+/// effective uid `euid` outside any user namespace of the build.
+fn open_store(root: &Path, state_dir: &Path, euid: u32) -> Result<Store, Refusal> {
+    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| store_refusal(&e, state_dir, euid))
 }
 
-/// A store that cannot be opened in `state_dir`, as a [`Refusal`]. An
-/// error that names the state directory itself says so alone; one left by
-/// a `prune --all` that did not finish gets the ways out
-/// ([`crate::prune::unfinished`]).
-fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
+/// A store that cannot be opened in `state_dir` by the effective uid
+/// `euid` (outside any user namespace of the build), as a [`Refusal`]. An
+/// error that names the state directory itself says so alone; a directory
+/// a `prune --all` did not finish emptying gets what `euid` does with it
+/// ([`crate::prune::cut_short`]).
+fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
     use rnk_store::Error;
     let reason = match e {
         Error::Io { path, .. } if path == state_dir => e.to_string(),
@@ -418,8 +422,12 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
     Refusal {
         kind: Kind::Other,
         reason,
-        guidance: crate::prune::left_unfinished(e)
-            .map_or_else(|| "".into(), |dir| crate::prune::unfinished(dir).into()),
+        guidance: match crate::prune::unfinished_prune(e) {
+            Some((crate::prune::Unfinished::CutShort, dir)) => {
+                crate::prune::cut_short(dir, euid).into()
+            }
+            Some((crate::prune::Unfinished::NotPruned, _)) | None => "".into(),
+        },
     }
 }
 
@@ -506,9 +514,9 @@ pub(crate) fn set_up_kaniko(
     // directory there, so it is never a persistent store, and nothing a
     // `RUN` left outlives the build (ADR-0077).
     let store = if on_slash {
-        Store::open_anonymous(state_dir).map_err(|e| store_refusal(&e, state_dir))?
+        Store::open_anonymous(state_dir).map_err(|e| store_refusal(&e, state_dir, euid))?
     } else {
-        open_store(state_dir, state_dir)?
+        open_store(state_dir, state_dir, euid)?
     };
     let root = if on_slash {
         let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;

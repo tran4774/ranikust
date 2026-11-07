@@ -11,9 +11,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum Error {
     /// The state directory is not empty and carries no `.ranikust-state`
     /// marker file (or the marker is not a regular file), or, for
-    /// [`crate::Store::prune_all`], holds a name the store does not make:
-    /// it may be a directory the user cares about, which clean-up would
-    /// delete from.
+    /// [`crate::Store::prune_all`], holds a name the store does not make or
+    /// a [`crate::PRUNING_MARKER`] that is not a regular file: it may be a
+    /// directory the user cares about, which clean-up would delete from.
     #[error("{} {why}", path.display())]
     NotAStateDir {
         /// The state directory.
@@ -70,9 +70,7 @@ pub enum Error {
     /// [`crate::Store::prune_all`] left more than [`crate::PRUNING_MARKER`]
     /// in the state directory: an entry on another mount, or one this
     /// process may not remove; that marker stays, so no build opens the
-    /// directory and the next `prune --all` accepts it. Or the directory
-    /// holds a [`crate::PRUNING_MARKER`] that is not a regular file, which
-    /// `prune --all` neither takes nor removes: `left` says to remove it.
+    /// directory and the next `prune --all` accepts it.
     #[error(
         "ranikust prune --all could not empty the state directory {}: it still holds {left}; \
          no build uses it until ranikust prune --all empties it",

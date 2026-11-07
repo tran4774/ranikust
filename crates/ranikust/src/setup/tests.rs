@@ -607,46 +607,60 @@ fn a_store_refusal_names_its_state_directory_once() {
             source: source(),
         },
     ] {
-        let refusal = store_refusal(&e, dir);
+        let refusal = store_refusal(&e, dir, 1000);
         assert_eq!(refusal.reason.matches("/home/u/state").count(), 1, "{e}");
         assert_eq!(refusal.kind, Kind::Other, "{e}");
     }
     // What failed below it says where the store is too.
     let e = Error::Cancelled;
-    let refusal = store_refusal(&e, dir);
+    let refusal = store_refusal(&e, dir, 1000);
     assert_eq!(
         refusal.reason,
         format!("cannot open the store in /home/u/state: {e}")
     );
 }
 
-/// A build refused by a `prune --all` that did not finish is shown the
-/// ways out, for the directory the store names; other refusals get none.
+/// A build refused by a `prune --all` that did not finish is shown how to
+/// finish it, for the directory the store names: a user runs `prune --all`
+/// again, root, which it refuses, empties the directory itself; other
+/// refusals get no guidance.
 #[test]
-fn a_build_refused_by_an_unfinished_prune_is_shown_the_ways_out() {
+fn a_build_refused_by_an_unfinished_prune_is_shown_how_to_finish_it() {
     use rnk_store::Error;
     let given = Path::new("/home/u/link");
     let real = Path::new("/home/u/my state");
-    let refusal = store_refusal(
-        &Error::PruneCutShort {
-            path: real.to_owned(),
-        },
-        given,
+    let cut_short = || Error::PruneCutShort {
+        path: real.to_owned(),
+    };
+    let refusal = store_refusal(&cut_short(), given, 1000);
+    assert_eq!(
+        refusal.guidance,
+        "ranikust prune --all --state-dir '/home/u/my state' finishes emptying it"
     );
-    let ways = crate::prune::unfinished(real);
-    assert!(ways.contains("'/home/u/my state'"), "{ways}");
-    assert_eq!(refusal.guidance, ways);
     assert!(
-        refusal.to_string().ends_with(&format!("\n  {ways}")),
+        refusal
+            .to_string()
+            .ends_with(&format!("\n  {}", refusal.guidance)),
         "{refusal}"
     );
-    let busy = store_refusal(
-        &Error::Busy {
+    let root = store_refusal(&cut_short(), given, 0);
+    assert!(
+        root.guidance
+            .contains("( CDPATH= cd -P -- '/home/u/my state' && exec flock -xn . sh -c '"),
+        "{root}"
+    );
+    assert!(!root.guidance.contains("prune --all"), "{root}");
+    for e in [
+        Error::Busy {
             path: real.to_owned(),
         },
-        given,
-    );
-    assert_eq!(busy.guidance, "");
+        Error::NotPruned {
+            path: real.to_owned(),
+            left: "\"x\"".to_owned(),
+        },
+    ] {
+        assert_eq!(store_refusal(&e, given, 1000).guidance, "", "{e}");
+    }
 }
 
 #[test]
