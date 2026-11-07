@@ -1981,7 +1981,7 @@ impl Tar {
 }
 
 /// Layers each with, after a good first entry, a value the kernel would
-/// refuse on every local filesystem (#179).
+/// refuse (#179).
 fn kernel_refused(f: &Fixture) -> Vec<(&'static str, Vec<u8>)> {
     let first = || {
         let mut t = Tar::new(f);
@@ -2276,7 +2276,8 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
 
 /// A symlink that puts an entry's directory past what `/proc/self/fd`
 /// shows of it in a live root: the entry is refused before a directory it
-/// lacks is made, and one a byte shorter is taken.
+/// lacks is made, and one a byte shorter is taken; in a directory made
+/// there, it is refused as well.
 #[test]
 fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
     let f = Fixture::new();
@@ -2304,6 +2305,17 @@ fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
     };
     at("a/x").unwrap();
     assert_eq!(at("aa").unwrap_err(), Errno::NOENT);
+
+    // A directory the symlink leads to that already lies past it.
+    let mut t = Tar::new(&f);
+    t.dir("s/aaaa", 0o755).file("s/aaaa/x", 0o644, b"past");
+    let e = extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap_err();
+    assert!(
+        matches!(&e, Error::Entry { path, reason } if path == Path::new("s/aaaa/x")
+            && reason.ends_with(DIR_PAST_PATH_MAX)),
+        "{e}"
+    );
+    assert_eq!(at("aaaa/x").unwrap_err(), Errno::NOENT);
 }
 
 /// A live root reads where a directory lies through `/proc/self/fd`, whose

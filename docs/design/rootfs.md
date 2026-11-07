@@ -143,20 +143,18 @@ never called.
   calls it on the bytes it already decompresses, so a header it refuses
   fails the layer before `/` changes
   ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123).
-- **The kernel's limits.** `read_header` refuses values the kernel refuses
-  on every local filesystem, so the entry fails before anything of it is
-  written, in every extraction and the check alike
+- **The kernel's limits.** `read_header` refuses values the kernel refuses,
+  so the entry fails before anything of it is written, in every extraction
+  and the check alike
   ([#179](https://github.com/tran4774/ranikust/issues/179)): a NUL byte in
-  a name or link target; a component over 255 bytes (`NAME_MAX`, each
-  filesystem's own: FUSE takes up to 1024, NFS the server's; 255 is held to
-  all the same); a directory path over 4095 bytes (`PATH_MAX` counts the
-  NUL), the entry's name aside, since the kernel gets the directory, then
-  the name; in a live root, over what `/proc/self/fd` shows of it with the
-  root's own path, 4094 bytes on `/` (where a directory lies is read
-  there), which the check holds to as it guards `/`, and where a symlink
-  puts it past that, refused before a directory it lacks is made; a symlink
-  target over 4095 bytes. On a directory, file or symlink it refuses an
-  xattr, as it is set (escaped in
+  a name or link target; a component over 255 bytes (`NAME_MAX`; a FUSE
+  or NFS filesystem may take a longer one, refused all the same); a
+  directory path over 4095 bytes (`PATH_MAX` counts the NUL), the entry's
+  name aside, since the kernel gets the directory, then the name; in a live
+  root, over what `/proc/self/fd` shows of it with the root's own path,
+  4094 bytes on `/` (where a directory lies is read there), which the check
+  holds to as it guards `/`; a symlink target over 4095 bytes. On a
+  directory, file or symlink it refuses an xattr, as it is set (escaped in
   the overlay form), whose name is empty, over 255 bytes
   (`XATTR_NAME_MAX`) or holds a NUL byte, whose value is
   over 64 KiB (`XATTR_SIZE_MAX`), a non-empty `security.capability` that
@@ -174,7 +172,9 @@ never called.
   fails at write time: an xattr name the filesystem does not take (most
   take only some of the kernel's namespaces, `user.`, `security.` and the
   like; a FUSE or Ceph one may take any name), a POSIX ACL it refuses, a
-  value too big for its blocks, and `security.*` in a user namespace.
+  value too big for its blocks, and `security.*` in a user namespace. In a
+  live root, an entry whose directory a symlink puts past what
+  `/proc/self/fd` shows is refused before a directory it lacks is made.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

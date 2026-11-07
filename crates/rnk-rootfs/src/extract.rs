@@ -166,7 +166,7 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// whose path in the layer is longer is refused before anything of it is
 /// written (on `/`, past 4094 bytes, as [`check_headers`] refuses it), and
 /// so is one whose directory a symlink puts past that, before a directory
-/// it lacks is made.
+/// it lacks is made (an [`Error::Entry`] that names the entry).
 ///
 /// # Errors
 ///
@@ -262,14 +262,13 @@ pub struct Extracted {
 /// root, a link with an empty target, a GNU sparse or unknown entry type,
 /// a whiteout that names nothing, a file or symlink as the layer's root,
 /// ids, modes, device numbers and times that do not parse or are out of
-/// range, and values the kernel refuses on every local filesystem: a name
-/// or link target with a NUL byte, a component over `NAME_MAX` (each
-/// filesystem's own, which FUSE puts at 1024 bytes: 255 is held to all the
-/// same), a symlink target over `PATH_MAX` less its NUL, and on a
-/// directory, file or symlink an xattr whose name is empty, over
-/// `XATTR_NAME_MAX` or holds a NUL byte, whose value is over
-/// `XATTR_SIZE_MAX` or a file capability the
-/// kernel never sets, or a `user.*` one on a symlink; also where the root
+/// range, and values the kernel refuses: a name or link target with a NUL
+/// byte, a component over 255 bytes (`NAME_MAX`; a FUSE or NFS filesystem
+/// may take a longer one, refused all the same), a symlink target over
+/// `PATH_MAX` less its NUL, and on a directory, file or symlink an xattr
+/// whose name is empty, over `XATTR_NAME_MAX` or holds a NUL byte, whose
+/// value is over `XATTR_SIZE_MAX` or a file capability the kernel never
+/// sets, or a `user.*` one on a symlink; also where the root
 /// would have the entry skipped (an ignored path, a whiteout whose
 /// directory is missing), which a header does not show. It holds a
 /// directory path to 4094 bytes, as [`extract_live`] on `/` does, which
@@ -534,11 +533,10 @@ fn for_each_entry<R: Read>(
 /// long link), a whiteout that names nothing, an unknown entry type, a
 /// file or symlink as the layer's root, ids, modes, device numbers and
 /// times that do not parse or are out of range, and the values the kernel
-/// refuses on every local filesystem ([`kernel_refuses_name`],
-/// [`kernel_refuses_xattrs`]), for every name the extraction hands it but
-/// a node's, every link target, and the xattrs of a directory, file or
-/// symlink (a node's are checked where it is made). The first step
-/// of every extraction, and all of [`check_headers`]. `wh` tells what a
+/// refuses ([`kernel_refuses_name`], [`kernel_refuses_xattrs`]), for every
+/// name the extraction hands it but a node's, every link target, and the
+/// xattrs of a directory, file or symlink (a node's are checked where it is
+/// made). The first step of every extraction, and all of [`check_headers`]. `wh` tells what a
 /// whiteout is, `dir_max` the longest directory path the root takes; the
 /// `trusted.*` xattrs left out ([`SKIPPED_XATTR`]) are counted in
 /// `skipped`, the first of them kept in `first_skipped`.
@@ -762,12 +760,11 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
 }
 
 /// Why the kernel refuses the name `name` in the directory `dir` (both
-/// cleaned) on every local filesystem, `what` naming it in the reason: a
-/// NUL byte, a component of either over [`NAME_MAX`] (each filesystem's
-/// own, which FUSE puts at 1024 bytes), or a `dir` over
-/// `dir_max` ([`PATH_MAX`], less a live root's own path). An extraction
-/// hands the kernel `dir` whole, then `name` relative to it, so the whole
-/// path may be longer.
+/// cleaned), `what` naming it in the reason: a NUL byte, a component of
+/// either over [`NAME_MAX`] (which a FUSE or NFS filesystem may lift, held
+/// to all the same), or a `dir` over `dir_max` ([`PATH_MAX`], less a live
+/// root's own path). An extraction hands the kernel `dir` whole, then
+/// `name` relative to it, so the whole path may be longer.
 fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr, dir_max: usize) -> Option<String> {
     let path = dir.as_os_str().as_bytes();
     if path.contains(&0) || name.as_bytes().contains(&0) {
@@ -1652,7 +1649,11 @@ impl Extractor<'_> {
                 Err(e) => return Err(e),
             }
         };
-        let mut physical = live.physical(cur.as_fd(), &existing)?;
+        let mut physical = match live.physical(cur.as_fd(), &existing) {
+            Ok(p) => p,
+            Err(e) if is_name_too_long(&e) => return Err(past_proc(raw)),
+            Err(e) => return Err(e),
+        };
         missing.reverse();
         let full: PathBuf = physical
             .iter()
@@ -1664,10 +1665,7 @@ impl Extractor<'_> {
         // A symlink in `parent` may put it past what `/proc/self/fd` shows,
         // which the names it lacks would then be made in.
         if full.as_os_str().len() > dir_max {
-            return Err(Error::Entry {
-                path: raw.to_owned(),
-                reason: format!("the name lies in a directory whose path is {DIR_PAST_PATH_MAX}"),
-            });
+            return Err(past_proc(raw));
         }
         let mode = Mode::from_raw_mode(PARENT_MODE);
         for n in &missing {
@@ -1942,6 +1940,21 @@ fn is_whiteout(st: &Stat) -> bool {
 
 fn is_noent(e: &Error) -> bool {
     e.raw_os_error() == Some(Errno::NOENT.raw_os_error())
+}
+
+fn is_name_too_long(e: &Error) -> bool {
+    e.raw_os_error() == Some(Errno::NAMETOOLONG.raw_os_error())
+}
+
+/// The entry `raw` lies, through a symlink, in a directory of a live root
+/// past what `/proc/self/fd` shows of it.
+fn past_proc(raw: &Path) -> Error {
+    Error::Entry {
+        path: raw.to_owned(),
+        reason: format!(
+            "the name lies, through a symlink, in a directory whose path is {DIR_PAST_PATH_MAX}"
+        ),
+    }
 }
 
 /// The name, or a directory on the way to it, is no longer there.

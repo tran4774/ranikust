@@ -235,7 +235,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   filesystem, and a node's name and xattrs refused only where it is made;
   a live root takes a directory path up to what `/proc/self/fd` shows of it
   and refuses one byte more before writing, the check taking 4094 bytes and
-  refusing 4095, which `extract` and `extract_overlay` take;
+  refusing 4095, which `extract` and `extract_overlay` take, and refuses
+  one a symlink puts past it before a directory it lacks is made;
   `red_team_check_headers_refuses_only_what_an_extraction_refuses` (proptest,
   GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
   and xattr records, with values at and past the kernel's limits, included):
