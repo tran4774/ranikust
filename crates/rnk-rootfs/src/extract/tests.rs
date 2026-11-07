@@ -1135,13 +1135,8 @@ fn extract_overlay_reports_whether_the_layer_set_the_root() {
 
 /// ADR-0106: in a user namespace, block and character devices are left out;
 /// FIFOs, whiteouts and opaque markers are still made, unprivileged as
-/// there. A hardlink to a device left out, or to such a link, is left out
-/// too, never copied from a lower layer; once the layer puts a file at the
-/// device's name, a link links it; a link to a device the layer whites out
-/// is refused; a device as the layer's root is refused in both modes; and,
-/// the control, an unprivileged `Create` fails.
-/// `tests/spans.rs` checks the count; the budget for the names remembered
-/// is `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`.
+/// there. `tests/spans.rs` checks the count; the budget for the names
+/// remembered is `past_the_names_budget_a_link_to_a_device_is_copied_or_refused`.
 #[test]
 fn skipped_device_nodes_leave_fifos_and_whiteouts() {
     let f = Fixture::new();
@@ -1202,6 +1197,17 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
         fs::metadata(f.host("tty")).unwrap().ino(),
         fs::metadata(f.host("tty-link")).unwrap().ino()
     );
+    // A device after an entry of this layer at its name leaves that entry
+    // there; a link to the name is left out with the device.
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.file("x", 0o644, b"first")
+        .node("x", EntryType::Char, 1, 3)
+        .hardlink("x-link", "x");
+    extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Skip).unwrap();
+    assert_eq!(fs::read(f.host("x")).unwrap(), b"first");
+    assert!(fs::symlink_metadata(f.host("x-link")).is_err());
+
     // A device the layer whites out is gone, as when they are made.
     let f = Fixture::new();
     let mut t = Tar::new(&f);
@@ -1235,6 +1241,39 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
             extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Create).unwrap_err();
         assert_eq!(errno(&e), Some(Errno::PERM), "{e}");
     }
+}
+
+/// ADR-0128: a layer remembers only the devices it leaves out itself. A
+/// link to one a lower layer left out finds nothing there: it is refused,
+/// or copies what a deeper layer has at that name.
+#[test]
+fn a_link_to_a_device_a_lower_layer_left_out_is_refused() {
+    let deep = Fixture::new();
+    fs::write(deep.host("tty"), b"deep").unwrap();
+    let lower = Fixture::new();
+    let mut t = Tar::new(&lower);
+    t.node("sda", EntryType::Block, 8, 0)
+        .node("tty", EntryType::Char, 5, 0);
+    extract_overlay(
+        &lower.root,
+        t.bytes().as_slice(),
+        &[&deep.root],
+        DeviceNodes::Skip,
+    )
+    .unwrap();
+    let lowers = [&lower.root, &deep.root];
+
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("sda-link", "sda");
+    let e = extract_overlay(&f.root, t.bytes().as_slice(), &lowers, DeviceNodes::Skip).unwrap_err();
+    assert!(e.to_string().contains("in no layer below"), "{e}");
+
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    t.hardlink("tty-link", "tty");
+    extract_overlay(&f.root, t.bytes().as_slice(), &lowers, DeviceNodes::Skip).unwrap();
+    assert_eq!(fs::read(f.host("tty-link")).unwrap(), b"deep");
 }
 
 /// Counts the warnings logged while it is the default.
