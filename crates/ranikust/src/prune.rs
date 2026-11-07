@@ -72,7 +72,7 @@ const NEEDS_GNU_FIND: &str = needs_gnu_find!();
 /// the script stops there with nothing changed, saying what it needs
 /// ([`NEEDS_GNU_FIND`]).
 macro_rules! gnu_find_first {
-    ($rest:literal) => {
+    ($rest:expr) => {
         concat!(
             r#"find --version 2>/dev/null | grep -q "GNU findutils" && find --version 2>/dev/null | grep -qF "FTS(FTS_CWDFD)" || { echo ""#,
             needs_gnu_find!(),
@@ -82,16 +82,55 @@ macro_rules! gnu_find_first {
     };
 }
 
-/// Root's emptying of the state directory it runs in, for [`in_dir`]:
-/// with GNU `find` only ([`gnu_find_first`]); its regular marker first,
-/// `.ranikust-state` or else the `.ranikust-pruning` a prune that did not
-/// finish left, so that what an interrupted removal leaves is unmarked,
-/// and nothing where there is neither; then everything, with no top-level
-/// entry an operand and `find -xdev` entering no other filesystem, so a
-/// mount point is left (`find` then fails).
-const ROOT_SCRIPT: &str = gnu_find_first!(
-    "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && find . -xdev -mindepth 1 -delete"
-);
+/// The start of root's emptying, after [`gnu_find_first`]: its regular
+/// marker first, `.ranikust-state` or else the `.ranikust-pruning` a prune
+/// that did not finish left, so that what an interrupted removal leaves is
+/// unmarked, and nothing where there is neither.
+macro_rules! root_marker_first {
+    () => {
+        "{ test -f .ranikust-state && ! test -h .ranikust-state && rm .ranikust-state || { test -f .ranikust-pruning && ! test -h .ranikust-pruning && rm .ranikust-pruning; }; } && "
+    };
+}
+
+/// Root's emptying of a state directory root owns, for [`in_dir`]: with
+/// GNU `find` only ([`gnu_find_first`]), the marker first
+/// ([`root_marker_first`]), then everything, with no top-level entry an
+/// operand and `find -xdev` entering no other filesystem, so a mount point
+/// is left (`find` then fails). Root's store may hold files of image ids
+/// that are host accounts' too, so every owner's go.
+const ROOT_SCRIPT: &str = gnu_find_first!(concat!(
+    root_marker_first!(),
+    "find . -xdev -mindepth 1 -delete"
+));
+
+/// Root's emptying of the state directory it runs in, which `uid` owns,
+/// for [`in_dir`]: [`ROOT_SCRIPT`] where root owns it; else the same steps
+/// deleting only `uid`'s entries and those of no account (the owner's
+/// subordinate ids have none), so that what other accounts own is left in
+/// place; the script then stops, saying so, the directory not empty.
+fn root_script(uid: u32) -> String {
+    if uid == 0 {
+        return ROOT_SCRIPT.to_owned();
+    }
+    let mut script = String::from(gnu_find_first!(root_marker_first!()));
+    script.push_str(&format!(
+        r#"{{ find . -xdev -mindepth 1 \( -uid {uid} -o -nouser \) -delete && test -z "$(find . -mindepth 1 -maxdepth 1)" || {{ echo "not emptied: entries of accounts other than uid {uid} are left in place, as is anything find names above" >&2; exit 1; }}; }}"#
+    ));
+    script
+}
+
+/// What [`root_script`] deletes in a directory `uid` owns, to follow "the
+/// emptying needs GNU findutils": nothing to add for root.
+fn owner_only(uid: u32) -> String {
+    if uid == 0 {
+        String::new()
+    } else {
+        format!(
+            " and deletes only the entries of uid {uid}, the directory's owner, and of no \
+             account, stopping where another account owns any"
+        )
+    }
+}
 
 /// A user's emptying of the state directory it runs in without a user
 /// namespace, for [`in_dir`]: with GNU `find` only ([`gnu_find_first`]);
@@ -111,8 +150,9 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
         "root empties a state directory with ordinary tools while no build uses it and nothing \
          is mounted below it, its marker first so that no build takes what an interrupted \
          removal leaves, and nothing in a directory without one or other than the one ranikust \
-         checked; the emptying {NEEDS_GNU_FIND}: {}, then {}",
-        in_dir(dir, pin, ROOT_SCRIPT),
+         checked; the emptying {NEEDS_GNU_FIND}{}: {}, then {}",
+        owner_only(pin.uid),
+        in_dir(dir, pin, &root_script(pin.uid)),
         remove_dir(dir, pin)
     )
 }
@@ -190,9 +230,10 @@ pub(crate) fn unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let commands = match pin {
         Ok(pin) => format!(
             "; or move the directory aside and remove it, {}; or, as root, empty it in place, \
-             which {NEEDS_GNU_FIND}, {}, then {}",
+             which {NEEDS_GNU_FIND}{}, {}, then {}",
             move_aside(dir, pin),
-            in_dir(dir, pin, ROOT_SCRIPT),
+            owner_only(pin.uid),
+            in_dir(dir, pin, &root_script(pin.uid)),
             remove_dir(dir, pin)
         ),
         Err(why) => format!("; {}", no_commands(dir, &why, false)),
