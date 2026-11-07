@@ -299,12 +299,11 @@ The steps, in order:
       as its PID 1 with no other process of its uid during the build, keep
       its secrets in its environment rather than on its command line or in
       a shell left running, and ask for the rbind only with trusted base
-      images. The
-      rbind's masks come along, every mount of it made `nosuid`, `nodev`
-      and `noexec` with `mount_setattr(AT_RECURSIVE)` (without it the `RUN`
-      fails); the sandbox's probe chooses it once and logs it once per
-      build. Unasked, the probe fails at `Step::MountProc` and warns how to
-      get a new `proc`: build as a regular user on a host that allows user
+      images. The rbind's masks come along, every mount of it made
+      `nosuid`, `nodev` and `noexec` with `mount_setattr(AT_RECURSIVE)`
+      (without it the `RUN` fails); the sandbox's probe chooses it once and
+      logs it once per build. Unasked, the probe fails at `Step::MountProc`
+      and warns how to get a new `proc`: build as a regular user on a host that allows user
       namespaces, where a new `proc` mounts, or in a container where
       ranikust may mount (overlay mode as root), both in
       [where environments land](modes-and-detection.md#where-environments-land);

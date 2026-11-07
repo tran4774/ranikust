@@ -165,9 +165,10 @@ fn proc_guidance(e: &Error, allowed: Fallbacks) -> Option<&'static str> {
          each RUN sees every process of this PID namespace (the host's or other containers' \
          too where the container shares one), reads their command lines, mount tables and \
          network tables, ranikust's included, and reaches the environment and files of those \
-         of its uid: then give the container a PID namespace of its own, start ranikust as \
-         its PID 1 with no other process of its uid during the build, and keep secrets in its \
-         environment, not on its command line or in a shell left running",
+         of ranikust's uid, and RUNs run one at a time: then give the container a PID \
+         namespace of its own, start ranikust as its PID 1 with no other process of its uid \
+         during the build, and keep secrets in its environment, not on its command line or \
+         in a shell left running",
     )
 }
 
@@ -259,11 +260,12 @@ fn log_rbinds(caps: Caps) {
              each RUN sees every process of this PID namespace (the host's or other \
              containers' too where the container shares one), reads their command lines, mount \
              tables and network tables, ranikust's included, and reaches the environment and \
-             files of those of its uid; RUNs run one at a time, but one that reaches another \
-             process of its uid can act through it after its turn. Give the container a PID \
-             namespace of its own, start ranikust as its PID 1 with no other process of its uid \
-             during the build, keep secrets in its environment, not on its command line or in \
-             a shell left running, and allow this only with trusted base images"
+             files of those of ranikust's uid; RUNs run one at a time, but one that reaches \
+             another process of that uid can act through it after its turn. Give the \
+             container a PID namespace of its own, start ranikust as its PID 1 with no other \
+             process of its uid during the build, keep secrets in its environment, not on its \
+             command line or in a shell left running, and allow this only with trusted base \
+             images"
         ),
     }
     match caps.sysfs {
@@ -516,6 +518,7 @@ mod tests {
             "PID namespace of its own",
             "PID 1",
             "no other process of its uid",
+            "one at a time",
             "secrets in its environment",
             "not on its command line",
             "shell left running",

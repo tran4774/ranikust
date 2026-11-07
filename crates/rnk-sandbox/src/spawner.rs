@@ -63,7 +63,8 @@ impl Sandbox {
     /// starts the spawner thread. `dir` is the sandbox's directory in the
     /// state directory, `<state-dir>/sandbox`; `caps` is what [`crate::probe`]
     /// found. Such a sandbox runs [`Isolation::Full`] on any root, and
-    /// [`Isolation::Direct`] on `/` only: a bare `chroot` is never used where
+    /// [`Isolation::Direct`] on `/` only, none where [`Caps::proc`] is
+    /// [`KernelFs::Rbind`] (ADR-0127): a bare `chroot` is never used where
     /// the full sandbox can run (ADR-0014, ADR-0060). Kaniko mode that
     /// cannot mount uses [`Sandbox::start_direct`]. Every `Full` `RUN` runs
     /// under [`SeccompProfile::docker_default`] until
@@ -854,7 +855,7 @@ impl Runner {
             (Isolation::Full, None) => return Err(Error::Privilege("the RUN sandbox")),
             // A turn under an rbind of `/proc` ends with the `RUN`'s PID
             // namespace, which `Direct` has none of (ADR-0127).
-            (Isolation::Direct, Some(_)) if self.kernel_fs.0 == KernelFs::Rbind => {
+            (Isolation::Direct, Some(_)) if is_rbind(self.kernel_fs.0) => {
                 return Err(Error::InvalidSpec(
                     "Isolation::Direct where RUNs get an rbind of /proc: use Isolation::Full"
                         .into(),
@@ -1795,11 +1796,8 @@ static TURN: Mutex<()> = Mutex::new(());
 /// Waits for a `RUN`'s turn where it gets the outer `/proc` (`proc`), held
 /// until the guard drops; `None` where `RUN`s run side by side.
 fn take_turn(proc: KernelFs) -> Option<MutexGuard<'static, ()>> {
-    match proc {
-        // The lock guards no data: a `RUN` that panicked left none broken.
-        KernelFs::Rbind => Some(TURN.lock().unwrap_or_else(PoisonError::into_inner)),
-        KernelFs::Fresh => None,
-    }
+    // The lock guards no data: a `RUN` that panicked left none broken.
+    is_rbind(proc).then(|| TURN.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// The `RUN`s running now, for [`Sandbox::cancel`].
@@ -5283,33 +5281,98 @@ mod tests {
         assert_ne!(runner.next_id(), runner.next_id());
     }
 
-    /// Under an rbind of `/proc` a caller, whichever `Sandbox` it runs in,
-    /// waits for its turn until the one before has released its own; with a
-    /// new `proc` no caller waits.
+    /// Whether thread `tid` of this process is asleep within 60 s, as one
+    /// waiting for its turn is; `false` once it has ended.
+    fn asleep(tid: i32) -> bool {
+        let stat = format!("/proc/self/task/{tid}/stat");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < deadline {
+            let Ok(s) = fs::read_to_string(&stat) else {
+                return false;
+            };
+            // The state follows the name, which may hold a `)`.
+            let state = s
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next());
+            if state == Some("S") {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        false
+    }
+
+    /// Runs `call` on a detached thread, so that a turn never released fails
+    /// the test instead of hanging it: the thread's id, and its result.
+    fn detached<T: Send + 'static>(
+        call: impl FnOnce() -> T + Send + 'static,
+    ) -> (i32, mpsc::Receiver<T>) {
+        let (ready, tid) = mpsc::channel();
+        let (done, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            ready
+                .send(rustix::thread::gettid().as_raw_nonzero().get())
+                .unwrap();
+            // A test that already failed no longer listens.
+            let _ = done.send(call());
+        });
+        (tid.recv().unwrap(), result)
+    }
+
+    /// Under an rbind of `/proc` a `RUN` waits for its turn, whichever
+    /// `Sandbox` runs it, until the one before has released its own; with a
+    /// new `proc` no `RUN` waits.
     #[test]
     fn runs_take_turns_only_under_an_rbind_of_proc() {
+        let empty = tempfile::tempdir().unwrap();
+        let missing = empty.path().canonicalize().unwrap().join("missing");
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        // Without `Sandbox::start`'s cgroups and profile: a `Direct` `RUN`
+        // fails before executing anything, and under an rbind is refused
+        // once its turn comes.
+        let sandbox = |dir: &tempfile::TempDir, proc| {
+            let runner = Runner::new(dir.path(), Some(RootEntry::PivotRoot))
+                .unwrap()
+                .with_kernel_fs(proc, KernelFs::Fresh);
+            Sandbox::spawn_thread(runner).unwrap()
+        };
         assert!(take_turn(KernelFs::Fresh).is_none());
         let first = take_turn(KernelFs::Rbind);
         assert!(first.is_some());
-        let (ready, at_take) = mpsc::channel();
-        let (entered, second) = mpsc::channel();
-        // Detached: a turn never released fails the test instead of hanging it.
-        std::thread::spawn(move || {
-            ready.send(()).unwrap();
-            entered.send(take_turn(KernelFs::Rbind).is_some()).unwrap();
+        let fresh = sandbox(&dirs[0], KernelFs::Fresh);
+        let r = fresh.run(direct(&missing, &missing));
+        assert!(
+            matches!(
+                r,
+                Err(Error::Setup {
+                    step: Step::Workdir,
+                    ..
+                })
+            ),
+            "{r:?}"
+        );
+        let waiting = [&dirs[1], &dirs[2]].map(|dir| {
+            let sandbox = sandbox(dir, KernelFs::Rbind);
+            let spec = direct(&missing, &missing);
+            detached(move || sandbox.run(spec))
         });
-        at_take.recv().unwrap();
-        assert_eq!(
-            second.recv_timeout(std::time::Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Timeout),
-            "a second turn while the first is held"
-        );
+        for (tid, result) in &waiting {
+            assert!(
+                asleep(*tid),
+                "a RUN while the turn is held: {:?}",
+                result.try_recv()
+            );
+            assert!(result.try_recv().is_err(), "a RUN while the turn is held");
+        }
         drop(first);
-        assert_eq!(
-            second.recv_timeout(std::time::Duration::from_secs(60)),
-            Ok(true),
-            "the second turn once the first is released"
-        );
+        for (_, result) in waiting {
+            match result.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(Err(Error::InvalidSpec(why))) => {
+                    assert!(why.contains("rbind of /proc"), "{why}")
+                }
+                r => panic!("the turn once released: {r:?}"),
+            }
+        }
     }
 
     /// Where `RUN`s get an rbind of `/proc`, a `Direct` one is refused

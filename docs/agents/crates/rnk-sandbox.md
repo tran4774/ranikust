@@ -137,7 +137,7 @@ pub enum MountResult { Fresh, Rbind { fresh: StepFailure }, Failed { fresh: Step
 pub struct StepFailure { pub op: &'static str, pub errno: Option<i32>, pub detail: Option<String> }
 pub struct Sandbox { /* spawner thread; journals in <state-dir>/sandbox/runs */ }
 impl Sandbox {
-    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060); RUN cgroups where delegated (ADR-0110); Full RUNs under SeccompProfile::docker_default
+    pub fn start(caps: Caps, dir: &Path) -> Result<Self>;   // replays journals; Full on any root, Direct on / only (ADR-0060; none where Caps::proc() is Rbind, ADR-0127); RUN cgroups where delegated (ADR-0110); Full RUNs under SeccompProfile::docker_default
     pub fn start_direct() -> Result<Self>;                   // kaniko mode on / (ADR-0051): Direct on / only; no directory or journal; the process becomes a child subreaper
     #[cfg(test)] pub(crate) fn start_with_root(..) -> Result<Self>; // the Direct chroot off /, test-only (ADR-0060)
     pub fn allow_userns_network(&mut self);                   // --allow network.none-userns (ADR-0033)
@@ -505,8 +505,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   swaps for symlinks out of the root or for nodes; planted stub records
   aimed outside, naming `/` or ending in `..`), `Direct` children that fail
   before executing, mount sources and remount flags, `Direct` refusals
-  (one where `RUN`s get an rbind of `/proc`), the turns taken only under
-  an rbind of `/proc`, whichever `Sandbox` takes them
+  (`direct_is_refused_where_runs_get_an_rbind_of_proc`), the turns taken
+  only under an rbind of `/proc`, whichever `Sandbox` takes them
   (`runs_take_turns_only_under_an_rbind_of_proc`), the sealed heredoc
   memfd, the relay (a surviving write end, a full stream, a `RUN` reading
   its own stream back), the init's status records,
