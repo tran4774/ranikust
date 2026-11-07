@@ -68,6 +68,10 @@ ranikust, `0700`, below directories only root or that user may write
 ([kaniko-mode](kaniko-mode.md#host-safety-checks)). Kaniko mode on `/` keeps
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+Rootless overlay mode opens the persistent store inside the build's user
+namespace, with `--allow proc.rbind` too, since its `RUN`s reach no other
+process's files through `/proc`
+([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
 
 In a user namespace other than the initial one (a rootless or `--userns`
 build, or ranikust started in a rootless container), an extracted layer's key
@@ -169,7 +173,11 @@ needs the same ownership).
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
 `.ranikust-state` file is refused, so this clean-up never runs in a directory
-the user pointed at by mistake. In overlay mode an upper directory written
+the user pointed at by mistake. Names that only ranikust makes there
+(`.ranikust-anon-*`: an anonymous store's leftovers, or the user-namespace
+probe's directory of a rootless build cut short before its store opened) do
+not count: such a directory is a new store, gets the marker, and the names
+stay. In overlay mode an upper directory written
 under `volatile` is never trusted after a crash.
 
 ## Prune

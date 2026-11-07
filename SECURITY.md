@@ -59,8 +59,7 @@ These are vulnerabilities in ranikust, whatever the Dockerfile or image:
   descriptor ranikust holds, keeps capabilities outside Docker's default set,
   or gets a wrong UID/GID mapping.
 - **Sandbox escape in a mode that promises isolation.** In overlay mode
-  (as root; rootless is planned, Phase 3) or in kaniko mode with mounts
-  available, a `RUN`
+  (as root or rootless) or in kaniko mode with mounts available, a `RUN`
   command reaches more of the host than `docker build` would allow it under
   the same privileges.
 - **Credential leaks.** Registry credentials or build secrets end up in logs,
@@ -107,8 +106,22 @@ These are documented properties, not vulnerabilities:
   ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).
-- **Refusing to run** where no mode works. Today that includes every regular
-  user, root outside a container where it may not mount, root in a
+- **`--allow proc.rbind` shows a `RUN` the command lines of its PID
+  namespace.** In rootless overlay mode where a new `/proc` is refused (a
+  container's masked `/proc`), the flag gives each `RUN` a read-only rbind of
+  `/proc`: it sees every process of ranikust's PID namespace and reads its
+  command line, status and mount table, ranikust's included, but not its
+  environment, files or memory; the `RUN`s go one at a time. Keep no secrets
+  in command lines and give the build container a PID namespace of its own;
+  one shared with a process of another mount namespace is refused
+  ([ADR-0126](docs/adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md),
+  [threat model section 6](docs/security/threat-model.md#6-accepted-risks)).
+- **Refusing to run** where no mode works. Today that includes a regular user
+  where no user namespace with an id map can be made (Ubuntu 24.04 or later
+  without an AppArmor profile for the binary), where a new `/proc` is refused
+  and `--allow proc.rbind` is not given, or whose state directory is on
+  overlayfs; root outside a container where it may not mount and rootless
+  overlay mode cannot run; root in a
   container whose `/proc/sys` is writable
   ([ADR-0054](docs/adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)),
   and kaniko mode on a container's `/` with ranikust's binary reachable
@@ -123,8 +136,8 @@ These are documented properties, not vulnerabilities:
   Kubernetes `shareProcessNamespace` or `hostPID`, no `--pid`)
   ([ADR-0101](docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks));
-  the rootless mode and its AppArmor advice for Ubuntu 24.04 or later are
-  Phase 3 ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
+  the AppArmor advice for Ubuntu 24.04 or later is Phase 3
+  ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
 - Vulnerabilities in base images, in the tools a Dockerfile runs, or in the
   kernel. Report kernel bugs to the kernel.
 

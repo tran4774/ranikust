@@ -1,8 +1,8 @@
 # How ranikust builds
 
-> This page describes what is built; where a part is not, it says so. Rootless
-> overlay mode (Phase 3) is not built, nor is the AppArmor advice that goes
-> with it ([status](status.md)).
+> This page describes what is built; where a part is not, it says so. The
+> AppArmor advice for a regular user (Phase 3) is not built
+> ([status](status.md)).
 
 A Dockerfile build runs each instruction of each stage in a root filesystem
 and records what the instruction changed as an image layer. ranikust can do
@@ -24,9 +24,11 @@ user may write, because the image's setuid programs land there.
 ## Overlay mode
 
 Used where ranikust may mount filesystems: as root on a host or VM, or in a
-privileged container. A regular user who may create user namespaces would get
-it too (*rootless* overlay mode, planned for Phase 3, not built). Until then a
-regular user is refused (see [When no mode works](#when-no-mode-works)).
+privileged container. A regular user who may create user namespaces gets it
+too, and so does root in a container that may not mount but has a volume at the
+state directory (*rootless* overlay mode, [below](#rootless-overlay-mode)).
+Where none of that works a regular user is refused (see
+[When no mode works](#when-no-mode-works)).
 
 - **Snapshots.** Each stage gets its own overlay filesystem in the state
   directory, and each instruction writes into a fresh layer of it, so the
@@ -73,6 +75,42 @@ regular user is refused (see [When no mode works](#when-no-mode-works)).
   one.
 - kaniko's `--snapshot-mode` is accepted and ignored with a warning: there is
   no filesystem walk to tune.
+
+### Rootless overlay mode
+
+Overlay mode in a user namespace of ranikust's own, where the mounts a build
+needs belong to that namespace: for a regular user, where the kernel lets one
+create user namespaces and the user has entries in `/etc/subuid` and
+`/etc/subgid` for an image with several owners, and for root in a container
+that may not mount, such as a default rootless Podman container
+([ADR-0107]). ranikust probes the namespace and an overlay mount in
+it first, in a directory it makes in the state directory and removes after,
+and logs the verdict as `user namespace probe: ...`; only then does it enter
+the namespace, so a refusal leaves nothing changed. The mode line says what the
+build got: how `RUN` enters its root, the kind of `/proc` and `/sys`, and the
+overlay mount options.
+
+- **State directory.** It must not be on overlayfs, a container's own root:
+  mount a volume there (`-v ranikust-state:/var/lib/ranikust`) or pass
+  `--state-dir` on one. Without a volume, `--mode=auto` builds in kaniko mode
+  on the container's `/` and logs the hint.
+- **`/proc`.** A `RUN` gets a new `proc`. Where the kernel refuses it (Podman's
+  and Docker's masked `/proc`), ranikust stops and names `--allow proc.rbind`,
+  which binds the container's `/proc` read-only instead. Through it every `RUN`
+  sees each process of the PID namespace and reads its command line, status and
+  mount table, ranikust's included, so keep no secrets in them, and `RUN`s run
+  one at a time ([ADR-0126], [ADR-0127], [ADR-0130], [ADR-0132]). ranikust
+  refuses a PID namespace it shares with processes of the host or other
+  containers, as in kaniko mode on `/`, and warns about a `--build-arg` whose
+  name looks like a secret ([ADR-0129]).
+- **`--mode=auto` and root.** Root in a container that may not mount tries
+  rootless overlay mode and, where it cannot run, builds in kaniko mode as
+  before. It does not try where `/proc/sys` is writable or cannot be told: a
+  `RUN` as the namespace's root could write it, and kaniko mode on `/` is
+  refused there for the same reason ([ADR-0054]). `--mode=overlay` there builds
+  rootless or is refused with both reasons.
+- **After the namespace.** Once ranikust is in it no other mode can follow, so
+  a failure there ends the build.
 
 ## kaniko mode
 
@@ -265,12 +303,13 @@ may mount but overlayfs is unusable (a state directory on NFS, say).
 
 As a regular user where user namespaces are restricted (the default on Ubuntu
 24.04 and later), or in a pod that is neither root nor allowed user
-namespaces, ranikust cannot build. It stops before doing anything and says
-what would work: running as root, installing an AppArmor profile for the
-binary, or running inside a container. Today every regular user is refused,
-whatever user namespaces allow, and the message offers running as root or in a
-container; refusing only where user namespaces are restricted, and the
-AppArmor advice, come with rootless mode (Phase 3).
+namespaces, ranikust cannot build. It stops before doing anything, names the
+step of the probe that failed and says what would work: running as root, or
+inside a container. The AppArmor profile for the binary, which lifts the
+restriction on Ubuntu 24.04, is advice planned for Phase 3: the message does
+not give it yet. A regular user is also refused where only an rbind of `/proc`
+would work and `--allow proc.rbind` is absent, and where the state directory is
+on overlayfs.
 
 ## Privilege levels at a glance
 
@@ -278,9 +317,10 @@ AppArmor advice, come with rootless mode (Phase 3).
 |---|---|---|
 | root on a host or VM | overlay | namespaces, a private root, reduced capabilities |
 | root in a privileged container | overlay | the same, inside the container |
-| a regular user allowed user namespaces | overlay, rootless (planned, Phase 3) | the same, inside a user namespace |
+| a regular user allowed user namespaces | overlay, rootless | the same, inside a user namespace |
+| root in a container that forbids mounts, with a volume at the state directory | overlay, rootless (with `--allow proc.rbind` where `/proc` is masked) | the same, inside a user namespace |
 | root in a container that forbids mounts | kaniko | only the container |
-| a regular user without user namespaces | none | ranikust refuses to build (today also for a regular user who has them) |
+| a regular user without user namespaces | none | ranikust refuses to build |
 
 The [security policy](https://github.com/tran4774/ranikust/blob/main/SECURITY.md)
 and the [threat model](https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md)
@@ -323,6 +363,12 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
 [ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
+[ADR-0107]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
+[ADR-0126]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md
+[ADR-0127]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md
 [ADR-0128]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md
+[ADR-0129]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md
+[ADR-0130]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md
 [ADR-0131]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md
+[ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md

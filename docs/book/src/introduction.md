@@ -6,9 +6,10 @@ binary, with no daemon and no container runtime, and runs inside a container
 or directly on a host or VM.
 
 > **Status: pre-alpha.** ranikust builds as root, in overlay mode or in kaniko
-> mode, and its releases are pre-releases ([Installing](install.md)).
-> Rootless builds, the layer cache and some instructions come later; each page
-> says what is not built yet. See [Status and roadmap](status.md).
+> mode, or as a regular user, in rootless overlay mode, and its releases are
+> pre-releases ([Installing](install.md)). The layer cache and some
+> instructions come later; each page says what is not built yet. See
+> [Status and roadmap](status.md).
 
 ## Why ranikust
 
