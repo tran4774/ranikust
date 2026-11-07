@@ -78,9 +78,10 @@ pub enum Error {
         reason: String,
     },
 
-    /// A directory entry changed while it was being deleted (a swap between
-    /// `statx` and `open`); deletion stops instead of guessing.
-    #[error("{} changed while it was being deleted", path.display())]
+    /// A directory entry changed while it was worked on (a swap between two
+    /// calls, such as `statx` and `open` while it is deleted); the work stops
+    /// instead of guessing.
+    #[error("{} changed while ranikust worked on it", path.display())]
     Changed {
         /// The path inside the root.
         path: PathBuf,

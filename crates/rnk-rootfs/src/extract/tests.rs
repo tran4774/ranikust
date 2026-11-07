@@ -2364,6 +2364,54 @@ fn acl_layer(f: &Fixture, name: &str, value: &[u8], dir: bool) -> Vec<u8> {
     t.bytes()
 }
 
+/// An empty POSIX ACL removes the one an entry already has, as setting it
+/// does since Linux 6.2, on a kernel that refuses the value too.
+#[test]
+fn an_empty_posix_acl_removes_the_one_there() {
+    let f = Fixture::new();
+    let d = f.host.join("d");
+    fs::create_dir(&d).unwrap();
+    let flags = rustix::fs::XattrFlags::empty();
+    let minimal = posix_acl(2, &ACL_MINIMAL);
+    let named = posix_acl(
+        2,
+        &[
+            (ACL_USER_OBJ, 7, ACL_UNDEFINED),
+            (ACL_USER, 5, rustix::process::getuid().as_raw()),
+            (ACL_GROUP_OBJ, 5, ACL_UNDEFINED),
+            (ACL_MASK, 5, ACL_UNDEFINED),
+            (ACL_OTHER, 5, ACL_UNDEFINED),
+        ],
+    );
+    for (name, value) in [
+        ("system.posix_acl_access", &named),
+        ("system.posix_acl_default", &minimal),
+    ] {
+        if let Err(Errno::NOTSUP) = rustix::fs::setxattr(&d, name, value, flags) {
+            eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
+            return;
+        }
+    }
+    let mut t = Tar::new(&f);
+    t.pax(&[
+        ("SCHILY.xattr.system.posix_acl_access", b""),
+        ("SCHILY.xattr.system.posix_acl_default", b""),
+    ])
+    .dir("d", 0o755)
+    // None there to remove: no error either.
+    .pax(&[("SCHILY.xattr.system.posix_acl_access", b"")])
+    .file("f", 0o644, b"");
+    extract(&f.root, t.bytes().as_slice(), Whiteouts::Apply).unwrap();
+    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
+        let mut buf = [0; 256];
+        assert_eq!(
+            rustix::fs::getxattr(&d, name, &mut buf),
+            Err(Errno::NODATA),
+            "{name}"
+        );
+    }
+}
+
 /// Red team (#179, T26): a POSIX ACL the kernel's VFS refuses before any
 /// filesystem sees it (`do_set_acl`, `posix_acl_from_xattr`,
 /// `posix_acl_valid`), or a default ACL on a file, is refused by the check
@@ -2418,7 +2466,13 @@ fn the_check_takes_a_posix_acl_where_the_kernel_does() {
             fs::write(&p, b"").unwrap();
         }
         let kernel = rustix::fs::setxattr(&p, name, &value, flags);
-        assert_eq!(kernel.is_ok(), takes, "{what}: the kernel gives {kernel:?}");
+        // Linux before 6.2 refuses an empty value, which removes the ACL
+        // since: every extraction removes it instead.
+        let removal = value.is_empty() && kernel == Err(Errno::INVAL);
+        assert!(
+            kernel.is_ok() == takes || removal,
+            "{what}: the kernel gives {kernel:?}"
+        );
         let layer = acl_layer(&f, name, &value, dir);
         let checked = check_headers(layer.as_slice());
         assert_eq!(

@@ -431,6 +431,9 @@ impl<'a> XattrTarget<'a> {
     }
 
     fn set(&self, n: &OsStr, value: &[u8]) -> rustix::io::Result<()> {
+        if is_acl_removal(n, value) {
+            return removed(self.remove(n));
+        }
         match self {
             Self::MagicLink(target) => rustix::fs::setxattr(target, n, value, XattrFlags::empty()),
             Self::Named { target, .. } => {
@@ -588,6 +591,25 @@ pub(crate) fn read_xattrs_lenient(
     }
 }
 
+/// Whether setting `name` to `value` removes a POSIX ACL: an empty value
+/// does since Linux 6.2 (`do_set_acl`), which an older kernel refuses
+/// (`EINVAL`), so it is removed on every kernel instead of set.
+fn is_acl_removal(name: &OsStr, value: &[u8]) -> bool {
+    value.is_empty()
+        && matches!(
+            name.as_bytes(),
+            b"system.posix_acl_access" | b"system.posix_acl_default"
+        )
+}
+
+/// A removal's result, where no such xattr is no error.
+fn removed(r: rustix::io::Result<()>) -> rustix::io::Result<()> {
+    match r {
+        Err(Errno::NODATA) => Ok(()),
+        r => r,
+    }
+}
+
 /// What a refused xattr does: an error when strict (no `skipped`), else it
 /// is counted.
 fn xattr_result(
@@ -635,7 +657,11 @@ fn apply_with(
                 rustix::fs::fchown(fd, uid, gid).map_err(|e| io_err("chown", path, e))?;
             }
             for (name, value) in &m.xattrs {
-                let r = rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty());
+                let r = if is_acl_removal(name, value) {
+                    removed(rustix::fs::fremovexattr(fd, name.as_os_str()))
+                } else {
+                    rustix::fs::fsetxattr(fd, name.as_os_str(), value, XattrFlags::empty())
+                };
                 xattr_result(r, name, skipped, path)?;
             }
             if let Some(mode) = mode {

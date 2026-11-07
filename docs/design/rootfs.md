@@ -160,8 +160,11 @@ never called.
   `security.capability` that is not 20 bytes of revision 2 or 24 of revision
   3 with a root id other than -1 (`cap_convert_nscap` in
   `security/commoncap.c`), a non-empty POSIX ACL (`system.posix_acl_access`
-  or `_default`; an empty one removes it) that the kernel's VFS refuses
-  before a filesystem sees it, as `posix_acl_from_xattr` and
+  or `_default`; an empty one removes it, as since Linux 6.2, and every
+  extraction removes it on an older kernel, which refuses the value) that
+  the kernel's VFS refuses before a filesystem sees it (since 6.2; before
+  it, in the ACL handler most filesystems share, while 9p, CIFS and FUSE
+  without ACLs passed it on unparsed), as `posix_acl_from_xattr` and
   `posix_acl_valid` in `fs/posix_acl.c` do (a version other than 2, a size
   other than 4 + 8n bytes, an unknown tag, a named user or group of id -1,
   permissions past `rwx`, entries missing, repeated or out of order), a

@@ -238,14 +238,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the check takes a POSIX ACL exactly where the kernel sets one on the
   temporary filesystem, and every extraction takes those
   (`the_check_takes_a_posix_acl_where_the_kernel_does`, skipped without
-  ACLs);
+  ACLs), and an empty one removes the ACL there, as Linux 6.2 and later do,
+  on an older kernel too (`an_empty_posix_acl_removes_the_one_there`);
   a live root takes a directory path up to what `/proc/self/fd` shows of it
   and refuses one byte more before writing, the check taking 4094 bytes and
   refusing 4095, which `extract` and `extract_overlay` take, and refuses
   one a symlink puts past it before a directory it lacks is made, and an
   entry, whiteout or hardlink target in a directory already past it, by
-  name, before anything is removed or linked; each such value judged alike by the check and every extraction
-  whatever its encoding (`red_team_each_encoding_of_a_value_at_the_kernels_limits_is_judged_alike`:
+  name, before anything is removed or linked; each such value judged alike
+  by the check and every extraction whatever its encoding
+  (`red_team_each_encoding_of_a_value_at_the_kernels_limits_is_judged_alike`:
   ustar, PAX, GNU long names and links, a PAX record after a GNU long name
   and two of one key, a NUL at a value's end, UTF-8 cut at 255 bytes), and
   a directory path padded with `./` and `//` held to its cleaned bytes

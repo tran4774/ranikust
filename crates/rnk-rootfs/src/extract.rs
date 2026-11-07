@@ -874,7 +874,9 @@ fn is_file_capability(value: &[u8]) -> bool {
 /// Why the kernel's VFS refuses `value` as a POSIX ACL, the default one
 /// if `default`, on a directory if `dir`, wherever ACLs are taken: as
 /// `do_set_acl`, `posix_acl_from_xattr`, `set_posix_acl` and
-/// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order. Not an id
+/// `posix_acl_valid` (`fs/posix_acl.c`) refuse it, in that order, for every
+/// filesystem since Linux 6.2 (before it, in the ACL handler most share;
+/// 9p, CIFS and FUSE without ACLs passed the value on unparsed). Not an id
 /// the user namespace does not map, nor ACLs on a filesystem without them:
 /// those fail where it is set.
 fn posix_acl_refusal(value: &[u8], default: bool, dir: bool) -> Option<&'static str> {
@@ -900,7 +902,8 @@ fn posix_acl_refusal(value: &[u8], default: bool, dir: bool) -> Option<&'static 
             u32::from_le_bytes([i0, i1, i2, i3]),
         )
     };
-    // `do_set_acl`: an empty value removes the ACL.
+    // `do_set_acl`: an empty value removes the ACL, as every extraction
+    // does on an older kernel too.
     if value.is_empty() {
         return None;
     }
