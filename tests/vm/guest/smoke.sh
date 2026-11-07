@@ -270,7 +270,6 @@ for v in "${VARIANTS[@]}"; do
       { echo "error: --reproducible digests differ: $a (default jobs), $b (--jobs 1), $c (later, with metrics)" >&2; exit 1; }
     sudo test -s "$m" || { echo "error: no metrics report at $m" >&2; exit 1; }
     echo "host: --reproducible gives $a with --jobs 1 and the default, 2 s later, and with metrics on"
-    root_digest="$a"
     # Phase 1 acceptance: the secret reaches no build log and no metrics
     # report (the blobs are checked above, the RUN environments in the
     # Dockerfile).
@@ -456,19 +455,25 @@ else
     { echo "error: user: the image does not run as built: $got" >&2; exit 1; }
   sudo docker rmi -f "$loaded" >/dev/null
 fi
-# #79: the ranikust binary as this user builds tests/smoke/e2e in rootless
-# overlay mode, with a fresh proc, and the --reproducible digest of root's
-# build; where AppArmor restricts the user namespace, it refuses, naming
-# the step.
-ud="$dir/e2e" rc=0
+# #79: the ranikust binary as this user builds the rootless smoke case's
+# `content` stage (a mapped owner, a setgid directory, a symlink, a
+# whiteout) in rootless overlay mode, with a fresh proc, and the
+# --reproducible digest root's build of it gets; where AppArmor restricts
+# the user namespace, it refuses, naming the switch. Not tests/smoke/e2e:
+# its `RUN --network=none` reads /sys/class/net, which the rbind of /sys a
+# user gets shows as the host's.
+ud="$dir/rootless" rc=0
 # The user's umask may leave a new directory group-writable, which a state
 # directory and every directory above it may not be (ADR-0050).
-mkdir -m 700 -p "$ud" "$ud/w" && mkdir -p "$ud/out"
-sudo cat "$W/token" >"$ud/token"
-smoke_e2e_args "$CTX" "$ud/w" "$ud/out" "$ud/token"
-e2e_args+=(--build-arg "BASE=$E2E_BASE")
-log="$("$RNK" "${e2e_args[@]}" --reproducible 2>&1)" || rc=$?
-printf '%s\n' "$log" >"$dir/e2e.log"
+mkdir -m 700 -p "$ud" "$ud/w"
+sudo mkdir -m 700 -p "$W/rootless-root"
+rl_args=(--context "$HOME/rnk/guest/cases/rootless" --no-push --target content --reproducible
+  --build-arg "BASE=$E2E_BASE" --destination localhost/rnk-rootless:latest)
+log="$(sudo "$RNK" "${rl_args[@]}" --state-dir "$W/rootless-root" 2>&1)" ||
+  { echo "error: user: root's build of the rootless case failed:" >&2; echo "$log" >&2; exit 1; }
+root_digest="$(smoke_digest "$log")"
+log="$("$RNK" "${rl_args[@]}" --state-dir "$ud/w" 2>&1)" || rc=$?
+printf '%s\n' "$log" >"$dir/rootless.log"
 grep -E 'user namespace probe|rootless' <<<"$log" || true
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
   [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
