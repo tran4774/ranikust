@@ -218,6 +218,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `OutputDir` writes; rounds of 3000 writes, the victim checked after each,
   until one round saw swaps land, let some writes through and refused some
   (no new round after 60 s).
+  `tests/devices_left_out.rs` (`DeviceNodes::Skip`, ADR-0106, ADR-0128,
+  ADR-0131): a link to a left-out device, however spelled or chained, is
+  left out with it; a link through a symlink of this or a lower layer
+  (relative, absolute, climbing) to a left-out device or to the host is
+  refused, and past the names budget a lower layer's symlink is copied as a
+  symlink; whiteouts and opaque markers carry no device; overlay's own xattr
+  names under `user.overlay.`, `trusted.overlay.` or already escaped never
+  become overlay metadata, as root too;
+  `red_team_generated_layers_without_devices_stay_in_their_root` (proptest,
+  over two lower layers with symlinks to the host): no `mknod` tried, no
+  device but a whiteout, no overlay metadata but an opaque marker's, no inode
+  shared with the host or a lower layer, neither changed.
 - **T1** (`just test-rootless`): extraction and live extraction never
   write below or skip-wrongly real mounts (profile `privileged`, with the
   lane's `RNK_T1_ROOT`); foreign owners and setuid kept raw in `extract`
