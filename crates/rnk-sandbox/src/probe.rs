@@ -90,13 +90,16 @@ impl Fallbacks {
     /// ranikust's included (its build arguments, its secret paths). Their
     /// environment, files and memory stay closed to it: they need
     /// `CAP_SYS_PTRACE` in the process's user namespace, which a `RUN` in
-    /// the build's lacks for every process outside it, whatever its kernel
-    /// uid (ADR-0130; measured on Linux 5.15 and 6.8, not yet through
-    /// ranikust end to end). Inside it are ranikust, not dumpable
-    /// (ADR-0051), and the other `RUN`s, which [`crate::Sandbox`] then runs
-    /// one at a time (ADR-0127). The rest is an accepted residual; against
-    /// it, keep no secrets in other processes' command lines, ranikust's
-    /// included, and give the build container a PID namespace of its own.
+    /// the build's lacks for every process outside it and the namespaces
+    /// below it, whatever its kernel uid (ADR-0130; measured on Linux 5.15
+    /// and 6.8, not yet through ranikust end to end). In those are
+    /// ranikust, not dumpable (ADR-0051), and the other `RUN`s, which
+    /// [`crate::Sandbox`] then runs one at a time (ADR-0127), each with the
+    /// namespaces made during it (the `--network=none` helper's, its own
+    /// under `--seccomp=unconfined`). The rest is an accepted residual;
+    /// against it, keep no secrets in other processes' command lines,
+    /// ranikust's included, and give the build container a PID namespace of
+    /// its own.
     /// The `ranikust` binary has no flag for it before #79. This crate does
     /// not scan for a PID namespace shared with a process of another mount
     /// namespace: its caller runs ADR-0101's peer scan (ADR-0129), as the

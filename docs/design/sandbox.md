@@ -284,12 +284,14 @@ The steps, in order:
       not their environment, files or memory: those need `CAP_SYS_PTRACE`
       in the process's user namespace (`cap_ptrace_access_check`), which a
       `RUN` in the build's user namespace lacks for every process outside
-      it, whatever its kernel uid
+      it and the namespaces below it, whatever its kernel uid
       ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md);
       measured on Linux 5.15 and 6.8, not yet through ranikust end to
-      end). Inside it are ranikust, not dumpable
+      end). In those are ranikust, not dumpable
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
-      and the build's other `RUN`s. So that no `RUN` reaches another's
+      and the build's other `RUN`s, each with the namespaces made during
+      it (the `--network=none` helper's, its own under
+      `--seccomp=unconfined`). So that no `RUN` reaches another's
       processes, the `RUN`s of such a build run one at a time:
       `Sandbox::run` holds a lock, one for the whole process, alone, from
       before the clone until the `RUN`'s init is reaped, the processes of
