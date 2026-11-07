@@ -60,6 +60,10 @@ pub(crate) enum ChildMount {
         target: CString,
         /// An rbind of `/sys` instead of a new one.
         rbind: bool,
+        /// With `rbind`, a new one first, the rbind only where the kernel
+        /// refuses it (`EPERM`): a `RUN` with a network namespace of its
+        /// own ([`sysfs_of_own_network`]).
+        fresh_first: bool,
     },
     Dev {
         target: CString,
@@ -1254,6 +1258,12 @@ fn mount_one(
         ChildMount::Sysfs {
             target,
             rbind: true,
+            fresh_first: true,
+        } => Some(sysfs_of_own_network(err, root, target)),
+        ChildMount::Sysfs {
+            target,
+            rbind: true,
+            fresh_first: false,
         } => Some(rbind_kernel_fs(
             err,
             Step::MountSys,
@@ -1266,6 +1276,7 @@ fn mount_one(
         ChildMount::Sysfs {
             target,
             rbind: false,
+            ..
         } => Some(mount_kernel_fs(
             err,
             Step::MountSys,
@@ -1355,22 +1366,58 @@ fn mount_kernel_fs(
     flags: MountFlags,
     magic: FsWord,
 ) -> OwnedFd {
+    try_mount_kernel_fs(err, step, root, target, fstype, flags, magic)
+        .unwrap_or_else(|e| fail(err, step, e))
+}
+
+/// [`mount_kernel_fs`], giving back the error of the `mount` itself
+/// instead of failing `step` with it.
+fn try_mount_kernel_fs(
+    err: RawFd,
+    step: Step,
+    root: BorrowedFd<'_>,
+    target: &CStr,
+    fstype: &CStr,
+    flags: MountFlags,
+    magic: FsWord,
+) -> Result<OwnedFd, Errno> {
     let t = resolve_dir(err, step, root, target);
-    check(
-        err,
-        step,
-        rustix::mount::mount(
-            fstype,
-            fd_path(err, &t).path(),
-            fstype,
-            flags,
-            None::<&CStr>,
-        ),
+    let mounted = rustix::mount::mount(
+        fstype,
+        fd_path(err, &t).path(),
+        fstype,
+        flags,
+        None::<&CStr>,
     );
     drop(t);
+    mounted?;
     let made = resolve_dir(err, step, root, target);
     fs_is(err, step, &made, magic);
-    made
+    Ok(made)
+}
+
+/// `sysfs` for a `RUN` with a network namespace of its own, where the
+/// probe chose an rbind of `/sys`: a new read-only one, which the build's
+/// user namespace may mount for a network namespace it owns, so that
+/// `/sys/class/net` shows the `RUN`'s own devices; the rbind only where the
+/// kernel still refuses a new one (`EPERM`, such as below an outer
+/// runtime's masks of `/sys`).
+fn sysfs_of_own_network(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> OwnedFd {
+    let step = Step::MountSys;
+    let flags = MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
+    match try_mount_kernel_fs(err, step, root, target, c"sysfs", flags, SYSFS_MAGIC) {
+        Ok(made) => made,
+        Err(Errno::PERM) => rbind_kernel_fs(
+            err,
+            step,
+            root,
+            target,
+            c"/sys",
+            MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
+            SYSFS_MAGIC,
+        ),
+        Err(e) => fail(err, step, e),
+    }
 }
 
 /// [`mount_kernel_fs`] where a new instance is refused: binds `source`,
