@@ -53,12 +53,12 @@ writer) before `unshare`, the probes and the state directory's checks.
   then name only `.`, under `flock -xn .`, so they act on that directory
   and fail while a build holds it; where the check fails, no commands
   (give the path with no symbolic link on it; for a user's directory,
-  `prune --all` as that user). A prune
-  that could not finish (`NotPruned`) gets the ways out
-  (`prune::unfinished`); a build refused by one cut short
-  (`PruneCutShort`) is told the next step (`prune::cut_short`:
-  `prune --all` for a user, root's commands for root). Prints one line on
-  stdout; a refusal exits 1, `prune` without `--all` 2.
+  `prune --all` as that user). A prune that could not finish
+  (`NotPruned`) gets the ways out (`prune::unfinished`); a build refused
+  by one cut short (`PruneCutShort`) is told the next step
+  (`prune::cut_short`: `prune --all` for a user, root's commands for
+  root). Prints one line on stdout; a refusal exits 1, `prune` without
+  `--all` 2.
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -369,8 +369,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   what `stat -c %d:%i:%u` prints, each command failing with nothing
   changed when the pin is wrong or a parent is swapped for a symlink
   after printing, root given none for a path through a symlink; the ways
-  out only in `prune`'s refusal of a prune that could not finish),
-  `statedir`
+  out only in `prune`'s refusal of a prune that could not finish), `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, nothing created through a planted link; `0700`; a user's default
   below `$HOME` passes, a group-writable home is refused with that user's

@@ -167,49 +167,51 @@ prune that did not finish leaves), and a top-level name neither the store
 nor a build makes there (the markers, its directories, `sandbox/`, an
 anonymous store's names); then the build's user namespace; in it,
 `Store::prune_all`. That takes the state directory's `flock` exclusive
-without waiting,
-as an anonymous store does, and holds it to the end: every build holds it
-shared for its life, so `prune --all` removes nothing while any build runs
-there (it says so and exits 1), and a build that starts meanwhile is
-refused. Under the lock it runs the check again, since a build may have
-changed the directory meanwhile; it creates nothing in an empty one. Before
-deleting it syncs the directory with `.ranikust-pruning` in it, whether it
-renamed `.ranikust-state` itself or found one an earlier prune left:
-entries are emptied in place, under their published names, so a prune
-killed or failed part-way leaves a layer a build would reuse with files
-missing, and `Store::open` refuses any directory holding that name until a
-`prune --all` finishes (a ranikust that predates it finds the directory
-unmarked, and refuses it too); such a build's refusal gives the next step:
-`ranikust prune --all` for a user, root's commands for root. The rename
-makes no inode, which a full disk or quota, the usual reason to prune,
-would refuse. A failed sync renames back only a marker this prune renamed:
-one an earlier prune left stays, since that prune may have removed entries.
-It deletes by descriptor (no symlink followed, no mount crossed), names
-what it could not remove, then syncs the filesystem and removes
-`.ranikust-pruning` last, so the marker's removal never reaches the disk
-without the deletions; a failed sync keeps it. Where it cannot finish (a
-mount below, files of ids no user namespace maps), its refusal names the
-ways out: unmount, set up the user's subordinate ids, move the directory
-aside and remove it in `podman unshare`, or, as root, empty it in place.
+without waiting, as an anonymous store does, and holds it to the end:
+every build holds it shared for its life, so `prune --all` removes
+nothing while any build runs there (it says so and exits 1), and a build
+that starts meanwhile is refused. Under the lock it runs the check again,
+since a build may have changed the directory meanwhile; it creates
+nothing in an empty one. Before deleting it syncs the directory with
+`.ranikust-pruning` in it, whether it renamed `.ranikust-state` itself or
+found one an earlier prune left: entries are emptied in place, under
+their published names, so a prune killed or failed part-way leaves a
+layer a build would reuse with files missing, and `Store::open` refuses
+any directory holding that name until a `prune --all` finishes (a
+ranikust that predates it finds the directory unmarked, and refuses it
+too); such a build's refusal gives the next step: `ranikust prune --all`
+for a user, root's commands for root. The rename makes no inode, which a
+full disk or quota, the usual reason to prune, would refuse. A failed
+sync renames back only a marker this prune renamed: one an earlier prune
+left stays, since that prune may have removed entries. It deletes by
+descriptor (no symlink followed, no mount crossed), names what it could
+not remove, then syncs the filesystem and removes `.ranikust-pruning`
+last, so the marker's removal never reaches the disk without the
+deletions; a failed sync keeps it. Where it cannot finish (a mount below,
+files of ids no user namespace maps), its refusal names the ways out:
+unmount, set up the user's subordinate ids, move the directory aside and
+remove it in `podman unshare`, or, as root, empty it in place.
+
 The commands a refusal prints (those ways out, root's, and a user's
 without a user namespace) act only on the directory ranikust checked: the
 process that prints them opens the path as given, made absolute, with no
 symlink followed on it, runs `Store::check_prune` on it and takes its
-device, inode and owner, and each command checks, right after its one
-`cd -P`, that the directory it entered has them (`stat -c %d:%i:%u`), so
-a path changed after the message was printed, a parent swapped for a
-symlink included, makes it fail before it changes anything. Where that
-open or check fails, a refusal gives no commands: it says to give the
-path with no symbolic link on it and, for a user's directory, to run
-`ranikust prune --all` as that user. In
-the directory, they name only `.`, so the lock, the marker's check and
-the deletion act on it whatever is put at its path meanwhile; `rmdir`
-and the move aside enter the parent once and check `./name` the same
-way. They take the same exclusive `flock` (`flock -xn .`), so they fail
-while a build runs there, take a marker only as a regular file, and
-enter no other filesystem (`find -xdev`); a bind mount of the same
-filesystem is not told apart, so they say to run only while nothing is
-mounted below.
+device, inode and owner. Each command checks, right after its one
+`cd -P`, that the directory it acts on has them (`stat -c %d:%i:%u`):
+`.` for the emptying, `./name` in the parent it entered for `rmdir` and
+the move aside. So a path changed after the message was printed, a
+parent swapped for a symlink included, makes it fail before it changes
+anything. Where that open or check fails, no commands are printed, and
+the refusal says instead to give the path with no symbolic link on it
+and, for a user's directory, to run `ranikust prune --all` as that user
+(a user's own `prune --all` is refused before, with the check's reason).
+In the directory, the emptying names only `.`, so the lock, the marker's
+check and the deletion act on it whatever is put at its path meanwhile;
+it takes the same exclusive `flock` (`flock -xn .`), so it fails while a
+build runs there, takes a marker only as a regular file, and enters no
+other filesystem (`find -xdev`); a bind mount of the same filesystem is
+not told apart, so the commands say to run only while nothing is mounted
+below.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

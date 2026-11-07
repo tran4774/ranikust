@@ -159,10 +159,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   itself (`rnk_rootfs::refuse_own_root`), whatever its caller checked. It
   empties entries in place, under their published names, so it first
   renames the marker `.ranikust-pruning` (`PRUNING_MARKER`) and syncs
-  the directory, and `open` refuses a
-  directory holding that name (`Error::PruneCutShort`) until a prune
-  finishes: a prune killed or failed part-way never hands a build a layer
-  with files missing ([why a rename](../../design/cache-and-store.md#prune)).
+  the directory, and `open` refuses a directory holding that name
+  (`Error::PruneCutShort`) until a prune finishes: a prune killed or failed
+  part-way never hands a build a layer with files missing
+  ([why a rename](../../design/cache-and-store.md#prune)).
   It deletes through `rnk-rootfs::delete_contents` by descriptor (no
   symlink followed, no mount crossed or emptied), and only when nothing
   else is left syncs the filesystem (`syncfs`) and removes

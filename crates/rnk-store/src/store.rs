@@ -1282,10 +1282,10 @@ impl Store {
     /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
     /// Before removing anything it refuses this process's own `/`, by
     /// device and inode as `rnk_rootfs::prune` does, then, under the lock,
-    /// what [`Store::check_prune`] refuses, in the order given there. It
-    /// takes one holding the regular [`PRUNING_MARKER`] a prune that did
-    /// not finish leaves, which `open` refuses, and makes nothing in an
-    /// empty directory, not even the marker. Then it renames
+    /// the rest of what [`Store::check_prune`] refuses, in the order given
+    /// there. It takes one holding the regular [`PRUNING_MARKER`] a prune
+    /// that did not finish leaves, which `open` refuses, and makes nothing
+    /// in an empty directory, not even the marker. Then it renames
     /// [`STATE_MARKER`] to [`PRUNING_MARKER`], or takes over the one an
     /// earlier prune left, and syncs the directory before deleting: entries
     /// are emptied in place, and a prune cut short or failed leaves a
@@ -1407,14 +1407,15 @@ impl Store {
     /// neither it nor a regular [`STATE_MARKER`], and a top-level name
     /// neither the store nor a build makes there (the markers, the store's
     /// directories, [`SANDBOX_DIR`], an anonymous store's names), each
-    /// [`Error::NotAStateDir`]. The caller has checked `state` as
-    /// [`Store::prune_all`] says.
+    /// [`Error::NotAStateDir`]. Unlike `prune_all`, it needs no check of
+    /// `state` by the caller: it follows no symlink on it and changes
+    /// nothing.
     ///
     /// # Errors
     ///
-    /// As [`Store::prune_all`], but for [`Error::InUse`], [`Error::NoFlock`]
-    /// and what deleting returns; [`Error::Rootfs`] when `state` holds a
-    /// symlink.
+    /// As [`Store::prune_all`], but for [`Error::InUse`], [`Error::NoFlock`],
+    /// the [`Error::Io`] of resolving `state` and what deleting returns;
+    /// [`Error::Rootfs`] when `state` holds a symlink.
     pub fn check_prune(state: &Path) -> Result<PruneCheck> {
         let root = RootPath::open(state)?;
         rnk_rootfs::refuse_own_root(&root, state)?;

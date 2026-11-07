@@ -139,7 +139,7 @@ fn podman_shim(at: &Path) -> PathBuf {
 }
 
 #[test]
-fn root_is_refused_naming_phase_5_before_anything() {
+fn root_is_refused_naming_phase_5_with_nothing_changed() {
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
     marked_state(&state);
@@ -576,10 +576,12 @@ fn the_suggested_scripts_empty_only_a_marked_state_directory() {
             "made by mv: {made_by_mv}"
         );
         assert!(state.join("blobs").is_dir(), "made by mv: {made_by_mv}");
-        // The machine's `mv` ran after the shim's `mkdir`, and failed.
+        // The machine's `mv` ran after the shim's `mkdir`, and failed; no
+        // file where it did not run.
         let status = fs::read_to_string(&mv_ran).ok();
         let want = made_by_mv.then(|| "1\n".to_owned());
         assert_eq!(status, want, "made by mv: {made_by_mv}: mv's status");
+        // Absent where `mv` did not run; the next pass starts without it.
         let _ = fs::remove_file(&mv_ran);
         fs::remove_dir_all(&state).unwrap();
     }
