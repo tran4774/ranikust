@@ -42,22 +42,33 @@ pub enum KernelFs {
     Fresh,
     /// A recursive bind of the one ranikust sees, each of its mounts made
     /// `nosuid`, `nodev` and `noexec` (and read-only for `sysfs`), where a
-    /// user namespace may not mount a new one. With `proc`, a `RUN` sees
-    /// the processes of the PID namespace ranikust runs in.
+    /// user namespace may not mount a new one. For `proc`, only with
+    /// [`Fallbacks::allow_proc_rbind`].
     Rbind,
 }
 
 /// The kernel filesystems [`probe_with_fallbacks`] may bind where a new
-/// instance is refused: those the user-namespace probe bound after a new
-/// one was refused ([`crate::UsernsReport::fallbacks`]). The default
-/// allows none.
+/// instance is refused. [`crate::UsernsReport::fallbacks`] allows the
+/// read-only rbind of `/sys` the user-namespace probe needed; an rbind of
+/// `/proc` only [`Fallbacks::allow_proc_rbind`] allows (ADR-0126). The
+/// default allows none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Fallbacks {
     /// An rbind of `/proc`.
-    pub proc: bool,
+    pub(crate) proc: bool,
     /// A read-only rbind of `/sys`.
-    pub sysfs: bool,
+    pub(crate) sysfs: bool,
+}
+
+impl Fallbacks {
+    /// These, and an rbind of `/proc` where a new `proc` is refused, at the
+    /// operator's request only (ADR-0126): through it a `RUN` sees every
+    /// process of the PID namespace ranikust runs in, and reaches those of
+    /// its uid through their `/proc` entries.
+    #[must_use]
+    pub fn allow_proc_rbind(self) -> Self {
+        Self { proc: true, ..self }
+    }
 }
 
 /// The command the probe tries to execute. It does not exist in the probe's
@@ -82,7 +93,7 @@ const PROBE_ROOT_PREFIX: &str = "probe-";
 /// [`Error::Setup`] with the step and errno that failed, or a host-side
 /// error.
 pub fn probe(dir: &Path) -> Result<Caps> {
-    probe_with_fallbacks(dir, Fallbacks::default())
+    probe_in(dir, Fallbacks::default())
 }
 
 /// [`probe`] in the build's user namespace: where mounting a new `proc` or
@@ -90,12 +101,31 @@ pub fn probe(dir: &Path) -> Result<Caps> {
 /// tried again with an rbind of it ([`KernelFs::Rbind`]). A new instance
 /// is always tried first, so a `RUN` never gets an rbind where a new one
 /// mounts; the choice holds for every `RUN` of the sandbox started with
-/// these [`Caps`]. An rbind of `/proc` is logged as a warning, once.
+/// these [`Caps`]. An rbind of `/proc` is logged as a warning, once; a new
+/// `proc` refused where `allowed` has no rbind of it is final, with a
+/// warning that says how to get one.
 ///
 /// # Errors
 ///
-/// As [`probe`].
+/// As [`probe`]: a refused new `proc` that `allowed` does not let be bound
+/// is [`Error::Setup`] at [`Step::MountProc`].
 pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
+    let result = probe_in(dir, allowed);
+    if let Err(e) = &result
+        && is_proc_refusal(e)
+        && !allowed.proc
+    {
+        tracing::warn!(
+            "rnk-sandbox: a RUN needs a new proc, which a user namespace may not mount here \
+             (a container whose /proc has masked paths): run where it can, or allow an rbind \
+             of /proc, through which each RUN sees this container's processes and reaches \
+             those of its uid"
+        );
+    }
+    result
+}
+
+fn probe_in(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
     let runner = Runner::new(dir, None)?;
     journal::replay(runner.runs_dir(), runner.state_dir(), None)?;
     remove_stale_roots(dir);
@@ -179,8 +209,8 @@ fn log_rbinds(caps: Caps) {
     match caps.proc {
         KernelFs::Fresh => {}
         KernelFs::Rbind => tracing::warn!(
-            "rnk-sandbox: a new proc is refused here, so each RUN gets an rbind of /proc \
-             and sees the processes ranikust sees"
+            "rnk-sandbox: a new proc is refused here and an rbind of /proc is allowed, so \
+             each RUN sees the processes ranikust sees and reaches those of its uid"
         ),
     }
     match caps.sysfs {
@@ -189,6 +219,18 @@ fn log_rbinds(caps: Caps) {
             "rnk-sandbox: a new sysfs is refused here, so each RUN gets a read-only rbind of /sys"
         ),
     }
+}
+
+/// A new `proc` refused with `EPERM`, as a user namespace is where the
+/// `/proc` it sees has masked paths.
+fn is_proc_refusal(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Setup {
+            step: Step::MountProc,
+            source,
+        } if source.raw_os_error() == Some(libc::EPERM)
+    )
 }
 
 /// `pivot_root` refused with `EPERM`, as a seccomp filter does.
@@ -368,6 +410,48 @@ mod tests {
         );
         assert_eq!(next_attempt(moved, both, &pivot), None);
         assert_eq!(next_attempt(fresh, both, &Error::Privilege("x")), None);
+    }
+
+    #[test]
+    fn proc_is_bound_only_on_request_and_sysfs_without_one() {
+        let setup = |step, errno| Error::Setup {
+            step,
+            source: io::Error::from_raw_os_error(errno),
+        };
+        let fresh = Caps {
+            root_entry: RootEntry::PivotRoot,
+            proc: KernelFs::Fresh,
+            sysfs: KernelFs::Fresh,
+        };
+        // What `UsernsReport::fallbacks` gives where both were refused.
+        let report = Fallbacks {
+            proc: false,
+            sysfs: true,
+        };
+        let proc_eperm = setup(Step::MountProc, libc::EPERM);
+        assert_eq!(next_attempt(fresh, report, &proc_eperm), None);
+        assert!(is_proc_refusal(&proc_eperm));
+        assert!(!is_proc_refusal(&setup(Step::MountProc, libc::EINVAL)));
+        assert!(!is_proc_refusal(&setup(Step::MountSys, libc::EPERM)));
+        let sysfs = next_attempt(fresh, report, &setup(Step::MountSys, libc::EPERM)).unwrap();
+        assert_eq!(
+            (sysfs.proc, sysfs.sysfs),
+            (KernelFs::Fresh, KernelFs::Rbind)
+        );
+        let asked = report.allow_proc_rbind();
+        assert_eq!(
+            asked,
+            Fallbacks {
+                proc: true,
+                sysfs: true
+            }
+        );
+        assert_eq!(
+            next_attempt(fresh, asked, &proc_eperm).unwrap().proc,
+            KernelFs::Rbind
+        );
+        assert!(Fallbacks::default().allow_proc_rbind().proc);
+        assert!(!Fallbacks::default().allow_proc_rbind().sysfs);
     }
 
     #[test]

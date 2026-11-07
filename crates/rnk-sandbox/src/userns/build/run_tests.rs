@@ -1,9 +1,10 @@
 //! `RUN`s in the build's user namespace (#78): `proc` and `sysfs` as the
-//! probe chose them, `setgroups` where the map allows it, `--network=none`
-//! with loopback, in T1 (root of rootless Podman) and T2 (the VM's regular
-//! user).
+//! probe chose them, an rbind of `/proc` only on request (ADR-0126),
+//! `setgroups` where the map allows it, `--network=none` with loopback, in
+//! T1 (root of rootless Podman) and T2 (the VM's regular user).
 
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use rustix::mount::MountFlags;
@@ -64,14 +65,20 @@ const RUNS: [Run; 3] = [
 
 /// In this forked, single-threaded child: the user-namespace probe in
 /// `top`, the build's user namespace, the sandbox's probe with the
-/// fallbacks the first found, then each of `runs` as a full-sandbox `RUN`
-/// in a root holding this host's `/usr` (bound read-only) and [`PASSWD`]
-/// and [`GROUP`]. One line per step: `caps=`, then each `RUN`'s
-/// `run<n>=` outcome and its output lines prefixed `<n>:`; an `error=`
-/// line ends it early.
-fn runs_in_build_namespace(top: &Path, sub: Option<SubordinateIds>, runs: &[Run]) -> String {
+/// fallbacks the first found (and an rbind of `/proc` if `proc_rbind`),
+/// then each of `runs` as a full-sandbox `RUN` in a root holding this
+/// host's `/usr` (bound read-only) and [`PASSWD`] and [`GROUP`]. One line
+/// per step: `caps=`, then each `RUN`'s `run<n>=` outcome and its output
+/// lines prefixed `<n>:`; an `error=` line ends it early, `error=probe
+/// <step> <errno>` for the sandbox's probe.
+fn runs_in_build_namespace(
+    top: &Path,
+    sub: Option<SubordinateIds>,
+    proc_rbind: bool,
+    runs: &[Run],
+) -> String {
     let mut out = Vec::new();
-    if let Err(e) = steps(top, sub, runs, &mut out) {
+    if let Err(e) = steps(top, sub, proc_rbind, runs, &mut out) {
         out.push(format!("error={e}"));
     }
     out.join("\n")
@@ -80,6 +87,7 @@ fn runs_in_build_namespace(top: &Path, sub: Option<SubordinateIds>, runs: &[Run]
 fn steps(
     top: &Path,
     sub: Option<SubordinateIds>,
+    proc_rbind: bool,
     runs: &[Run],
     out: &mut Vec<String>,
 ) -> Result<(), String> {
@@ -110,7 +118,16 @@ fn steps(
     rustix::mount::mount_remount(root.join("usr"), MountFlags::BIND | MountFlags::RDONLY, c"")
         .map_err(|e| s(&e))?;
     let sandbox_dir = top.join("sandbox");
-    let caps = crate::probe_with_fallbacks(&sandbox_dir, report.fallbacks()).map_err(|e| s(&e))?;
+    let fallbacks = if proc_rbind {
+        report.fallbacks().allow_proc_rbind()
+    } else {
+        report.fallbacks()
+    };
+    let caps = match crate::probe_with_fallbacks(&sandbox_dir, fallbacks) {
+        Ok(caps) => caps,
+        Err(Error::Setup { step, source }) => return Err(format!("probe {step:?} {source}")),
+        Err(e) => return Err(s(&e)),
+    };
     out.push(format!("caps={caps:?}"));
     let sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| s(&e))?;
     for (n, (user, network, script)) in runs.iter().enumerate() {
@@ -224,9 +241,9 @@ fn leg_dir() -> tempfile::TempDir {
 
 /// T1: root of rootless Podman, whose `/proc` is masked and whose network
 /// namespace its user namespace owns, runs in the build's (multi-range)
-/// user namespace with an rbind of each, as the user-namespace probe
-/// found: still Docker's flags and masks, the rbind's mounts all
-/// `nosuid`, `nodev`, `noexec`, `/sys` all read-only. `USER _apt` gets
+/// user namespace with an rbind of each, `/proc`'s on request: still
+/// Docker's flags and masks, the rbind's mounts all `nosuid`, `nodev`,
+/// `noexec`, `/sys` all read-only. `USER _apt` gets
 /// its ids through `setgroups`; `--network=none` brings `lo` up in a
 /// network namespace the build owns, with no helper (ADR-0033).
 #[test]
@@ -234,7 +251,7 @@ fn leg_dir() -> tempfile::TempDir {
 fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let dir = leg_dir();
-    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, &RUNS));
+    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, true, &RUNS));
     measured(&format!(
         "RUNs in the build's user namespace of root: {}",
         out.replace('\n', "; ")
@@ -257,16 +274,16 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
 }
 
 /// T1: below a one-id user namespace (`unshare -r`), `setgroups` denied
-/// and gid 5 unmapped: root's `RUN` skips `setgroups` and mounts
-/// `/dev/pts` without `gid=5`. `USER _apt`'s ids are not mapped: refused
-/// at `setgid` (ADR-0098), not at `setgroups`.
+/// and gid 5 unmapped (an rbind of `/proc` on request): root's `RUN` skips
+/// `setgroups` and mounts `/dev/pts` without `gid=5`. `USER _apt`'s ids
+/// are not mapped: refused at `setgid` (ADR-0098), not at `setgroups`.
 #[test]
 #[ignore = "T1: default: RUNs in the build's user namespace below a one-id namespace in a rootless Podman container"]
 fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let dir = leg_dir();
     let out = in_subreaper(|| match one_id_parent() {
-        Ok(()) => runs_in_build_namespace(dir.path(), None, &RUNS),
+        Ok(()) => runs_in_build_namespace(dir.path(), None, true, &RUNS),
         Err(e) => format!("error={e}"),
     });
     measured(&format!(
@@ -293,11 +310,12 @@ fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
 }
 
 /// T2 (the VM, root dropping to the user who ran sudo): the build's user
-/// namespace of a regular user through `newuidmap`. Where
-/// `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04) it is
-/// refused before anything runs; elsewhere (22.04) a fresh `proc` mounts,
-/// so a `RUN` gets one, PID 2 under ranikust's init, and `sysfs`, whose
-/// network namespace the user does not own, an rbind of `/sys`.
+/// namespace of a regular user through `newuidmap`, with no rbind of
+/// `/proc` asked for. Where `kernel.apparmor_restrict_unprivileged_userns`
+/// is 1 (Ubuntu 24.04) it is refused before anything runs; elsewhere
+/// (22.04) a fresh `proc` mounts, so a `RUN` gets one, PID 2 under
+/// ranikust's init, and `sysfs`, whose network namespace the user does not
+/// own, an rbind of `/sys`, which needs no request.
 #[test]
 #[ignore = "T2: drops from root to the sudo user to run RUNs in the build's user namespace"]
 fn runs_in_the_build_user_namespace_of_a_regular_user() {
@@ -323,7 +341,7 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
     )
     .unwrap();
     let out = as_user(uid, gid, || {
-        runs_in_build_namespace(dir.path(), Some(sub), &RUNS)
+        runs_in_build_namespace(dir.path(), Some(sub), false, &RUNS)
     });
     measured(&format!(
         "RUNs in the build's user namespace of {name} (restricted: {restricted}): {}",
@@ -346,6 +364,32 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
+}
+
+/// T1: root of rootless Podman, where the user-namespace probe found that
+/// only an rbind of `/proc` works: without the request, the sandbox's
+/// probe refuses at [`Step::MountProc`], and no `RUN` starts.
+#[test]
+#[ignore = "T1: default: the build's user namespace refuses an unrequested rbind of /proc in a rootless Podman container"]
+fn an_rbind_of_proc_needs_a_request() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let dir = leg_dir();
+    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, false, &RUNS));
+    measured(&format!(
+        "the build's user namespace of root, no rbind of /proc asked for: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(
+        value(&out, "report").contains("proc: rbind of /proc"),
+        "{out}"
+    );
+    let eperm = io::Error::from_raw_os_error(libc::EPERM);
+    assert_eq!(
+        value(&out, "error"),
+        format!("probe {:?} {eperm}", Step::MountProc),
+        "{out}"
+    );
+    assert!(!out.contains("caps=") && !out.contains("run0="), "{out}");
 }
 
 /// [`Caps`] in a line, as [`chosen`] reads it.

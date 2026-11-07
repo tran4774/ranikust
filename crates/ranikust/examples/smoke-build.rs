@@ -9,11 +9,14 @@
 //! inside rootless `podman run --privileged` (`just smoke`), never directly
 //! on a host. With `--userns` it works in the build's user namespace
 //! (`rnk_sandbox::enter_build_user_namespace`) of the user it runs as,
-//! with the `proc` and `sysfs` fallbacks the user-namespace probe found:
-//! root of a default `podman run`, or a regular user on the T2 VM.
+//! with the `sysfs` fallback the user-namespace probe found, and an rbind
+//! of `/proc` only with `--allow proc.rbind`, as `ranikust` will take it
+//! (#79): root of a default `podman run`, which needs it, or a regular
+//! user on the T2 VM.
 //!
 //! ```sh
-//! smoke-build --out DIR [--image REF] [--work DIR] [--tag NAME] [--userns] [--run CMD]...
+//! smoke-build --out DIR [--image REF] [--work DIR] [--tag NAME] [--userns]
+//!             [--allow proc.rbind] [--run CMD]...
 //! ```
 
 use std::collections::BTreeMap;
@@ -52,6 +55,7 @@ struct Args {
     work: PathBuf,
     tag: String,
     userns: bool,
+    proc_rbind: bool,
     runs: Vec<String>,
 }
 
@@ -72,6 +76,7 @@ fn parse_args() -> Result<Args, BoxError> {
         work: "/work".into(),
         tag: "smoke".into(),
         userns: false,
+        proc_rbind: false,
         runs: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -87,6 +92,7 @@ fn parse_args() -> Result<Args, BoxError> {
             "--work" => args.work = value.into(),
             "--tag" => args.tag = value,
             "--run" => args.runs.push(value),
+            "--allow" if value == "proc.rbind" => args.proc_rbind = true,
             _ => return Err(format!("unknown argument {flag:?}").into()),
         }
     }
@@ -101,7 +107,12 @@ fn run() -> Result<(), BoxError> {
     rnk_rootfs::probe_support()?;
     // Before any thread exists.
     let fallbacks = if args.userns {
-        enter_user_namespace(&args.work)?
+        let found = enter_user_namespace(&args.work)?;
+        if args.proc_rbind {
+            found.allow_proc_rbind()
+        } else {
+            found
+        }
     } else {
         rnk_sandbox::enter_build_namespace()?;
         Fallbacks::default()
@@ -136,8 +147,8 @@ fn run() -> Result<(), BoxError> {
 
 /// `--userns`: the user-namespace probe in a directory of `work`, then the
 /// build's user namespace with the subordinate ids `ranikust` would use;
-/// returns the fallbacks the probe found, which the sandbox's probe may
-/// then choose.
+/// returns the fallbacks the probe found (never `/proc`'s), which the
+/// sandbox's probe may then choose.
 fn enter_user_namespace(work: &Path) -> Result<Fallbacks, BoxError> {
     let subordinate = subids::lookup(rustix::process::geteuid().as_raw())?;
     let scratch = work.join("userns-probe");

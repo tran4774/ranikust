@@ -279,13 +279,22 @@ smoke image="docker.io/library/alpine:3.20":
     # refuses `sethostname` without CAP_SYS_ADMIN.
     OUT_U="$TARGET/smoke/oci-userns" NAME_U=localhost/ranikust-smoke-userns:latest
     rm -rf "$OUT_U" "$OUT_U.tar" && mkdir -p "$OUT_U"
+    # Unasked, the rbind of /proc is refused (ADR-0126): the probe stops at
+    # the new proc, before anything is pulled.
+    if podman run --rm -v "$BIN:/smoke-build:ro" "$smoke_image" \
+      /smoke-build --userns --image "$smoke_image" --out /out >"$OUT_U.refused.log" 2>&1; then
+      echo "error: --userns without --allow proc.rbind: expected a refusal" >&2; exit 1
+    fi
+    grep -q '^smoke-build: RUN sandbox: mount proc: ' "$OUT_U.refused.log" ||
+      { echo "error: --userns without --allow proc.rbind: not refused at the new proc:" >&2;
+        cat "$OUT_U.refused.log" >&2; exit 1; }
     runs=(--run 'echo "hello from ranikust" > /hello' --run 'apk add --no-cache jq')
     for c in "${smoke_checks[@]:smoke_checks_own_proc}"; do
       [[ $c == *'$(hostname)'* ]] || runs+=(--run "$c")
     done
     podman run --rm -v "$BIN:/smoke-build:ro" -v "$OUT_U:/out" \
-      "$smoke_image" /smoke-build --userns --image "$smoke_image" --out /out --tag "$NAME_U" "${runs[@]}" |
-      tee "$OUT_U.log"
+      "$smoke_image" /smoke-build --userns --allow proc.rbind --image "$smoke_image" --out /out \
+      --tag "$NAME_U" "${runs[@]}" | tee "$OUT_U.log"
     grep -qx 'probe: Caps { root_entry: PivotRoot, proc: Rbind, sysfs: Rbind }' "$OUT_U.log" ||
       { echo "error: --userns: expected an rbind of /proc and of /sys" >&2; exit 1; }
     smoke_check_no_stub_leak "$OUT_U"

@@ -304,13 +304,17 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
          proc: rbind of /proc (mount proc: EPERM); sysfs: rbind of /sys (mount sysfs: EPERM); \
          mknod: EPERM"
     );
-    let both = crate::Fallbacks {
-        proc: true,
+    // The rbind of /proc worked, yet only the operator allows it.
+    let sysfs = crate::Fallbacks {
+        proc: false,
         sysfs: true,
     };
-    assert_eq!(r.fallbacks(), both);
-    let sysfs = passing(ranges(), &[SYSFS]).fallbacks();
-    assert_eq!((sysfs.proc, sysfs.sysfs), (false, true));
+    assert_eq!(r.fallbacks(), sysfs);
+    assert_eq!(passing(ranges(), &[SYSFS]).fallbacks(), sysfs);
+    assert_eq!(
+        passing(ranges(), &[PROC]).fallbacks(),
+        crate::Fallbacks::default()
+    );
     // Nothing worked: nothing to fall back to.
     assert_eq!(
         passing(ranges(), &[PROC, PROC_RBIND, SYSFS, SYSFS_RBIND]).fallbacks(),

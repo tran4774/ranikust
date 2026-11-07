@@ -292,12 +292,14 @@ impl UsernsReport {
         }
     }
 
-    /// The kernel filesystems a new instance of which was refused and an
-    /// rbind worked: those [`crate::probe_with_fallbacks`] may bind.
+    /// What [`crate::probe_with_fallbacks`] may bind: `/sys`, where a new
+    /// `sysfs` was refused and the rbind worked. Never `/proc`, whatever
+    /// this probe found: only [`crate::Fallbacks::allow_proc_rbind`] allows
+    /// it (ADR-0126).
     #[must_use]
     pub fn fallbacks(&self) -> crate::Fallbacks {
         crate::Fallbacks {
-            proc: matches!(self.proc, MountResult::Rbind { .. }),
+            proc: false,
             sysfs: matches!(self.sysfs, MountResult::Rbind { .. }),
         }
     }

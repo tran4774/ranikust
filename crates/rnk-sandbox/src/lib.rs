@@ -18,8 +18,10 @@
 //! yet. [`enter_build_user_namespace`] moves the process into the build's
 //! user namespace, each id map tried in a forked child first; no build of
 //! the binary calls it yet. There, [`probe_with_fallbacks`] lets a `RUN`
-//! get an rbind of `/proc` or `/sys` where the user-namespace probe found a
-//! new one refused ([`UsernsReport::fallbacks`]).
+//! get a read-only rbind of `/sys` where the user-namespace probe found a
+//! new `sysfs` refused ([`UsernsReport::fallbacks`]), and an rbind of
+//! `/proc` only at the operator's request
+//! ([`Fallbacks::allow_proc_rbind`], ADR-0126).
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused

@@ -428,7 +428,8 @@ echo "default: ok"
 # through newuidmap. Where AppArmor restricts unprivileged user namespaces
 # (Ubuntu 24.04) it is refused before anything runs; elsewhere (22.04) a
 # RUN gets a fresh proc in its own PID namespace, so every check applies,
-# and an rbind of /sys, whose network namespace the user does not own.
+# and an rbind of /sys, whose network namespace the user does not own;
+# neither needs --allow proc.rbind.
 echo "=== user: $(id -un), smoke-build --userns"
 dir="$W/user" rc=0
 sudo mkdir -p "$dir" && sudo chown "$(id -u):$(id -g)" "$dir"
