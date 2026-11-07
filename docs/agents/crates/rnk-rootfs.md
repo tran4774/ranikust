@@ -254,6 +254,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   them, in a private mount namespace), device nodes in `extract`, device
   nodes and foreign owners in `copy`, `trusted.*` xattrs, a symlink owned by
   another user in `host`.
+- **T2** (`just test-vm unit`):
+  `deep_trees_on_an_overlay_are_deleted_and_pruned_whatever_its_layers`:
+  `delete_contents` and `prune` on a 64-level tree in an overlay's lower
+  layer, through the merged directory, with every layer on one filesystem
+  and with the upper on a tmpfs (`xino` off, then on): each ancestor
+  reopened through `..` after its copy-up must still be the one left; a
+  `measured:` line per configuration, with the kernel.
 - **To do:** `cargo fuzz` on `extract` (Phase 6).
 
 ## Metrics

@@ -10,6 +10,8 @@ use rustix::fs::{CWD, Mode};
 use super::*;
 use crate::test_util::{Fixture, errno, snapshot, tree};
 
+mod overlay;
+
 #[test]
 fn deletes_everything_but_the_root() {
     let f = Fixture::new();

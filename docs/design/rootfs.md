@@ -368,6 +368,17 @@ directory an extracted entry replaces, and applies OCI whiteouts.
   climbs the same way for `rm -rf`. `prune` nests a deletion walk in its
   own, so it holds at most 64 (`tests/descriptors.rs`: 2,000 levels with
   only 32 or 64 fds left free under the soft `RLIMIT_NOFILE`).
+- The reopen check is inode identity (inode, device, mount id), as in GNU
+  `fts`. On an overlay's merged directory, the deletions below an ancestor
+  copy it up before the walk climbs back to it; it kept its inode number
+  with every layer on one filesystem (as Docker's and containerd's
+  `overlay2` mount it) and with the upper on a tmpfs, `xino` off or on (T2
+  `deep_trees_on_an_overlay_are_deleted_and_pruned_whatever_its_layers`,
+  kernels 5.15 and 6.8) [measured]. Where copy-up records no origin (a
+  lower that cannot encode file handles: FUSE, 9p, an overlay without
+  `nfs_export`), a copied-up directory's inode number may change: past 30
+  levels the walk then stops with `Error::Changed`, failing closed
+  [inferred].
 - Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
   `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
   `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, and its `ino`, device and
