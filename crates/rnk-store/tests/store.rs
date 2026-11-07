@@ -179,15 +179,27 @@ fn check_state_dir_decides_as_open_and_writes_nothing() {
     fs::write(marked.join(rnk_store::STATE_MARKER), "").unwrap();
     fs::write(marked.join("kept"), "x").unwrap();
     Store::check_state_dir(&marked).unwrap();
+    assert_eq!(names(&marked), [rnk_store::STATE_MARKER, "kept"]);
     let foreign = case("foreign");
     fs::write(foreign.join("precious"), "x").unwrap();
     let err = Store::check_state_dir(&foreign).unwrap_err();
     assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
     assert_eq!(names(&foreign), ["precious"]);
+    let not_a_file = case("not-a-file");
+    fs::create_dir(not_a_file.join(rnk_store::STATE_MARKER)).unwrap();
+    let err = Store::check_state_dir(&not_a_file).unwrap_err();
+    assert!(matches!(err, Error::NotAStateDir { .. }), "{err}");
     let slash = case("slash");
     fs::write(slash.join(rnk_store::BUILDING_MARKER), "").unwrap();
     let err = Store::check_state_dir(&slash).unwrap_err();
     assert!(matches!(err, Error::UsedOnSlash { .. }), "{err}");
+    assert_eq!(names(&slash), [rnk_store::BUILDING_MARKER]);
+    // An anonymous store holds its state directory alone.
+    let held = case("held");
+    let store = Store::open_anonymous(&held).unwrap();
+    let err = Store::check_state_dir(&held).unwrap_err();
+    assert!(matches!(err, Error::Busy { .. }), "{err}");
+    store.close().unwrap();
     let err = Store::check_state_dir(&dir.path().join("missing")).unwrap_err();
     assert!(matches!(err, Error::Io { .. }), "{err}");
 }

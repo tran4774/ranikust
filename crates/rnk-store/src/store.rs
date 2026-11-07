@@ -321,8 +321,8 @@ impl Store {
     /// canonicalized; a new or empty directory gets the [`STATE_MARKER`]
     /// marker, and a non-empty one without it is refused, unless it holds
     /// only names ranikust makes there ([`crate::ANON_PREFIX`]), which
-    /// stay. A state directory
-    /// owned by another user or writable by others is used with a warning.
+    /// stay. A state directory owned by another user or writable by others
+    /// is used with a warning.
     /// The store's own directories take the process's gid and no setgid
     /// bit, whatever a setgid state directory or a `grpid` mount gave them,
     /// so that what the store makes carries ids a user namespace maps
@@ -397,16 +397,17 @@ impl Store {
     }
 
     /// Checks, writing nothing, that [`Store::open`] would take the
-    /// existing directory `state` as a state directory: it holds
-    /// [`STATE_MARKER`] or only names ranikust makes there, and no
-    /// [`BUILDING_MARKER`]. For a step that writes there before the store
-    /// opens (Q-111, (a)).
+    /// existing directory `state` as a state directory now: its shared
+    /// `flock` can be taken (and is let go), and it holds [`STATE_MARKER`]
+    /// or only names ranikust makes there, and no [`BUILDING_MARKER`]. For
+    /// a step that writes there before the store opens (Q-111, (a)).
     ///
     /// # Errors
     ///
-    /// [`Error::NotAStateDir`] and [`Error::UsedOnSlash`] as
-    /// [`Store::open`], [`Error::Io`] when `state` cannot be resolved or
-    /// read, [`Error::Rootfs`] when it cannot be opened.
+    /// [`Error::Busy`], [`Error::NoFlock`], [`Error::NotAStateDir`] and
+    /// [`Error::UsedOnSlash`] as [`Store::open`], [`Error::Io`] when
+    /// `state` cannot be resolved or read, [`Error::Rootfs`] when it cannot
+    /// be opened.
     pub fn check_state_dir(state: &Path) -> Result<()> {
         let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
             op: "resolve",
@@ -414,6 +415,17 @@ impl Store {
             source,
         })?;
         let root = RootPath::open(&state_path)?;
+        let state_lock = root.open_at(".", &OpenHow::read().directory().no_follow())?;
+        match lock::try_lock_shared(&state_lock) {
+            Ok(true) => {}
+            Ok(false) => return Err(Error::Busy { path: state_path }),
+            Err(source) => {
+                return Err(Error::NoFlock {
+                    path: state_path,
+                    source,
+                });
+            }
+        }
         refuse_used_on_slash(&root, &state_path)?;
         needs_marker(&root, &state_path).map(drop)
     }
@@ -1781,8 +1793,9 @@ fn needs_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
     }
 }
 
-/// The state directory's marker: `Some(true)` for a regular file, `None`
-/// where there is none.
+/// The state directory's marker: `Some(true)` for a regular file,
+/// `Some(false)` for anything else of that name, `None` where there is
+/// none.
 fn marker(state: &RootPath) -> Result<Option<bool>> {
     match state.statx(MARKER) {
         Ok(st) => Ok(Some(st.file_type() == FileType::Regular)),
