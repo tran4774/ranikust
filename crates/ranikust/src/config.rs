@@ -777,7 +777,7 @@ fn build_arg(arg: &str) -> Result<BuildArg, Invalid> {
 
 /// `path` cleaned lexically, as Go's `filepath.Clean`: no `.`, no repeated
 /// `/`, `..` resolved against the parent (never above `/`).
-fn clean(path: &Path) -> PathBuf {
+pub(crate) fn clean(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in path.components() {
@@ -795,7 +795,7 @@ fn clean(path: &Path) -> PathBuf {
 
 /// `path` made absolute against the current directory, without touching the
 /// filesystem: no symlink is resolved.
-fn absolute(path: &Path) -> PathBuf {
+pub(crate) fn absolute(path: &Path) -> PathBuf {
     // `absolute` only fails without a current directory; the path as given is
     // then the best there is.
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())

@@ -493,13 +493,21 @@ per stage made for the build (ADR-0059). Before anything is written,
    user, not writable by others, and set to `0700` if others may search it;
    then the whole chain is checked again from its descriptor.
 3. Before its mode is touched: never `/`, and only a directory just created,
-   empty, or holding the store's regular `.ranikust-state` marker; unmarked,
-   none of the thirty system directories of `statedir::SYSTEM_DIRS` (`/mnt`,
-   `/srv`, `/opt`..., by device and inode); one marked only with the old
-   `.ranikust-root` is refused, named. After `chmod 0700` the mode must read
-   back so; `builds/` likewise.
+   empty, or holding the store's regular `.ranikust-state` marker (or
+   `.ranikust-pruning`, what a `prune --all` cut short leaves, which the store
+   then refuses itself); unmarked, none of the thirty system directories of
+   `statedir::SYSTEM_DIRS` (`/mnt`, `/srv`, `/opt`..., by device and inode);
+   one marked only with the old `.ranikust-root` is refused, named. After
+   `chmod 0700` the mode must read back so; `builds/` likewise.
 4. On `/`, the store then refuses a marked directory too, and anything but its
    own marker and leftovers (ADR-0077; [locks](cache-and-store.md#locks)).
+
+`ranikust prune --all` checks an existing state directory by these rules
+through `statedir::check`, which makes nothing and sets no mode: its chain
+as step 2 checks it again, never `/`, and its contents as
+`Store::check_prune`, which refuses what `Store::prune_all` would; not the
+system directories, since it empties only a marked directory
+([prune](cache-and-store.md#prune)).
 
 `ranikust` holds kaniko mode on `/` with `flock` on a descriptor of `/` for
 the whole build, and refuses kaniko mode outside a container where root may

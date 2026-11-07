@@ -24,7 +24,10 @@ from that.
 ### Rules
 
 - T0 tests need no privileges and no network, and write only below a fresh
-  temporary directory, which they remove on failure too.
+  temporary directory, which they remove on failure too. Some run tools of
+  the machine: the `prune` tests, for the shell commands `prune --all`
+  suggests, `bash`, `sh`, `flock` (util-linux) and GNU `find`, and, where
+  the machine has them, `zsh`, `dash`, `ksh`, `mksh` and BusyBox.
 - A test that needs more is marked `#[ignore = "T1: <profile>: <reason>"]`,
   `#[ignore = "T2c: <profile>: <reason>"]` or `#[ignore = "T2: <reason>"]`.
   Its harness runs it with `cargo test -- --ignored` in the right
@@ -697,9 +700,11 @@ Exceptions, all from emulation (the native CI job runs them all):
 - `without_root_the_set_up_refuses_before_touching_the_state_dir`,
   `without_root_the_set_up_never_makes_the_default_state_dir`,
   `kaniko_variables_are_not_read`, `logging_flags_change_what_is_written`,
-  `the_store_opens_inside_the_user_namespace_or_not_at_all` and
-  `red_team_the_build_user_namespace_is_whole_or_not_entered` are skipped:
-  qemu-user runs a thread of its own, so the set-up, or
+  `the_store_opens_inside_the_user_namespace_or_not_at_all`,
+  `red_team_the_build_user_namespace_is_whole_or_not_entered`,
+  `prune_all_empties_in_the_user_namespace_or_changes_nothing` and
+  `prune_all_as_a_user_empties_a_state_directory_or_changes_nothing` are
+  skipped: qemu-user runs a thread of its own, so the set-up, or
   `enter_build_user_namespace`, stops at its single-thread check before the
   privilege refusal or the user namespace the tests expect.
 - `seccomp::tests::the_filter_refuses_what_it_should_and_nothing_else` and

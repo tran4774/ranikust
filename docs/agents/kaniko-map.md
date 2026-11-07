@@ -117,7 +117,8 @@ container's `/` stages run one at a time and only the uploads follow it);
 `--platform`. `--parallel-stages` is recognised and refused for good
 (`ADR-0060`); `--seccomp` is ranikust's own (`ADR-0109`; refused in kaniko
 mode on `/`); `--userns` (Phase 3) does not exist yet.
-Subcommands: `build` (the default) and `version`; `prune` comes in Phase 5;
+Subcommands: `build` (the default), `version` and `prune` (only `--all` for a
+user other than root, ADR-0105; by size and age in Phase 5);
 `push` (an OCI layout, ADR-0052) has no phase yet; `login` never will
 (ADR-0049).
 

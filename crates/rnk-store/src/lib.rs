@@ -3,26 +3,31 @@
 //! Owns the store in the state directory: compressed blobs (`blobs/`),
 //! extracted layers (`layers/`), `RUN --mount=type=cache` directories
 //! (`caches/`) and entries being written (`tmp/`). Provides per-digest locks,
-//! publication by atomic rename, start-up clean-up and `prune`, and defines
-//! `BuildPaths`, the paths handed down to every crate. Tells whether the
-//! process runs in a user namespace other than the initial one (by the
-//! inode of `/proc/self/ns/user`), for the group of its own directories and
-//! for `rnk-snapshot`'s layer keys and device nodes.
+//! publication by atomic rename, start-up clean-up and the emptying of
+//! `ranikust prune --all` (ADR-0105; `prune` by size and age is Phase 5),
+//! and defines `BuildPaths`, the paths handed down to every crate. Tells
+//! whether the process runs in a user namespace other than the initial one
+//! (by the inode of `/proc/self/ns/user`), for the group of its own
+//! directories and for `rnk-snapshot`'s layer keys and device nodes.
 //!
 //! ```text
 //! <state-dir>/
 //! ├── .ranikust-state                marker: a non-empty directory without it is refused
+//! ├── .ranikust-pruning              the marker while prune --all empties it: no build opens it
 //! ├── blobs/<algorithm>/<hex>        compressed blobs, by digest
 //! ├── layers/v3/<algorithm>/<hex>/   extracted layers, by chain ID [open: #1]
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
 //! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
-//! └── builds/<build-id>/, <build-id>.lock      one per running build
+//! ├── builds/<build-id>/, <build-id>.lock      one per running build
+//! └── sandbox/                       the RUN sandbox's own files (made by the caller)
 //! ```
 //!
 //! A build is alive while it holds the `flock` on `builds/<build-id>.lock`;
 //! [`Store::open`] removes the `builds/` and `tmp/` directories of every
-//! build that is not.
+//! build that is not. [`Store::prune_all`] empties the whole directory only
+//! while no build holds it, its marker renamed [`PRUNING_MARKER`] first,
+//! which keeps every build out until a prune finishes.
 //!
 //! # Boundaries
 //!
@@ -48,7 +53,7 @@ pub use error::{Error, Result};
 pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
 pub use store::{
-    BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper, STATE_MARKER,
-    Store, TmpEntry,
+    BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper,
+    PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, Store, TmpEntry,
 };
 pub use userns::user_namespace_proc;

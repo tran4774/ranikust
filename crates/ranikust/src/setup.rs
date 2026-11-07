@@ -11,6 +11,7 @@
 //! outside a container, kaniko mode with a directory per stage; every other
 //! environment is refused with the probe's diagnosis.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::DirBuilderExt as _;
@@ -62,7 +63,8 @@ pub(crate) struct Refusal {
     /// What failed, with the step and errno when a probe found it.
     pub(crate) reason: String,
     /// What to do instead; empty when the reason already says it.
-    pub(crate) guidance: &'static str,
+    /// ranikust's own text, though it may name the state directory.
+    pub(crate) guidance: Cow<'static, str>,
     /// What kind of refusal it is: what `--mode=auto` may make of it
     /// ([`route`]).
     pub(crate) kind: Kind,
@@ -201,10 +203,7 @@ const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user 
 /// The build's user namespace, entered, and the store opened in it.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "`prune --all` (#76) and rootless overlay mode (#79) read it"
-    )
+    expect(dead_code, reason = "rootless overlay mode (#79) reads it")
 )]
 pub(crate) struct UsernsSetup {
     /// Its map, and the maps passed over on the way.
@@ -215,45 +214,62 @@ pub(crate) struct UsernsSetup {
 
 /// Enters the build's user namespace and opens the store in it (M2): the
 /// state directory's check first, outside, where its owners read as the
-/// host's ([`crate::statedir::prepare`]); then, for a user other than root,
-/// its subordinate ids ([`crate::subids`]); then
-/// [`rnk_sandbox::enter_build_user_namespace`], which also enters the build's
-/// mount namespace; then [`Store::open`], whose start-up clean-up removes
-/// a dead build's files as root of the namespace, those of subordinate ids
-/// too, which the user outside could not. Logs the map, one uid as such
-/// (ADR-0098). Call while single-threaded, in place of [`enter_namespace`].
+/// host's ([`crate::statedir::prepare`]); then [`enter_build_userns`]; then
+/// [`Store::open`], whose start-up clean-up removes a dead build's files as
+/// root of the namespace, those of subordinate ids too, which the user
+/// outside could not. Call while single-threaded, in place of
+/// [`enter_namespace`].
 ///
 /// # Errors
 ///
-/// A [`Refusal`]. Where the process may be in the namespace already (an
-/// error of [`rnk_sandbox::enter_build_user_namespace`] not known to leave
-/// the process unchanged, or the store refused), it is of [`Kind::Broken`]:
-/// the process must end, and no caller, in any mode, may ignore it.
+/// A [`Refusal`] from the state directory's check, or as
+/// [`enter_build_userns`]; a store refused is of [`Kind::Broken`].
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "`prune --all` (#76) and rootless overlay mode (#79) call it"
-    )
+    expect(dead_code, reason = "rootless overlay mode (#79) calls it")
 )]
 pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refusal> {
-    let euid = rustix::process::geteuid().as_raw();
     prepare_state_dir(state_dir)?;
+    // The user's, for the guidance: root of the namespace once in it.
+    let euid = rustix::process::geteuid().as_raw();
+    let userns = enter_build_userns(NO_USER_NAMESPACE.into())?;
+    let store = open_store(state_dir, state_dir, euid).map_err(inside_userns)?;
+    Ok(UsernsSetup { userns, store })
+}
+
+/// Enters the build's user namespace, checking and opening nothing of the
+/// state directory, which the caller checked outside first: for a user
+/// other than root, its subordinate ids ([`crate::subids`]); then
+/// [`rnk_sandbox::enter_build_user_namespace`], which also enters the
+/// build's mount namespace. Logs the map, one uid as such (ADR-0098). Call
+/// while single-threaded.
+///
+/// # Errors
+///
+/// A [`Refusal`], with `no_userns` as its guidance where a user other than
+/// root gets no user namespace. Where the process may be in the namespace
+/// already (an error of [`rnk_sandbox::enter_build_user_namespace`] not
+/// known to leave the process unchanged), it is of [`Kind::Broken`]: the
+/// process must end, and no caller, in any mode, may ignore it. A caller's
+/// own failure once in the namespace is made one with [`inside_userns`].
+pub(crate) fn enter_build_userns(
+    no_userns: Cow<'static, str>,
+) -> Result<rnk_sandbox::BuildUserNamespace, Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
     let subordinate = crate::subids::lookup(euid).map_err(|e| Refusal {
         kind: Kind::Other,
-        guidance: "",
+        guidance: "".into(),
         reason: format!("cannot read this user's subordinate ids: {e}"),
     })?;
     let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
-        .map_err(|e| userns_refusal(e, euid))?;
+        .map_err(|e| userns_refusal(e, euid, no_userns))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
-    let store = open_store(state_dir, state_dir).map_err(inside_userns)?;
-    Ok(UsernsSetup { userns, store })
+    Ok(userns)
 }
 
 /// `refusal`, made once the process is in the build's user namespace: no
 /// other mode may follow it.
-fn inside_userns(refusal: Refusal) -> Refusal {
+pub(crate) fn inside_userns(refusal: Refusal) -> Refusal {
     Refusal {
         kind: Kind::Broken,
         ..refusal
@@ -262,8 +278,9 @@ fn inside_userns(refusal: Refusal) -> Refusal {
 
 /// The refusal for [`rnk_sandbox::enter_build_user_namespace`]'s error
 /// `e`, for the effective uid `euid`: [`Kind::Broken`] unless `e` is one
-/// that function documents as leaving the process unchanged.
-fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
+/// that function documents as leaving the process unchanged; `no_userns`
+/// guides a user other than root who gets no user namespace.
+fn userns_refusal(e: SandboxError, euid: u32, no_userns: Cow<'static, str>) -> Refusal {
     Refusal {
         kind: match e {
             SandboxError::NotSingleThreaded { .. }
@@ -273,9 +290,9 @@ fn userns_refusal(e: SandboxError, euid: u32) -> Refusal {
             _ => Kind::Broken,
         },
         guidance: if euid != 0 && matches!(e, SandboxError::NoUserNamespace { .. }) {
-            NO_USER_NAMESPACE
+            no_userns
         } else {
-            ""
+            "".into()
         },
         reason: e.to_string(),
     }
@@ -316,17 +333,17 @@ pub(crate) fn set_up(
                  mode cannot keep its upper directories",
                 state_dir.display()
             ),
-            guidance: ON_OVERLAYFS,
+            guidance: ON_OVERLAYFS.into(),
         });
     }
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
-    let store = open_store(state_dir, state_dir)?;
+    let store = open_store(state_dir, state_dir, euid)?;
     // Before the overlay probe: a thread it joined may still be counted.
     if std::mem::take(userns_probe) {
         report_user_namespace(&store);
     }
-    let sandbox_dir = state_dir.join("sandbox");
+    let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let outcome = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
@@ -348,7 +365,7 @@ pub(crate) fn set_up(
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| Refusal {
         kind: Kind::Other,
         reason: e.to_string(),
-        guidance: "",
+        guidance: "".into(),
     })?;
     if userns_network {
         sandbox.allow_userns_network();
@@ -367,26 +384,50 @@ const ON_OVERLAYFS: &str = "mount a volume at the state directory, e.g. \
      `-v ranikust-state:/var/lib/ranikust`, or pass --state-dir on one; outside a container \
      the default --mode=auto builds in kaniko mode there instead";
 
-/// Opens the store in `state_dir` for a build whose root is `root`.
-fn open_store(root: &Path, state_dir: &Path) -> Result<Store, Refusal> {
-    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| store_refusal(&e, state_dir))
+/// Opens the store in `state_dir` for a build whose root is `root`, by the
+/// effective uid `euid` outside any user namespace of the build.
+fn open_store(root: &Path, state_dir: &Path, euid: u32) -> Result<Store, Refusal> {
+    Store::open(&BuildPaths::new(root, state_dir)).map_err(|e| store_refusal(&e, state_dir, euid))
 }
 
-/// A store that cannot be opened in `state_dir`, as a [`Refusal`]. A state
-/// directory another build holds, or one kaniko mode on `/` may not share
-/// with persistent builds (ADR-0077), says so itself.
-fn store_refusal(e: &rnk_store::Error, state_dir: &Path) -> Refusal {
+/// A store that cannot be opened in `state_dir` by the effective uid
+/// `euid` (outside any user namespace of the build), as a [`Refusal`]. An
+/// error that names the state directory itself says so alone; a directory
+/// a `prune --all` did not finish emptying gets what `euid` does with it
+/// ([`crate::prune::cut_short`]).
+fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
     use rnk_store::Error;
     let reason = match e {
-        Error::Busy { .. } | Error::StateNotEmpty { .. } | Error::UsedOnSlash { .. } => {
-            e.to_string()
-        }
-        _ => format!("cannot open the store in {}: {e}", state_dir.display()),
+        Error::Io { path, .. } if path == state_dir => e.to_string(),
+        Error::NotAStateDir { .. }
+        | Error::NoFlock { .. }
+        | Error::Busy { .. }
+        | Error::InUse { .. }
+        | Error::NotPruned { .. }
+        | Error::PruneCutShort { .. }
+        | Error::StateNotEmpty { .. }
+        | Error::NotEmptied { .. }
+        | Error::Unmarked { .. }
+        | Error::UsedOnSlash { .. }
+        | Error::AnonymousFile { .. }
+        | Error::NameOutlivesUnlink { .. } => e.to_string(),
+        Error::Io { .. }
+        | Error::BadEntry { .. }
+        | Error::Cancelled
+        | Error::Anonymous { .. }
+        | Error::Random(_)
+        | Error::Rootfs(_)
+        | Error::Fill { .. } => format!("cannot open the store in {}: {e}", state_dir.display()),
     };
     Refusal {
         kind: Kind::Other,
         reason,
-        guidance: "",
+        guidance: match crate::prune::unfinished_prune(e) {
+            Some((crate::prune::Unfinished::CutShort, dir)) => {
+                crate::prune::cut_short(dir, euid).into()
+            }
+            Some((crate::prune::Unfinished::NotPruned, _)) | None => "".into(),
+        },
     }
 }
 
@@ -445,7 +486,7 @@ pub(crate) fn set_up_kaniko(
         return Err(Refusal {
             kind: Kind::Other,
             reason: format!("kaniko mode cannot run as uid {euid}"),
-            guidance: KANIKO_NEEDS_ROOT,
+            guidance: KANIKO_NEEDS_ROOT.into(),
         });
     }
     if let Some(refusal) = host_without_mounts(on_slash, can_mount) {
@@ -460,7 +501,7 @@ pub(crate) fn set_up_kaniko(
         rnk_sandbox::trim_to_run_capabilities().map_err(|e| Refusal {
             kind: Kind::Other,
             reason: format!("kaniko mode on /: {e}"),
-            guidance: "",
+            guidance: "".into(),
         })?;
     }
     // On `/`, the lock first, on `/` itself: two builds in one container
@@ -473,9 +514,9 @@ pub(crate) fn set_up_kaniko(
     // directory there, so it is never a persistent store, and nothing a
     // `RUN` left outlives the build (ADR-0077).
     let store = if on_slash {
-        Store::open_anonymous(state_dir).map_err(|e| store_refusal(&e, state_dir))?
+        Store::open_anonymous(state_dir).map_err(|e| store_refusal(&e, state_dir, euid))?
     } else {
-        open_store(state_dir, state_dir)?
+        open_store(state_dir, state_dir, euid)?
     };
     let root = if on_slash {
         let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;
@@ -483,7 +524,7 @@ pub(crate) fn set_up_kaniko(
     } else {
         None
     };
-    let sandbox_dir = store.state_dir().join("sandbox");
+    let sandbox_dir = store.state_dir().join(rnk_store::SANDBOX_DIR);
     // Off `/` root may mount here (`host_without_mounts`): the full sandbox.
     let caps = if on_slash {
         None
@@ -493,7 +534,7 @@ pub(crate) fn set_up_kaniko(
         let caps = rnk_sandbox::probe(&sandbox_dir).map_err(|e| Refusal {
             kind: Kind::Other,
             reason: format!("the RUN sandbox cannot run here: {e}"),
-            guidance: "",
+            guidance: "".into(),
         })?;
         span.record("steps", 1_u64);
         Some(caps)
@@ -518,7 +559,7 @@ pub(crate) fn set_up_kaniko(
     let mut sandbox = started.map_err(|e| Refusal {
         kind: Kind::Other,
         reason: e.to_string(),
-        guidance: "",
+        guidance: "".into(),
     })?;
     sandbox.set_nofile_limit(nofile);
     // A `Direct` `RUN` never gets the profile, whatever it is (ADR-0103).
@@ -558,7 +599,7 @@ pub(crate) fn host_without_mounts(on_slash: bool, can_mount: bool) -> Option<Ref
         reason: "kaniko mode outside a container, where root may not mount: RUN would run in \
                  a bare chroot on this machine, which root can leave"
             .to_owned(),
-        guidance: HOST_WITHOUT_MOUNTS,
+        guidance: HOST_WITHOUT_MOUNTS.into(),
     })
 }
 
@@ -576,7 +617,7 @@ fn lock_slash() -> Result<OwnedFd, Refusal> {
         Err(rustix::io::Errno::WOULDBLOCK) => Err(Refusal {
             kind: Kind::Other,
             reason: "another ranikust build is using / in this container".to_owned(),
-            guidance: "run one kaniko-mode build at a time per container",
+            guidance: "run one kaniko-mode build at a time per container".into(),
         }),
         Err(e) => Err(failed("cannot lock the root /", &e)),
     }
@@ -739,7 +780,7 @@ fn failed(what: &str, e: &dyn fmt::Display) -> Refusal {
     Refusal {
         kind: Kind::Other,
         reason: format!("{what}: {e}"),
-        guidance: "",
+        guidance: "".into(),
     }
 }
 
@@ -754,7 +795,7 @@ fn probe_overlay(build_dir: &Path, euid: u32) -> Result<OverlayCaps, Refusal> {
         .map_err(|e| Refusal {
             kind: Kind::Other,
             reason: format!("cannot create {}: {e}", dir.display()),
-            guidance: "",
+            guidance: "".into(),
         })?;
     rnk_snapshot::probe(&dir).map_err(|e| overlay_refusal(&e, euid))
 }
@@ -783,7 +824,7 @@ fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
     Refusal {
         kind,
         reason: format!("overlay mode cannot run here: {e}"),
-        guidance,
+        guidance: guidance.into(),
     }
 }
 
@@ -816,7 +857,7 @@ fn prepare_state_dir(state_dir: &Path) -> Result<(), Refusal> {
     crate::statedir::prepare(state_dir).map_err(|refused| Refusal {
         kind: Kind::Other,
         reason: refused.0,
-        guidance: "",
+        guidance: "".into(),
     })
 }
 
@@ -830,7 +871,7 @@ fn namespace_refusal(e: SandboxError, euid: u32) -> Refusal {
     Refusal {
         kind,
         reason: e.to_string(),
-        guidance,
+        guidance: guidance.into(),
     }
 }
 
@@ -857,7 +898,7 @@ fn pick<C>(
         };
         Refusal {
             kind,
-            guidance,
+            guidance: guidance.into(),
             reason: format!("the RUN sandbox cannot run here: {e}"),
         }
     })?;

@@ -49,16 +49,17 @@ and tests are on each crate's card in
 ### `ranikust`
 
 The binary: the CLI and the orchestration of a build across the library crates
-(ADR-0067). Parses the `build` (the default) and `version` subcommands, kaniko's
-common flags (those it does not accept are refused by name) and
-`--mode=auto|overlay|kaniko`
-([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` comes in Phase 5 (a minimal
-`prune --all` in Phase 3, ADR-0105), `push` (an OCI layout, ADR-0052) has no
-phase yet, and there is no `login` (ADR-0049).
-Runs the set-up and the probes while
-single-threaded, picks the mode and the root, runs `rnk-sched` with its own
-`StageRunner` (which drives `rnk-builder`, one thread per stage) and writes the
-outputs. **Must not** hold the rule of a single concern (Dockerfile semantics,
+(ADR-0067). Parses the `build` (the default), `prune` and `version`
+subcommands, kaniko's common flags (those it does not accept are refused by
+name) and `--mode=auto|overlay|kaniko`
+([ADR-0023](docs/adr/0023-mode-flag.md)); `prune` takes `--all`, required,
+which empties a user's state directory (`--state-dir`) inside the build's user
+namespace through `rnk-store` (ADR-0105), until Phase 5 adds removal by size
+and age; `push` (an OCI layout, ADR-0052) has no phase yet, and there is no
+`login` (ADR-0049). Runs the set-up and the probes while single-threaded,
+picks the mode and the root, runs `rnk-sched` with its own `StageRunner`
+(which drives `rnk-builder`, one thread per stage) and writes the outputs.
+**Must not** hold the rule of a single concern (Dockerfile semantics,
 scheduling, executing an instruction, snapshots, the sandbox, filesystem
 access, storage, layers, images, registries), or probe a capability itself.
 
@@ -129,11 +130,12 @@ processes.
 The persistent, content-addressed store in the state directory
 ([ADR-0021](docs/adr/0021-rnk-store-crate.md)): blobs, extracted layers,
 `RUN --mount=type=cache` directories, entries being written. Per-digest locks,
-publication by atomic rename, start-up clean-up, and `BuildPaths`, the paths
-handed down to every crate. It tells whether the process runs in a user
+publication by atomic rename, start-up clean-up, the emptying of `prune --all`
+while no build holds the state directory (ADR-0105), and `BuildPaths`, the
+paths handed down to every crate. It tells whether the process runs in a user
 namespace (by the inode of `/proc/self/ns/user`), for its own directories'
-group and `rnk-snapshot`'s layer keys and device nodes. `prune` comes in
-Phase 5, a minimal `prune --all` in Phase 3 (ADR-0105). **Must not** decide what
+group and `rnk-snapshot`'s layer keys and device nodes. `prune` by size and
+age comes in Phase 5. **Must not** decide what
 an entry contains (the caller fills a temporary entry, `rnk-store` publishes
 it), transfer blobs, decode layers, mount, or delete except through
 `rnk-rootfs`.

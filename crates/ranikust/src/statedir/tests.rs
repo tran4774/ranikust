@@ -150,6 +150,51 @@ fn the_advice_names_the_default_of_the_effective_user() {
     }
 }
 
+/// What the commands a refusal prints require of a state directory: the
+/// one checked, the build's rule with its owner as the user, and no system
+/// directory, marked or not, even by another name; its mode is returned.
+#[test]
+fn the_commands_take_only_a_directory_a_build_accepts() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o750)).unwrap();
+    fs::write(state.join(rnk_store::STATE_MARKER), b"").unwrap();
+    let check = rnk_store::Store::check_prune(&state).unwrap();
+    let other = tmp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let mode = check_for_commands_beside(&state, &check, &[other.as_path()]).unwrap();
+    assert_eq!(mode, 0o750);
+    assert_eq!(check_for_commands(&state, &check).unwrap(), 0o750);
+    let link = tmp.path().join("link");
+    symlink(&state, &link).unwrap();
+    let why = check_for_commands_beside(&state, &check, &[other.as_path(), link.as_path()])
+        .unwrap_err()
+        .0;
+    assert!(
+        why.contains(&format!("is the system directory {}", link.display())),
+        "{why}"
+    );
+    for changed in [
+        rnk_store::PruneCheck {
+            ino: check.ino + 1,
+            ..check
+        },
+        rnk_store::PruneCheck {
+            uid: check.uid + 1,
+            ..check
+        },
+    ] {
+        let why = check_for_commands(&state, &changed).unwrap_err().0;
+        assert!(why.contains("changed while ranikust checked it"), "{why}");
+    }
+    for mode in [0o1777, 0o770, 0o702] {
+        fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
+        let why = check_for_commands(&state, &check).unwrap_err().0;
+        assert!(why.contains("is writable by group or others"), "{why}");
+    }
+}
+
 #[test]
 fn prepare_refuses_without_creating_anything() {
     let tmp = private_tempdir();
@@ -168,6 +213,25 @@ fn prepare_refuses_without_creating_anything() {
     let why = prepare(&link.join("state")).unwrap_err().0;
     assert!(why.contains("without following a symlink"), "{why}");
     assert!(!real.join("state").exists());
+}
+
+/// A path through `..` names, in a refusal, the parent that breaks the
+/// rule, not the one its text has at that depth.
+#[test]
+fn a_refusal_through_dotdot_names_the_parent_that_breaks_the_rule() {
+    let tmp = private_tempdir();
+    let open = tmp.path().join("open");
+    let state = open.join("s/state");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(open.join("s"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    let given = state.join("../state");
+    let want = format!("unsafe state directory: {} is writable", open.display());
+    let why = check(&given).unwrap_err().0;
+    assert!(why.contains(&want), "{why}");
+    let why = prepare(&given).unwrap_err().0;
+    assert!(why.contains(&want), "{why}");
 }
 
 /// What another local user can do in a sticky `/tmp` after `prepare` found
@@ -238,6 +302,22 @@ fn a_directory_that_is_not_a_state_directory_keeps_its_mode() {
     fs::create_dir(&linked).unwrap();
     symlink("/etc/hostname", linked.join(rnk_store::STATE_MARKER)).unwrap();
     assert!(prepare(&linked).is_err());
+    // The marker of a prune cut short counts: the store refuses a build
+    // there itself, and prune --all finishes it.
+    let pruning = tmp.path().join("pruning");
+    fs::create_dir(&pruning).unwrap();
+    fs::set_permissions(&pruning, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(pruning.join("data"), b"x").unwrap();
+    let marker = pruning.join(rnk_store::PRUNING_MARKER);
+    symlink("/etc/hostname", &marker).unwrap();
+    let why = prepare(&pruning).unwrap_err().0;
+    assert!(why.contains("not a state directory"), "{why}");
+    let mode = |dir: &Path| fs::metadata(dir).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&pruning), 0o755);
+    fs::remove_file(&marker).unwrap();
+    fs::write(&marker, b"").unwrap();
+    prepare(&pruning).unwrap();
+    assert_eq!(mode(&pruning), 0o700);
 }
 
 #[test]
