@@ -139,6 +139,13 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
   none extracted before this rule is reused.
 - Identity is compared by `(dev, ino)` (and mount id), never by string; the
   store's `.ranikust-state` marker is a regular file.
+- The header check (`read_header`, #179) gives a layer the same answer on
+  every host: it holds a name to `NAME_MAX` though a FUSE filesystem may
+  take a longer one, and refuses a malformed POSIX ACL though, on Linux 5.8
+  to 6.1, 9p outside `access=client`, CIFS, and FUSE mounted in the initial
+  user namespace without ACLs would pass it on unparsed. An empty ACL value
+  removes the ACL on every kernel
+  ([design/rootfs.md#extraction](../../design/rootfs.md#extraction)).
 
 ## Refs
 
@@ -304,7 +311,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   directory on the same filesystem and a tmpfs inside a root, with links to
   them, in a private mount namespace), device nodes in `extract`, device
   nodes and foreign owners in `copy`, `trusted.*` xattrs, a symlink owned by
-  another user in `host`.
+  another user in `host`, an empty POSIX ACL value removing the ACL
+  (`an_empty_posix_acl_removes_the_one_there_as_root`, `default`; with a
+  `measured:` line of the kernel's own verdict, which on Linux 5.15,
+  `RANIKUST_VM_RELEASE=jammy`, refuses the value).
 - **T2** (`just test-vm unit`):
   `deep_trees_on_an_overlay_are_deleted_and_pruned_whatever_its_layers`:
   `delete_contents` and `prune` on a 64-level tree in an overlay's lower

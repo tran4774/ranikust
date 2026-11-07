@@ -74,7 +74,11 @@ anything, then applies, in this order:
 1. **Owner**, `fchownat(fd, "", AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)`.
    First, because `chown` clears setuid, setgid and `security.capability`.
 2. **Xattrs**, before the mode, because setting `user.*` needs write
-   permission that the final mode may remove.
+   permission that the final mode may remove. An empty ACL value removes the
+   ACL (`system.posix_acl_access` or `_default`, with `removexattr`, no
+   error if there is none), in an extraction, a `COPY` and every `set_meta`:
+   Linux 6.2 and later take the empty value as a removal, an older kernel
+   refuses it (`EINVAL`).
 3. **Mode**, the raw bits `& 0o7777` (setuid, setgid and sticky kept, no
    umask). Skipped for symlinks.
 4. **Times**, `utimensat(fd, "", AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)`, last,
@@ -146,50 +150,57 @@ never called.
 - **The kernel's limits.** `read_header` refuses values the kernel refuses,
   so the entry fails before anything of it is written, in every extraction
   and the check alike
-  ([#179](https://github.com/tran4774/ranikust/issues/179)): a NUL byte in a
-  name or link target; a component over 255 bytes (`NAME_MAX`; a FUSE
-  filesystem may take a longer one, refused all the same); a directory path
-  over 4095 bytes (`PATH_MAX` counts the NUL), the entry's name aside, since
-  the kernel gets the directory, then the name; in a live root, over what
-  `/proc/self/fd` shows of it with the root's own path, 4094 bytes on `/`
-  (where a directory lies is read there), which the check holds to as it
-  guards `/`; a symlink target over 4095 bytes. On a directory, file or
-  symlink it refuses an xattr, as it is set (escaped in the overlay form),
-  whose name is empty, over 255 bytes (`XATTR_NAME_MAX`) or holds a NUL
-  byte, whose value is over 64 KiB (`XATTR_SIZE_MAX`), a non-empty
-  `security.capability` that is not 20 bytes of revision 2 or 24 of revision
-  3 with a root id other than -1 (`cap_convert_nscap` in
-  `security/commoncap.c`), a non-empty POSIX ACL (`system.posix_acl_access`
-  or `_default`) that the kernel's VFS refuses before a filesystem sees it,
-  as `posix_acl_from_xattr` and `posix_acl_valid` in `fs/posix_acl.c` do (a
-  version other than 2, a size other than 4 + 8n bytes, an unknown tag, a
-  named user or group of id -1, permissions past `rwx`, entries missing,
-  repeated or out of order), a default ACL with entries on anything but a
-  directory (`set_posix_acl`), and `user.*` on a symlink. The VFS checks
-  ACLs for every filesystem since Linux 6.2. Before it, the ACL handler most
-  filesystems share does, while 9p outside `access=client`, CIFS, and FUSE
-  mounted in the initial user namespace without ACLs pass the value on
-  unparsed; the check refuses it there all the same. An empty ACL removes
-  it, as Linux 6.2 and later do; an older kernel refuses the empty value, so
-  every extraction removes the ACL instead. A device node or FIFO's name and
-  xattrs are refused by the extraction that makes it, before it or its
-  parents are made: a live root makes none, a user namespace no device. What
-  the kernel never gets is taken: the `.wh.` prefix of a whiteout (the name
-  it hides is checked), AUFS metadata, a hardlink's xattrs and `trusted.*`
-  ones. An entry at an ignored path, a whiteout whose directory is missing
-  and a hardlink to a device left out are refused all the same: whether they
-  are skipped depends on the root or on an earlier entry, which a header
-  does not show. What depends on the filesystem, the namespace or the root
-  still fails at write time: an xattr name the filesystem does not take
-  (most take only some of the kernel's namespaces, `user.`, `security.` and
-  the like; a FUSE or Ceph one may take any name), a POSIX ACL on a
-  filesystem without them, a value too big for its blocks, `security.*` in a
-  user namespace, and an id the user namespace does not map: a named user or
-  group in an ACL, or the root id of a revision 3 `security.capability`
-  (`EINVAL`, measured on Linux 6.8 and 7.0). In a live root, an entry that
-  names a directory a symlink puts past what `/proc/self/fd` shows (its own,
-  a whiteout's or a hardlink target's) is refused before anything of it is
-  made or removed.
+  ([#179](https://github.com/tran4774/ranikust/issues/179)):
+  - **Names and paths:** a NUL byte in a name or link target; a component
+    over 255 bytes (`NAME_MAX`); a directory path over 4095 bytes
+    (`PATH_MAX` counts the NUL), the entry's name aside, since the kernel
+    gets the directory, then the name; in a live root, over what
+    `/proc/self/fd` shows of it with the root's own path, 4094 bytes on `/`
+    (where a directory lies is read there), which the check holds to as it
+    guards `/`; a symlink target over 4095 bytes.
+  - **Xattrs** on a directory, file or symlink, as they are set (escaped in
+    the overlay form): a name that is empty, over 255 bytes
+    (`XATTR_NAME_MAX`) or holds a NUL byte; a value over 64 KiB
+    (`XATTR_SIZE_MAX`); a non-empty `security.capability` that is not 20
+    bytes of revision 2 or 24 of revision 3 with a root id other than -1
+    (`cap_convert_nscap` in `security/commoncap.c`); `user.*` on a symlink.
+  - **POSIX ACLs** (`system.posix_acl_access` or `_default`) that the
+    kernel's VFS refuses before a filesystem sees them, as
+    `posix_acl_from_xattr` and `posix_acl_valid` in `fs/posix_acl.c` do: a
+    version other than 2, a size other than 4 + 8n bytes, an unknown tag, a
+    named user or group of id -1, permissions past `rwx`, entries missing,
+    repeated or out of order; and a default ACL with entries on anything but
+    a directory (`set_posix_acl`). An empty value is a removal
+    ([Metadata](#metadata)).
+  - **The same answer on every host.** Two limits hold where a kernel would
+    take more, so whether a layer is taken never depends on the host's
+    kernel or filesystem (real images carry neither): a name over 255 bytes,
+    which a FUSE filesystem may take; and a malformed POSIX ACL on Linux 5.8
+    to 6.1, where the VFS does not check ACLs yet (the ACL handler most
+    filesystems share does) and 9p outside `access=client`, CIFS, and FUSE
+    mounted in the initial user namespace without ACLs pass the value on
+    unparsed.
+  - **Devices and FIFOs:** their name and xattrs are refused by the
+    extraction that makes them, before it or its parents are made: a live
+    root makes none, a user namespace no device.
+  - **Taken**, as the kernel never gets them: the `.wh.` prefix of a
+    whiteout (the name it hides is checked), AUFS metadata, a hardlink's
+    xattrs and `trusted.*` ones.
+  - **Refused all the same:** an entry at an ignored path, a whiteout whose
+    directory is missing and a hardlink to a device left out: whether they
+    are skipped depends on the root or on an earlier entry, which a header
+    does not show.
+  - **Left to write time**, as they depend on the filesystem, the namespace
+    or the root: an xattr name the filesystem does not take (most take only
+    some of the kernel's namespaces, `user.`, `security.` and the like; a
+    FUSE or Ceph one may take any name), a POSIX ACL on a filesystem without
+    them, a value too big for its blocks, `security.*` in a user namespace,
+    and an id the user namespace does not map: a named user or group in an
+    ACL, or the root id of a revision 3 `security.capability` (`EINVAL`,
+    measured on Linux 6.8 and 7.0).
+  - **In a live root**, an entry that names a directory a symlink puts past
+    what `/proc/self/fd` shows (its own, a whiteout's or a hardlink
+    target's) is refused before anything of it is made or removed.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may

@@ -2368,6 +2368,29 @@ fn acl_layer(f: &Fixture, name: &str, value: &[u8], dir: bool) -> Vec<u8> {
 /// does since Linux 6.2, on a kernel that refuses the value too.
 #[test]
 fn an_empty_posix_acl_removes_the_one_there() {
+    if empty_posix_acls_extracted().is_none() {
+        eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
+    }
+}
+
+/// [`an_empty_posix_acl_removes_the_one_there`] as root, and in the VM on
+/// each release's kernel: Linux before 6.2 (`RANIKUST_VM_RELEASE=jammy`)
+/// refuses the empty value every extraction removes the ACL for instead.
+#[test]
+#[ignore = "T2c: default: as root, and in the VM on each release's kernel"]
+fn an_empty_posix_acl_removes_the_one_there_as_root() {
+    let kernel = empty_posix_acls_extracted().expect("a temporary filesystem with POSIX ACLs");
+    let release = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    measured(&format!(
+        "Linux {}: an empty POSIX ACL value: {kernel} by setxattr, removed by the extraction",
+        release.trim()
+    ));
+}
+
+/// Extracts empty POSIX ACLs over a directory that has both and checks they
+/// are gone: what the kernel's own `setxattr` does with an empty value, or
+/// `None` where the temporary filesystem takes no ACLs.
+fn empty_posix_acls_extracted() -> Option<String> {
     let f = Fixture::new();
     let d = f.host.join("d");
     fs::create_dir(&d).unwrap();
@@ -2389,13 +2412,14 @@ fn an_empty_posix_acl_removes_the_one_there() {
     ] {
         match rustix::fs::setxattr(&d, name, value, flags) {
             Ok(()) => {}
-            Err(Errno::NOTSUP) => {
-                eprintln!("skipped: the temporary filesystem takes no POSIX ACLs");
-                return;
-            }
+            Err(Errno::NOTSUP) => return None,
             Err(e) => panic!("{name}: {e}"),
         }
     }
+    let probe = f.host.join("probe");
+    fs::create_dir(&probe).unwrap();
+    rustix::fs::setxattr(&probe, "system.posix_acl_default", &minimal, flags).unwrap();
+    let kernel = rustix::fs::setxattr(&probe, "system.posix_acl_default", b"", flags);
     let mut t = Tar::new(&f);
     t.pax(&[
         ("SCHILY.xattr.system.posix_acl_access", b""),
@@ -2414,6 +2438,10 @@ fn an_empty_posix_acl_removes_the_one_there() {
             "{name}"
         );
     }
+    Some(match kernel {
+        Ok(()) => "taken as a removal".to_owned(),
+        Err(e) => format!("refused ({e})"),
+    })
 }
 
 /// Red team (#179, T26): a POSIX ACL the kernel's VFS refuses before any

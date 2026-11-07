@@ -217,7 +217,9 @@ pub struct Meta {
     /// Last modification time.
     pub mtime: Option<FileTime>,
     /// Extended attributes to set, `(name, value)`, for example
-    /// `("security.capability", ...)`. Existing ones not listed are kept.
+    /// `("security.capability", ...)`. Existing ones not listed are kept. An
+    /// empty POSIX ACL value (`system.posix_acl_access` or `_default`)
+    /// removes the ACL, on every kernel.
     pub xattrs: Vec<(OsString, Vec<u8>)>,
 }
 
@@ -889,8 +891,11 @@ mod tests {
             minimal.extend(u32::MAX.to_le_bytes());
         }
         let name = "system.posix_acl_access";
-        if rustix::fs::lsetxattr(&l, name, &minimal, XattrFlags::empty()).is_ok() {
-            eprintln!("skipped: this filesystem takes an ACL on a symlink");
+        let set = rustix::fs::lsetxattr(&l, name, &minimal, XattrFlags::empty());
+        // A missing ACL is no error to a removal, so it must fail otherwise.
+        let remove = rustix::fs::lremovexattr(&l, name);
+        if set.is_ok() || matches!(remove, Ok(()) | Err(Errno::NODATA)) {
+            eprintln!("skipped: this filesystem sets or removes an ACL on a symlink");
             return;
         }
         let parent = pin(dir.path(), OFlags::DIRECTORY);
@@ -910,6 +915,28 @@ mod tests {
                 matches!(e, Error::Io { op, .. } if op == call),
                 "{call}: {e:?}"
             );
+        }
+    }
+
+    /// `set_or_remove` makes the call it names: the removal for an empty
+    /// POSIX ACL value, where a missing ACL is no error, else the set.
+    #[test]
+    fn set_or_remove_makes_the_call_it_names() {
+        let access = OsStr::new("system.posix_acl_access");
+        let default = OsStr::new("system.posix_acl_default");
+        let removal = |name, r| set_or_remove(name, b"", || panic!("set"), || r);
+        assert_eq!(
+            removal(access, Err(Errno::PERM)),
+            ("removexattr", Err(Errno::PERM))
+        );
+        assert_eq!(
+            removal(default, Err(Errno::NODATA)),
+            ("removexattr", Ok(()))
+        );
+        assert_eq!(removal(default, Ok(())), ("removexattr", Ok(())));
+        for (name, value) in [(access, &b"\x02\0\0\0"[..]), (OsStr::new("user.x"), b"")] {
+            let set = set_or_remove(name, value, || Err(Errno::PERM), || panic!("remove"));
+            assert_eq!(set, ("setxattr", Err(Errno::PERM)), "{name:?}");
         }
     }
 }

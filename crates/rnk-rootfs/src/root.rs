@@ -904,8 +904,9 @@ impl RootPath {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] of op `chown` (owner, group), `setxattr`, `chmod`
-    /// (mode) or `utimensat` (times) when a change fails, and of the step
+    /// [`Error::Io`] of op `chown` (owner, group), `setxattr` (or
+    /// `removexattr`, for an empty POSIX ACL value, which removes the ACL),
+    /// `chmod` (mode) or `utimensat` (times) when a change fails, and of the step
     /// that failed when `p` cannot be reached or read; [`Error::Unsupported`]
     /// without `openat2` or without procfs at `/proc` (xattrs, mode);
     /// [`Error::InvalidPath`] when `p` ends in `..`, and for a symlink
