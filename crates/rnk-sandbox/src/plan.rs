@@ -124,7 +124,7 @@ impl EtcFiles {
 /// One mount of the per-`RUN` sequence. Targets are paths inside the root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MountOp {
-    /// `proc`: a new one, or an rbind of `/proc`.
+    /// `proc`: a new one, or a read-only rbind of `/proc`.
     Proc { target: PathBuf, how: KernelFs },
     /// A read-only `sysfs`: a new one, or an rbind of `/sys`.
     Sysfs { target: PathBuf, how: KernelFs },

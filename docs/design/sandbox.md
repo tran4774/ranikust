@@ -310,9 +310,14 @@ The steps, in order:
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
       the build keeps the persistent store
       ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
-      The rbind's masks come along, every mount of it made `nosuid`,
-      `nodev` and `noexec` with `mount_setattr(AT_RECURSIVE)` (without it
-      the `RUN` fails); the sandbox's probe chooses it once and logs it once
+      The rbind's masks come along, every mount of it made read-only,
+      `nosuid`, `nodev` and `noexec` with `mount_setattr(AT_RECURSIVE)`
+      (without it the `RUN` fails): a `RUN` writes nothing there, not even
+      its own `oom_score_adj` as a new `proc` lets it, nor a file of a
+      process outside it
+      ([ADR-0132](../adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md));
+      writes through a link of it, such as `/dev/stderr`, reach their
+      target as before. The sandbox's probe chooses it once and logs it once
       per build. Unasked, the probe fails at `Step::MountProc` and warns how
       to get a new `proc`: build as a regular user on a host that allows
       user namespaces, where a new `proc` mounts, or in a container where

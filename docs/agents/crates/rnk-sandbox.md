@@ -125,7 +125,7 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps>; // 
 pub struct Caps { pub root_entry: RootEntry, .. } // #[non_exhaustive]; every RUN of the Sandbox gets them; proc(), sysfs(): KernelFs, read-only, so an rbind is only the probe's choice
 pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
-impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; --allow proc.rbind with #79): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's command line, status, mount table and network tables, not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6); #79 adds the peer scan (ADR-0129)
+impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; --allow proc.rbind with #79): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's command line, status, mount table and network tables, not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6), and writes nothing there: the bind is read-only (ADR-0132); #79 adds the peer scan (ADR-0129)
 pub enum RootEntry { PivotRoot, MoveMount }
 pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(): the first step a RUN needs that failed; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
@@ -249,8 +249,10 @@ What a change here must keep, with where it lives:
   [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md),
   and #79's condition). The rbind
   (`MS_BIND | MS_REC`, its source `/proc` or `/sys` opened `O_PATH`, its
-  type checked before and after) gets `nosuid`, `nodev`, `noexec`, and
-  `/sys` read-only, on every mount of it with `mount_setattr(AT_RECURSIVE)`;
+  type checked before and after) gets read-only, `nosuid`, `nodev` and
+  `noexec` on every mount of it with `mount_setattr(AT_RECURSIVE)`
+  (`/proc`'s read-only: a `RUN` writes nothing there, not even its own
+  `oom_score_adj` as a new `proc` lets it, [ADR-0132](../../adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md));
   a refusal fails the `RUN`, never leaves a mount without them. The masks
   and read-only paths then go on top as for a new one.
   Then `pivot_root(".", ".")` + `umount2(MNT_DETACH)`; where seccomp refuses
@@ -628,8 +630,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose`
   (`src/userns/build/run_tests.rs`): root of rootless Podman, after both
   probes, gets an rbind of `/proc` (asked for) and of `/sys` with every mount
-  `nosuid`, `nodev`, `noexec`, `/sys` read-only, `/proc/sys` read-only,
-  `/proc/kcore` masked; `USER _apt` gets 42:65534 through `setgroups`;
+  `nosuid`, `nodev`, `noexec` and read-only, `/proc/kcore` masked: a write
+  of its own `oom_score_adj`, or of a process's outside it of its kernel
+  uid, fails with `EROFS`, one through `/dev/stderr` works (without the
+  read-only flag, both writes succeed); `USER _apt` gets 42:65534 through `setgroups`;
   `--network=none` has `lo` up in a network namespace of its own;
   `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
@@ -660,7 +664,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `runs_in_the_build_user_namespace_of_a_regular_user`
   (`src/userns/build/run_tests.rs`: the T1 `RUN`s as that user; refused
   where AppArmor restricts, elsewhere, with no request, a new `proc`, PID 2
-  under `ranikust-init`, and an rbind of `/sys`);
+  under `ranikust-init`, where the `RUN` writes its own `oom_score_adj`,
+  and an rbind of `/sys`);
   `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
   T1 mount red team as real root, whose map is every id);
   `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the

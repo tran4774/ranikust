@@ -83,7 +83,9 @@ pub struct Fallbacks {
 
 impl Fallbacks {
     /// Also allows an rbind of `/proc` where a new `proc` is refused, at the
-    /// operator's request only (ADR-0126). Through it a `RUN` sees every
+    /// operator's request only (ADR-0126). It is read-only, so a `RUN`
+    /// writes nothing there, not even its own `oom_score_adj` as a new
+    /// `proc` lets it (ADR-0132). Through it a `RUN` sees every
     /// process of the PID namespace ranikust runs in (the container's, or
     /// one it shares with the host or other containers), and reads the
     /// command line, status, mount table and network tables of each,
@@ -159,13 +161,14 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
 }
 
 /// What a `RUN` reaches through an rbind of `/proc`, in the guidance and
-/// the warning alike (ADR-0127, ADR-0130).
+/// the warning alike (ADR-0127, ADR-0130, ADR-0132).
 macro_rules! proc_rbind_exposure {
     () => {
         "each RUN sees every process of this PID namespace (the host's or other \
          containers' too where the container shares one) and reads their command lines, \
          status, mount tables and network tables, ranikust's included, though not their \
-         environment, files or memory; RUNs then run one at a time"
+         environment, files or memory; the rbind is read-only, so a RUN writes nothing \
+         there, not even its own oom_score_adj; RUNs then run one at a time"
     };
 }
 
@@ -532,6 +535,7 @@ mod tests {
             "status",
             "network tables",
             "not their environment, files or memory",
+            "read-only, so a RUN writes nothing there, not even its own oom_score_adj",
             "one at a time",
             "PID namespace of its own",
             "code you do not trust",

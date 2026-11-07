@@ -19,8 +19,8 @@
 //! user namespace, each id map tried in a forked child first; no build of
 //! the binary calls it yet. There, [`probe_with_fallbacks`] lets a `RUN`
 //! get a read-only rbind of `/sys` where the user-namespace probe found a
-//! new `sysfs` refused ([`UsernsReport::fallbacks`]), and an rbind of
-//! `/proc` only at the operator's request
+//! new `sysfs` refused ([`UsernsReport::fallbacks`]), and a read-only
+//! rbind of `/proc` only at the operator's request
 //! ([`Fallbacks::allow_proc_rbind`], ADR-0126).
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where

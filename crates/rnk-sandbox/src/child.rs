@@ -1235,7 +1235,8 @@ fn mount_one(
             root,
             target,
             c"/proc",
-            MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
+            // Its `/proc/<pid>` files include processes outside the `RUN`'s.
+            MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
             PROC_SUPER_MAGIC,
         )),
         ChildMount::Proc {

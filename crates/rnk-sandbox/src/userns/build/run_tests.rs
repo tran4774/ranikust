@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Barrier;
 
@@ -22,9 +23,15 @@ use crate::{
 /// per line, then the `/proc` and `/sys` mounts it sees as `mount: <mount
 /// point> <options> <type>`. Only `grep`, `sed` and `cut`: Ubuntu's base
 /// image has no `awk`. In `mountinfo`, the optional fields after the
-/// options never start with `-`, the separator before the type.
+/// options never start with `-`, the separator before the type. `oom=` is
+/// `written` or the shell's error when it writes its own
+/// `/proc/self/oom_score_adj` unchanged. Last, `stderr=written` comes
+/// through `/dev/stderr`, a link through `/proc`, opened again: appended
+/// to the log both streams share (`>` would empty it), where a later line
+/// through the shared descriptor would write over it.
 const KERNEL: &str = r#"
 mi=/proc/self/mountinfo
+echo "oom=$( (read v </proc/self/oom_score_adj && echo "$v" >/proc/self/oom_score_adj && echo written) 2>&1)"
 echo "pid=$$"
 echo "levels=$(($(grep NSpid /proc/self/status | wc -w) - 1))"
 echo "init=$(cat /proc/1/comm)"
@@ -36,6 +43,7 @@ echo "net=$(readlink /proc/self/ns/net)"
 echo "ids=$(id -u):$(id -g):$(id -G)"
 grep -E '^([^ ]+ ){4}/(proc|sys)(/[^ ]*)? ' $mi |
   sed -E 's/^([^ ]+ ){4}([^ ]+) ([^ ]+) ([^ -][^ ]* )*- ([^ ]+) .*/mount: \2 \3 \5/'
+echo stderr=written >>/dev/stderr
 "#;
 
 /// What a `USER` `RUN` prints.
@@ -64,6 +72,48 @@ const RUNS: [Run; 3] = [
     ("_apt", Network::Host, IDS),
     ("", Network::None, NETWORK),
 ];
+
+/// The `argv[0]` of [`Sleeper`], which [`OUTER`] looks for.
+const SLEEPER: &str = "rnk-outer-sleeper";
+
+/// What a root `RUN` prints about a [`Sleeper`] outside it, of its kernel
+/// uid, seen through an rbind of `/proc`: `outer=` its PID there, or
+/// `none`; `outer-oom=` as [`KERNEL`]'s `oom=`, for its `oom_score_adj`.
+const OUTER: &str = r#"
+p=none
+for d in /proc/[0-9]*; do
+  if grep -qs "rnk-outer-[s]leeper" "$d/cmdline"; then p=${d#/proc/}; fi
+done
+echo "outer=$p"
+echo "outer-oom=$( (read v </proc/$p/oom_score_adj && echo "$v" >/proc/$p/oom_score_adj && echo written) 2>&1)"
+"#;
+
+/// A `sleep` this test process starts, outside the build's user namespace
+/// but of its kernel uid: killed and reaped on drop.
+struct Sleeper(std::process::Child);
+
+impl Sleeper {
+    fn start() -> Self {
+        let child = std::process::Command::new("sleep")
+            .arg0(SLEEPER)
+            .arg("300")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start sleep");
+        Self(child)
+    }
+}
+
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        // Already gone only if something else ended it: nothing to undo.
+        let _ = self.0.kill();
+        // Reaped, so that no zombie outlives the test.
+        let _ = self.0.wait();
+    }
+}
 
 /// In this forked, single-threaded child: the user-namespace probe in
 /// `top`, the build's user namespace, the sandbox's probe with the
@@ -277,8 +327,11 @@ fn value<'a>(out: &'a str, key: &str) -> &'a str {
 /// The `/proc` and `/sys` mounts root's `RUN` saw: every `proc` and
 /// `sysfs` mount is `nosuid`, `nodev` and `noexec`, every mount below
 /// `/sys` read-only, whatever the probe chose; `/proc/sys` read-only and
-/// `/proc/kcore` masked.
-fn check_kernel_mounts(out: &str) {
+/// `/proc/kcore` masked. Every mount below `/proc` is read-only too where
+/// `how` is an rbind of it, and the `RUN`'s write of its own
+/// `oom_score_adj` refused; a new `proc` takes it. Either way a write
+/// through `/dev/stderr`, a link through `/proc`, works.
+fn check_kernel_mounts(out: &str, how: KernelFs) {
     let mounts: Vec<Vec<&str>> = out
         .lines()
         .filter_map(|l| l.strip_prefix("0:mount: "))
@@ -299,6 +352,19 @@ fn check_kernel_mounts(out: &str) {
         if sys {
             assert!(opts.contains(&"ro"), "{m:?} is writable:\n{out}");
         }
+        let below_proc = m[0] == "/proc" || m[0].starts_with("/proc/");
+        match how {
+            KernelFs::Rbind if below_proc => {
+                assert!(opts.contains(&"ro"), "{m:?} is writable:\n{out}");
+            }
+            KernelFs::Fresh if m[0] == "/proc" => {
+                assert!(
+                    opts.contains(&"rw"),
+                    "{m:?}: a new proc is read-only:\n{out}"
+                );
+            }
+            KernelFs::Rbind | KernelFs::Fresh => {}
+        }
     }
     assert!(value(out, "0:procsys").starts_with("ro,"), "{out}");
     assert_eq!(value(out, "0:kcore"), "masked", "{out}");
@@ -307,6 +373,13 @@ fn check_kernel_mounts(out: &str) {
         "proc sys=sysfs",
         "the kernel filesystems' types:\n{out}"
     );
+    let oom = value(out, "0:oom");
+    match how {
+        // strerror(EROFS), the shell's reason.
+        KernelFs::Rbind => assert!(oom.ends_with("Read-only file system"), "{out}"),
+        KernelFs::Fresh => assert_eq!(oom, "written", "{out}"),
+    }
+    assert_eq!(value(out, "0:stderr"), "written", "{out}");
 }
 
 /// What a fresh `proc` and an rbind of `/proc` each show: the `RUN` is
@@ -359,15 +432,20 @@ fn leg_dir() -> tempfile::TempDir {
 /// namespace its user namespace owns, runs in the build's (multi-range)
 /// user namespace with an rbind of each, `/proc`'s on request: still
 /// Docker's flags and masks, the rbind's mounts all `nosuid`, `nodev`,
-/// `noexec`, `/sys` all read-only. `USER _apt` gets
-/// its ids through `setgroups`; `--network=none` brings `lo` up in a
-/// network namespace the build owns, with no helper (ADR-0033).
+/// `noexec` and read-only (ADR-0132), so that a `RUN` writes nothing
+/// there, not even the `oom_score_adj` of a process outside it of its
+/// kernel uid. `USER _apt` gets its ids through `setgroups`;
+/// `--network=none` brings `lo` up in a network namespace the build owns,
+/// with no helper (ADR-0033).
 #[test]
 #[ignore = "T1: default: RUNs in the build's user namespace of root in a rootless Podman container"]
 fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let dir = leg_dir();
-    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, true, &RUNS));
+    let sleeper = Sleeper::start();
+    let runs = [RUNS[0], RUNS[1], RUNS[2], ("", Network::Host, OUTER)];
+    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, true, &runs));
+    drop(sleeper);
     measured(&format!(
         "RUNs in the build's user namespace of root: {}",
         out.replace('\n', "; ")
@@ -381,12 +459,23 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert_eq!((proc, sysfs), (KernelFs::Rbind, KernelFs::Rbind), "{out}");
     assert_eq!(value(&out, "run0"), "exit 0", "{out}");
     check_proc(&out, proc);
-    check_kernel_mounts(&out);
+    check_kernel_mounts(&out, proc);
     // gid 5 as the initial namespace sees it, as mountinfo shows it.
     assert!(value(&out, "0:devpts").contains("gid="), "{out}");
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
+    assert_eq!(value(&out, "run3"), "exit 0", "{out}");
+    assert_ne!(
+        value(&out, "3:outer"),
+        "none",
+        "the sleeper is not seen:\n{out}"
+    );
+    // strerror(EROFS), the shell's reason.
+    assert!(
+        value(&out, "3:outer-oom").ends_with("Read-only file system"),
+        "{out}"
+    );
 }
 
 /// T1: below a one-id user namespace (`unshare -r`), `setgroups` denied
@@ -415,7 +504,7 @@ fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
     let (proc, _) = chosen(&out);
     assert_eq!(value(&out, "run0"), "exit 0", "{out}");
     check_proc(&out, proc);
-    check_kernel_mounts(&out);
+    check_kernel_mounts(&out, proc);
     assert!(!value(&out, "0:devpts").contains("gid="), "{out}");
     assert!(value(&out, "0:ids").starts_with("0:0:"), "{out}");
     assert!(
@@ -476,7 +565,7 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
     assert_eq!((proc, sysfs), (KernelFs::Fresh, KernelFs::Rbind), "{out}");
     assert_eq!(value(&out, "run0"), "exit 0", "{out}");
     check_proc(&out, proc);
-    check_kernel_mounts(&out);
+    check_kernel_mounts(&out, proc);
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
