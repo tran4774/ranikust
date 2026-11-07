@@ -165,13 +165,14 @@ pub fn extract(dst: &RootPath, tar: impl Read, wh: Whiteouts) -> Result<()> {
 /// most `PATH_MAX` bytes with the root's own path: an entry in a directory
 /// whose path in the layer is longer is refused before anything of it is
 /// written (on `/`, past 4094 bytes, as [`check_headers`] refuses it), and
-/// so is one whose directory a symlink puts past that, before a directory
-/// it lacks is made (an [`Error::Entry`] that names the entry).
+/// so is one that names a directory a symlink puts past that (its own, a
+/// whiteout's or a hardlink target's), before a directory it lacks is made.
 ///
 /// # Errors
 ///
 /// As [`extract`]; [`Error::Entry`] when the physical path of a directory
-/// cannot be told (`/proc/self/fd` gives a path outside the root).
+/// cannot be told (`/proc/self/fd` gives a path outside the root, or none
+/// past what it shows).
 pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result<()> {
     extract_with(
         dst,
@@ -263,8 +264,8 @@ pub struct Extracted {
 /// a whiteout that names nothing, a file or symlink as the layer's root,
 /// ids, modes, device numbers and times that do not parse or are out of
 /// range, and values the kernel refuses: a name or link target with a NUL
-/// byte, a component over 255 bytes (`NAME_MAX`; a FUSE or NFS filesystem
-/// may take a longer one, refused all the same), a symlink target over
+/// byte, a component over 255 bytes (`NAME_MAX`; a FUSE filesystem may
+/// take a longer one, refused all the same), a symlink target over
 /// `PATH_MAX` less its NUL, and on a directory, file or symlink an xattr
 /// whose name is empty, over `XATTR_NAME_MAX` or holds a NUL byte, whose
 /// value is over `XATTR_SIZE_MAX` or a file capability the kernel never
@@ -536,10 +537,10 @@ fn for_each_entry<R: Read>(
 /// refuses ([`kernel_refuses_name`], [`kernel_refuses_xattrs`]), for every
 /// name the extraction hands it but a node's, every link target, and the
 /// xattrs of a directory, file or symlink (a node's are checked where it is
-/// made). The first step of every extraction, and all of [`check_headers`]. `wh` tells what a
-/// whiteout is, `dir_max` the longest directory path the root takes; the
-/// `trusted.*` xattrs left out ([`SKIPPED_XATTR`]) are counted in
-/// `skipped`, the first of them kept in `first_skipped`.
+/// made). The first step of every extraction, and all of [`check_headers`].
+/// `wh` tells what a whiteout is, `dir_max` the longest directory path the
+/// root takes; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`]) are
+/// counted in `skipped`, the first of them kept in `first_skipped`.
 fn read_header<R: Read>(
     entry: &mut tar::Entry<'_, R>,
     wh: Whiteouts,
@@ -761,8 +762,8 @@ fn xattr_name(wh: Whiteouts, name: &[u8]) -> OsString {
 
 /// Why the kernel refuses the name `name` in the directory `dir` (both
 /// cleaned), `what` naming it in the reason: a NUL byte, a component of
-/// either over [`NAME_MAX`] (which a FUSE or NFS filesystem may lift, held
-/// to all the same), or a `dir` over `dir_max` ([`PATH_MAX`], less a live
+/// either over [`NAME_MAX`] (which a FUSE filesystem may lift, held to
+/// all the same), or a `dir` over `dir_max` ([`PATH_MAX`], less a live
 /// root's own path). An extraction hands the kernel `dir` whole, then
 /// `name` relative to it, so the whole path may be longer.
 fn kernel_refuses_name(what: &str, dir: &Path, name: &OsStr, dir_max: usize) -> Option<String> {
@@ -1508,7 +1509,7 @@ impl Extractor<'_> {
                 };
                 let target = match &self.live {
                     Some(live) => {
-                        let t = live.physical(pfd.as_fd(), &dir)?.join(hidden);
+                        let t = live.physical(pfd.as_fd(), &dir, raw)?.join(hidden);
                         if live.keep.covers(&t) || live.keep.has_below(&t) {
                             self.stats.ignored += 1;
                             return Ok(());
@@ -1566,7 +1567,7 @@ impl Extractor<'_> {
         let physical;
         let (dir, keep) = match &self.live {
             Some(live) => {
-                physical = live.physical(start.as_fd(), dir)?;
+                physical = live.physical(start.as_fd(), dir, raw)?;
                 if live.keep.covers(&physical) {
                     self.stats.ignored += 1;
                     return Ok(());
@@ -1649,11 +1650,7 @@ impl Extractor<'_> {
                 Err(e) => return Err(e),
             }
         };
-        let mut physical = match live.physical(cur.as_fd(), &existing) {
-            Ok(p) => p,
-            Err(e) if is_name_too_long(&e) => return Err(past_proc(raw)),
-            Err(e) => return Err(e),
-        };
+        let mut physical = live.physical(cur.as_fd(), &existing, raw)?;
         missing.reverse();
         let full: PathBuf = physical
             .iter()
@@ -1705,7 +1702,7 @@ impl Extractor<'_> {
             Err(e) if is_xdev(&e) => return Ok(None),
             Err(e) => return Err(on_mount(e, raw)),
         };
-        let t = live.physical(fd.as_fd(), &tparent)?.join(tname);
+        let t = live.physical(fd.as_fd(), &tparent, raw)?.join(tname);
         if live.keep.covers(&t) {
             return Ok(None);
         }
@@ -1741,7 +1738,7 @@ impl Extractor<'_> {
                 continue;
             };
             let pfd = self.root.resolve_dir_in(parent, Mounts::Stay)?;
-            if live.physical(pfd.as_fd(), parent)? != parent {
+            if live.physical(pfd.as_fd(), parent, path)? != parent {
                 return Err(Error::Changed { path: path.clone() });
             }
             root::set_meta_at(pfd.as_fd(), name, m, Some(FileType::Directory), path)?;
@@ -1800,9 +1797,14 @@ impl<'r> Live<'r> {
     }
 
     /// The physical path inside the root of the directory `fd` (reached
-    /// as `at`), from the kernel's own name for it: `""` for the root.
-    fn physical(&self, fd: BorrowedFd<'_>, at: &Path) -> Result<PathBuf> {
-        let link = read_fd_link(self.proc.as_fd(), fd, at)?;
+    /// as `at` by the entry `raw`), from the kernel's own name for it: `""`
+    /// for the root.
+    fn physical(&self, fd: BorrowedFd<'_>, at: &Path, raw: &Path) -> Result<PathBuf> {
+        let link = match read_fd_link(self.proc.as_fd(), fd, at) {
+            Ok(link) => link,
+            Err(e) if is_name_too_long(&e) => return Err(past_proc(raw)),
+            Err(e) => return Err(e),
+        };
         let rel = if self.root_host == b"/" {
             link.strip_prefix(b"/")
         } else {
@@ -1946,13 +1948,13 @@ fn is_name_too_long(e: &Error) -> bool {
     e.raw_os_error() == Some(Errno::NAMETOOLONG.raw_os_error())
 }
 
-/// The entry `raw` lies, through a symlink, in a directory of a live root
+/// The entry `raw` names, through a symlink, a directory of a live root
 /// past what `/proc/self/fd` shows of it.
 fn past_proc(raw: &Path) -> Error {
     Error::Entry {
         path: raw.to_owned(),
         reason: format!(
-            "the name lies, through a symlink, in a directory whose path is {DIR_PAST_PATH_MAX}"
+            "it names, through a symlink, a directory whose path is {DIR_PAST_PATH_MAX}"
         ),
     }
 }

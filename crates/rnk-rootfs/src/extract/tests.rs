@@ -2277,7 +2277,8 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
 /// A symlink that puts an entry's directory past what `/proc/self/fd`
 /// shows of it in a live root: the entry is refused before a directory it
 /// lacks is made, and one a byte shorter is taken; in a directory made
-/// there, it is refused as well.
+/// there, it is refused as well, and so is a whiteout, an opaque one or a
+/// hardlink target there.
 #[test]
 fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
     let f = Fixture::new();
@@ -2316,6 +2317,26 @@ fn a_live_root_refuses_a_directory_a_symlink_puts_past_what_proc_shows() {
         "{e}"
     );
     assert_eq!(at("aaaa/x").unwrap_err(), Errno::NOENT);
+
+    let mut wh = Tar::new(&f);
+    wh.file("s/aaaa/.wh.y", 0o644, b"");
+    let mut opaque = Tar::new(&f);
+    opaque.file("s/aaaa/.wh..wh..opq", 0o644, b"");
+    let mut link = Tar::new(&f);
+    link.hardlink("h", "s/aaaa/x");
+    for (t, raw) in [
+        (wh, "s/aaaa/.wh.y"),
+        (opaque, "s/aaaa/.wh..wh..opq"),
+        (link, "h"),
+    ] {
+        let e = extract_live(&f.root, t.bytes().as_slice(), &live_keep()).unwrap_err();
+        assert!(
+            matches!(&e, Error::Entry { path, reason } if path == Path::new(raw)
+                && reason.ends_with(DIR_PAST_PATH_MAX)),
+            "{raw}: {e}"
+        );
+    }
+    assert!(fs::symlink_metadata(f.host.join("h")).is_err());
 }
 
 /// A live root reads where a directory lies through `/proc/self/fd`, whose

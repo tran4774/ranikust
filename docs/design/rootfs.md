@@ -148,7 +148,7 @@ never called.
   and the check alike
   ([#179](https://github.com/tran4774/ranikust/issues/179)): a NUL byte in
   a name or link target; a component over 255 bytes (`NAME_MAX`; a FUSE
-  or NFS filesystem may take a longer one, refused all the same); a
+  filesystem may take a longer one, refused all the same); a
   directory path over 4095 bytes (`PATH_MAX` counts the NUL), the entry's
   name aside, since the kernel gets the directory, then the name; in a live
   root, over what `/proc/self/fd` shows of it with the root's own path,
@@ -173,8 +173,9 @@ never called.
   take only some of the kernel's namespaces, `user.`, `security.` and the
   like; a FUSE or Ceph one may take any name), a POSIX ACL it refuses, a
   value too big for its blocks, and `security.*` in a user namespace. In a
-  live root, an entry whose directory a symlink puts past what
-  `/proc/self/fd` shows is refused before a directory it lacks is made.
+  live root, an entry that names a directory a symlink puts past what
+  `/proc/self/fd` shows (its own, a whiteout's or a hardlink target's) is
+  refused before a directory it lacks is made.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may
