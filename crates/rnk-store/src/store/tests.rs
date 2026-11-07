@@ -391,7 +391,8 @@ fn scratch_and_anonymous_files_are_made_where_each_store_keeps_them() {
 
 /// A store directory whose group cannot be made the process's: a warning
 /// outside a user namespace, where the store opened before it fixed
-/// groups; an error in one, or where the namespace cannot be told.
+/// groups; an error in one, or where the namespace cannot be told. Any
+/// other failure is an error everywhere.
 #[test]
 fn a_refused_group_change_fails_only_in_a_user_namespace() {
     let refused = || rnk_rootfs::Error::Io {
@@ -404,4 +405,10 @@ fn a_refused_group_change_fails_only_in_a_user_namespace() {
     assert!(matches!(e, Error::Rootfs(_)), "{e}");
     let unknown = || Err(Error::Random(io::Error::other("no procfs")));
     assert!(refused_group(refused(), "tmp", unknown).is_err());
+    let missing = rnk_rootfs::Error::Io {
+        op: "open",
+        path: PathBuf::from("tmp"),
+        source: io::Error::from_raw_os_error(Errno::NOENT.raw_os_error()),
+    };
+    assert!(refused_group(missing, "tmp", || Ok(false)).is_err());
 }

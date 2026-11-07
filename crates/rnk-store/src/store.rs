@@ -1777,14 +1777,18 @@ fn own_group(state: &RootPath, d: &str) -> Result<()> {
     }
 }
 
-/// What [`own_group`] does when the change of `d` fails with `e`: an error
-/// in a user namespace, or where `in_user_namespace` cannot tell; else a
-/// warning.
+/// What [`own_group`] does when the change of `d` fails with `e`: a
+/// warning for a refused change (`EPERM`) outside a user namespace; an
+/// error for any other failure, in one, or where `in_user_namespace`
+/// cannot tell.
 fn refused_group(
     e: rnk_rootfs::Error,
     d: &str,
     in_user_namespace: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
+    if e.raw_os_error() != Some(rustix::io::Errno::PERM.raw_os_error()) {
+        return Err(e.into());
+    }
     match in_user_namespace() {
         Ok(false) => {
             tracing::warn!(
