@@ -607,8 +607,9 @@ fn mount_ids(mountinfo: &[u8]) -> Vec<u64> {
 /// What [`check_pid_namespace`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PidNamespace {
-    /// PID 1 is ranikust, or in the mount namespace ranikust started in, and
-    /// PID 2 is no kernel thread.
+    /// PID 1 is in the mount namespace ranikust started in (ranikust
+    /// itself, where it is PID 1 of `/proc`'s PID namespace), and PID 2 is
+    /// no kernel thread.
     Own,
     /// PID 1 is in another mount namespace: its mount table shares no mount
     /// with ranikust's as it started.
@@ -625,10 +626,10 @@ const PF_KTHREAD: u64 = 0x0020_0000;
 /// For a build with an rbind of `/proc`, whether ranikust's PID namespace
 /// is shared with another mount namespace, from files that no ptrace check
 /// guards, as a `RUN` under the rbind reads them (ADR-0134): PID 2 is a
-/// kernel thread (`kthreadd`, in the initial PID namespace only), or PID 1,
-/// unless it is ranikust, lists no mount of the namespace ranikust started
-/// in (`started_in`, read [`MountNamespace::with_mounts`]). Unlike
-/// [`scan_peers`], it does not depend on what ranikust may open.
+/// kernel thread (`kthreadd`, in the initial PID namespace only), or PID 1
+/// lists no mount of the namespace ranikust started in (`started_in`, read
+/// [`MountNamespace::with_mounts`]). Unlike [`scan_peers`], it does not
+/// depend on what ranikust may open.
 pub(crate) fn check_pid_namespace(started_in: rustix::io::Result<&MountNamespace>) -> PidNamespace {
     let started = match started_in {
         Ok(ns) => ns.mounts.as_ref().map_or(Err(Errno::INVAL), |m| m.clone()),
@@ -637,7 +638,6 @@ pub(crate) fn check_pid_namespace(started_in: rustix::io::Result<&MountNamespace
     let read =
         |path: &str| fs::read(path).map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::IO));
     decide_pid_namespace(
-        std::process::id(),
         started.as_deref().map_err(|&e| e),
         || read("/proc/1/mountinfo"),
         || read("/proc/2/stat"),
@@ -645,11 +645,11 @@ pub(crate) fn check_pid_namespace(started_in: rustix::io::Result<&MountNamespace
     )
 }
 
-/// [`check_pid_namespace`]'s decision for ranikust's pid `me`, the mount
-/// IDs it `started` with, and readers of PID 1's `mountinfo`, PID 2's
-/// `stat` and PID 1's name.
+/// [`check_pid_namespace`]'s decision for the mount IDs ranikust `started`
+/// with, and readers of PID 1's `mountinfo`, PID 2's `stat` and PID 1's
+/// name. ranikust's own pid is not asked: `getpid()` is its pid in its own
+/// PID namespace, which may not be the one `/proc` shows.
 fn decide_pid_namespace(
-    me: u32,
     started: Result<&[u64], Errno>,
     pid1_mountinfo: impl FnOnce() -> Result<Vec<u8>, Errno>,
     pid2_stat: impl FnOnce() -> Result<Vec<u8>, Errno>,
@@ -671,9 +671,6 @@ fn decide_pid_namespace(
         // always is.
         Err(Errno::NOENT | Errno::SRCH) => {}
         Err(e) => return PidNamespace::Unknown(STAT, e),
-    }
-    if me == 1 {
-        return PidNamespace::Own;
     }
     let started = match started {
         Ok(ids) => ids,
@@ -754,9 +751,8 @@ mod tests {
         assert_eq!(started, [22, 23]);
         let user = b"2 (sh) S 1 2 2 0 -1 4194560 100 0 0 0\n".to_vec();
         let kthreadd = b"2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0\n".to_vec();
-        let decide = |me: u32, pid1: &[u8], pid2: Result<Vec<u8>, Errno>| {
+        let decide = |pid1: &[u8], pid2: Result<Vec<u8>, Errno>| {
             decide_pid_namespace(
-                me,
                 Ok(&started),
                 || Ok(pid1.to_vec()),
                 || pid2,
@@ -767,34 +763,44 @@ mod tests {
             pid: pid.into(),
             comm: comm.into(),
         };
-        assert_eq!(decide(7, mine, Ok(user.clone())), PidNamespace::Own);
-        assert_eq!(decide(7, mine, Err(Errno::NOENT)), PidNamespace::Own);
-        // ranikust is PID 1: its own table may have changed since it started.
-        assert_eq!(decide(1, other, Ok(user.clone())), PidNamespace::Own);
+        // PID 1 in ranikust's mount namespace: ranikust itself, where it is
+        // PID 1 of `/proc`'s PID namespace, or a shell that started it.
+        assert_eq!(decide(mine, Ok(user.clone())), PidNamespace::Own);
+        assert_eq!(decide(mine, Err(Errno::NOENT)), PidNamespace::Own);
+        // ranikust may be PID 1 of a PID namespace of its own while `/proc`
+        // shows an enclosing one: only PID 1's mounts tell.
         assert_eq!(
-            decide(7, other, Ok(user.clone())),
+            decide_pid_namespace(
+                Ok(&[10, 11]),
+                || Ok(b"20 1 0:5 / / rw - x x x\n".to_vec()),
+                || Err(Errno::NOENT),
+                || "pause".into()
+            ),
+            PidNamespace::OtherInit(process("1", "pause"))
+        );
+        assert_eq!(
+            decide(other, Ok(user.clone())),
             PidNamespace::OtherInit(process("1", "init"))
         );
         // The host's PID namespace, whoever PID 1 is.
-        for me in [1, 7] {
+        for pid1 in [mine, other] {
             assert_eq!(
-                decide(me, mine, Ok(kthreadd.clone())),
+                decide(pid1, Ok(kthreadd.clone())),
                 PidNamespace::Host(process("2", "kthreadd"))
             );
         }
         // What cannot be read or parsed is refused.
         let stat = "reading /proc/2/stat";
         assert_eq!(
-            decide(7, mine, Err(Errno::ACCESS)),
+            decide(mine, Err(Errno::ACCESS)),
             PidNamespace::Unknown(stat, Errno::ACCESS)
         );
         assert_eq!(
-            decide(7, mine, Ok(b"2 (x".to_vec())),
+            decide(mine, Ok(b"2 (x".to_vec())),
             PidNamespace::Unknown(stat, Errno::INVAL)
         );
         assert_eq!(
             decide_pid_namespace(
-                7,
                 Ok(&started),
                 || Err(Errno::ACCESS),
                 || Ok(user.clone()),
@@ -804,7 +810,6 @@ mod tests {
         );
         assert_eq!(
             decide_pid_namespace(
-                7,
                 Err(Errno::INVAL),
                 || Ok(mine.to_vec()),
                 || Ok(user.clone()),

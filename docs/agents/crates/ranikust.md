@@ -539,7 +539,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   build-argument warning's text for each `Reach`,
   `a_build_arg_warning_names_how_a_run_reads_the_command_line`;
   `check_pid_namespace`'s decision on fixture `mountinfo` and `stat` text,
-  ranikust as PID 1 included,
+  PID 1 told by its mounts alone, never by ranikust's own pid,
   `a_shared_pid_namespace_shows_in_files_no_ptrace_check_guards`, and the
   `stat` parse, `a_kernel_thread_is_told_by_its_stat_flags_whatever_its_name`).
   `src/main.rs` tests: the order of the refusals on `/`, `--seccomp`'s

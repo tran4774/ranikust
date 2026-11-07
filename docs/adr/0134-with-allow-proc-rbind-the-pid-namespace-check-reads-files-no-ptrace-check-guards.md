@@ -31,8 +31,8 @@ PID namespace be judged for such a build? A review of
 
 With `--allow proc.rbind`, ranikust also refuses, before it enters the build's
 user namespace, a PID namespace that files with no ptrace check show shared:
-PID 2 is a kernel thread, or PID 1, unless it is ranikust, lists no mount of the
-mount namespace ranikust started in.
+PID 2 is a kernel thread, or PID 1 lists no mount of the mount namespace
+ranikust started in.
 
 The maintainer chose (2026-11-08) to settle it in #79, with the first option,
 the cheaper of the two the review proposed.
@@ -43,7 +43,10 @@ the cheaper of the two the review proposed.
   `/proc/self/mountinfo` as it starts, before a set-up may enter a mount
   namespace of its own, and keeps the mount IDs. `/proc/1/mountinfo` must list
   one of them: a mount is in one namespace, and its ID is unique on the system.
-  Where ranikust is PID 1 (`podman run … ranikust …`), this part passes.
+  Where ranikust is PID 1 (`podman run … ranikust …`), this part passes, since
+  `/proc/1/mountinfo` is then its own table. Its own pid is not asked:
+  `getpid()` is its pid in its own PID namespace, and `/proc` may show an
+  enclosing one.
 - **What cannot be told is refused:** a file that cannot be read or parsed,
   each with its step, the error and guidance.
 - **The peer scan stays** as ADR-0129 and ADR-0130 run it, after it, and as
