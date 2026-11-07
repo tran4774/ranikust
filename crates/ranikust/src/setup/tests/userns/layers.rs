@@ -18,6 +18,11 @@ use super::*;
 /// The namespace's root, and a user other than root.
 const ROOT: (u32, u32) = (0, 0);
 const USER: (u32, u32) = (1000, 1000);
+/// An owner no map of a test holds: each maps 65537 ids at most.
+const FAR: (u32, u32) = (3_000_000_000, 3_000_000_000);
+
+/// Every entry's mtime in the tars.
+const MTIME: i64 = 1_000_000;
 
 /// `security.capability` v2: `cap_net_raw` permitted and effective.
 const CAP_NET_RAW: [u8; 20] = [
@@ -46,7 +51,7 @@ impl Tar {
         h.set_mode(mode);
         h.set_uid(u64::from(uid));
         h.set_gid(u64::from(gid));
-        h.set_mtime(1_000_000);
+        h.set_mtime(MTIME.unsigned_abs());
         h.set_size(u64::try_from(data.len()).unwrap());
         edit(&mut h);
         h.set_cksum();
@@ -76,6 +81,12 @@ impl Tar {
         self.push(name, t, ids, mode, b"", |h| {
             h.set_device_major(dev.0).unwrap();
             h.set_device_minor(dev.1).unwrap();
+        })
+    }
+
+    fn symlink(&mut self, name: &str, ids: (u32, u32), target: &str) -> &mut Self {
+        self.push(name, EntryType::Symlink, ids, 0o777, b"", |h| {
+            h.set_link_name(target).unwrap();
         })
     }
 
@@ -109,15 +120,16 @@ impl Tar {
     }
 }
 
-/// The bottom layer: a `0555` root of root's, owners other than root,
-/// setuid, setgid and sticky modes, `user.*` and `security.capability`
-/// xattrs, a FIFO and two device nodes. Also the length of its part up to
-/// `etc/owned`, which ends at an entry.
+/// The bottom layer: a `0555` root of root's, owners other than root, a
+/// user's symlink, a hardlink, setuid, setgid and sticky modes, `user.*`
+/// and `security.capability` xattrs, a FIFO and two device nodes. Also the
+/// length of its part up to `etc/owned`, which ends at an entry.
 fn bottom() -> (Vec<u8>, Digest, usize) {
     let mut t = Tar::default();
     t.dir("./", ROOT, 0o555)
         .dir("bin/", ROOT, 0o755)
         .file("bin/su", ROOT, 0o4755, b"su")
+        .hardlink("bin/su-again", "bin/su")
         .file("bin/wall", (0, 5), 0o2755, b"wall")
         .dir("etc/", ROOT, 0o755)
         .file("etc/owned", (2, 3), 0o640, b"owned");
@@ -133,6 +145,7 @@ fn bottom() -> (Vec<u8>, Digest, usize) {
     .dir("home/", ROOT, 0o755)
     .dir("home/u/", USER, 0o700)
     .file("home/u/f", USER, 0o600, b"mine")
+    .symlink("home/u/link", USER, "f")
     .dir("lib/", ROOT, 0o755)
     .xattrs(&[("user.k", b"v")])
     .file("lib/shared", (2, 3), 0o640, b"shared")
@@ -140,6 +153,7 @@ fn bottom() -> (Vec<u8>, Digest, usize) {
     .file("opq/a", ROOT, 0o644, b"a")
     .dir("run/", ROOT, 0o755)
     .node("run/fifo", EntryType::Fifo, ROOT, 0o600, (0, 0))
+    .dir("srv/", (0, 5), 0o2775)
     .dir("tmp/", ROOT, 0o1777)
     .file("gone", ROOT, 0o644, b"gone");
     let (tar, id) = t.finish();
@@ -168,7 +182,8 @@ fn bottom_dump() -> String {
         ". d 0:0 555".to_owned(),
         "bin d 0:0 755".to_owned(),
         format!("bin/ping f 0:0 755 \"ping\" security.capability={cap} user.origin=ping"),
-        "bin/su f 0:0 4755 \"su\"".to_owned(),
+        "bin/su f 0:0 4755 links=2 \"su\"".to_owned(),
+        "bin/su-again f 0:0 4755 links=2 \"su\"".to_owned(),
         "bin/wall f 0:5 2755 \"wall\"".to_owned(),
         "dev d 0:0 755".to_owned(),
         "etc d 0:0 755".to_owned(),
@@ -177,12 +192,14 @@ fn bottom_dump() -> String {
         "home d 0:0 755".to_owned(),
         "home/u d 1000:1000 700".to_owned(),
         "home/u/f f 1000:1000 600 \"mine\"".to_owned(),
+        "home/u/link l 1000:1000 777 -> f".to_owned(),
         "lib d 0:0 755".to_owned(),
         "lib/shared f 2:3 640 \"shared\" user.k=v".to_owned(),
         "opq d 0:0 755".to_owned(),
         "opq/a f 0:0 644 \"a\"".to_owned(),
         "run d 0:0 755".to_owned(),
         "run/fifo p 0:0 600".to_owned(),
+        "srv d 0:5 2775".to_owned(),
         "tmp d 0:0 1777".to_owned(),
     ]
     .join("\n")
@@ -202,8 +219,9 @@ opq d 0:0 755 user.overlay.opaque=y
 opq/b f 0:0 644 \"b\"";
 
 /// Each entry below `root` as this process sees it, one sorted line each:
-/// path, type, owner, mode, then the contents of a file, the numbers of a
-/// device and every xattr.
+/// path, type, owner, mode, then the links to a file and its contents, a
+/// symlink's target, the numbers of a device, an mtime other than the
+/// tars' [`MTIME`] and every xattr.
 fn dump(root: &Path) -> String {
     let mut lines = Vec::new();
     let mut todo = vec![PathBuf::from(".")];
@@ -229,11 +247,22 @@ fn dump(root: &Path) -> String {
             m.mode() & 0o7777
         );
         if t.is_file() {
+            if m.nlink() > 1 {
+                line += &format!(" links={}", m.nlink());
+            }
             line += &format!(" \"{}\"", fs::read(&p).unwrap().escape_ascii());
+        }
+        if t.is_symlink() {
+            line += &format!(" -> {}", fs::read_link(&p).unwrap().display());
         }
         if t.is_char_device() || t.is_block_device() {
             let dev = m.rdev();
             line += &format!(" {},{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+        }
+        // A whiteout is the extraction's own node, made when it ran.
+        let whiteout = t.is_char_device() && m.rdev() == 0;
+        if !whiteout && m.mtime() != MTIME {
+            line += &format!(" t={}", m.mtime());
         }
         let mut names = vec![0; 4096];
         let n = rustix::fs::llistxattr(&p, &mut names).unwrap();
@@ -269,8 +298,9 @@ fn holds(dir: &Path, name: &str) -> bool {
 }
 
 /// In a build with `store`: the bottom and top layers through `overlay`,
-/// then a diff ID the bottom layer's tar does not hash to. What it saw,
-/// for [`expected`], then where the two layers are. Closes the store.
+/// then a diff ID the bottom layer's tar does not hash to, and a layer of
+/// an owner no map holds. What it saw, for [`expected`], then where the
+/// two layers are. Closes the store.
 fn extract_layers(store: Store) -> String {
     let capture = rnk_metrics::Capture::new();
     let store = Arc::new(store);
@@ -288,14 +318,31 @@ fn extract_layers(store: Store) -> String {
     let mismatch = overlay
         .base_layer_from(&wrong, b.as_slice(), &[])
         .map_or_else(|e| e.to_string(), |l| format!("published {l:?}"));
+    let (f, f_id) = Tar::default()
+        .dir("./", ROOT, 0o755)
+        .file("far", FAR, 0o644, b"far")
+        .finish();
+    // The error, after the layer's key, which depends on the map.
+    let far = overlay
+        .base_layer_from(&f_id, f.as_slice(), &[])
+        .map_or_else(
+            |e| {
+                let e = e.to_string();
+                e.split_once(": chown ")
+                    .map_or(format!("refused: {e}"), |(_, why)| {
+                        format!("refused: chown {why}")
+                    })
+            },
+            |_| "published".to_owned(),
+        );
     let published = fs::read_dir(lower.path().parent().unwrap())
         .unwrap()
         .count();
     let tmp = store.state_dir().join("tmp").join(store.build_id());
     let tmp_left = fs::read_dir(tmp).unwrap().count();
     let report = format!(
-        "nodes_skipped {skipped}\nnamed by diff ID {}\nmismatch refused {}\npublished {published}\n\
-         tmp {tmp_left}\n-- bottom\n{}\n-- top\n{}\n-- paths\n{}\n{}",
+        "nodes_skipped {skipped}\nnamed by diff ID {}\nmismatch refused {}\nfar owner {far}\n\
+         published {published}\ntmp {tmp_left}\n-- bottom\n{}\n-- top\n{}\n-- paths\n{}\n{}",
         lower.path().ends_with(b_id.encoded()),
         mismatch.contains("the uncompressed tar has diff ID"),
         dump(lower.path()),
@@ -312,7 +359,8 @@ fn extract_layers(store: Store) -> String {
 }
 
 /// [`extract_layers`]'s report, its paths left out, for a build in a user
-/// namespace (`userns`) or as root.
+/// namespace (`userns`) or as root. In the namespace, the owner no map
+/// holds fails the extraction, which publishes nothing (ADR-0098).
 fn expected(userns: bool) -> String {
     let mut bottom: Vec<String> = bottom_dump().lines().map(str::to_owned).collect();
     if !userns {
@@ -320,10 +368,16 @@ fn expected(userns: bool) -> String {
         bottom.sort();
     }
     format!(
-        "nodes_skipped {}\nnamed by diff ID {}\nmismatch refused true\npublished 2\ntmp 0\n\
-         -- bottom\n{}\n-- top\n{TOP_DUMP}",
+        "nodes_skipped {}\nnamed by diff ID {}\nmismatch refused true\nfar owner {}\n\
+         published {}\ntmp 0\n-- bottom\n{}\n-- top\n{TOP_DUMP}",
         if userns { 2 } else { 0 },
         !userns,
+        if userns {
+            "refused: chown ./far: Invalid argument (os error 22)"
+        } else {
+            "published"
+        },
+        if userns { 2 } else { 3 },
         bottom.join("\n"),
     )
 }
@@ -410,17 +464,13 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
         .split_once('\t')
         .unwrap_or_else(|| panic!("{first}"));
     let mut second = String::new();
-    r.read_line(&mut second).unwrap();
-    assert_eq!(second, "blocked\n", "{first}");
-    let tmp = state.join("tmp").join(build);
-    let layers = state.join("layers/v3/sha256");
-    let published = || fs::read_dir(&layers).map_or(0, Iterator::count);
-    // Halfway: the entries before the cut are on disk, none after it.
-    assert!(holds(&tmp, "owned"), "{}", tmp.display());
-    assert!(!holds(&tmp, "ping"), "{}", tmp.display());
-    assert_eq!(published(), 0);
-    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+    let read = r.read_line(&mut second);
+    // Killed before any assertion, so that none leaves it blocked for good.
+    let killed = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
     let waited = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty());
+    read.unwrap();
+    killed.unwrap();
+    assert_eq!(second, "blocked\n", "{first}");
     let Ok(Some((_, status))) = waited else {
         panic!("waitpid: {waited:?}");
     };
@@ -429,8 +479,14 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
         Some(libc::SIGKILL),
         "{status:?}"
     );
+    // Halfway: the entries before the cut are on disk, none after it, and
+    // nothing is published.
+    let tmp = state.join("tmp").join(build);
+    let layers = state.join("layers/v3/sha256");
+    let published = || fs::read_dir(&layers).map_or(0, Iterator::count);
+    assert!(holds(&tmp, "owned"), "{}", tmp.display());
+    assert!(!holds(&tmp, "ping"), "{}", tmp.display());
     assert_eq!(published(), 0);
-    assert!(holds(&tmp, "owned"));
 
     let build = build.to_owned();
     let next = in_child(user, || {
@@ -467,7 +523,7 @@ fn killed_extraction_publishes_nothing(state: &Path, user: Option<(u32, u32)>) -
 /// whiteouts and opaque directories their tars give, as overlay as root
 /// extracts them; a `0555` root, root's or a user's, is published by the
 /// rename; device nodes are left out and counted; a diff ID the tar does not
-/// hash to publishes nothing.
+/// hash to, or an owner the namespace does not map, publishes nothing.
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container extracts layers in the build's user namespace"]
 fn base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them() {

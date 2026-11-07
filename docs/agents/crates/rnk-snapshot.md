@@ -299,9 +299,10 @@ that found a bug stay as its regression test.
   ranikust's user-namespace probe makes under rootless Podman's defaults
   (#74). Base layers in the build's user namespace (`ranikust`'s
   `setup/tests/userns/layers.rs`, also T2 as the sudo user, #77): owners,
-  modes, xattrs, whiteouts and opaque directories as overlay as root makes
-  them, `0555` roots published, devices skipped and counted, a `SIGKILL`ed
-  extraction publishing nothing.
+  modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
+  directories as overlay as root makes them, `0555` roots published, devices
+  skipped and counted, an owner outside the map failing the extraction, a
+  `SIGKILL`ed extraction publishing nothing.
 - **T2c** (rootful Docker, `just test-container unit-c`;
   `#[ignore = "T2c: <profile>: ..."]`): profile `sysadmin`:
   `tests/overlay.rs` (overlay mounts: the probe, a layer per instruction with
