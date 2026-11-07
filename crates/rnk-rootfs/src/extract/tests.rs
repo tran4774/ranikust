@@ -1355,9 +1355,9 @@ fn past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused() {
         let e = extract_overlay(&f.root, tar.as_slice(), &[], DeviceNodes::Skip).unwrap_err();
         assert!(e.to_string().contains("target s is neither"), "{e}");
 
-        // The layer's own "y" comes before a lower layer's.
         let lower = Fixture::new();
         fs::write(lower.host("s"), b"lower").unwrap();
+        // The layer's own "y" comes before a lower layer's.
         fs::write(lower.host("y"), b"lower").unwrap();
         let f = Fixture::new();
         extract_overlay(&f.root, tar.as_slice(), &[&lower.root], DeviceNodes::Skip).unwrap();

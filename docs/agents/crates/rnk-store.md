@@ -28,9 +28,9 @@ extract the same digest at once.
   user other than root opens the store inside the build's user namespace
   (`ranikust`'s `setup::enter_user_namespace`, #75), where the clean-up
   removes files of the user's subordinate ids as root of the namespace, and
-  where extracted layers are filled and published (#77). It tells whether
-  it runs in a user namespace other than the initial one
-  (`user_namespace_proc`), for its own directories' group and for
+  where extracted layers are filled and published (#77).
+- Telling whether the process runs in a user namespace other than the
+  initial one (`user_namespace_proc`), for its own directories' group and
   `rnk-snapshot`'s layer keys and device nodes.
 - `BuildPaths`, the paths handed down to every crate.
 
@@ -184,9 +184,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   group passes neither its gid nor the bit to a directory of the store,
   and a store directory of another group takes the process's gid (the gid
   checks skipped for a user of one group), while one already the
-  process's keeps its ctime; a refused change is only a warning outside a
-  user namespace
-  (`a_refused_group_change_is_only_a_warning_outside_a_user_namespace`).
+  process's keeps its ctime; a refused change is a warning only outside a
+  user namespace, and the refusal itself is the error in one or where the
+  namespace cannot be told
+  (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
   build's `tmp/<id>` and on `builds/<id>` keeps its contents).

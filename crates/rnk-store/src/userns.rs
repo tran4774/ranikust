@@ -1,6 +1,7 @@
 //! Whether this process runs in a user namespace other than the initial
 //! one: the store's directories must then carry ids it maps (ADR-0099), and
-//! `rnk-snapshot` keys the layers it extracts there by the map (ADR-0104).
+//! `rnk-snapshot` keys the layers it extracts there by the map (ADR-0104)
+//! and leaves device nodes out of them (ADR-0106).
 
 use std::io;
 use std::os::fd::OwnedFd;

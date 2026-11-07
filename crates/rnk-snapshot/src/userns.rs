@@ -170,7 +170,7 @@ mod tests {
         assert_ne!(identity.layer_key(&chain), chain);
     }
 
-    /// Whatever namespace the tests run in: in a user namespace, this
+    /// In a user namespace other than the initial one, `current` holds this
     /// process's maps.
     #[test]
     fn the_current_namespace_has_this_process_s_maps() {
