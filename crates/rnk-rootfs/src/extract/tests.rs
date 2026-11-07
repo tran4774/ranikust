@@ -1247,7 +1247,7 @@ fn skipped_device_nodes_leave_fifos_and_whiteouts() {
 /// link to one a lower layer left out finds nothing there: it is refused,
 /// or copies what a deeper layer has at that name.
 #[test]
-fn a_link_to_a_device_a_lower_layer_left_out_is_refused() {
+fn a_link_to_a_device_a_lower_layer_left_out_is_refused_or_copies_a_deeper_layer() {
     let deep = Fixture::new();
     fs::write(deep.host("tty"), b"deep").unwrap();
     let lower = Fixture::new();
@@ -1299,19 +1299,20 @@ impl tracing::Subscriber for Warnings {
 /// ADR-0128: within the budget, a link to a device left out is left out;
 /// past it, the layer remembers no further name, a short one after the
 /// first that does not fit included, and warns once: a link to a device it
-/// does not remember is copied from a lower layer that has its name, or
-/// refused, never left out. The only test here that reaches the warning,
-/// so no other can cache it as unwanted.
+/// does not remember is linked to what the layer has at that name, else
+/// copied from a lower layer that has it, else refused, never left out.
+/// The only test here that reaches the warning, so no other can cache it
+/// as unwanted.
 #[test]
-fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
+fn past_the_names_budget_a_link_to_a_device_is_linked_copied_or_refused() {
     let warnings = tracing::Dispatch::new(Warnings::default());
     // Long names fill the budget in a few hundred entries.
     let long = format!("{}/", "n".repeat(250)).repeat(16);
     let name = |i: usize| format!("{long}{i:03}");
     let cost = name(0).len() + SKIPPED_NAME_COST;
     let fit = SKIPPED_NAMES_MAX / cost;
-    // What the names that fit leave would hold "s": only a budget closed
-    // at the first name past it leaves "s" unremembered.
+    // What the names that fit leave would hold "s" or "y": only a budget
+    // closed at the first name past it leaves them unremembered.
     assert!(SKIPPED_NAMES_MAX - fit * cost >= "s".len() + SKIPPED_NAME_COST);
 
     let f = Fixture::new();
@@ -1327,6 +1328,9 @@ fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
         h
     };
     let mut b = tar::Builder::new(Vec::new());
+    let mut file = header(EntryType::Regular);
+    file.set_size(1);
+    b.append_data(&mut file, "y", &b"y"[..]).unwrap();
     let mut device = |path: &str| {
         let mut h = header(EntryType::Char);
         h.set_device_major(1).unwrap();
@@ -1338,7 +1342,10 @@ fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
         device(&name(i));
     }
     device("s");
+    device("y");
     b.append_link(&mut header(EntryType::Link), "first", name(0))
+        .unwrap();
+    b.append_link(&mut header(EntryType::Link), "to-y", "y")
         .unwrap();
     b.append_link(&mut header(EntryType::Link), "to-s", "s")
         .unwrap();
@@ -1353,6 +1360,9 @@ fn past_the_names_budget_a_link_to_a_device_is_copied_or_refused() {
         let f = Fixture::new();
         extract_overlay(&f.root, tar.as_slice(), &[&lower.root], DeviceNodes::Skip).unwrap();
         assert!(fs::symlink_metadata(f.host("first")).is_err());
+        let ino = |p: &str| fs::symlink_metadata(f.host(p)).unwrap().ino();
+        assert_eq!(ino("to-y"), ino("y"));
+        assert_eq!(fs::read(f.host("y")).unwrap(), b"y");
         assert_eq!(fs::read(f.host("to-s")).unwrap(), b"lower");
     });
     let count = warnings
