@@ -41,8 +41,9 @@ them, with any cgroup a command made below its own: in a
 `docker run --privileged` container, or wherever ranikust starts at the root
 of its own cgroup namespace with a writable cgroupfs, and in a systemd unit or
 scope with `Delegate=yes` whose cgroup systemd marks as delegated with
-`trusted.delegate` (Ubuntu 22.04's systemd 249 and 24.04's 255 do). Anywhere
-else nothing changes. They set no resource limit, only how many cgroups a
+`trusted.delegate` (Ubuntu 22.04's systemd 249 and 24.04's 255 do). In
+rootless overlay mode only the root of its own cgroup namespace counts.
+Anywhere else nothing changes. They set no resource limit, only how many cgroups a
 `RUN` may make below its own, and how deep: 4095 cgroups and 32 levels at
 most, past which `mkdir` fails with `EAGAIN`. ranikust logs which layout it
 uses:

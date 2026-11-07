@@ -311,7 +311,7 @@ The steps, in order:
       ranikust's included, and give the build container a PID namespace of
       its own. With the flag, `ranikust` also refuses, before the build's
       user namespace, a PID namespace shared with a process of another mount
-      namespace, as T21
+      namespace that it can open as it starts, as T21
       ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
       and warns for a `--build-arg` whose name looks like a secret's: its
       value is on the command line a `RUN` reads; the build keeps the
@@ -658,6 +658,7 @@ means no `RUN` cgroups, logged with its errno at `warn`:
 | `docker run --privileged` (its own cgroup namespace, cgroupfs read-write) | Yes |
 | Another cgroup namespace's root on a read-write cgroupfs, delegated or not: root's own `unshare -C` with cgroup2 remounted; a systemd 257 unit with `ProtectControlGroups=private` **[inferred]** | Yes |
 | `Delegate=yes` under a systemd that sets no `trusted.delegate` | No |
+| Rootless overlay mode anywhere but its own cgroup namespace's root, a `Delegate=yes` unit or scope included | No |
 | Root on a host, an ssh session's scope, a unit without `Delegate=` | No |
 | Docker's default options, most pods (cgroupfs read-only) | No |
 | A kernel before 5.14 (no `cgroup.kill`); `Direct` on `/`; the probe's own `RUN`s | No |

@@ -379,9 +379,9 @@ What a change here must keep, with where it lives:
   [design](../../design/sandbox.md#run-cgroups), ADR-0110): only where
   ranikust's own cgroup `D` carries a delegation mark it trusts
   (`trusted_marks`: root, `trusted.delegate` alone; not root, also
-  `user.delegate` on a `D` it owns) or is the root of its cgroup namespace
-  (rootless overlay mode, root in its user namespace, where `trusted.*`
-  reads as absent: only the latter), on
+  `user.delegate` on a `D` it owns) or is the root of its cgroup namespace,
+  the only case open to rootless overlay mode (root in its user namespace,
+  it reads `trusted.*` as absent), on
   a read-write cgroupfs with `cgroup.kill`; an unreadable mark, or an
   unreadable file of a marked or namespace-root `D`, is a `warn`. The probe
   runs every step once, and a failure leaves the build as without cgroups.
