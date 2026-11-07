@@ -1136,8 +1136,8 @@ fn a_layer_that_fails_before_its_first_entry_leaves_the_root_usable() {
 }
 
 /// Layers whose digest and diff ID are right but whose tar has, after a good
-/// first entry, a header every extraction refuses on its own (a value the
-/// kernel would refuse among them, #179), and whether it is the
+/// first entry, a header the extraction on `/` refuses on its own (a value
+/// the kernel would refuse among them, #179), and whether it is the
 /// `tar-header` limit (`--limit`) that refuses it.
 fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
     let first = || {
@@ -1242,11 +1242,11 @@ fn bad_headers() -> Vec<(&'static str, Vec<u8>, bool)> {
 }
 
 /// On `/` a streamed layer's tar headers are checked in the pass that
-/// verifies its digest and diff ID (ADR-0123): one with a header every
-/// extraction refuses, or one over the `tar-header` limit, fails before its
-/// first entry reaches `/`, which is left as it was and usable. Control: the
-/// same layer from the store, which is never spooled, reaches `/` before
-/// its bad header and breaks it.
+/// verifies its digest and diff ID (ADR-0123): one with a header the
+/// extraction on `/` refuses, or one over the `tar-header` limit, fails
+/// before its first entry reaches `/`, which is left as it was and usable.
+/// Control: the same layer from the store, which is never spooled, reaches
+/// `/` before its bad header and breaks it.
 #[test]
 fn on_slash_a_streamed_layer_with_a_bad_tar_header_changes_nothing() {
     let good = Tar::new().file("good", b"g").bytes();

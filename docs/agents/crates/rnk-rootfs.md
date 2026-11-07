@@ -240,7 +240,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   GNU long names and links and PAX `path`, `linkpath`, `size`, `uid`, `mtime`
   and xattr records, with values at and past the kernel's limits, included):
   it refuses no generated layer that an extraction takes, and passes none
-  whose framing or values an extraction refuses;
+  whose framing or values an extraction refuses (the check as `extract`
+  reads; `check_headers`, for `/`, refuses besides only a directory past
+  4094 bytes);
   `red_team_check_headers_agrees_with_every_extraction_on_mutated_headers`
   (proptest) holds the same on a layer of every header kind, half the time
   with a member at or past the kernel's limits spliced in, with one to four

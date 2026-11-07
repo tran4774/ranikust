@@ -97,8 +97,8 @@ const NAME_MAX: usize = 255;
 /// The kernel's `XATTR_NAME_MAX`: the longest xattr name.
 const XATTR_NAME_MAX: usize = 255;
 /// The longest directory path [`check_headers`] takes: what a live root at
-/// `/` reads back of it ([`live_dir_max`]).
-const SLASH_DIR_MAX: usize = PATH_MAX - 1;
+/// `/` reads back of it.
+const SLASH_DIR_MAX: usize = live_dir_max(b"/");
 /// Why a directory's path is refused: one reason for every root, so the
 /// check and each extraction say the same.
 const DIR_PAST_PATH_MAX: &str =
@@ -1814,8 +1814,8 @@ impl<'r> Live<'r> {
 /// path [`Live::physical`] reads: `/proc/self/fd` shows at most
 /// [`PATH_MAX`] bytes, the root's own path and a `/` included (4094 on
 /// `/`).
-fn live_dir_max(root_host: &[u8]) -> usize {
-    let prefix = if root_host == b"/" {
+const fn live_dir_max(root_host: &[u8]) -> usize {
+    let prefix = if matches!(root_host, [b'/']) {
         1
     } else {
         root_host.len() + 1

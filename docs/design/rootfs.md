@@ -137,8 +137,9 @@ never called.
   the root, sparse and unknown types, whiteouts naming nothing, a link with
   an empty target, a file or symlink as the layer's root, ids and times that
   do not parse, and the kernel's limits below), with the extraction's
-  errors. It refuses nothing such an extraction takes; what the root or the
-  ignore list decides is the extraction's. Kaniko mode's spool pass on `/`
+  errors. It refuses nothing such an extraction takes but a directory path
+  of 4095 bytes, which a live root at `/` refuses (below); what the root or
+  the ignore list decides is the extraction's. Kaniko mode's spool pass on `/`
   calls it on the bytes it already decompresses, so a header it refuses
   fails the layer before `/` changes
   ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123).

@@ -2333,10 +2333,10 @@ fn a_live_root_takes_a_directory_path_to_what_proc_shows_of_it() {
 
 /// The reason of an [`Error::Entry`].
 fn entry_reason(e: &Error) -> &str {
-    match e {
-        Error::Entry { reason, .. } => reason,
-        _ => panic!("{e}"),
-    }
+    let Error::Entry { reason, .. } = e else {
+        panic!("{e}");
+    };
+    reason
 }
 
 /// A device node or FIFO's name and xattrs are refused by the extraction
@@ -2436,12 +2436,14 @@ fn gen_record_names() -> Vec<Vec<u8>> {
 
 /// The link targets GNU long link records and PAX `linkpath` records
 /// carry: those above, a NUL byte, a name of 256 bytes, an entry in a
-/// directory of 4096 bytes, and targets of 4095 and of 4096 bytes.
+/// directory of 4095 bytes (past what a live root at `/` reads back) and
+/// of 4096, and targets of 4095 and of 4096 bytes.
 fn gen_record_targets() -> Vec<Vec<u8>> {
     let mut targets: Vec<Vec<u8>> = GEN_TARGETS.iter().map(|t| t.as_bytes().to_vec()).collect();
     targets.extend([
         b"t\0u".to_vec(),
         format!("d/{}", "n".repeat(256)).into_bytes(),
+        format!("{}/f", dir_of(4095)).into_bytes(),
         format!("{}/f", dir_of(4096)).into_bytes(),
         vec![b't'; 4095],
         vec![b't'; 4096],
@@ -2481,8 +2483,9 @@ fn gen_xattr(i: usize) -> (String, Vec<u8>) {
 /// past the limits itself, not one looked up through a long symlink), an
 /// xattr it refuses by its name or size, a file capability's form, or a
 /// `user.*` one on a symlink (`EPERM`, unless the entry has a `security.*`
-/// xattr, which a test without privilege is refused with `EPERM` too; in a
-/// live root, the entry by its name in the layer). Not a name the
+/// xattr, which a test without privilege is refused with `EPERM` too,
+/// matched by its name in the layer, which a live root reports only when
+/// no symlink lies on its way). Not a name the
 /// filesystem does not take (`EOPNOTSUPP`), nor where a live root's
 /// directory lies, read through `/proc/self/fd`, which depends on where
 /// the root is.
@@ -2512,7 +2515,7 @@ fn is_kernel_refusal(e: &Error, tar: &[u8]) -> bool {
 
 /// `path` as the extraction names an entry ([`path::clean`]).
 fn cleaned(path: &Path) -> PathBuf {
-    crate::path::clean(path).unwrap_or_default()
+    crate::path::clean(path).expect("an extraction names entries inside the root")
 }
 
 /// The names of the entries of `tar` with a `security.*` xattr, as far as
