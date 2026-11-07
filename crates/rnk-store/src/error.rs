@@ -69,12 +69,13 @@ pub enum Error {
         path: PathBuf,
     },
 
-    /// [`crate::Store::prune_all`] left more than the marker in the state
+    /// [`crate::Store::prune_all`] left more than its markers in the state
     /// directory: an entry on another mount, or one this process may not
-    /// remove. The marker stays, so the next `prune --all` accepts the
-    /// directory.
+    /// remove. Both markers stay, so no build opens the directory and the
+    /// next `prune --all` accepts it.
     #[error(
-        "ranikust prune --all could not empty the state directory {}: it still holds {left}",
+        "ranikust prune --all could not empty the state directory {}: it still holds {left}; \
+         no build uses it until ranikust prune --all empties it",
         path.display()
     )]
     NotPruned {
@@ -82,6 +83,20 @@ pub enum Error {
         path: PathBuf,
         /// What is left, with the names quoted.
         left: String,
+    },
+
+    /// The state directory holds [`crate::PRUNING_MARKER`]: a `ranikust
+    /// prune --all` was cut short or failed there, and may have emptied
+    /// entries part-way under their published names, which a build would
+    /// reuse as they are.
+    #[error(
+        "ranikust prune --all did not finish emptying the state directory {}: what it holds may \
+         be partly removed, so no build uses it; run ranikust prune --all again",
+        path.display()
+    )]
+    PruneCutShort {
+        /// The state directory.
+        path: PathBuf,
     },
 
     /// An anonymous store (kaniko mode on `/`) was opened on a state

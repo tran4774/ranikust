@@ -36,6 +36,13 @@ use STATE_MARKER as MARKER;
 /// later builds in this container from making names (Q-360).
 pub const BUILDING_MARKER: &str = ".ranikust-building";
 use BUILDING_MARKER as BUILDING;
+
+/// In a state directory while [`Store::prune_all`] empties it, removed
+/// last but for [`STATE_MARKER`]. Entries are emptied in place, under their
+/// published names: a prune cut short or failed leaves this file, and no
+/// store opens there until a prune finishes ([`Error::PruneCutShort`]).
+pub const PRUNING_MARKER: &str = ".ranikust-pruning";
+use PRUNING_MARKER as PRUNING;
 /// What [`BUILDING`] holds: the PID namespace and the boot of the build
 /// that made it; `None` when either cannot be read, and any marker then
 /// counts as this container's.
@@ -332,7 +339,8 @@ impl Store {
     ///
     /// [`Error::NotAStateDir`] for a foreign directory, [`Error::Busy`]
     /// while an anonymous store holds it, [`Error::UsedOnSlash`] for the
-    /// marker of a kaniko-mode build on `/`, [`Error::NoFlock`] when its
+    /// marker of a kaniko-mode build on `/`, [`Error::PruneCutShort`] for
+    /// [`PRUNING_MARKER`], [`Error::NoFlock`] when its
     /// filesystem has no `flock`, [`Error::Io`] or [`Error::Rootfs`] when
     /// it cannot be created or opened (including
     /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8).
@@ -361,6 +369,7 @@ impl Store {
             }
         }
         refuse_used_on_slash(&state, &state_path)?;
+        refuse_cut_short_prune(&state, &state_path)?;
         check_marker(&state, &state_path)?;
         for d in DIRS {
             state.create_dir_all(d, DIR_MODE)?;
@@ -1251,9 +1260,9 @@ impl Store {
     }
 
     /// Empties the state directory `state`, for `ranikust prune --all`
-    /// (ADR-0105): every entry, lock and build directory, then the
-    /// [`STATE_MARKER`] last, so that a prune cut short leaves a directory
-    /// the next one accepts. `false` when it was empty already.
+    /// (ADR-0105): every entry, lock and build directory, then
+    /// [`PRUNING_MARKER`] and the [`STATE_MARKER`] last. `false` when it was
+    /// empty already.
     ///
     /// Takes the state directory's `flock` exclusive without waiting, as
     /// an anonymous store does, and holds it to the end: every build's
@@ -1261,9 +1270,12 @@ impl Store {
     /// is removed, and no build opens a store meanwhile ([`Error::Busy`]).
     /// Before removing anything it refuses, as [`Store::open`] does, a
     /// non-empty directory without a regular [`STATE_MARKER`] and one
-    /// holding [`BUILDING_MARKER`]; it creates nothing, not even the marker
-    /// of an empty directory. Deletes through `rnk-rootfs` by descriptor:
-    /// no symlink followed, no mount crossed or emptied.
+    /// holding [`BUILDING_MARKER`]; it makes nothing in an empty directory,
+    /// not even the marker. Then it writes [`PRUNING_MARKER`] and syncs the
+    /// directory before deleting: entries are emptied in place, and a prune
+    /// cut short or failed leaves a directory no store opens and the next
+    /// prune accepts. Deletes through `rnk-rootfs` by descriptor: no
+    /// symlink followed, no mount crossed or emptied.
     ///
     /// Files of ids the process may not remove (a rootless build's, of
     /// subordinate ids) need the caller in the build's user namespace,
@@ -1275,9 +1287,11 @@ impl Store {
     /// [`Error::InUse`] while a build holds the state directory;
     /// [`Error::NotAStateDir`], [`Error::UsedOnSlash`] and
     /// [`Error::NoFlock`] as [`Store::open`]; [`Error::NotPruned`] naming
-    /// what is left when anything but the marker stays (an entry on another
-    /// mount, one this process may not remove); [`Error::Io`] or
-    /// [`Error::Rootfs`] when the directory cannot be resolved or opened.
+    /// what is left when anything but the two markers stays (an entry on
+    /// another mount, one this process may not remove), or when a
+    /// [`PRUNING_MARKER`] is not a regular file; [`Error::Io`] or
+    /// [`Error::Rootfs`] when the directory cannot be resolved, opened or
+    /// synced.
     pub fn prune_all(state: &Path) -> Result<bool> {
         let span = tracing::info_span!("rnk_store.prune");
         let _entered = span.enter();
@@ -1310,27 +1324,56 @@ impl Store {
             }
             Err(e) => return Err(e.into()),
         }
+        let not_pruned = |left: String| Error::NotPruned {
+            path: state_path.clone(),
+            left,
+        };
+        let sync = || {
+            rustix::fs::fsync(&lock).map_err(|e| Error::Io {
+                op: "sync",
+                path: state_path.clone(),
+                source: e.into(),
+            })
+        };
+        match root.statx(PRUNING) {
+            // A prune cut short: this one finishes it.
+            Ok(st) if st.file_type() == FileType::Regular => {}
+            Ok(_) => {
+                return Err(not_pruned(format!(
+                    "{PRUNING:?}, which is not a regular file"
+                )));
+            }
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+                drop(root.open_at(PRUNING, &OpenHow::write().create_new(0o600))?);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        // Journal first: on disk before any entry is emptied in place.
+        sync()?;
         let mut keep = IgnoreList::new();
         keep.insert(MARKER)?;
+        keep.insert(PRUNING)?;
         let deleted = delete_contents(&root, &keep);
         let left: Vec<OsString> = list(&root, Path::new("."))?
             .into_iter()
-            .filter(|n| n != MARKER)
+            .filter(|n| n != MARKER && n != PRUNING)
             .collect();
         let left = match (left.is_empty(), deleted) {
             (true, Ok(())) => None,
-            (_, Err(e)) => Some(format!(
+            (true, Err(e)) => Some(format!("no name it lists, but removing failed: {e}")),
+            (false, Err(e)) => Some(format!(
                 "{} (removing them failed: {e})",
                 shown_names(&left)
             )),
             (false, Ok(())) => Some(format!("{} (on another mount?)", shown_names(&left))),
         };
         if let Some(left) = left {
-            return Err(Error::NotPruned {
-                path: state_path,
-                left,
-            });
+            return Err(not_pruned(left));
         }
+        root.remove_file(PRUNING)?;
+        // Never a marker gone with the journal still on disk: a directory
+        // left so would be refused by both a build and a prune.
+        sync()?;
         match root.remove_file(MARKER) {
             Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {}
             r => r?,
@@ -1774,6 +1817,18 @@ fn lock_state_dir(fd: &OwnedFd, state_path: &Path) -> Result<()> {
 fn refuse_used_on_slash(state: &RootPath, state_path: &Path) -> Result<()> {
     match state.statx(BUILDING) {
         Ok(_) => Err(Error::UsedOnSlash {
+            path: state_path.to_owned(),
+        }),
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Refuses a state directory holding [`PRUNING`], whatever its type: a
+/// `prune --all` that did not finish may have emptied entries part-way.
+fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
+    match state.statx(PRUNING) {
+        Ok(_) => Err(Error::PruneCutShort {
             path: state_path.to_owned(),
         }),
         Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => Ok(()),

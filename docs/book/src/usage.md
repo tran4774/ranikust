@@ -60,10 +60,11 @@ build's user namespace left under the user's subordinate ids included, which
 the user cannot remove otherwise; `rmdir` then removes the directory. It
 removes nothing while a build uses the directory, refuses a directory
 ranikust did not make (one without `.ranikust-state`), leaves a missing one
-missing, and prints what it did. Root is refused, a container's root
-included: it removes its state directory with `rm -rf` while no build uses
-it ([ADR-0105]). Without `--all`, `prune` is a usage error: removing by size
-and age comes in Phase 5.
+missing, and prints what it did. If it is interrupted or cannot remove
+everything, builds refuse the directory until `prune --all` runs to the end.
+Root is refused, a container's root included: it removes its state directory
+with `rm -rf --one-file-system` while no build uses it ([ADR-0105]). Without
+`--all`, `prune` is a usage error: removing by size and age comes in Phase 5.
 
 ## kaniko flags it accepts
 

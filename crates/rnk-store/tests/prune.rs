@@ -166,22 +166,79 @@ fn prune_all_keeps_the_marker_while_anything_stays() {
     let probe = shut.join("probe");
     let stops = fs::File::create(&probe).is_err();
     if stops {
-        let e = Store::prune_all(&state).unwrap_err();
+        let pruned = Store::prune_all(&state);
+        let left = tree(&state);
+        let opened = Store::open(&BuildPaths::new(&state, &state));
+        // Before any assertion: the temp dir must go even if one fails.
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+        let e = pruned.unwrap_err();
         assert!(matches!(e, Error::NotPruned { .. }), "{e}");
         assert!(e.to_string().contains("\"builds\""), "{e}");
-        let left = tree(&state);
-        assert!(
-            left.contains(&PathBuf::from(rnk_store::STATE_MARKER)),
-            "{left:?}"
-        );
+        for marker in [rnk_store::STATE_MARKER, rnk_store::PRUNING_MARKER] {
+            assert!(left.contains(&PathBuf::from(marker)), "{marker}: {left:?}");
+        }
         assert!(left.contains(&PathBuf::from("builds/shut/f")), "{left:?}");
-        fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+        // What the prune left is never a build's store.
+        let Err(e) = opened else {
+            panic!("a store opened after a failed prune")
+        };
+        assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
     } else {
         // Root or `CAP_DAC_OVERRIDE`: the mode stops nothing here.
         fs::remove_file(&probe).unwrap();
     }
     assert!(Store::prune_all(&state).unwrap());
     assert_eq!(tree(&state), Vec::<PathBuf>::new());
+}
+
+/// A prune killed while it empties a layer in place leaves the layer
+/// published and part-empty: no build opens the directory until a prune
+/// finishes, which then empties it, its journal and marker last.
+#[test]
+fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    used_store(&state);
+    let layer = open(&state).get(&EntryKey::Layer(digest(2))).unwrap();
+    let layer = layer.expect("the layer is published");
+    // Where a killed prune stops: one file of the layer gone, the journal
+    // it wrote first still there.
+    fs::remove_file(layer.join("usr/f")).unwrap();
+    fs::write(state.join(rnk_store::PRUNING_MARKER), b"").unwrap();
+    let before = tree(&state);
+    for _ in 0..2 {
+        let Err(e) = Store::open(&BuildPaths::new(&state, &state)) else {
+            panic!("a store opened on a prune cut short")
+        };
+        assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
+        assert!(
+            e.to_string().contains("run ranikust prune --all again"),
+            "{e}"
+        );
+    }
+    assert_eq!(tree(&state), before, "the refusal changes nothing");
+    assert!(Store::prune_all(&state).unwrap());
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+    open(&state).close().unwrap();
+}
+
+/// A journal that is not a regular file was not written by a prune: the
+/// prune removes nothing, and no build opens the directory either.
+#[test]
+fn a_journal_that_is_not_a_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    used_store(&state);
+    fs::create_dir(state.join(rnk_store::PRUNING_MARKER)).unwrap();
+    let before = tree(&state);
+    let e = Store::prune_all(&state).unwrap_err();
+    assert!(matches!(e, Error::NotPruned { .. }), "{e}");
+    assert!(e.to_string().contains("not a regular file"), "{e}");
+    assert_eq!(tree(&state), before);
+    let Err(e) = Store::open(&BuildPaths::new(&state, &state)) else {
+        panic!("a store opened")
+    };
+    assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
 }
 
 #[test]

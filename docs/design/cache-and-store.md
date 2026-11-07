@@ -159,10 +159,14 @@ directory's `flock` exclusive without waiting, as an anonymous store does,
 and holds it to the end: every build holds it shared for its life, so
 `prune --all` removes nothing while any build runs there (it says so and
 exits 1), and a build that starts meanwhile is refused. It refuses a
-non-empty directory without a regular `.ranikust-state` file, deletes by
-descriptor (no symlink followed, no mount crossed), removes the marker last
-so that a prune cut short can run again, and names what it could not
-remove. It creates nothing, not even the marker of an empty directory.
+non-empty directory without a regular `.ranikust-state` file and creates
+nothing in an empty one. Before deleting it writes `.ranikust-pruning` and
+syncs the directory: entries are emptied in place, under their published
+names, so a prune killed or failed part-way leaves a layer a build would
+reuse with files missing, and `Store::open` refuses any directory holding
+that file until a `prune --all` finishes. It deletes by descriptor (no
+symlink followed, no mount crossed), names what it could not remove, and
+removes `.ranikust-pruning`, then `.ranikust-state`, last.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the
