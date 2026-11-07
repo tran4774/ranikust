@@ -138,7 +138,13 @@ fn devices_left_out_cost_a_bounded_heap_whatever_their_names() {
     let _one = one_at_a_time();
     let (_tmp, _host, root) = root();
     let mut b = tar::Builder::new(Vec::new());
-    let long = "n".repeat(4000);
+    // Names of about 4000 bytes the kernel would take, as a hardlink's name
+    // must be (#179); a left-out device's name never reaches it.
+    let long = format!(
+        "{}{}",
+        format!("{}/", "n".repeat(250)).repeat(15),
+        "n".repeat(200)
+    );
     for i in 0..4000 {
         let name = if i == 0 {
             "dev".to_owned()

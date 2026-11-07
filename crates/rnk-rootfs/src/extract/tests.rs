@@ -2225,39 +2225,52 @@ fn values_at_the_kernels_limits_or_that_it_never_gets_are_taken() {
     value(65537).unwrap_err();
 }
 
-/// A device node or FIFO's xattrs are refused by the extraction that makes
-/// it, before it is made, and left to it by the check: a live root makes
-/// none, and [`DeviceNodes::Skip`] no device.
+/// A device node or FIFO's name and xattrs are refused by the extraction
+/// that makes it, before it or its parents are made, and left to it by the
+/// check: a live root makes none, and [`DeviceNodes::Skip`] no device.
 #[test]
-fn a_nodes_xattrs_are_refused_where_it_is_made() {
+fn a_nodes_name_and_xattrs_are_refused_where_it_is_made() {
     let f = Fixture::new();
-    for name in ["com.apple.x", "user.a"] {
-        let key = format!("SCHILY.xattr.{name}");
-        let value: &[u8] = b"v";
+    let long = format!("d/{}", "n".repeat(256));
+    let deep = format!("{}/p", dir_of(4096));
+    let cases: [(&str, &str, &[u8]); 5] = [
+        ("SCHILY.xattr.com.apple.x", "d/p", b"v"),
+        ("SCHILY.xattr.user.a", "d/p", b"v"),
+        ("path", &long, b""),
+        ("path", &deep, b""),
+        ("path", "d/a\0b", b""),
+    ];
+    for (key, name, value) in cases {
+        // A record of its own, or the name the node takes.
+        let record: (&str, &[u8]) = if key == "path" {
+            (key, name.as_bytes())
+        } else {
+            (key, value)
+        };
         let mut t = Tar::new(&f);
-        t.pax(&[(key.as_str(), value)])
-            .node("p", EntryType::Fifo, 0, 0)
-            .pax(&[(key.as_str(), value)])
-            .node("c", EntryType::Char, 1, 3);
+        t.pax(&[record])
+            .node("d/p", EntryType::Fifo, 0, 0)
+            .pax(&[record])
+            .node("d/c", EntryType::Char, 1, 3);
         let bytes = t.bytes();
         check_headers(bytes.as_slice()).unwrap();
+        let first = Path::new(if key == "path" { name } else { "d/p" });
         for (how, r, tree) in every_extraction(&bytes) {
             match how {
-                "live" => r.unwrap_or_else(|e| panic!("{name}, {how}: {e}")),
+                "live" => r.unwrap_or_else(|e| panic!("{key} {name:?}, {how}: {e}")),
                 _ => {
                     let e = r.unwrap_err();
                     assert!(
-                        matches!(&e, Error::Entry { path, .. } if path == Path::new("p")),
-                        "{name}, {how}: {e}"
+                        matches!(&e, Error::Entry { path, .. } if path == first),
+                        "{key} {name:?}, {how}: {e}"
                     );
-                    assert!(tree.is_empty(), "{name}, {how}: {tree:?}");
+                    assert!(tree.is_empty(), "{key} {name:?}, {how}: {tree:?}");
                 }
             }
         }
-        // Left out, the device's xattrs are never set.
+        // Left out, the device's name and xattrs never reach the kernel.
         let mut t = Tar::new(&f);
-        t.pax(&[(key.as_str(), value)])
-            .node("c", EntryType::Char, 1, 3);
+        t.pax(&[record]).node("d/c", EntryType::Char, 1, 3);
         let f = Fixture::new();
         extract_overlay(&f.root, t.bytes().as_slice(), &[], DeviceNodes::Skip).unwrap();
     }

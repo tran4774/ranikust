@@ -253,16 +253,16 @@ pub struct Extracted {
 /// a whiteout that names nothing, a file or symlink as the layer's root,
 /// ids, modes, device numbers and times that do not parse or are out of
 /// range, and what the kernel would refuse whatever the root holds: a name
-/// or link target with a NUL byte, a name over `NAME_MAX`, a directory
-/// path or symlink target that does not fit `PATH_MAX` with its NUL, and
-/// on a directory, file or symlink an xattr whose name is empty, over
-/// `XATTR_NAME_MAX`, in no namespace or holds a NUL byte, whose value is
-/// over `XATTR_SIZE_MAX`, or a `user.*` one on the symlink.
+/// or link target with a NUL byte, a component over `NAME_MAX`, a
+/// directory path or symlink target that does not fit `PATH_MAX` with its
+/// NUL, and on a directory, file or symlink an xattr whose name is empty,
+/// over `XATTR_NAME_MAX`, holds a NUL byte or is no namespace and more,
+/// whose value is over `XATTR_SIZE_MAX`, or a `user.*` one on the symlink.
 /// It refuses nothing such an extraction takes: what depends on the root
 /// or the ignore list (where an entry lands, a hardlink's target, a
 /// hardlink or device node as the layer's root) is left to the extraction,
-/// and so are the xattrs of a device node or FIFO, which a live root never
-/// makes.
+/// and so are the name and xattrs of a device node or FIFO, which a live
+/// root never makes.
 /// What follows the end-of-archive block is the caller's to read.
 ///
 /// Public for `rnk-snapshot`'s spool pass on `/` (ADR-0123): the pass that
@@ -499,8 +499,9 @@ fn for_each_entry<R: Read>(
 /// file or symlink as the layer's root, ids, modes, device numbers and
 /// times that do not parse or are out of range, and the values the kernel
 /// refuses whatever the root holds ([`kernel_refuses_name`],
-/// [`kernel_refuses_xattrs`]), for every name and target the extraction
-/// hands it and the xattrs of a directory, file or symlink. The first step
+/// [`kernel_refuses_xattrs`]), for every name the extraction hands it but
+/// a node's, every link target, and the xattrs of a directory, file or
+/// symlink (a node's are checked where it is made). The first step
 /// of every extraction, and all of [`check_headers`]. `wh` tells what a
 /// whiteout is; the `trusted.*` xattrs left out ([`SKIPPED_XATTR`]) are
 /// counted in `skipped`, the first of them kept in `first_skipped`.
@@ -545,9 +546,13 @@ fn read_header<R: Read>(
         }
         return Ok(Header::Whiteout { raw, path, name });
     }
-    if let Some(why) = path
-        .file_name()
-        .and_then(|n| kernel_refuses_name("the name", dir, n))
+    // A node's name is checked where it is made ([`Extractor::entry`]): a
+    // live root makes no node, a user namespace no device.
+    let node = matches!(etype, EntryType::Char | EntryType::Block | EntryType::Fifo);
+    if !node
+        && let Some(why) = path
+            .file_name()
+            .and_then(|n| kernel_refuses_name("the name", dir, n))
     {
         return Err(refuse(&why));
     }
@@ -624,8 +629,8 @@ fn read_header<R: Read>(
         return Err(refuse(ROOT_NOT_DIR));
     }
     // Whether the entry takes `user.*` xattrs, when its xattrs are checked
-    // here: no extraction sets a hardlink's, and a live root makes no node,
-    // so a node's are checked where it is made ([`Extractor::entry`]).
+    // here: no extraction sets a hardlink's, and a node's are checked where
+    // it is made, as its name.
     let takes_user = match &kind {
         Kind::Dir | Kind::File => Some(true),
         Kind::Symlink(_) => Some(false),
@@ -895,10 +900,16 @@ impl Extractor<'_> {
                 }
             };
         }
-        // `read_header` leaves a node's xattrs to the extraction that makes
-        // it: refused before its parents or the node are made.
+        // `read_header` leaves a node's name and xattrs to the extraction
+        // that makes it: refused before its parents or the node are made.
         if let Kind::Node(..) = kind
-            && let Some(why) = kernel_refuses_xattrs(&meta.xattrs, false)
+            && let Some(why) = path
+                .file_name()
+                .and_then(|n| {
+                    let dir = path.parent().unwrap_or(Path::new(""));
+                    kernel_refuses_name("the name", dir, n)
+                })
+                .or_else(|| kernel_refuses_xattrs(&meta.xattrs, false))
         {
             return Err(refuse(&why));
         }

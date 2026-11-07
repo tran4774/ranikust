@@ -153,12 +153,16 @@ never called.
   xattr, as it is set (escaped in the overlay form), whose name is empty,
   over 255 bytes (`XATTR_NAME_MAX`), holds a NUL byte or is not a namespace
   of `xattr(7)` and more, whose value is over 64 KiB (`XATTR_SIZE_MAX`),
-  and `user.*` on the symlink. A device node or FIFO's xattrs are refused by
-  the extraction that makes it, before it is made: a live root makes none.
-  What the kernel never gets is taken: the `.wh.` prefix of a whiteout
-  (the name it hides is checked), AUFS metadata, a hardlink's xattrs and
-  `trusted.*` ones. What depends on the filesystem (a `system.*` name it
-  does not know, a value too big for its blocks) still fails at write time.
+  and `user.*` on the symlink. A device node or FIFO's name and xattrs are
+  refused by the extraction that makes it, before it or its parents are
+  made: a live root makes none, a user namespace no device. What the kernel
+  never gets is taken: the `.wh.` prefix of a whiteout (the name it hides
+  is checked), AUFS metadata, a hardlink's xattrs and `trusted.*` ones.
+  An entry at an ignored path, or a hardlink to a device left out, is
+  refused all the same: whether it is skipped depends on the root or on an
+  earlier entry, which a header does not show. What depends on
+  the filesystem (a `system.*` name it does not know, a value too big for
+  its blocks) still fails at write time.
 - **Metadata.** Numeric uid and gid from the header (PAX `uid`/`gid`
   included), raw mode bits, PAX `SCHILY.xattr.*` but `trusted.*` (never
   set, in every mode, as BuildKit's containerd extraction: a filesystem may
