@@ -984,22 +984,9 @@ fn the_marker_keeper_writes_a_removed_marker_where_the_store_is_never_closed() {
 #[test]
 fn a_tree_deeper_than_path_max_is_emptied_at_the_end() {
     use rustix::fs::{CWD, Mode, OFlags, mkdirat, openat};
-    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    // Any `RLIMIT_NOFILE` will do: the deletion holds a fixed number of
+    // descriptors whatever the depth.
     const DEPTH: u64 = 2100; // "d/" each: 4200 bytes, past PATH_MAX
-    let limit = getrlimit(Resource::Nofile);
-    let want = DEPTH + 64;
-    if limit.maximum.is_some_and(|max| max < want) {
-        eprintln!("skipped: RLIMIT_NOFILE's hard limit is below {want}");
-        return;
-    }
-    setrlimit(
-        Resource::Nofile,
-        Rlimit {
-            current: Some(want.max(limit.current.unwrap_or(0))),
-            maximum: limit.maximum,
-        },
-    )
-    .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (state, _marker) = anon_state(dir.path());
     let store = Store::open_anonymous(&state).unwrap();

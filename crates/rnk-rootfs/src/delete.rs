@@ -304,12 +304,14 @@ fn prune_walk(
     Ok(())
 }
 
-/// Most directory descriptors one deletion walk holds, whatever the depth
-/// of the tree: the directory it works in and its nearest ancestors. A
-/// farther ancestor's descriptor is closed and the directory reopened
-/// through `..` when the walk climbs back to it, checked to be the one it
-/// was (as GNU `fts` does for `rm -rf`), so a tree deeper than
-/// `RLIMIT_NOFILE` is deleted like any other.
+/// Most descriptors one deletion walk holds at a time, whatever the depth
+/// of the tree: the directory it works in, its nearest ancestors, and the
+/// two a step opens briefly (the next directory, and the duplicate it is
+/// listed through). A farther ancestor's descriptor is closed and the
+/// directory reopened through `..` when the walk climbs back to it, checked
+/// to be the one it was (as GNU `fts` does for `rm -rf`), so a tree deeper
+/// than `RLIMIT_NOFILE` is deleted like any other (`tests/descriptors.rs`
+/// leaves the walk exactly this many).
 pub(crate) const OPEN_DIRS: usize = 32;
 
 /// A directory a deletion walk works in: its descriptor, its identity and
@@ -324,7 +326,7 @@ struct Dir<T> {
 }
 
 /// A deletion walk's stack of directories: the one it works in, on top,
-/// and its ancestors in the walk. Only the [`OPEN_DIRS`] nearest the top
+/// and its ancestors in the walk. Only the `OPEN_DIRS - 2` nearest the top
 /// keep a descriptor; a farther one is reopened through `..` of its child
 /// when it becomes the top again, and must then be the inode, on the
 /// device and mount, that it was: else [`Error::Changed`], with nothing
@@ -353,14 +355,15 @@ impl<T> Dirs<T> {
 
     /// Makes `dir`, opened in the top directory, the top; closes the
     /// farthest ancestor still open when the stack would hold more than
-    /// `OPEN_DIRS - 1` descriptors.
+    /// `OPEN_DIRS - 2` descriptors.
     fn push(&mut self, dir: Dir<T>) {
         if let Some(Dir { fd, st, data }) = self.top.replace(dir) {
             self.below.push((Some(fd), st, data));
             self.open += 1;
         }
-        // Room for the next directory, opened before it is pushed.
-        if 1 + self.open >= OPEN_DIRS {
+        // Room for the two the next step opens before it pushes: the
+        // directory, then the duplicate `read_names` lists it through.
+        if 1 + self.open + 2 > OPEN_DIRS {
             let farthest = self.below.len() - self.open;
             if let Some(closed) = self.below.get_mut(farthest) {
                 closed.0 = None;

@@ -99,8 +99,8 @@ fn entries_on_another_mount_are_kept() {
 
 #[test]
 fn deletes_a_tree_deeper_than_path_max() {
-    // Past `PATH_MAX`; `tests/descriptors.rs` runs deeper still under a
-    // lowered `RLIMIT_NOFILE`.
+    // Past `PATH_MAX`; `tests/descriptors.rs` runs with longer paths, under
+    // a lowered `RLIMIT_NOFILE`.
     const DEPTH: usize = 3004;
     let f = Fixture::new();
     let mut cur =

@@ -366,8 +366,8 @@ directory an extracted entry replaces, and applies OCI whiteouts.
   else `Error::Changed` with nothing done in what `..` reached: a directory
   moved or swapped out from under it meanwhile leads elsewhere. GNU `fts`
   climbs the same way for `rm -rf`. `prune` nests a deletion walk in its
-  own, so it holds at most 64 (`tests/descriptors.rs`: 2,000 levels under a
-  soft limit of 256).
+  own, so it holds at most 64 (`tests/descriptors.rs`: 2,000 levels with
+  only 32 or 64 fds left free under the soft `RLIMIT_NOFILE`).
 - Each entry gets `statx(AT_SYMLINK_NOFOLLOW)`. Another mount id or
   `STATX_ATTR_MOUNT_ROOT` keeps it untouched. A directory is opened with
   `O_DIRECTORY | O_NOFOLLOW` and `RESOLVE_NO_XDEV`, and its `ino`, device and
