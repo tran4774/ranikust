@@ -111,10 +111,10 @@ These are documented properties, not vulnerabilities:
   container's masked `/proc`), the flag gives each `RUN` a read-only rbind of
   `/proc`: it sees every process of ranikust's PID namespace and reads its
   command line, status, mount table and network tables, ranikust's
-  included, but not its
-  environment, files or memory; the `RUN`s go one at a time. Keep no secrets
-  in command lines and give the build container a PID namespace of its own;
-  one shared with a process of another mount namespace is refused
+  included, but not its environment, files or memory; the `RUN`s go one at
+  a time. Keep no secrets in command lines and give the build container a
+  PID namespace of its own; one shared with a process of another mount
+  namespace is refused where ranikust can open that process as it starts
   ([ADR-0126](docs/adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks)).
 - **Refusing to run** where no mode works. Today that includes a regular user

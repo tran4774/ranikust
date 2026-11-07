@@ -184,8 +184,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    the build then gets what worked, and an rbind of `/proc` is logged once;
    with it the `RUN`s run one at a time
    ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)),
-   and a PID namespace shared with a process of another mount namespace is
-   refused before the process enters the namespace
+   and a PID namespace shared with a process of another mount namespace that
+   ranikust can open as it starts is refused before the process enters the
+   namespace
    ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
    the store stays the persistent one
    ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).

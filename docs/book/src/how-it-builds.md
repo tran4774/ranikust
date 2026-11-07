@@ -97,12 +97,13 @@ overlay mount options.
 - **`/proc`.** A `RUN` gets a new `proc`. Where the kernel refuses it (Podman's
   and Docker's masked `/proc`), ranikust stops and names `--allow proc.rbind`,
   which binds the container's `/proc` read-only instead. Through it every `RUN`
-  sees each process of the PID namespace and reads its command line, status and
-  mount table, ranikust's included, so keep no secrets in them, and `RUN`s run
-  one at a time ([ADR-0126], [ADR-0127], [ADR-0130], [ADR-0132]). ranikust
-  refuses a PID namespace it shares with processes of the host or other
-  containers, as in kaniko mode on `/`, and warns about a `--build-arg` whose
-  name looks like a secret ([ADR-0129]).
+  sees each process of the PID namespace and reads its command line, status,
+  mount table and network tables, ranikust's included, so keep no secrets in
+  them, and `RUN`s run one at a time ([ADR-0126], [ADR-0127], [ADR-0130],
+  [ADR-0132]). ranikust refuses a PID namespace it shares with a process of the
+  host or another container that it can open as it starts, as in kaniko mode on
+  `/`, and warns about a `--build-arg` whose name looks like a secret
+  ([ADR-0129]).
 - **`--mode=auto` and root.** Root in a container that may not mount tries
   rootless overlay mode and, where it cannot run, builds in kaniko mode as
   before. It does not try where `/proc/sys` is writable or cannot be told: a

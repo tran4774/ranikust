@@ -401,9 +401,10 @@ pub(crate) struct BuildArgs {
     /// its command line, status, mount table and network tables, ranikust's
     /// included, and the `RUN`s go one at a time. Keep no secrets in other
     /// processes' command lines, ranikust's included, and give the build
-    /// container a PID namespace of its own: one shared with the host or
-    /// other containers is refused (ADR-0126, ADR-0130). Repeat for
-    /// several.
+    /// container a PID namespace of its own: ranikust refuses one shared
+    /// with a process of the host or another container only where it can
+    /// open that process as it starts (ADR-0126, ADR-0129, ADR-0130).
+    /// Repeat for several.
     #[arg(
         long = "allow",
         value_name = "ENTITLEMENT",

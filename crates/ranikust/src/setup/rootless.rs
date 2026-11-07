@@ -53,8 +53,9 @@ const PROC_RBIND: &str = "a RUN needs a new proc, which this user namespace may 
      through which every RUN sees each process of this PID namespace and reads its command \
      line, status, mount table and network tables, ranikust's included, and RUNs run one at \
      a time; keep no secrets in other processes' command lines and give the build container \
-     a PID namespace of its own, not one shared with the host or other containers, which is \
-     refused (ADR-0126, ADR-0130)";
+     a PID namespace of its own: one shared with a process of the host or another container \
+     is refused only where ranikust can open that process as it starts (ADR-0126, ADR-0129, \
+     ADR-0130)";
 
 /// Guidance where another step of the user namespace fails.
 const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), or in a \
@@ -67,7 +68,7 @@ pub(crate) fn refused_by_hook(env: &str) -> NotHere {
         refusal: Refusal {
             kind: Kind::Other,
             reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
-            guidance: UNUSABLE,
+            guidance: guidance("hook", false, rustix::process::geteuid().as_raw()),
         },
         probed: false,
     }
@@ -176,10 +177,11 @@ fn state_dir_for_probe(state_dir: &Path) -> Result<(), Refusal> {
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`
-/// for its overlay mount) for the effective uid `euid`; `rbind` says an
-/// rbind of `/proc` worked there. A user namespace without capabilities
-/// (Ubuntu's AppArmor switch) stops a user other than root at the map, the
-/// `chown` or the mount namespace.
+/// for its overlay mount, `hook` for the test hook's refusal before it)
+/// for the effective uid `euid`; `rbind` says an rbind of `/proc` worked
+/// there. A user namespace without capabilities (Ubuntu's AppArmor switch)
+/// stops a user other than root at the map, the `chown` or the mount
+/// namespace.
 fn guidance(step: &str, rbind: bool, euid: u32) -> &'static str {
     match step {
         "proc" if rbind => PROC_RBIND,
@@ -297,12 +299,13 @@ mod tests {
             "proc",
             "sysfs",
             "overlay",
+            "hook",
         ] {
             assert_eq!(guidance(step, false, 0), "", "{step}");
         }
         assert_eq!(guidance("proc", true, 1000), PROC_RBIND);
         assert_eq!(guidance("proc", true, 0), PROC_RBIND);
-        for step in ["proc", "sysfs", "overlay"] {
+        for step in ["proc", "sysfs", "overlay", "hook"] {
             assert_eq!(guidance(step, false, 1000), UNUSABLE, "{step}");
         }
         assert!(super::super::NO_USER_NAMESPACE.contains("apparmor_restrict_unprivileged_userns"));
@@ -315,6 +318,11 @@ mod tests {
     fn the_probe_writes_only_in_a_state_directory() {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().unwrap();
+        // A container's own root refuses first, for another reason.
+        if crate::statedir::on_overlayfs(tmp.path()) {
+            eprintln!("skipped: the temporary directory is on overlayfs");
+            return;
+        }
         let private = |p: &Path| {
             std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).unwrap();
         };
