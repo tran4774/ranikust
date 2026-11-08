@@ -320,8 +320,7 @@ impl fmt::Display for Unmapped {
             } => {
                 write!(f, "{step} for uid {uid}, gid {gid}")?;
                 if !groups.is_empty() {
-                    let list: Vec<String> =
-                        groups.iter().take(NAMED).map(u32::to_string).collect();
+                    let list: Vec<String> = groups.iter().take(NAMED).map(u32::to_string).collect();
                     write!(f, ", groups {}", list.join(" "))?;
                     if groups.len() > NAMED {
                         write!(f, " and {} more", groups.len() - NAMED)?;
