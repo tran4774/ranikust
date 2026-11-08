@@ -363,6 +363,110 @@ fn red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopen
     assert!(planted >= 6 * 5 * 2, "planted {planted}");
 }
 
+/// Red team: a link out of the state directory, or to a FIFO out, planted below a store
+/// directory never makes the store block, change anything outside or hand back what is there (T13).
+#[test]
+fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
+    use std::os::unix::fs::symlink;
+    let top = tempfile::tempdir().unwrap();
+    let mut cases = 0;
+    for at in ["layers/v3", "layers/v3/sha256", "blobs/sha256", "caches/"] {
+        for aim in [
+            "an absolute link out",
+            "a link climbing out",
+            "a link to a FIFO out",
+        ] {
+            let dir = tempfile::tempdir_in(top.path()).unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let state = base.join(".ranikust");
+            let outside = base.join("outside");
+            fs::create_dir(&outside).unwrap();
+            let store = Store::open(&paths(&base)).unwrap();
+            store
+                .fill(&EntryKey::Layer(digest(9)), |_| -> io::Result<u64> {
+                    Ok(0)
+                })
+                .unwrap();
+            store
+                .fill(&EntryKey::Blob(digest(9)), |e| write_blob(e, b"x"))
+                .unwrap();
+            let cache = store.cache_dir("the-id").unwrap();
+            store.close().unwrap();
+            let at = if at == "caches/" {
+                cache.strip_prefix(&state).unwrap().to_owned()
+            } else {
+                PathBuf::from(at)
+            };
+            let key = match at.components().next().unwrap().as_os_str().to_str() {
+                Some("layers") => Some(EntryKey::Layer(digest(1))),
+                Some("blobs") => Some(EntryKey::Blob(digest(2))),
+                _ => None,
+            };
+            // What the store would find there if it followed the link out.
+            let found = match &key {
+                Some(EntryKey::Layer(d)) if at.ends_with("v3") => {
+                    outside.join("sha256").join(d.encoded())
+                }
+                Some(EntryKey::Layer(d) | EntryKey::Blob(d)) => outside.join(d.encoded()),
+                _ => outside.join("in-the-cache"),
+            };
+            fs::create_dir_all(found.parent().unwrap()).unwrap();
+            fs::write(&found, "host").unwrap();
+            let fifo = outside.join("fifo");
+            mkfifo(&fifo);
+            fs::remove_dir_all(state.join(&at)).unwrap();
+            let up = "../".repeat(at.components().count());
+            match aim {
+                "an absolute link out" => symlink(&outside, state.join(&at)).unwrap(),
+                "a link climbing out" => symlink(format!("{up}outside"), state.join(&at)).unwrap(),
+                _ => symlink(&fifo, state.join(&at)).unwrap(),
+            }
+            cases += 1;
+            let case = format!("{} as {aim}", at.display());
+            let before = tree(&outside);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let opened = base.clone();
+            thread::spawn(move || {
+                let mut handed = Vec::new();
+                if let Ok(store) = Store::open(&paths(&opened)) {
+                    match &key {
+                        Some(key) => {
+                            handed.extend(store.get(key).ok().flatten());
+                            let filled = match key {
+                                EntryKey::Layer(_) => store.fill(key, |e| -> io::Result<u64> {
+                                    fs::write(e.path().join("f"), "store")?;
+                                    Ok(0)
+                                }),
+                                _ => store.fill(key, |e| write_blob(e, b"store")),
+                            };
+                            handed.extend(filled.ok());
+                            handed.extend(store.get(key).ok().flatten());
+                        }
+                        None => handed.extend(store.cache_dir("the-id").ok()),
+                    }
+                    drop(store.close());
+                }
+                tx.send(handed).unwrap();
+            });
+            let handed = rx
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{case}: blocked"));
+            assert_eq!(tree(&outside), before, "{case}");
+            for p in handed {
+                if let Ok(real) = fs::canonicalize(&p) {
+                    assert!(
+                        real.starts_with(&state),
+                        "{case}: {} is {}",
+                        p.display(),
+                        real.display()
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 4 * 3);
+}
+
 /// A probe directory of a build cut short before its store opened is
 /// ranikust's own: the directory is still a new store, and the store
 /// removes it once open.

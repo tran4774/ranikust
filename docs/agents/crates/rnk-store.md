@@ -240,6 +240,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   name, in a marked or an unmarked directory, refused by both without being
   opened or blocking, the tree unchanged
   (`red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened`);
+  a link out of the state directory, absolute or climbing, or to a FIFO
+  outside, at `layers/v3`, `layers/v3/sha256`, `blobs/sha256` or a cache
+  directory: the store's `get`, `fill` and `cache_dir` never block, change
+  anything outside or hand back what is there
+  (`red_team_a_link_out_below_a_store_directory_changes_nothing_outside`);
   another anonymous name, a file or a symlink
   with the probe's prefix is refused and left as it was
   (`only_the_probes_own_directories_stand_in_for_the_marker`);
