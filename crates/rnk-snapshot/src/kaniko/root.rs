@@ -602,7 +602,7 @@ impl Snapshotter for Kaniko {
                             &shared.root,
                             "",
                             &CopyOpts::default(),
-                            &|p, _| !shared.ignore.covers(p),
+                            &|p, _| !shared.ignore.covers_walked(p),
                         )?;
                         if !shared.is_slash()
                             && let Some(meta) = root_meta
@@ -906,7 +906,8 @@ fn copy_out(shared: &Shared, what: &Keep, to: &RootPath) -> Result<()> {
     let span = tracing::info_span!("rnk_snapshot.keep", paths = tracing::field::Empty);
     let _entered = span.enter();
     let opts = CopyOpts::default();
-    let filter = |p: &Path, _: bool| !shared.ignore.covers(p);
+    // The copies start at the root or at a path `physical` gave: no `..`.
+    let filter = |p: &Path, _: bool| !shared.ignore.covers_walked(p);
     let paths = match what {
         Keep::All => None,
         Keep::Paths(paths) => {

@@ -447,6 +447,10 @@ directory an extracted entry replaces, and applies OCI whiteouts.
   matches); `..` above the root and the root itself are refused. A kept
   entry keeps its ancestors, which are not empty. What goes on the list is
   the caller's ([kaniko-mode](kaniko-mode.md#ignore-list), `ADR-0038`).
+  The walk asks about each entry with `IgnoreList::covers_walked`, in time
+  linear in the tree's entries whatever their depth
+  ([kaniko-mode](kaniko-mode.md#ignore-list); a 100,000-level chain in T0,
+  with and without a list).
 - The walk starts from an opened directory fd: the root, a path opened
   with `RESOLVE_NO_XDEV`, or the directory a caller just checked by
   `statx`, so the directory checked is the one emptied.

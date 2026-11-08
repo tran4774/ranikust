@@ -918,6 +918,58 @@ fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
     assert!(w4 < 32.0 * w1.max(0.01), "walk: {w1:.3} s -> {w4:.3} s");
 }
 
+/// Levels of a chain a `RUN` makes in seconds, as many as the copy can
+/// hold descriptors for (two a level) under the hard `RLIMIT_NOFILE`, which
+/// kaniko mode raises the soft limit to: 100,000 at most.
+fn deepest_copyable() -> usize {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let was = getrlimit(Resource::Nofile);
+    // Raising the soft limit takes nothing from the other tests; where it
+    // fails, the chain is only shallower.
+    let _ = setrlimit(
+        Resource::Nofile,
+        Rlimit {
+            current: was.maximum,
+            maximum: was.maximum,
+        },
+    );
+    let soft = getrlimit(Resource::Nofile).current.unwrap_or(u64::MAX);
+    // Room for what the other tests in this binary hold meanwhile.
+    usize::try_from(soft.saturating_sub(4096) / 2)
+        .unwrap_or(usize::MAX)
+        .min(100_000)
+}
+
+/// A parent holding a deep chain is copied into a child, and handed over
+/// to another, each asking the ignore list about every entry, in time
+/// linear in the chain's depth.
+#[test]
+fn a_deep_chain_is_copied_and_handed_over_in_time_linear_in_its_depth() {
+    let depth = deepest_copyable();
+    let f = Fixture::new();
+    let made = std::time::Instant::now();
+    let parent = unwalked(&f, |p| chain_named(p, depth, "d"));
+    let made = made.elapsed();
+    let t0 = std::time::Instant::now();
+    let child = f.stages.prepare(Base::Stage(&parent)).unwrap();
+    let copied = t0.elapsed();
+    child.release().unwrap();
+    let t0 = std::time::Instant::now();
+    let last = f.stages.prepare_last(&parent).unwrap();
+    let handed = t0.elapsed();
+    last.release().unwrap();
+    parent.release().unwrap();
+    eprintln!("depth {depth}: made {made:.2?}, copied {copied:.2?}, handed over {handed:.2?}");
+    // A fixed amount of work per level, as making it: never quadratic in
+    // depth, which would take minutes here.
+    for (what, took) in [("copying", copied), ("handing over", handed)] {
+        assert!(
+            took < 20 * made + std::time::Duration::from_secs(10),
+            "{what} took {took:?}, making {made:?}"
+        );
+    }
+}
+
 // The hand-over to the only stage that reads a parent (ADR-0061, ADR-0062).
 
 fn set_times(p: &Path, secs: i64) {

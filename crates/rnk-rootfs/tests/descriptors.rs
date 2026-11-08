@@ -1,5 +1,6 @@
 //! Deletion and pruning hold a bounded number of directory descriptors,
-//! whatever the depth of the tree.
+//! whatever the depth of the tree, and take time linear in its depth, as
+//! do a live root's whiteouts.
 //!
 //! A test binary of its own: each test lowers this process's soft
 //! `RLIMIT_NOFILE` around the call so that exactly the descriptors the
@@ -327,6 +328,152 @@ fn a_chain_of_100k_levels_is_pruned_within_the_descriptors_promised() {
             "{what} took {took:?}, making {made:?}"
         );
     }
+}
+
+#[test]
+fn delete_contents_empties_a_chain_of_100k_levels_in_time_linear_in_its_depth() {
+    let _serial = serial();
+    let r = Root::new();
+    let top = r.top();
+    let made = std::time::Instant::now();
+    drop(chain_of(&top, "deep", DEEPEST, "d", &["f"]));
+    let made = made.elapsed();
+    let took = std::time::Instant::now();
+    {
+        let _free = Free::only(DELETE_FDS);
+        delete_contents(&r.root, &IgnoreList::new()).unwrap();
+    }
+    let took = took.elapsed();
+    assert!(names(&top).is_empty());
+    measured(&format!(
+        "{DEEPEST} levels: made in {made:.2?}, deleted in {took:.2?}"
+    ));
+    assert!(
+        took < 20 * made + std::time::Duration::from_secs(10),
+        "deleting took {took:?}, making {made:?}"
+    );
+}
+
+/// A list of literal, below-only and glob entries: two inside the chain
+/// `deep` (its files `deep/d/f` and `deep/d/d/f`), the deeper ones beside
+/// it.
+fn mixed_list() -> IgnoreList {
+    let mut keep = IgnoreList::new();
+    keep.insert("deep/d/f").unwrap();
+    keep.insert("elsewhere/a/b/c/d/e/f/g").unwrap();
+    keep.insert_below("elsewhere/x/y/z").unwrap();
+    keep.insert_glob("deep/d/d/[ef]").unwrap();
+    keep.insert_glob("elsewhere/*/*/*/*/*/*/*/[xy]*").unwrap();
+    keep
+}
+
+/// [`delete_contents`] asks the list about every entry of the chain: in
+/// time linear in its depth still, keeping exactly what the list names.
+#[test]
+fn delete_contents_with_an_ignore_list_empties_a_chain_of_100k_levels_in_time_linear_in_its_depth()
+{
+    let _serial = serial();
+    let r = Root::new();
+    let top = r.top();
+    let made = std::time::Instant::now();
+    drop(chain_of(&top, "deep", DEEPEST, "d", &["f"]));
+    let made = made.elapsed();
+    let keep = mixed_list();
+    let took = std::time::Instant::now();
+    {
+        let _free = Free::only(DELETE_FDS);
+        delete_contents(&r.root, &keep).unwrap();
+    }
+    let took = took.elapsed();
+    assert_eq!(names(&top), ["deep"]);
+    let deep = dir_fd(&top, "deep");
+    assert_eq!(names(&deep), ["d"]);
+    let d1 = dir_fd(&deep, "d");
+    assert_eq!(names(&d1), ["d", "f"]);
+    assert_eq!(names(&dir_fd(&d1, "d")), ["f"]);
+    measured(&format!(
+        "{DEEPEST} levels with a list: made in {made:.2?}, deleted in {took:.2?}"
+    ));
+    assert!(
+        took < 20 * made + std::time::Duration::from_secs(10),
+        "deleting took {took:?}, making {made:?}"
+    );
+}
+
+/// A layer of empty regular files named `names`: whiteouts, here.
+fn layer_of(names: &[&str]) -> Vec<u8> {
+    let mut b = tar::Builder::new(Vec::new());
+    for n in names {
+        let mut h = tar::Header::new_gnu();
+        h.set_path(n).unwrap();
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_mode(0o644);
+        h.set_size(0);
+        h.set_cksum();
+        b.append(&h, std::io::empty()).unwrap();
+    }
+    b.into_inner().unwrap()
+}
+
+/// A whiteout in a live root removes a chain of [`DEEPEST`] levels, asking
+/// the list about each entry, in time linear in its depth.
+#[test]
+fn a_whiteout_in_a_live_root_removes_a_chain_of_100k_levels_in_time_linear_in_its_depth() {
+    let _serial = serial();
+    let r = Root::new();
+    let top = r.top();
+    let made = std::time::Instant::now();
+    drop(chain_of(&top, "deep", DEEPEST, "d", &["f"]));
+    let made = made.elapsed();
+    // Nothing on it lies below the chain, which a whiteout would then skip.
+    let mut keep = IgnoreList::new();
+    keep.insert("proc").unwrap();
+    keep.insert("elsewhere/a/b/c/d/e/f/g").unwrap();
+    keep.insert_below("tmp/apt-key-gpghome").unwrap();
+    keep.insert_glob("var/cache/*/[xy]*").unwrap();
+    let layer = layer_of(&[".wh.deep"]);
+    let took = std::time::Instant::now();
+    rnk_rootfs::extract_live(&r.root, layer.as_slice(), &keep).unwrap();
+    let took = took.elapsed();
+    assert!(names(&top).is_empty());
+    measured(&format!(
+        "{DEEPEST} levels whited out: made in {made:.2?}, removed in {took:.2?}"
+    ));
+    assert!(
+        took < 20 * made + std::time::Duration::from_secs(10),
+        "removing took {took:?}, making {made:?}"
+    );
+}
+
+/// An opaque marker in a live root empties a chain of [`DEEPEST`] levels,
+/// asking the list about each entry and whether it holds a kept one, in
+/// time linear in its depth, and keeps what the list names.
+#[test]
+fn an_opaque_marker_in_a_live_root_empties_a_chain_of_100k_levels_in_time_linear_in_its_depth() {
+    let _serial = serial();
+    let r = Root::new();
+    let top = r.top();
+    let made = std::time::Instant::now();
+    drop(chain_of(&top, "deep", DEEPEST, "d", &["f"]));
+    let made = made.elapsed();
+    let keep = mixed_list();
+    let layer = layer_of(&["deep/.wh..wh..opq"]);
+    let took = std::time::Instant::now();
+    rnk_rootfs::extract_live(&r.root, layer.as_slice(), &keep).unwrap();
+    let took = took.elapsed();
+    assert_eq!(names(&top), ["deep"]);
+    let deep = dir_fd(&top, "deep");
+    assert_eq!(names(&deep), ["d"]);
+    let d1 = dir_fd(&deep, "d");
+    assert_eq!(names(&d1), ["d", "f"]);
+    assert_eq!(names(&dir_fd(&d1, "d")), ["f"]);
+    measured(&format!(
+        "{DEEPEST} levels below an opaque marker: made in {made:.2?}, emptied in {took:.2?}"
+    ));
+    assert!(
+        took < 20 * made + std::time::Duration::from_secs(10),
+        "emptying took {took:?}, making {made:?}"
+    );
 }
 
 /// Levels of the comb's spine, and of each of its teeth: three times

@@ -707,8 +707,6 @@ impl<'a> Ctx<'a> {
                 (Some(t), Some(d)) => t.child(d, name),
                 _ => None,
             };
-            // `covers`, not `contains`: `--ignore-path` globs and kaniko's
-            // below-only entries match names that are not literal entries.
             if let Some(below) = self.below {
                 let p = as_path(&child_path);
                 if !below.iter().any(|b| p.starts_with(b) || b.starts_with(p)) {
@@ -717,7 +715,10 @@ impl<'a> Ctx<'a> {
                     continue;
                 }
             }
-            if !self.ignore.is_empty() && self.ignore.covers(as_path(&child_path)) {
+            // Not `contains`: `--ignore-path` globs and kaniko's below-only
+            // entries match names that are not literal entries. The path is
+            // the names this walk read, joined: no `..`.
+            if self.ignore.covers_walked(as_path(&child_path)) {
                 self.mark(prev_child, KEPT);
                 self.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;

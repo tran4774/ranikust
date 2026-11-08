@@ -175,6 +175,100 @@ proptest::proptest! {
     }
 }
 
+/// `has_below` as it was before it read only the leading names: the whole
+/// path cleaned, every entry compared. The reference for the property
+/// below.
+fn has_below_by_every_entry(l: &IgnoreList, p: &Path) -> bool {
+    let Some(c) = path::clean(p) else {
+        return false;
+    };
+    let strictly_below = |e: &PathBuf| e != &c && e.starts_with(&c);
+    if l.paths.iter().chain(&l.below).any(strictly_below) {
+        return true;
+    }
+    let names: Vec<&OsStr> = c.iter().collect();
+    l.globs.iter().any(|g| g.has_below(&names))
+}
+
+/// A list of `lit`, `below` and `globs`, skipping what each refuses.
+fn list_of(lit: &[String], below: &[String], globs: &[String]) -> IgnoreList {
+    let mut l = IgnoreList::new();
+    for p in lit {
+        // A refused entry (the root, or above it) is not on the list.
+        let _ = l.insert(p);
+    }
+    for p in below {
+        // As above.
+        let _ = l.insert_below(p);
+    }
+    for p in globs {
+        // As above, and a malformed pattern.
+        let _ = l.insert_glob(p);
+    }
+    l
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+    /// `covers` and `has_below` answer as the references do on any path,
+    /// `..` included, and the walk's forms answer the same on every path
+    /// without `..`: random lists (literal, below-only and glob entries,
+    /// shallower and deeper than the paths, empty too) over a small
+    /// alphabet, paths with and without a leading `/`, `.`, doubled and
+    /// trailing slashes.
+    #[test]
+    fn the_walks_forms_answer_as_cleaning_the_whole_path_does(
+        lit in proptest::collection::vec("(/?(a|b|ab|\\.|\\.\\.)){1,5}/?", 0..4),
+        below in proptest::collection::vec("(/?(a|b|ab)){1,5}", 0..3),
+        globs in proptest::collection::vec("(/?(a|b|\\*|a\\*|\\?|\\[ab\\])){1,5}", 0..3),
+        any in proptest::collection::vec("/?((a|b|ab|\\.|\\.\\.)/{1,2}){0,7}(a|b|ab|\\.|\\.\\.)?", 1..12),
+        walked in proptest::collection::vec("/?((a|b|ab|\\.)/{1,2}){0,7}(a|b|ab|\\.)?", 1..12),
+    ) {
+        let l = list_of(&lit, &below, &globs);
+        for p in &any {
+            let p = Path::new(p);
+            proptest::prop_assert_eq!(l.covers(p), covers_by_every_ancestor(&l, p), "covers {}", p.display());
+            proptest::prop_assert_eq!(l.has_below(p), has_below_by_every_entry(&l, p), "has_below {}", p.display());
+        }
+        for p in &walked {
+            let p = Path::new(p);
+            let covers = covers_by_every_ancestor(&l, p);
+            proptest::prop_assert_eq!(l.covers_walked(p), covers, "covers_walked {}", p.display());
+            proptest::prop_assert_eq!(l.covers(p), covers, "covers {}", p.display());
+            let below = has_below_by_every_entry(&l, p);
+            proptest::prop_assert_eq!(l.has_below_walked(p), below, "has_below_walked {}", p.display());
+        }
+    }
+}
+
+/// The walk's forms read past the names an entry can match only to tell
+/// whether more follow: a deep path gets its answer from its first names.
+#[test]
+fn the_walks_forms_answer_for_a_deep_path_from_its_first_names() {
+    let deep: String = (0..3000).map(|i| format!("/d{i}")).collect();
+    let l = list(&["d0/d1"], &["d0/d1/d2/d3"], &["d0/d[0-9]/d2/x*"]);
+    assert!(l.covers_walked(format!("{deep}/x")));
+    assert!(l.covers_walked("d0/d1"));
+    assert!(!l.covers_walked("d0"));
+    assert!(l.has_below_walked("/d0"));
+    assert!(!l.has_below_walked(&deep));
+    let below = list(&[], &["d0/d1/d2/d3"], &["d0/d[0-9]/d2/x*"]);
+    assert!(!below.covers_walked("d0/d1/d2/d3"));
+    assert!(below.covers_walked("d0/d1/d2/d3/x"));
+    assert!(below.covers_walked(format!("{deep}/x")));
+    assert!(below.covers_walked("./d0//d1/d2/xy/"));
+    assert!(!below.covers_walked("d0/d1/d2/y"));
+    assert!(below.has_below_walked("d0/d1/d2"));
+    assert!(!below.has_below_walked("d0/d1/d2/d3"));
+    // A `..` among the first names is cleaned as `covers` cleans it.
+    assert!(below.covers_walked("d0/../d0/d1/d2/xy"));
+    assert!(!below.covers_walked("d0/d1/../d2/xy"));
+    assert!(below.has_below_walked("x/../d0"));
+    let none = IgnoreList::new();
+    assert!(!none.covers_walked(&deep) && !none.covers(&deep));
+    assert!(!none.has_below_walked("") && !none.has_below(""));
+}
+
 #[test]
 fn a_deep_path_is_covered_by_a_shallow_entry_and_a_deep_one() {
     let deep: String = (0..3000).map(|i| format!("/d{i}")).collect();
