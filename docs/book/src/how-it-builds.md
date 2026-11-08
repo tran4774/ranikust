@@ -1,7 +1,6 @@
 # How ranikust builds
 
-> This page describes what is built; where a part is not, it says so. The
-> AppArmor advice for a regular user (Phase 3) is not built
+> This page describes what is built; where a part is not, it says so
 > ([status](status.md)).
 
 A Dockerfile build runs each instruction of each stage in a root filesystem
@@ -327,11 +326,13 @@ may mount but overlayfs is unusable (a state directory on NFS, say).
 
 As a regular user where user namespaces are restricted (the default on Ubuntu
 24.04 and later), or in a pod that is neither root nor allowed user
-namespaces, ranikust cannot build. It stops before doing anything, names the
-step of the probe that failed and says what would work: running as root, or
-inside a container. The AppArmor profile for the binary, which lifts the
-restriction on Ubuntu 24.04, is advice planned for Phase 3: the message does
-not give it yet. A regular user is also refused where only an rbind of `/proc`
+namespaces, ranikust cannot build. It stops before it builds, names the step
+of the probe that failed and says what would work, in order: running as root
+with `sudo`; where Ubuntu's AppArmor switch restricts user namespaces,
+[ranikust's AppArmor profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
+for a binary in a path only root can change (else after installing it as
+`/usr/local/bin/ranikust`); or running inside a container. A regular user is
+also refused where only an rbind of `/proc`
 would work and `--allow proc.rbind` is absent, and where the state directory is
 on overlayfs.
 

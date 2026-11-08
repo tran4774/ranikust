@@ -127,7 +127,7 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 ```rust
 pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0; walk: whether the build may be kaniko mode on a container's / (the caller decides), without which no mount point is looked up
 pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
-pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
+pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount, path: Option<PathBuf> }, Unsealed { why: String, binary: BinaryMount, path: Option<PathBuf> } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed; binary_path(): the path /proc/self/exe named before the copy (the one an AppArmor profile attaches to), from the marker likewise, a name only
 pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, NotWeighed, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx_physical at its mount point through RootPath, its mount's root), Unplaced: not placed (a writable directory whose source was removed, a writable mount covered or not reached at its mount point, a table changed during the walk, among them); NotWeighed: the walk not asked for; Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it on a table that read the same twice; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn enter_build_user_namespace(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
@@ -356,7 +356,8 @@ What a change here must keep, with where it lives:
   (binfmt_misc, a `#!` line) is then refused before the exec, and the next
   way tried. The copy gets back the core-file limit ranikust started with.
   When no way works the build goes on, warned. The marker carries the
-  installed binary's mount only to a copy that checks; otherwise the file run
+  installed binary's mount and its path (in hexadecimal: a path may hold
+  any byte but NUL) only to a copy that checks; otherwise the file run
   is measured. Whether a writable mount reaches the binary is told from
   `/proc/self/mountinfo`: a directory root by its path, compared by
   component; a file root by its inode. Mount points and the binary's name
@@ -530,8 +531,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   no name, open read-only, a `#!` copy refused before the exec in a child
   run of the test binary, a way after another copying the whole binary,
   the binary's mount against `/` (a zero id: `NoMountId`), measured on
-  files and carried in the marker, a marker that does not check not
-  believed, a writable mount reaching the binary by sample mountinfo,
+  files and carried in the marker, the binary's path carried there too
+  (any byte, a malformed spelling refused), a marker that does not check
+  not believed about either, a writable mount reaching the binary by sample mountinfo,
   a binary in a root that is not an overlay weighed (by sample values and
   on `/`), a fuse-overlayfs root counted as an overlay, a FUSE root the
   table does not type unplaced, the root mount not counted, FUSE told

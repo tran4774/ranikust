@@ -37,10 +37,12 @@ user namespace, which the process enters after the probe has routed
 [rnk-sandbox](../agents/crates/rnk-sandbox.md#owns),
 [ranikust](../agents/crates/ranikust.md#owns)). Root's builds that may mount
 keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko mode is
-set up by `set_up_kaniko`. **Planned, Phase 3** (tracking issue
-[#41](https://github.com/tran4774/ranikust/issues/41)): `--userns`, the
-refusal of an image with an owner the namespace does not map, and the
-AppArmor advice, all under [Refusal and guidance](#refusal-and-guidance).
+set up by `set_up_kaniko`. The AppArmor advice for a user with no usable
+user namespace is built ([#81](https://github.com/tran4774/ranikust/issues/81),
+[Refusal and guidance](#refusal-and-guidance)). **Planned, Phase 3**
+(tracking issue [#41](https://github.com/tran4774/ranikust/issues/41)):
+`--userns` and the refusal of an image with an owner the namespace does not
+map, under [Refusal and guidance](#refusal-and-guidance).
 
 ## Where environments land
 
@@ -56,7 +58,8 @@ table per CI system in §6) and
 | Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless, with a volume at the state directory and `--allow proc.rbind`, the container's `/proc` being masked ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); without the flag `--mode=overlay` is refused, naming it, and `--mode=auto` takes kaniko mode on `/` with the ADR-0054 checks (refused on a host); without a volume the state directory is on overlayfs, so kaniko mode on `/` with a hint to mount one ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
 | Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (full uid range only with `newuidmap` and `/etc/subuid`) |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
-| Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
+| Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse, with `sudo`, the AppArmor profile after installing the binary under `/usr/local/bin`, or a container |
+| Unprivileged user on Ubuntu ≥ 24.04, binary at `/usr/local/bin/ranikust` with `contrib/apparmor/ranikust` loaded | overlay, rootless (as on 22.04) |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
 
 Most locked-down CI pods land in kaniko mode. Overlay is available only
@@ -347,8 +350,9 @@ Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
   mount's, with the advice to use kaniko mode (`NEEDS_KANIKO_MODE`), and
   rootless overlay mode's.
 - A process that is not root builds in rootless overlay mode or is refused
-  with the step it stopped at and the way out: the AppArmor switch, or root,
-  where `unshare` or the map failed (`NO_USER_NAMESPACE`); `--allow
+  with the step it stopped at and the way out: where no user namespace is
+  usable (`unshare`, the map, `chown` or the mount namespace failed), the
+  advice [below](#no-usable-user-namespace) (`setup/no_userns.rs`); `--allow
   proc.rbind`, what it exposes and the other ways, where only an rbind of
   `/proc` would do (`PROC_RBIND`); a volume at the state directory where it
   is on overlayfs; root or a container otherwise.
@@ -374,26 +378,49 @@ to bind-mount the chroot directory onto itself first. Where the kernel does
 not report whether `/` is a mount root (`STATX_ATTR_MOUNT_ROOT` missing from
 the mask), it neither refuses on that ground nor falls back to `MS_MOVE`.
 
-Planned, Phase 3: where no user namespace is usable, offer in place of
-`NO_USER_NAMESPACE`'s one line, in order:
-
-1. Run with `sudo`.
-2. Install the AppArmor profile, when
-   `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is `1`: a
-   three-line profile granting `userns,` with `flags=(unconfined)`, bound to
-   the binary's absolute path. The binary must live in a root-owned path such
-   as `/usr/local/bin/ranikust` (or come from a package that ships the
-   profile, like podman); a profile for a user-writable path lets anyone swap
-   the binary.
-3. Run ranikust inside a container.
-
-Also planned: the refusal of an image with an owner the user namespace does not
+Planned, Phase 3: the refusal of an image with an owner the user namespace does not
 map (probe step 2) names the owners found and the ways out: with one id, install
 `uidmap` and add ranges to `/etc/subuid` and `/etc/subgid`, run as root, or use
 a container; with ranges, widen them to the range needed. In a user namespace
 ranikust was started in (rootless Podman), the map is read from
 `/proc/self/uid_map` and `gid_map` and the fix is to widen the container's range
 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+
+### No usable user namespace
+
+Where a user other than root gets no usable user namespace, the refusal's
+guidance line gives, in order
+([#81](https://github.com/tran4774/ranikust/issues/81)):
+
+1. Run ranikust as root, with `sudo`.
+2. Only where `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads
+   `1`: have root load ranikust's AppArmor profile,
+   [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three lines
+   granting `userns,` with `flags=(unconfined)`, bound to
+   `/usr/local/bin/ranikust` (as podman's profile is to podman), into
+   `/etc/apparmor.d/ranikust` with `apparmor_parser -r`. A profile gives a
+   user namespace to whatever is at its path, so it is offered for the
+   binary's own path only where root alone may change it: as shipped for
+   `/usr/local/bin/ranikust`, with the path changed for another such path,
+   and otherwise after installing the binary under `/usr/local/bin` first,
+   naming the path that failed.
+3. Run ranikust in a container.
+
+The path is the one `/proc/self/exe` named before the sealed copy ran
+(ADR-0101), the one AppArmor attaches a profile to; the sealed copy's
+marker carries it (`rnk_sandbox::Sealing::binary_path`). Root alone may
+change it when `/`, each directory below it and the file are owned by root
+and written by neither group nor others (an ACL that grants writing shows in
+the group bits), none is a symlink or on FUSE (whose server, any user's,
+reports the owners), and the file is a regular one: each component is opened
+`O_PATH` from the one above without following a symlink. A sticky directory
+such as `/tmp` fails, since any user may take the name once it is gone; so
+does any error, a removed binary (`(deleted)`) included. Any value of the
+switch but `1`, or none (Ubuntu 22.04, other distributions), offers no
+profile. With the profile loaded the binary keeps it through the sealed
+copy's `execveat`, which no other profile attaches to, and so does a `RUN`
+(T2 smoke). The test hook `RANIKUST_DEBUG_FAULT=no-userns` gives the same
+advice.
 
 ## Failure handling
 

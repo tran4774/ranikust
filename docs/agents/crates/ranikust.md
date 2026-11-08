@@ -47,9 +47,18 @@ writer) before `unshare`, the probes and the state directory's checks.
   mount in it, in a `.ranikust-anon-userns-probe-*` directory of the state
   directory. Its line is logged without "(reported only)", and its verdict
   counts an rbind of `/proc` only with `--allow proc.rbind`
-  (`setup::allowed`). A stop is `NotHere`, with guidance: the AppArmor
-  switch for a user stopped at `unshare`, the map, `chown` or the mount
-  namespace; `--allow proc.rbind` where only the new `proc` fails and the
+  (`setup::allowed`). A stop is `NotHere`, with guidance: for a user
+  stopped at `unshare`, the map, `chown` or the mount namespace (and the
+  test hook's `no-userns`), `setup::no_userns`'s advice, in order: `sudo`;
+  where `kernel.apparmor_restrict_unprivileged_userns` reads 1, ranikust's
+  AppArmor profile (`contrib/apparmor/ranikust`), as shipped for
+  `/usr/local/bin/ranikust`, bound to the binary's own path where root
+  alone may change it (`/` down to the file walked `O_PATH` without
+  following a symlink, each root's, written by neither group nor others,
+  none on FUSE), else after installing the binary there first; a
+  container. The path is the one the binary started from
+  (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
+  `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
   rbind works. With the rbind, `main.rs` then runs the peer scan, the check
   of the PID namespace from files with no ptrace check (ADR-0134) and the
   build-argument warnings, still outside the namespace, where it can open
@@ -142,7 +151,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `volume_hint`; `setup/rootless.rs`: `plan`, `NotHere`, `set_up`, `refused_by_hook` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `volume_hint`; `setup/rootless.rs`: `plan`, `NotHere`, `set_up`, `refused_by_hook`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed) |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
@@ -226,7 +235,8 @@ Each step before the next; design in
    root, without `--mode=overlay`, and `container::detect` finds a
    container: kaniko mode on `/` alone reads it); the copy's run logs the
    way at debug after step 3, or a warning when no way worked (the build
-   goes on).
+   goes on), and knows the path the binary started from, for the advice
+   of a user with no user namespace.
    `RANIKUST_DEBUG_FAULT=seal-tmpfile` skips the memfd, `seal-none` both
    ways.
 3. `--metrics-file` refused in the build context or through a symlink
@@ -273,8 +283,9 @@ Each step before the next; design in
    `rnk_sandbox::probe_with_fallbacks` → `rnk_snapshot::probe` in
    `builds/<id>/overlay-probe` → `Sandbox::start` → the mode line.
    `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
-   process unchanged: the T0 tests of the binary set it, so none makes a
-   user namespace. Root's `--mode=auto` forks before `set_up` (ADR-0136);
+   process unchanged and the advice where no user namespace is usable: the
+   T0 tests of the binary set it, so none makes a user namespace. Root's
+   `--mode=auto` forks before `set_up` (ADR-0136);
    `RANIKUST_DEBUG_FAULT=rootless-broken` fails `set_up` at its last step,
    once the sandbox started, so that the T1 smoke case `rootless` sees the
    fallback undo the whole set-up.
@@ -448,10 +459,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   whatever the machine allows; `prune --all` emptying a state directory
   there, or refused before it with the directory unchanged, no process or
   mount left; `setup/rootless.rs`:
-  `each_stop_of_the_probe_gets_its_guidance`, the AppArmor switch for a
-  user stopped at `unshare`, the map, `chown` or the mount namespace,
-  `--allow proc.rbind` for a refused new `proc` whose rbind works, else
-  running as root), `prune` (`--all` and `--state-dir` parsed, `--kaniko-dir`
+  `each_stop_of_the_probe_gets_its_guidance`, `setup::no_userns`'s advice
+  for a user stopped at `unshare`, the map, `chown` or the mount namespace
+  or by the test hook, `--allow proc.rbind` for a refused new `proc` whose
+  rbind works, else running as root; `setup/no_userns/tests.rs`: the
+  advice's wording and order in each case (the switch at 1 or not; the
+  shipped path, another root-only one, a user's, none), the root-only rule
+  on synthetic nodes (a user's, group- or others-writable, `/tmp`'s sticky
+  bit, a symlink, a non-regular file, FUSE), the walk on a temporary
+  directory (no symlink followed; a relative path, `..`, a missing or
+  removed file refused) and on system binaries, against the standard
+  library's view), `prune` (`--all` and `--state-dir` parsed, `--kaniko-dir`
   refused; without `--all` a usage error naming Phase 5; root refused
   before anything, a missing directory left missing, an empty one left as
   it is, one without the marker or holding a name the store does not make
@@ -585,7 +603,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `without_root_the_set_up_never_makes_the_default_state_dir` run only
   as a normal user (skipped as root): nothing is created, a `--state-dir`
   is left empty with `ranikust.setup` in the report, and without one
-  `$HOME` is left empty in every `--mode`. `prune`: without `--all` exit 2
+  `$HOME` is left empty in every `--mode`;
+  `without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container`
+  (the hook's advice: `sudo` before a container, and between them, where
+  the host's switch is 1, the profile after an install under
+  `/usr/local/bin`, naming the test binary's own path; else no profile).
+  `prune`: without `--all` exit 2
   naming Phase 5; `--all` as root exit 1 naming Phase 5, as a user a
   missing state directory, the default one included, left missing (exit
   0); as a user, a directory without the marker and a path ending in
@@ -701,7 +724,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   container (#74); its user leg runs the binary as the VM's regular user on
   the `rootless` smoke case's `content` stage: rootless overlay mode with a
   fresh `proc` and root's `--reproducible` digest on 22.04, refused naming
-  the AppArmor switch on 24.04 (#79). A `--state-dir` at
+  the AppArmor switch on 24.04 (#79), with `sudo`, the profile after an
+  install under `/usr/local/bin`, then a container; there root's copy at
+  `/usr/local/bin/ranikust` is refused with the profile as shipped, then,
+  with `contrib/apparmor/ranikust` loaded, builds the same stage in
+  rootless overlay mode with a fresh `proc` and root's digest, and a `RUN`
+  keeps the profile; with the switch at 0 the advice names no profile
+  (#81). A `--state-dir` at
   `/`, below `/home/<user>` or in a directory others may write
   ([testing](../../testing.md#planned-test-suites)). `unit`: `exposure.rs`
   `a_namespace_left_but_held_keeps_its_number_from_new_ones` (ADR-0101: a

@@ -1,7 +1,7 @@
 # Choosing where to run it
 
-> Overlay mode as root, rootless overlay mode and kaniko mode are built. The
-> AppArmor advice for Ubuntu 24.04 and `--userns` (Phase 3) are not.
+> Overlay mode as root, rootless overlay mode and kaniko mode are built, and
+> so is the AppArmor profile for Ubuntu 24.04. `--userns` (Phase 3) is not.
 
 ranikust needs **Linux 5.8 or later**. It checks at start-up and stops with a
 clear message on older kernels, such as RHEL/CentOS 8, Debian 10, Ubuntu 20.04
@@ -23,7 +23,7 @@ it follows from the platform's documented defaults and has not been tried.
 | Docker container with default options, under cgroup v2 or v1 | kaniko | Docker's default seccomp profile blocks user namespaces, and AppArmor blocks mounts. | measured |
 | GitHub Actions `container:` job, GitLab Kubernetes executor, ordinary Kubernetes pod, GKE Autopilot, Bottlerocket | kaniko | Same restrictions as a default Docker container. | inferred |
 | Regular user on Debian 12+, Fedora, RHEL 9+ or Ubuntu 22.04 | overlay, rootless | A user namespace of ranikust's own gives it the mounts it needs. An image with several owners needs `newuidmap` and `/etc/subuid` and `/etc/subgid` entries; without them ranikust maps one id and says so; planned, it then refuses such an image, as it does one with a user outside the ranges ([ADR-0098](https://github.com/tran4774/ranikust/blob/main/docs/adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). | measured on Ubuntu 22.04, inferred for the rest |
-| Regular user on Ubuntu 24.04 or later | none | Refused with the step of the probe that failed (the `chown`, in a user namespace without capabilities) and the AppArmor switch that causes it. There, user namespaces get no capabilities by default; a three-line AppArmor profile for the binary at a fixed path is the planned remedy, which the message does not name yet. | measured |
+| Regular user on Ubuntu 24.04 or later | none; overlay, rootless with [ranikust's AppArmor profile](#ubuntu-2310-and-later-the-apparmor-profile) | There, user namespaces get no capabilities by default. Refused with the step of the probe that failed (the `chown`, in a user namespace without capabilities) and what to do: run it with `sudo`; have root load ranikust's AppArmor profile, for a binary in a path only root can change (else after installing it as `/usr/local/bin/ranikust`); or run it in a container. With the profile loaded, the binary at `/usr/local/bin/ranikust` builds as on Ubuntu 22.04. | measured |
 | Kubernetes pod under the "restricted" Pod Security Standard, OpenShift `restricted-v2` | none | Neither root nor user namespaces. | inferred |
 
 The measurements are in the research reports: the
@@ -32,6 +32,43 @@ The measurements are in the research reports: the
 and the
 [mode selection chapter](https://github.com/tran4774/ranikust/blob/main/docs/research/survey/06-overlay-and-parallelism.md).
 Real Kubernetes clusters have not been tested yet.
+
+## Ubuntu 23.10 and later: the AppArmor profile
+
+Where `kernel.apparmor_restrict_unprivileged_userns` is `1`, the default from
+Ubuntu 23.10, a user namespace gets capabilities only for a program an
+AppArmor profile allows, so a regular user's build is refused. Run it with
+`sudo`, in a container, or have root load ranikust's profile,
+[`contrib/apparmor/ranikust`](https://github.com/tran4774/ranikust/blob/main/contrib/apparmor/ranikust)
+in the repository:
+
+```text
+{{#include ../../../contrib/apparmor/ranikust}}
+```
+
+As root, with the binary from the release tarball and the profile above saved
+as `/etc/apparmor.d/ranikust`:
+
+```sh
+install -m 0755 -o root -g root ranikust /usr/local/bin/ranikust
+apparmor_parser -r /etc/apparmor.d/ranikust
+```
+
+- The profile is bound to `/usr/local/bin/ranikust`: AppArmor attaches it by
+  path, and gives a user namespace to whatever binary is there. Bind it only
+  to a path no user other than root can change: root owns the file and every
+  directory above it, and none is writable by group or others. ranikust's
+  refusal offers the profile only for such a path, and otherwise says to
+  install the binary under `/usr/local/bin` first. For another such path,
+  change the path in the profile.
+- It confines nothing (`flags=(unconfined)`): every user who may run that
+  binary, and every program a build runs, gets the user namespaces that the
+  switch at `0` gives every program. The rest of the host keeps the
+  restriction.
+- To remove it: `apparmor_parser -R /etc/apparmor.d/ranikust`, then delete
+  the file.
+
+Packages that ship the profile are planned for Phase 6.
 
 ## Cgroups of `RUN` commands
 
