@@ -18,7 +18,7 @@
 //! the directory ranikust checked ([`Pin`]).
 //!
 //! `prune --all --userns` is root's way to empty the state directory of
-//! `build --userns` (ADR-0139), which the `ranikust` range's first
+//! `build --userns` (ADR-0139, ADR-0146), which the `ranikust` range's first
 //! uid owns ([`prune_userns`]): the same steps, with root's range read
 //! before the checks, the checks those of `--userns`'s build
 //! ([`statedir::Owner::Mapped`]), and that range's user namespace, so that
@@ -243,19 +243,19 @@ const USER_SCRIPT: &str = gnu_find_first!(
 );
 
 /// Root's removal of what `prune --all --userns` left in `--userns`'s
-/// state directory, for [`in_dir`]: with GNU coreutils' `rm` only, and
-/// only where the regular `.ranikust-pruning` that prune left is, which it
-/// keeps, so that no build takes the directory meanwhile; every other
-/// top-level entry, each an operand as `./name`, never an option: `rm`'s
-/// `--preserve-root=all` refuses one on another filesystem than the
-/// directory, `--one-file-system` skips any below it; then it checks that
-/// only the marker is left. No owner filter: what that prune leaves is of
-/// ids its range does not map.
-const USERNS_LEFT_SCRIPT: &str = concat!(
-    r#"rm --version 2>/dev/null | grep -q "GNU coreutils" || { echo "needs GNU coreutils rm: nothing changed" >&2; exit 1; }; "#,
+/// state directory, for [`in_dir`]: with GNU `find` only
+/// ([`gnu_find_first`]), and only where the regular `.ranikust-pruning`
+/// that prune left is, which it keeps, so that no build takes the
+/// directory meanwhile; then everything else, as [`ROOT_SCRIPT`] deletes
+/// (`-xdev`: nothing on another filesystem), and a check that only the
+/// marker is left. Of every owner, unlike [`root_script`] (ADR-0146): the
+/// directory holds root's builds, its owner is no account's uid
+/// (ADR-0139), and only their `RUN`s, confined to their build roots, write
+/// in it as the range's ids, so an entry of another id is root's.
+const USERNS_LEFT_SCRIPT: &str = gnu_find_first!(concat!(
     r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
-    r#"find . -mindepth 1 -maxdepth 1 ! -path ./.ranikust-pruning -exec rm -r --one-file-system --preserve-root=all -- {} + && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || { echo "not emptied: what is named above is left, and the marker" >&2; exit 1; }"#
-);
+    r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || { echo "not emptied: what find names above is left, and the marker" >&2; exit 1; }"#
+));
 
 /// How root empties the state directory `dir`, pinned as `pin`, which
 /// holds a marker, with ordinary tools, then removes it.
@@ -411,10 +411,11 @@ fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let d = shell_word(dir.as_os_str());
     let by_root = match pin {
         Ok(pin) => format!(
-            "then, as root, remove every entry but the .ranikust-pruning marker, which keeps \
-             builds out, with commands that refuse a PATH with a relative or empty entry, unset \
-             LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH, act only on the directory \
-             ranikust checked, while no build holds it, and need GNU coreutils' rm: {}",
+            "then, as root, remove every entry of every owner but the .ranikust-pruning marker, \
+             which keeps builds out, with commands that refuse a PATH with a relative or empty \
+             entry, unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH and act only on \
+             the directory ranikust checked, while no build holds it; the removal \
+             {NEEDS_GNU_FIND}: {}",
             in_dir(dir, pin, USERNS_LEFT_SCRIPT)
         ),
         Err(why) => no_commands(dir, &why, false),

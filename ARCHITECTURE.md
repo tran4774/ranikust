@@ -63,7 +63,7 @@ name) and `--mode=auto|overlay|kaniko`
 which empties a user's state directory (`--state-dir`) inside the build's user
 namespace through `rnk-store` (ADR-0105), and with `--userns` root empties
 `--userns`'s in its `ranikust` range's namespace, as that range's first uid
-(ADR-0139), until Phase 5 adds removal by size
+(ADR-0139, ADR-0146), until Phase 5 adds removal by size
 and age; `push` (an OCI layout, ADR-0052) has no phase yet, and there is no
 `login` (ADR-0049). Runs the set-up and the probes while single-threaded,
 picks the mode and the root (rootless overlay mode's probe runs before the

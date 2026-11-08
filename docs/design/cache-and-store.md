@@ -367,12 +367,13 @@ directory that still holds entries, or an entry in a sticky directory
 another id owns, over which the namespace's root has no `CAP_FOWNER`), its
 refusal names the top-level entries left and says to stop every `--userns`
 build (their `RUN`s may change that tree) and unmount anything below, then
-gives root's commands in ADR-0133's form (the environment checked, the
-directory entered once, pinned outside the namespace, `flock -xn`): with
-GNU coreutils' `rm -r --one-file-system --preserve-root=all` they remove
-every top-level entry but the marker, of any owner (what is left is of ids
-the range does not map), and check that only the marker is left; then it
-runs again. `--metrics-file` is refused with it before anything runs: the
+gives root's commands with ADR-0133's safeguards (the environment checked,
+the directory entered once, pinned outside the namespace, `flock -xn`, GNU
+`find -xdev`): they delete everything but the marker, of every owner, the
+one exception to ADR-0133's owner filter (ADR-0146: the directory holds
+root's builds, its owner is no account's uid, so an entry of another id is
+root's or on a mount), and check that only the marker is left; then it runs
+again. `--metrics-file` is refused with it before anything runs: the
 process writes the report at exit, by then as the range's uid. Root's own
 `prune --all`, and a `--userns` build refused by a prune cut short, name
 `prune --all --userns` instead of root's commands

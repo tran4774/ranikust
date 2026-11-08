@@ -45,9 +45,19 @@ as root on the host.
 - Root's plain `prune --all` names `prune --all --userns` instead of its own
   commands only for a marked directory those checks accept; neither command
   sends root to the other. A `--userns` build, and a `prune --all --userns`
-  that could not finish, point back to it. Where the range's uid cannot
-  remove an entry, root gets commands in ADR-0133's form that remove all but
-  the marker, to run once every `--userns` build is stopped.
+  that could not finish, point back to it.
+- Where the range's uid cannot remove an entry (a mount below, entries of ids
+  the range does not map), root gets printed commands, to run once every
+  `--userns` build is stopped. They keep ADR-0133's safeguards (the
+  environment checked, the directory entered once and pinned, the lock
+  held, GNU `find -xdev`, the marker kept) but are the one exception to its
+  owner filter (rule 1): they delete every owner's entries. This directory
+  holds root's builds, its owner is no account's uid (ADR-0139), and only
+  their `RUN`s, confined to their build roots, write in it as the range's
+  ids, so an entry of another id is root's or on a mount. Unlike option (b),
+  they act only on what the range's uid could not remove, never the whole
+  store, after every `--userns` build is stopped and while none holds the
+  directory.
 - `--metrics-file` is refused with it (exit code 2): the report would be
   written at exit as the range's uid.
 
@@ -71,6 +81,7 @@ Phase 5's `prune` is not covered.
 
 ## More Information
 
-Refines ADR-0105 for root; builds on ADR-0133 and ADR-0139. Implemented by
+Refines ADR-0105 for root and ADR-0133's owner filter for this directory;
+builds on ADR-0139. Implemented by
 #207; the steps: [cache-and-store](../design/cache-and-store.md#prune) and
 [sandbox](../design/sandbox.md).
