@@ -236,4 +236,5 @@ Paths below are relative to the kaniko root at `44aa7ddc0`.
     `RUN`.
 - **Accepted differences** between overlay and kaniko mode (`ADR-0012`):
   hardlink splitting on in-place writes, metadata changes on hardlinked files,
-  link-count-only changes, copied-up but unchanged files.
+  link-count-only changes, copied-up but unchanged files; and an owner of
+  4294967295 over an earlier layer's directory (`ADR-0141`).
