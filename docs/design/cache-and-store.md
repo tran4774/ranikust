@@ -340,6 +340,33 @@ filesystem is not told apart, its contents deleted with the rest, so
 the commands say to run only while nothing is mounted below
 (ranikust's own deletion compares mount IDs instead).
 
+`ranikust prune --all --userns` is root's way to empty the state directory of
+`--userns` builds, which the first uid of root's `ranikust` range owns
+([ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md),
+[#207](https://github.com/tran4774/ranikust/issues/207)); the same steps,
+nothing deleted as root. From a user other than root, it is a usage error
+before anything is looked at. In order: a path ending in `..`; root's range,
+read as the build reads it (`subids::root_range`) and refused where the build
+would refuse it; then, outside any namespace, the checks of `--userns`'s
+build, which neither make the directory nor change its mode: a path at, below
+or above root's default refused by its spelling, missing or not (so without
+`--state-dir`, root's default is refused), then the directory owned by that
+uid, not writable by group or others, below directories only root owns and
+writes, sticky or not, each searchable by that uid and gid by its mode bits
+([sandbox](sandbox.md#--userns)), then `Store::check_prune`; a missing or
+empty directory is left so; then the range's user namespace, entered as the
+build enters it (the range alone mapped, from 0; the process then that uid
+and gid on the host, with no supplementary group); in it, `Store::prune_all`,
+as above. Before the namespace root only reads in the directory: no `chmod`,
+no marker, no deletion. Where it cannot finish (a mount below, or files of
+ids the range does not map, such as root's, which that uid cannot remove),
+its refusal says to unmount, remove those by hand as root, and run it again;
+it prints no commands. Root's own `prune --all`, and a `--userns` build
+refused by a prune cut short, name `prune --all --userns` instead of root's
+commands for a marked directory the range's first uid owns, which those
+commands would refuse to empty, its other uids' entries being outside their
+filter.
+
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the
 same locks, and never removing an entry a running build uses: decided by

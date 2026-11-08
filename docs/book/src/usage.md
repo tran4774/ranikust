@@ -56,6 +56,7 @@ and `--help` work on any kernel.
 ```sh
 ranikust prune --all                  # ~/.local/share/ranikust
 ranikust prune --all --state-dir=DIR
+ranikust prune --all --userns --state-dir=DIR   # as root: a --userns state directory
 ```
 
 As a user other than root, `prune --all` empties the state directory, files a
@@ -74,8 +75,22 @@ no user namespace (where AppArmor restricts them, as Ubuntu 23.10 and later
 do), its error says how to get out, naming the directory; root's way is to
 run `ranikust prune --all --state-dir DIR`, which prints root's commands.
 
-Root is refused, a container's root included: it empties its state directory
-with ordinary tools while no build uses it and nothing is mounted below it,
+Root empties the state directory of its `--userns` builds with
+`ranikust prune --all --userns --state-dir DIR` ([ADR-0139]). It first checks
+the directory as a `--userns` build does, changing nothing: owned by the first
+uid of the `ranikust` range, below directories that only root owns and may
+write and that uid may search, and not root's default `/var/lib/ranikust` or
+a path below or above it (so without `--state-dir` it is refused). Then it
+empties the directory in the range's user namespace, as that uid, never as
+root, with the same rules as a user's `prune --all`. What that uid cannot
+remove (a file of root's, a mount below) stops it, saying so: remove it by
+hand, as root, and run it again; until then builds refuse the directory and
+name the command. A user other than root gets a usage error. Root's own
+`prune --all` on such a directory names this command instead of the commands
+below, which would stop at the range's other ids.
+
+Without `--userns`, root is refused, a container's root included: it empties
+its state directory with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves
 ([ADR-0105]), then removes it with `rmdir`. `find -xdev` stops at a mount of
 another filesystem, but a bind mount of the same one below the directory
@@ -249,7 +264,7 @@ example `--context=$CI_PROJECT_DIR/app --digest-file=$CI_PROJECT_DIR/digest`
 | Flag | Meaning |
 |---|---|
 | `--mode=auto\|overlay\|kaniko` | How to snapshot: `auto` (default) probes the environment and picks the fastest mode that works: overlay mode where root may mount, rootless overlay mode, in a user namespace of ranikust's own, for a user other than root and for root in a container that may not mount, and kaniko mode where that cannot run, and, outside a container where overlayfs refuses the state directory (NFS, overlayfs), kaniko mode with a directory per stage ([How ranikust builds](how-it-builds.md)). It logs whether a `RUN` can run in a user namespace here (`user namespace probe: ...`; where root may mount it routes nothing and the line says `(reported only)`). A user other than root builds in rootless overlay mode or is refused, with `--mode=auto` and `--mode=overlay` alike; `--mode=kaniko` needs root. |
-| `--userns` | As root, builds in a user namespace whose root is an unprivileged uid of the host, the first of a `ranikust` line you add to both `/etc/subuid` and `/etc/subgid` (`ranikust:<start>:65536`); refused before anything is written without it, or where it shares an id with another range or a local account, or an account is named `ranikust` ([ADR-0104], [`--userns`](how-it-builds.md#--userns)). It needs a `--state-dir` of that uid's own (root's own, and any at, below or above root's default `/var/lib/ranikust`, are refused, [ADR-0139]) and reaches the context, the Dockerfile, the working directory, `--secret` files, the registry credentials and the outputs as that uid (root is to read the credentials and secrets first, [#206](https://github.com/tran4774/ranikust/issues/206)). It never falls back to another mode; with `--mode=kaniko` it is a usage error. From a user other than root it is a usage error: only root may map the range, and that user's build already runs in a user namespace of its own. |
+| `--userns` | As root, builds in a user namespace whose root is an unprivileged uid of the host, the first of a `ranikust` line you add to both `/etc/subuid` and `/etc/subgid` (`ranikust:<start>:65536`); refused before anything is written without it, or where it shares an id with another range or a local account, or an account is named `ranikust` ([ADR-0104], [`--userns`](how-it-builds.md#--userns)). It needs a `--state-dir` of that uid's own (root's own, and any at, below or above root's default `/var/lib/ranikust`, are refused, [ADR-0139]) and reaches the context, the Dockerfile, the working directory, `--secret` files, the registry credentials and the outputs as that uid (root is to read the credentials and secrets first, [#206](https://github.com/tran4774/ranikust/issues/206)). It never falls back to another mode; with `--mode=kaniko` it is a usage error. From a user other than root it is a usage error: only root may map the range, and that user's build already runs in a user namespace of its own. `prune --all --userns` empties its state directory ([below](#emptying-the-state-directory)). |
 | `--state-dir=DIR` | Where ranikust keeps its store and every build root it makes; kaniko's `--kaniko-dir`. Default `/var/lib/ranikust` as root, else `~/.local/share/ranikust`. It must be new, empty, or a state directory ranikust made (it holds `.ranikust-state`; `/` never), owned by the user running ranikust and writable by no one else, below directories only root or that user may write (root's sticky `/tmp` is fine); ranikust makes it mode `0700`. The default is refused where `/home` or `~/.local` is a symlink (no directory on the path may be one; Fedora Atomic links `/home` to `/var/home`) or `~/.local` or `~/.local/share` is writable by group or others: pass `--state-dir` then. In a container, overlay mode, rootless too, needs it on a volume. In kaniko mode on a container's `/` it must be new or empty, or a state directory whose store holds no data (as a set-up killed before a fallback to kaniko mode leaves it), which it empties first ([ADR-0136]): that mode keeps nothing there between builds, refuses a state directory another build uses, and never shares one with overlay-mode builds ([ADR-0077]). There is no work-directory flag: ranikust builds on `/` in a container in kaniko mode, and everywhere else in directories it makes here ([ADR-0050]). |
 | `--jobs=N` | Stages built at once, and blobs uploaded at once. Default: the number of CPUs available. In kaniko mode on a container's `/` the stages run one at a time and only the uploads follow it. |
 | `--snapshot-workers=N` | Threads of kaniko mode's filesystem walk. Default 8, the fastest measured; ignored, with a warning, in overlay mode. |

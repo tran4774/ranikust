@@ -217,7 +217,9 @@ other.
   the one it was making. One killed while its probe's files were being made
   may leave a `.ranikust-anon-userns-probe-*` directory of root's, not
   empty, in the state directory, which the next builds warn of. ranikust
-  removes neither: remove them by hand, as root.
+  removes neither: remove them by hand, as root. `ranikust prune --all
+  --userns --state-dir DIR` empties the state directory as the range's first
+  uid ([Emptying the state directory](usage.md#emptying-the-state-directory)).
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the
