@@ -134,7 +134,7 @@ case_run() {
   pruned_as_the_range
 }
 
-# pruned_as_the_range: `prune --all --userns` (ADR-0139) empties the
+# pruned_as_the_range: `prune --all --userns` (ADR-0146) empties the
 # state directory the builds left as the range's first uid, in its user
 # namespace: root's own `prune --all` names it; it refuses root's default,
 # a state directory of root's and one below a directory the range's uid

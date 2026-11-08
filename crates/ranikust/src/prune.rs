@@ -248,10 +248,7 @@ const USER_SCRIPT: &str = gnu_find_first!(
 /// that prune left is, which it keeps, so that no build takes the
 /// directory meanwhile; then everything else, as [`ROOT_SCRIPT`] deletes
 /// (`-xdev`: nothing on another filesystem), and a check that only the
-/// marker is left. Of every owner, unlike [`root_script`] (ADR-0146): the
-/// directory holds root's builds, its owner is no account's uid
-/// (ADR-0139), and only their `RUN`s, confined to their build roots, write
-/// in it as the range's ids, so an entry of another id is root's.
+/// marker is left. Of every owner, unlike [`root_script`]: ADR-0146.
 const USERNS_LEFT_SCRIPT: &str = gnu_find_first!(concat!(
     r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
     r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || { echo "not emptied: what find names above is left, and the marker" >&2; exit 1; }"#

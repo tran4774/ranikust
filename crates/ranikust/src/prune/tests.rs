@@ -963,6 +963,10 @@ fn the_scripts_change_nothing_without_gnu_findutils() {
             USERNS_LEFT_SCRIPT.to_owned(),
         ] {
             marked_state(&state);
+            // The marker USERNS_LEFT_SCRIPT takes: only the find check stops it.
+            if script == USERNS_LEFT_SCRIPT {
+                fs::write(state.join(rnk_store::PRUNING_MARKER), b"").unwrap();
+            }
             let before = listing(tmp.path());
             let command = in_dir(&state, pin_of(&state), &script);
             let mut run = std::process::Command::new("bash");
