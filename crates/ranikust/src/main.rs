@@ -5,10 +5,10 @@
 //! `--mode=auto|overlay|kaniko` to choose the snapshot mode (ADR-0011,
 //! ADR-0023, ADR-0049). `prune` takes `--all`, required, and `--state-dir`:
 //! it empties the state directory of a user other than root inside the
-//! build's user namespace (`prune`, ADR-0105), and with `--userns`, root's
-//! only, that of `--userns` inside its range's (ADR-0139); by size and age it comes in
-//! Phase 5, `push` later
-//! (Q-048); there is no `login` (ADR-0049).
+//! build's user namespace (`prune`, ADR-0105); with `--userns`, root
+//! empties `--userns`'s state directory in its range's namespace
+//! (ADR-0139). By size and age it comes in Phase 5, `push` later (Q-048);
+//! there is no `login` (ADR-0049).
 //!
 //! Set-up order, each step before the next: parse the flags (no I/O;
 //! refused kaniko flags are reported first) → the Linux 5.8 check of

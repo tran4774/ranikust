@@ -358,9 +358,13 @@ empty directory is left so; then the range's user namespace, entered as the
 build enters it (the range alone mapped, from 0; the process then that uid
 and gid on the host, with no supplementary group); in it, `Store::prune_all`,
 as above. Before the namespace root only reads in the directory: no `chmod`,
-no marker, no deletion. Where it cannot finish (a mount below, or files of
-ids the range does not map, such as root's, which that uid cannot remove),
-its refusal says to unmount, remove those by hand as root, and run it again;
+no marker, no deletion. A refused directory gets the advice that only a
+directory a `--userns` build accepts is emptied so, and to drop `--userns`
+for another. Where it cannot finish (a mount below, or directories of ids
+the range does not map, such as root's, that still hold entries, which that
+uid cannot empty; a file of any owner goes where its directory may be
+written), its refusal says to unmount, remove those by hand as root, and run
+it again;
 it prints no commands. Root's own `prune --all`, and a `--userns` build
 refused by a prune cut short, name `prune --all --userns` instead of root's
 commands for a marked directory the range's first uid owns, which those

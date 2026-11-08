@@ -83,15 +83,17 @@ write and that uid may search, and not root's default `/var/lib/ranikust` or
 a path below or above it (so without `--state-dir` it is refused). Then it
 empties the directory in the range's user namespace, as that uid, never as
 root, with the same rules as a user's `prune --all`. What that uid cannot
-remove (a file of root's, a mount below) stops it, saying so: remove it by
-hand, as root, and run it again; until then builds refuse the directory and
-name the command. A user other than root gets a usage error. Root's own
-`prune --all` on such a directory names this command instead of the commands
-below, which would stop at the range's other ids.
+remove (a mount below, or a directory of root's that still holds entries)
+stops it, saying so: remove it by hand, as root, and run it again; until then
+builds refuse the directory and name the command. A user other than root gets
+a usage error. Root's own `prune --all` on such a directory names this
+command instead of the commands below, which would stop at the range's other
+ids.
 
 Without `--userns`, root is refused, a container's root included: it empties
-its state directory with ordinary tools while no build uses it and nothing is mounted below it,
-the marker first, so that no build takes what an interrupted removal leaves
+its state directory with ordinary tools while no build uses it and nothing is
+mounted below it, the marker first, so that no build takes what an
+interrupted removal leaves
 ([ADR-0105]), then removes it with `rmdir`. `find -xdev` stops at a mount of
 another filesystem, but a bind mount of the same one below the directory
 would be emptied with it: hence nothing mounted below it. The emptying needs

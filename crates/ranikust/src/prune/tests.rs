@@ -80,19 +80,21 @@ fn prune_takes_all_and_a_state_directory() {
 fn prune_without_all_is_refused_naming_phase_5() {
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
-    let args = PruneArgs {
-        all: false,
-        state_dir: Some(state.clone()),
-        userns: true,
-    };
-    match run(&args) {
-        Err(Failed::Usage(message)) => {
-            assert!(message.contains("Phase 5"), "{message}");
-            assert!(message.contains("--all"), "{message}");
+    for userns in [false, true] {
+        let args = PruneArgs {
+            all: false,
+            state_dir: Some(state.clone()),
+            userns,
+        };
+        match run(&args) {
+            Err(Failed::Usage(message)) => {
+                assert!(message.contains("Phase 5"), "{message}");
+                assert!(message.contains("--all"), "{message}");
+            }
+            other => panic!("{userns}: {other:?}"),
         }
-        other => panic!("{other:?}"),
+        assert!(!state.exists());
     }
-    assert!(!state.exists());
 }
 
 /// How each printed command starts: [`ENV_CHECK`], as printed.
@@ -1849,7 +1851,7 @@ fn range_from(uid: u32, gid: u32) -> SubordinateIds {
     }
 }
 
-/// `prune --all --userns` is root's (#207): for a user other than root, a
+/// `prune --all --userns` is root's: for a user other than root, a
 /// usage error before the state directory is looked at.
 #[test]
 fn prune_userns_is_a_usage_error_for_a_user_other_than_root() {
@@ -1906,7 +1908,8 @@ fn a_userns_prune_reads_the_range_before_the_state_directory() {
 /// does, outside the namespace and changing nothing: a path at, below or
 /// above root's default refused, missing or not; one the range's first uid
 /// does not own refused; and one below a directory root does not own
-/// (here the test's own) refused. A missing one elsewhere is left so.
+/// (here the test's own) refused, each saying to drop `--userns` for a
+/// directory of another kind. A missing one elsewhere is left so.
 #[test]
 fn a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace() {
     let tmp = private_tempdir();
@@ -1934,10 +1937,12 @@ fn a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace() {
             refusal.reason.contains("--state-dir of its own"),
             "{refusal}"
         );
+        assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
     }
     let refusal = userns_with(&state, range).unwrap_err();
     let not_owned = format!("{} is owned by uid {euid}, not {other}", state.display());
     assert!(refusal.reason.contains(&not_owned), "{refusal}");
+    assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
     assert_eq!(refusal.kind, Kind::Other);
     // The effective ids stand in for the range's, which own the state
     // directory then, but not the test's directory above it.
@@ -1945,6 +1950,7 @@ fn a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace() {
         let refusal = userns_with(&state, || Ok(range_from(euid, egid))).unwrap_err();
         let parent = format!("{} is owned by uid {euid}, not root", tmp.path().display());
         assert!(refusal.reason.contains(&parent), "{refusal}");
+        assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
     }
     let missing = tmp.path().join("no/such/state");
     assert_eq!(userns_with(&missing, range).unwrap(), Pruned::Missing);
@@ -1982,11 +1988,12 @@ fn root_is_given_prune_userns_for_a_userns_state_directory() {
 }
 
 /// What a `prune --all --userns` that could not finish says: unmount,
-/// remove what the range's uid cannot by hand, then run it again, naming
-/// the state directory.
+/// remove by hand the directories the range's uid cannot empty, then run
+/// it again, naming the state directory.
 #[test]
 fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
     let text = userns_unfinished(Path::new("/srv/rnk state"));
+    assert!(text.contains("directories of ids"), "{text}");
     assert!(
         text.contains("unmount anything below '/srv/rnk state'"),
         "{text}"

@@ -14,8 +14,9 @@ writer) before `unshare`, the probes and the state directory's checks.
 ## Owns
 
 - Parsing the subcommands and flags: `build` (the default), `prune` (only
-  `--all`, `--state-dir` and `--userns`; by size and age in Phase 5, ADR-0032) and
-  `version` are built; `push` (an OCI layout only, ADR-0052) is later;
+  `--all`, `--state-dir` and `--userns`; by size and age in Phase 5,
+  ADR-0032) and `version` are built; `push` (an OCI layout only, ADR-0052)
+  is later;
   there is no `login` (ADR-0049).
   Kaniko's common flags plus `--mode` (ADR-0011, ADR-0023).
 - Process set-up while single-threaded: a private mount namespace when
@@ -179,19 +180,13 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`prune::userns_way`), so root's refusal and a `--userns` build's on a
   prune cut short name it. Prints one line on stdout; a refusal exits 1,
   `prune` without `--all` 2.
-- `prune --all --userns` (`prune::prune_userns`, ADR-0139, #207): from a
-  user other than root a usage error (exit 2), as for a build; then a
-  path ending in `..`; then root's range (`subids::root_range`, refused
-  with `ROOT_RANGE_GUIDANCE`); then `statedir::check_for` with
-  `Owner::Mapped` (root's default, a path below or above it refused by
-  path, missing or not; then `--userns`'s build's chain rule and
-  `Store::check_prune`, outside, nothing made or changed): a missing or
-  empty one left so; then `setup::rootless::enter_range` (the range's
-  namespace, as `set_up` enters it; no store opened); in it
-  `Store::prune_all`, as the range's first uid. Root only reads in the
-  directory before the namespace. Where it cannot finish, the ways out
-  are words only (`prune::userns_unfinished`: unmount, remove what the
-  range's uid cannot by hand, run it again), no commands.
+- `prune --all --userns` (`prune::prune_userns`, ADR-0139): a usage error
+  (exit 2) from a user other than root; else root's range
+  (`subids::root_range`), `statedir::check_for` with `Owner::Mapped`
+  (refusals carry `prune::USERNS_ONLY`), `setup::rootless::enter_range`,
+  then `Store::prune_all` as the range's first uid; an unfinished one gets
+  `prune::userns_unfinished`, words only. The steps and their order:
+  [cache-and-store.md#prune](../../design/cache-and-store.md#prune).
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -816,7 +811,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_nothing_is_written_before_the_refusal_whatever_the_state_dir`.
   `prune`: without `--all` exit 2
   naming Phase 5, `--userns` too; `--all --userns` as a user exit 2,
-  nothing made (`prune_userns_as_a_user_other_than_root_is_a_usage_error`); `--all` as root exit 1 naming Phase 5, as a user a
+  nothing made
+  (`prune_userns_as_a_user_other_than_root_is_a_usage_error`); `--all` as
+  root exit 1 naming Phase 5, as a user a
   missing state directory, the default one included, left missing (exit
   0); as a user, a directory without the marker and a path ending in
   `..` refused unchanged, and a state directory emptied or, without a

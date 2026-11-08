@@ -96,17 +96,8 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// cannot be read, or a userdb record of which it cannot tell whether it
 /// exists. [`ROOT_RANGE_GUIDANCE`] says what to do.
 pub(crate) fn root_range() -> Result<SubordinateIds, String> {
+    let ids = root_range_quiet()?;
     let etc = std::path::Path::new("/etc");
-    let userdb = USERDB_DIRS.map(std::path::Path::new);
-    if let Some(record) = userdb_record(&userdb)? {
-        return Err(format!(
-            "{} is a file named like a systemd userdb record of an account named \
-             {ROOT_ENTRY}, to which newuidmap and newgidmap would give root's {ROOT_ENTRY} \
-             range",
-            record.display()
-        ));
-    }
-    let ids = root_range_in(etc)?;
     match read_in(etc, NSSWITCH) {
         Ok(text) => {
             if let Some(module) = subid_module(&text) {
@@ -125,6 +116,26 @@ pub(crate) fn root_range() -> Result<SubordinateIds, String> {
         ),
     }
     Ok(ids)
+}
+
+/// [`root_range`] without its warning of an NSS `subid:` module, for a
+/// caller that maps nothing and only tells whether a directory may be
+/// `--userns`'s (`prune`'s guidance to root).
+///
+/// # Errors
+///
+/// As [`root_range`].
+pub(crate) fn root_range_quiet() -> Result<SubordinateIds, String> {
+    let userdb = USERDB_DIRS.map(std::path::Path::new);
+    if let Some(record) = userdb_record(&userdb)? {
+        return Err(format!(
+            "{} is a file named like a systemd userdb record of an account named \
+             {ROOT_ENTRY}, to which newuidmap and newgidmap would give root's {ROOT_ENTRY} \
+             range",
+            record.display()
+        ));
+    }
+    root_range_in(std::path::Path::new("/etc"))
 }
 
 /// The NSS configuration, whose `subid:` line libsubid reads.

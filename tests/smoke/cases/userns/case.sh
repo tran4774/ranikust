@@ -13,7 +13,7 @@
 # ADR-0074's reach of a distinct host account is measured again: neither
 # an account with the RUN's own ids nor one with the ids they map to on
 # the host reaches it, the latter reaching a process of its own (the
-# control). Then `prune --all --userns` (#207) empties the state directory
+# control). Then `prune --all --userns` empties the state directory
 # as the range's first uid (pruned_as_the_range). In the kaniko leg,
 # --userns with --mode=kaniko is a usage error.
 
@@ -134,7 +134,7 @@ case_run() {
   pruned_as_the_range
 }
 
-# pruned_as_the_range: `prune --all --userns` (#207, ADR-0139) empties the
+# pruned_as_the_range: `prune --all --userns` (ADR-0139) empties the
 # state directory the builds left as the range's first uid, in its user
 # namespace: root's own `prune --all` names it; it refuses root's default,
 # a state directory of root's and one below a directory the range's uid
@@ -183,7 +183,7 @@ pruned_as_the_range() {
   log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
   expect "$rc" 1 "prune --all --userns with a directory of root's in the store"
   grep -qF "ranikust: the build's user namespace: shifted range" <<<"$log" &&
-    grep -qF "unmount anything below $UW/state and remove such files by hand, as root" <<<"$log" ||
+    grep -qF "unmount anything below $UW/state and remove such directories by hand, as root" <<<"$log" ||
     fail "prune --all --userns with a directory of root's in the store: $log"
   sudo test -f "$UW/state/builds/rnk-roots/f" || fail "prune --all --userns removed a file of root's"
   rc=0

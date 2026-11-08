@@ -1098,7 +1098,7 @@ fn prune_without_all_is_a_usage_error_naming_phase_5() {
     }
 }
 
-/// `prune --all --userns` is root's (#207, ADR-0139): from a user other
+/// `prune --all --userns` is root's (ADR-0139): from a user other
 /// than root it is a usage error before any state directory, the default
 /// included, is looked at; without `--all` it is `prune`'s usage error
 /// naming Phase 5.
