@@ -501,6 +501,19 @@ fn a_plain_directory_is_not_overlayfs() {
     assert!(!on_overlayfs(&tmp.path().join("missing")));
 }
 
+/// Where a missing state directory would be made: its nearest existing
+/// directory, itself when it exists, `/` at most.
+#[test]
+fn the_nearest_existing_directory_is_where_a_missing_one_is_made() {
+    let tmp = private_tempdir();
+    assert_eq!(nearest_existing(tmp.path()), tmp.path());
+    assert_eq!(nearest_existing(&tmp.path().join("a/b/state")), tmp.path());
+    fs::create_dir(tmp.path().join("a")).unwrap();
+    let a = tmp.path().join("a");
+    assert_eq!(nearest_existing(&a.join("b/state")), a);
+    assert_eq!(nearest_existing(Path::new("/")), Path::new("/"));
+}
+
 #[test]
 fn the_nofile_limit_ends_at_the_hard_limit() {
     let hard = rustix::process::getrlimit(rustix::process::Resource::Nofile).maximum;

@@ -202,20 +202,24 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool, userns: bool) -> Result<P
 /// (ADR-0050) and `owner`'s ([`crate::statedir::prepare_for`]), not on
 /// overlayfs, as for overlay mode as root, and one the store would take,
 /// checked without writing (Q-111, (a)); its shared lock held from then
-/// on, `euid` naming what to do with a prune cut short. `what` names the
-/// mode in messages.
+/// on, `euid` naming what to do with a prune cut short. Each refusal comes
+/// before anything is made or changed: overlayfs is told from the nearest
+/// directory that exists, and the store's check runs before the mode is
+/// set. `what` names the mode in messages.
 fn state_dir_for_probe(
     state_dir: &Path,
     euid: u32,
     owner: crate::statedir::Owner,
     what: &str,
 ) -> Result<rnk_store::StateDirHold, Refusal> {
-    crate::statedir::prepare_for(state_dir, owner).map_err(|refused| Refusal {
+    let refusal = |refused: crate::statedir::Refused| Refusal {
         kind: Kind::Other,
         reason: refused.0,
         guidance: "".into(),
-    })?;
-    if crate::statedir::on_overlayfs(state_dir) {
+    };
+    // A missing state directory would be made on its nearest parent's
+    // filesystem.
+    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
         return Err(Refusal {
             kind: Kind::Other,
             reason: format!(
@@ -226,8 +230,11 @@ fn state_dir_for_probe(
             guidance: ON_OVERLAYFS.into(),
         });
     }
-    rnk_store::Store::check_state_dir(state_dir)
-        .map_err(|e| super::store_refusal(&e, state_dir, euid))
+    let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
+    let held = rnk_store::Store::check_state_dir(state_dir)
+        .map_err(|e| super::store_refusal(&e, state_dir, euid))?;
+    staged.finish().map_err(refusal)?;
+    Ok(held)
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`
@@ -547,5 +554,70 @@ mod tests {
             "{pruned:?}"
         );
         drop(held);
+    }
+
+    /// A missing state directory whose nearest parent is on overlayfs (a
+    /// container's own root) is refused before anything is made; checked
+    /// where the temporary directory is on overlayfs.
+    #[test]
+    fn a_missing_state_directory_on_overlayfs_is_refused_unmade() {
+        let tmp = tempfile::tempdir().unwrap();
+        if !crate::statedir::on_overlayfs(tmp.path()) {
+            eprintln!("skipped: the temporary directory is not on overlayfs");
+            return;
+        }
+        let me = crate::statedir::Owner::me();
+        let state = tmp.path().join("a/state");
+        let refusal = state_dir_for_probe(&state, 1000, me, "rootless").unwrap_err();
+        assert!(
+            refusal.reason.contains("is on overlayfs"),
+            "{}",
+            refusal.reason
+        );
+        assert!(!tmp.path().join("a").exists());
+    }
+
+    /// The store's refusals of the state directory come before its mode
+    /// is changed: one another process holds alone, and one a kaniko-mode
+    /// build on `/` used, keep the mode they had.
+    #[test]
+    fn a_state_directory_the_store_refuses_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        if crate::statedir::on_overlayfs(tmp.path()) {
+            eprintln!("skipped: the temporary directory is on overlayfs");
+            return;
+        }
+        let set = |p: &Path, mode| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        set(tmp.path(), 0o700);
+        let me = crate::statedir::Owner::me();
+        let open = tmp.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        set(&open, 0o755);
+        let alone = std::fs::File::open(&open).unwrap();
+        rustix::fs::flock(&alone, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+        let refusal = state_dir_for_probe(&open, 1000, me, "rootless").unwrap_err();
+        assert!(
+            refusal.reason.contains("another build is using"),
+            "{}",
+            refusal.reason
+        );
+        assert_eq!(mode(&open), 0o755);
+        drop(alone);
+        std::fs::write(open.join(rnk_store::BUILDING_MARKER), "").unwrap();
+        let refusal = state_dir_for_probe(&open, 1000, me, "rootless").unwrap_err();
+        assert!(
+            refusal.reason.contains("kaniko-mode build on /"),
+            "{}",
+            refusal.reason
+        );
+        assert_eq!(mode(&open), 0o755);
+        // Taken, it is made private.
+        std::fs::remove_file(open.join(rnk_store::BUILDING_MARKER)).unwrap();
+        drop(state_dir_for_probe(&open, 1000, me, "rootless").unwrap());
+        assert_eq!(mode(&open), 0o700);
     }
 }

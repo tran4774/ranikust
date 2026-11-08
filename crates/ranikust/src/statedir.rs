@@ -114,11 +114,19 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused> {
+    stage(state_dir, owner)?.finish()
+}
+
+/// [`prepare_for`] up to its step 5: the state directory made where
+/// missing and checked, its mode not yet changed, so that a caller's own
+/// read-only check refuses it as found.
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn stage(state_dir: &Path, owner: Owner) -> Result<Staged, Refused> {
     refuse_roots_default(state_dir, owner)?;
-    let existing = state_dir
-        .ancestors()
-        .find(|p| std::fs::symlink_metadata(p).is_ok())
-        .unwrap_or(Path::new("/"));
+    let existing = nearest_existing(state_dir);
     let is_state = existing == state_dir;
     let fd = open_dir(existing, OFlags::PATH)?;
     if is_state {
@@ -130,19 +138,57 @@ pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused>
     refuse_slash(&fd, state_dir, owner)?;
     accept_existing(&fd, state_dir, owner)?;
     check_chain(&walk(&fd, state_dir)?, owner, true)?;
-    make_private(&fd, state_dir, owner)?;
-    match rustix::fs::openat(
-        &fd,
-        "builds",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    ) {
-        Ok(builds) => make_private(&builds, &state_dir.join("builds"), owner),
-        Err(Errno::NOENT) => Ok(()),
-        Err(e) => Err(Refused(format!(
-            "cannot open {}: {e}",
-            state_dir.join("builds").display()
-        ))),
+    Ok(Staged {
+        fd,
+        state_dir: state_dir.to_owned(),
+        owner,
+    })
+}
+
+/// The nearest directory on `state_dir`'s path that exists, where a
+/// missing one would be made; `/` at most.
+pub(crate) fn nearest_existing(state_dir: &Path) -> &Path {
+    state_dir
+        .ancestors()
+        .find(|p| std::fs::symlink_metadata(p).is_ok())
+        .unwrap_or(Path::new("/"))
+}
+
+/// A state directory [`stage`] checked, whose mode [`Staged::finish`]
+/// sets.
+#[must_use = "the state directory is not private until finished"]
+pub(crate) struct Staged {
+    fd: OwnedFd,
+    state_dir: PathBuf,
+    owner: Owner,
+}
+
+impl Staged {
+    /// [`prepare_for`]'s step 5, through the descriptor checked.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`] naming the directory and the rule it breaks.
+    pub(crate) fn finish(self) -> Result<(), Refused> {
+        let Self {
+            fd,
+            state_dir,
+            owner,
+        } = self;
+        make_private(&fd, &state_dir, owner)?;
+        match rustix::fs::openat(
+            &fd,
+            "builds",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(builds) => make_private(&builds, &state_dir.join("builds"), owner),
+            Err(Errno::NOENT) => Ok(()),
+            Err(e) => Err(Refused(format!(
+                "cannot open {}: {e}",
+                state_dir.join("builds").display()
+            ))),
+        }
     }
 }
 
