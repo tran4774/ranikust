@@ -171,7 +171,7 @@ impl Owner {
         }
     }
 
-    /// The range's first and last uids, as `first-last`.
+    /// The range's first and last ids, as `first-last`.
     fn range_text(range: IdRange) -> String {
         format!("{}-{}", range.start, range.start + (range.count - 1))
     }
@@ -277,7 +277,7 @@ fn userns_left_script(range: SubordinateIds) -> String {
 
 /// The `ranikust` range's uids and gids, as `uids first-last, gids
 /// first-last` ([`Owner::range_text`]; `subids` reads only ranges of at
-/// least one id that end below `u32::MAX`).
+/// least one id whose end, `start + count`, fits in 32 bits).
 fn userns_ids(range: SubordinateIds) -> String {
     format!(
         "uids {}, gids {}",

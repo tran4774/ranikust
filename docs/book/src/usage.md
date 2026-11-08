@@ -96,8 +96,9 @@ remove every entry but `.ranikust-pruning`, which keeps builds out, and
 leave what is on another filesystem. Until then builds refuse the
 directory and name the command. A user other than root gets a usage
 error, and `--metrics-file` is refused with `--userns` (exit code 2): the
-report would be written as the range's uid. Root's own `prune --all` on a directory this command takes names it
-instead of the commands below, which would stop at the range's other ids.
+report would be written as the range's uid. Root's own `prune --all` on a
+directory this command takes names it instead of the commands below, which
+would stop at the range's other ids.
 
 Without `--userns`, root is refused, a container's root included: it empties
 its state directory with ordinary tools while no build uses it and nothing is

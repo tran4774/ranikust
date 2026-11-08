@@ -79,7 +79,7 @@ Phase 5's `prune` is not covered.
 - Bad, because an entry whose uid or gid is neither root's nor the range's
   (a range shrunk or moved since the build, a file of another account)
   stops root's commands with nothing changed; ranikust names no way past
-  it, and builds refuse the marked directory while it is there.
+  it, and the marker, which builds refuse, stays while that entry is there.
 
 ## Evidence
 
