@@ -2107,21 +2107,21 @@ struct RunUser {
 /// `setgroups`, `setresgid` and `setresuid` return for an id the user
 /// namespace does not map, [`Error::Unmapped`] naming the ids (ADR-0098).
 fn unmapped_user(e: Error, user: &RunUser) -> Error {
-    match e {
-        Error::Setup {
-            step: step @ (Step::Groups | Step::Gid | Step::Uid),
-            source,
-        } if source.raw_os_error() == Some(libc::EINVAL) => {
-            let groups: Vec<u32> = user.groups.iter().map(|g| g.as_raw()).collect();
-            Error::Unmapped(rnk_rootfs::Unmapped::user(
-                step,
-                user.uid.as_raw(),
-                user.gid.as_raw(),
-                &groups,
-            ))
-        }
-        e => e,
+    if let Error::Setup {
+        step: step @ (Step::Groups | Step::Gid | Step::Uid),
+        source,
+    } = &e
+        && source.raw_os_error() == Some(libc::EINVAL)
+    {
+        let groups: Vec<u32> = user.groups.iter().map(|g| g.as_raw()).collect();
+        return Error::Unmapped(rnk_rootfs::Unmapped::user(
+            *step,
+            user.uid.as_raw(),
+            user.gid.as_raw(),
+            &groups,
+        ));
     }
+    e
 }
 
 /// How a reaped `RUN` that was not cancelled ended: its status, the

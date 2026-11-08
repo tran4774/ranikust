@@ -74,7 +74,8 @@ impl UserNamespace {
             canonical(&text).ok_or_else(|| not_a_map(name))
         };
         let (uid_map, gid_map) = (map("uid_map")?, map("gid_map")?);
-        let ids = MappedIds::parse(&uid_map, &gid_map).ok_or_else(|| not_a_map("uid_map"))?;
+        let ids =
+            MappedIds::parse(&uid_map, &gid_map).ok_or_else(|| not_a_map("uid_map and gid_map"))?;
         Ok(Some(Self {
             uid_map,
             gid_map,

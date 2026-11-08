@@ -143,6 +143,11 @@ fn check_one_id(out: &str) {
     assert_eq!(field(out, "root extract"), "ok", "{out}");
     assert_eq!(field(out, "owned check"), OWNED_ONE_ID, "{out}");
     assert!(
+        field(out, "owned ways")
+            .contains("of at least 1000 subordinate uids and 1000 subordinate gids"),
+        "{out}"
+    );
+    assert!(
         field(out, "far check").starts_with(
             "owners this user namespace does not map: uid 3000000000 (/far), gid 3000000000 \
              (/far); it maps uid 0 and gid 0"
@@ -152,8 +157,9 @@ fn check_one_id(out: &str) {
     for image in ["owned", "far"] {
         let ways = field(out, &format!("{image} ways"));
         for part in [
+            "maps one uid and one gid,",
             "install uidmap",
-            "/etc/subuid and /etc/subgid",
+            "/etc/subuid and /etc/subgid of at least",
             "as root",
             "in a container",
         ] {
@@ -172,39 +178,19 @@ fn check_one_id(out: &str) {
 /// which the build's user namespace takes for no tool (not a regular
 /// file).
 fn hide_uidmap() -> Result<(), String> {
-    let tools = [c"/usr/bin/newuidmap", c"/usr/bin/newgidmap"];
-    // SAFETY: plain system calls on this single-threaded forked child, with
-    // NUL-terminated paths that outlive them.
-    unsafe {
-        if libc::unshare(libc::CLONE_NEWNS) != 0 {
-            return Err(format!("unshare: {}", io::Error::last_os_error()));
-        }
-        let none = std::ptr::null();
-        if libc::mount(
-            none,
-            c"/".as_ptr(),
-            none,
-            libc::MS_REC | libc::MS_PRIVATE,
-            none.cast(),
-        ) != 0
-        {
-            return Err(format!("private /: {}", io::Error::last_os_error()));
-        }
-        for tool in tools {
-            if libc::mount(
-                c"/dev/null".as_ptr(),
-                tool.as_ptr(),
-                none,
-                libc::MS_BIND,
-                none.cast(),
-            ) != 0
-            {
-                return Err(format!(
-                    "bind over {tool:?}: {}",
-                    io::Error::last_os_error()
-                ));
-            }
-        }
+    use rustix::mount::MountPropagationFlags;
+    // SAFETY: this forked child is single-threaded, so no other thread
+    // shares the mount namespace it leaves.
+    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS) }
+        .map_err(|e| format!("unshare: {e}"))?;
+    rustix::mount::mount_change(
+        "/",
+        MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
+    )
+    .map_err(|e| format!("private /: {e}"))?;
+    for tool in ["/usr/bin/newuidmap", "/usr/bin/newgidmap"] {
+        rustix::mount::mount_bind("/dev/null", tool)
+            .map_err(|e| format!("bind over {tool}: {e}"))?;
     }
     Ok(())
 }
@@ -253,7 +239,7 @@ fn an_owner_past_the_container_s_ranges_is_refused_before_extraction() {
     );
     let ways = field(&out, "far ways");
     assert!(
-        ways.contains("does not map uid 3000000000 and gid 3000000000: widen the container's"),
+        ways.contains("does not map uid 3000000000 and gid 3000000000: widen its id ranges"),
         "{out}"
     );
     assert!(field(&out, "far extract").ends_with(UNMAPPED), "{out}");
@@ -366,7 +352,9 @@ fn an_owner_past_a_user_s_ranges_is_refused_before_extraction() {
         "{out}"
     );
     assert!(
-        field(&out, "far ways").contains("widen them so that it maps uid 3000000000 and gid"),
+        field(&out, "far ways").contains(
+            "widen them to at least 3000000000 subordinate uids and 3000000000 subordinate gids"
+        ),
         "{out}"
     );
     assert!(field(&out, "far extract").ends_with(UNMAPPED), "{out}");

@@ -40,7 +40,7 @@ pub(crate) fn check(
     let span = tracing::debug_span!(
         "rnk_snapshot.check_owners",
         layers = layers.len(),
-        scanned = tracing::field::Empty,
+        layers_scanned = tracing::field::Empty,
     );
     let _entered = span.enter();
     let mut found = Unmapped::owners(ids.clone());
@@ -72,7 +72,7 @@ pub(crate) fn check(
         }
         scanned += 1;
     }
-    span.record("scanned", scanned);
+    span.record("layers_scanned", scanned);
     if found.is_empty() {
         Ok(())
     } else {

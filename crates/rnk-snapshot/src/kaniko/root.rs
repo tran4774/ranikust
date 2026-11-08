@@ -47,8 +47,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use rnk_layer::{Compression, EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
 use rnk_rootfs::{
-    CopyOpts, FileType, IgnoreList, RootPath, Unmapped, Whiteouts, copy_filtered, delete_contents,
-    extract, extract_live, extract_live_literal,
+    CopyOpts, FileType, IgnoreList, MappedIds, RootPath, Unmapped, Whiteouts, copy_filtered,
+    delete_contents, extract, extract_live, extract_live_literal,
 };
 use rnk_store::{NamedGuard, Store};
 use rustix::io::Errno;
@@ -453,7 +453,7 @@ impl Shared {
     /// the store is read as it is.
     fn spool(&self, store: &Store, layer: &KanikoLayer) -> Result<Arc<Spooled>> {
         if !matches!(layer.source, LayerSource::Stream(_)) {
-            return Spooled::of(store, layer).map(Arc::new);
+            return Spooled::of(store, layer, None).map(Arc::new);
         }
         let cached = {
             let mut spools = self.spools();
@@ -463,7 +463,14 @@ impl Shared {
         };
         let spooled = match cached {
             Some(spooled) => spooled,
-            None => Arc::new(Spooled::of(store, layer)?),
+            None => {
+                let ns = UserNamespace::current()?;
+                Arc::new(Spooled::of(
+                    store,
+                    layer,
+                    ns.as_ref().map(UserNamespace::ids),
+                )?)
+            }
         };
         let mut spools = self.spools();
         if let Some(entry) = spools.get_mut(&layer.diff_id) {
@@ -1040,19 +1047,19 @@ impl Spooled {
     /// them once, which nothing else sees: to check the tar headers as the
     /// extraction frames them and refuses them from a header alone, the
     /// `tar-header` limit and the kernel's limits included
-    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID; in a
-    /// user namespace, also to find the owners the extraction would give
-    /// that the namespace does not map, refused once the layer is verified
-    /// (ADR-0098). The
+    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID; with
+    /// `ids`, the ids of the user namespace the build runs in, also to find
+    /// the owners the extraction would give that it does not map, refused
+    /// once the layer is verified (ADR-0098). The
     /// body is read to its end, even after a bad header, where its source
     /// checks the size and the compressed digest. The first failure of the
     /// body or of its decompression is reported as such, before a bad
     /// header or a wrong diff ID. A blob already on disk is kept as it is.
-    fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
+    fn of(store: &Store, layer: &KanikoLayer, ids: Option<&MappedIds>) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
             return Ok(Self(SpooledBlob::Blob(layer.clone())));
         };
-        let mut owners = UserNamespace::current()?.map(|ns| Unmapped::owners(ns.ids().clone()));
+        let mut owners = ids.map(|ids| Unmapped::owners(ids.clone()));
         let what = || PathBuf::from(layer.diff_id.as_str());
         let file = store.scratch_file()?;
         let copy = file.try_clone().map_err(|source| Error::Io {

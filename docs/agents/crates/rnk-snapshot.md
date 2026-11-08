@@ -356,7 +356,7 @@ Rows: [design/metrics.md](../../design/metrics.md#rnk-snapshot).
 - Spans: `prepare` (`layers`), `apply` (a cached layer), `mount`, `umount`,
   `empty`, `keep` (`paths`; 0 for the whole root), `hand_over` (inside
   `prepare` with `handed_over = true`, `rnk_rootfs.prune` in it),
-  `release`, `probe`, `check_owners` (`layers`, `scanned`; per image, in a
+  `release`, `probe`, `check_owners` (`layers`, `layers_scanned`; per image, in a
   user namespace); records `diff`
   (`files_added`, `whiteouts`, `bytes`, ...), `walk` (`entries`,
   `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads`),

@@ -972,6 +972,50 @@ fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
     root.release().unwrap();
 }
 
+/// In a user namespace that does not map an owner of a streamed layer, the
+/// spool pass refuses the layer once it is verified, naming the owner,
+/// before anything of it reaches `/` (ADR-0098).
+#[test]
+fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_before_extraction() {
+    let (f, store) = Fixture::tars();
+    let kept = f.layer("l1", &[("a", b"owned")]);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(kept.diff_id(), source as Arc<dyn LayerOpen>)
+        .unwrap();
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entry.
+    let other = uid.max(gid).wrapping_add(1);
+    let one = format!("{other} 0 1\n");
+    let ids = MappedIds::parse(&one, &one).unwrap();
+    let e = Spooled::of(&store, &layer, Some(&ids)).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "owners this user namespace does not map: uid {uid} (/a), gid {gid} (/a); it maps \
+             uid {other} and gid {other}"
+        )
+    );
+    assert!(!f.host.join("a").exists());
+    // The control: outside a user namespace, or in one that maps the
+    // owners, the same layer passes.
+    Spooled::of(&store, &layer, None).unwrap();
+    let all = MappedIds::parse("0 0 4294967295\n", "0 0 4294967295\n").unwrap();
+    Spooled::of(&store, &layer, Some(&all)).unwrap();
+}
+
 /// A streamed layer of `files` and its counting source, the layer made
 /// `stages` times as stages of a build make it (`streamed_layer` once per
 /// stage pulled on it).

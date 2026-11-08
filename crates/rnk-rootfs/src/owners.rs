@@ -47,9 +47,19 @@ impl MappedIds {
     /// without `newuidmap` and `newgidmap` does.
     #[must_use]
     pub fn is_one_id(&self) -> bool {
-        [&self.uids, &self.gids]
-            .iter()
-            .any(|r| matches!(r.as_slice(), [(a, b)] if a == b))
+        self.is_one_uid() || self.is_one_gid()
+    }
+
+    /// Whether the uid map gives one id only.
+    #[must_use]
+    pub fn is_one_uid(&self) -> bool {
+        matches!(self.uids.as_slice(), [(a, b)] if a == b)
+    }
+
+    /// Whether the gid map gives one id only.
+    #[must_use]
+    pub fn is_one_gid(&self) -> bool {
+        matches!(self.gids.as_slice(), [(a, b)] if a == b)
     }
 }
 
@@ -198,23 +208,30 @@ impl Unmapped {
         }
     }
 
-    /// The highest uid met that may be unmapped: the one a map must reach.
+    /// The highest uid met that `map` does not hold: the one a map must
+    /// reach. A refused call does not tell which of its ids failed, so
+    /// without `map` each of them counts; a scan's own map always applies.
     #[must_use]
-    pub fn highest_uid(&self) -> Option<u32> {
+    pub fn highest_uid(&self, map: Option<&MappedIds>) -> Option<u32> {
+        let unmapped = |id: &u32| map.is_none_or(|m| !m.maps_uid(*id));
         match &*self.0 {
             Found::Owners { highest, .. } => highest[0],
-            Found::Chown { uid, .. } => *uid,
-            Found::User { uid, .. } => Some(*uid),
+            Found::Chown { uid, .. } => uid.filter(unmapped),
+            Found::User { uid, .. } => Some(*uid).filter(unmapped),
         }
     }
 
-    /// The highest gid met that may be unmapped.
+    /// The highest gid met that `map` does not hold, as
+    /// [`Unmapped::highest_uid`].
     #[must_use]
-    pub fn highest_gid(&self) -> Option<u32> {
+    pub fn highest_gid(&self, map: Option<&MappedIds>) -> Option<u32> {
+        let unmapped = |id: &u32| map.is_none_or(|m| !m.maps_gid(*id));
         match &*self.0 {
             Found::Owners { highest, .. } => highest[1],
-            Found::Chown { gid, .. } => *gid,
-            Found::User { gid, groups, .. } => groups.iter().copied().chain([*gid]).max(),
+            Found::Chown { gid, .. } => gid.filter(unmapped),
+            Found::User { gid, groups, .. } => {
+                groups.iter().copied().chain([*gid]).filter(unmapped).max()
+            }
         }
     }
 
@@ -249,6 +266,7 @@ impl Unmapped {
             ),
             (gid, &mut *gids, MappedIds::maps_gid),
         ];
+        let mut unnamed = false;
         for ((id, named, maps), top) in ids.into_iter().zip(highest.iter_mut()) {
             let Some(id) = id.filter(|&id| id != u32::MAX && !maps(map, id)) else {
                 continue;
@@ -260,8 +278,12 @@ impl Unmapped {
             if named.len() < NAMED {
                 named.insert(id, path.to_owned());
             } else {
-                *more += 1;
+                unnamed = true;
             }
+        }
+        // An entry counts once, whether its uid, its gid or both are unnamed.
+        if unnamed {
+            *more += 1;
         }
     }
 }
@@ -390,12 +412,24 @@ mod tests {
         for id in 1000..1000 + 2 * named {
             found.note(Some(id), None, Path::new("many"));
         }
-        assert_eq!(found.highest_uid(), Some(1000 + 2 * named - 1));
-        assert_eq!(found.highest_gid(), Some(101));
+        assert_eq!(found.highest_uid(None), Some(1000 + 2 * named - 1));
+        assert_eq!(found.highest_gid(None), Some(101));
         assert!(
             found
                 .to_string()
                 .contains(", and 9 more entries with other ids; it maps"),
+            "{found}"
+        );
+        // Six more gids fill the names, two are counted; then an entry whose
+        // uid and gid are both unnamed counts once.
+        for id in 2000..2008 {
+            found.note(None, Some(id), Path::new("gids"));
+        }
+        found.note(Some(5000), Some(5000), Path::new("both"));
+        assert!(
+            found
+                .to_string()
+                .contains(", and 12 more entries with other ids; it maps"),
             "{found}"
         );
         assert_eq!(found.map(), Some(&map("0 1000 1\n", "0 1000 1\n")));
@@ -419,8 +453,25 @@ mod tests {
             "set the group id for uid 1000, gid 1000, groups 27 4: an id this user namespace \
              does not map"
         );
-        assert_eq!((u.highest_uid(), u.highest_gid()), (Some(1000), Some(1000)));
+        assert_eq!(
+            (u.highest_uid(None), u.highest_gid(None)),
+            (Some(1000), Some(1000))
+        );
         let u = Unmapped::user("set supplementary groups", 0, 0, &[5000]);
-        assert_eq!(u.highest_gid(), Some(5000));
+        assert_eq!(u.highest_gid(None), Some(5000));
+        // With the map, only the ids it lacks: the call does not tell which.
+        let ranges = map("0 1000 1\n1 100000 65536\n", "0 1000 1\n1 100000 65536\n");
+        let u = Unmapped::user("set the user id", 70000, 0, &[27, 80000]);
+        assert_eq!(
+            (u.highest_uid(Some(&ranges)), u.highest_gid(Some(&ranges))),
+            (Some(70000), Some(80000))
+        );
+        let c = Unmapped::chown(Path::new("a"), Some(70000), Some(42));
+        assert_eq!(
+            (c.highest_uid(Some(&ranges)), c.highest_gid(Some(&ranges))),
+            (Some(70000), None)
+        );
+        let one_gid = map("0 1000 1\n1 100000 65536\n", "0 1000 1\n");
+        assert!(one_gid.is_one_id() && one_gid.is_one_gid() && !one_gid.is_one_uid());
     }
 }
