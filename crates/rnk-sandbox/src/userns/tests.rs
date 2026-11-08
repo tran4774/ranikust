@@ -902,7 +902,8 @@ fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker
 
 /// T2: as root with a shifted range (`--userns`, ADR-0104): every step a
 /// `RUN` needs passes, the probe's directory is given to the range's
-/// first ids and emptied, and a closure runs as root of the namespace with
+/// first ids, with what the probe made in it, and nothing in it is deleted
+/// from outside the namespace, and a closure runs as root of the namespace with
 /// no supplementary group, a file it makes owned on the host by the
 /// range's first ids.
 #[test]
@@ -919,7 +920,24 @@ fn the_user_namespace_steps_of_a_shifted_range_pass_as_its_first_ids() {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     let report = probe_in(&RootPath::open(&dir).unwrap(), BuildIds::Shifted(sub)).unwrap();
     measured(&format!("user namespace with a shifted range: {report}"));
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+    let mut left: Vec<(String, u32, u32)> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            let m = e.metadata().unwrap();
+            (e.file_name().into_string().unwrap(), m.uid(), m.gid())
+        })
+        .collect();
+    left.sort();
+    let (u, g) = (sub.uids.start, sub.gids.start);
+    assert_eq!(
+        left,
+        [
+            ("chown".into(), u, g),
+            ("proc".into(), u, g),
+            ("sys".into(), u, g)
+        ]
+    );
     let meta = fs::metadata(&dir).unwrap();
     assert_eq!((meta.uid(), meta.gid()), (sub.uids.start, sub.gids.start));
     assert_eq!(report.stop(ANY), None, "{report}");

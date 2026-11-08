@@ -412,7 +412,10 @@ impl fmt::Display for UsernsReport {
 
 /// Probes the user-namespace steps in `dir`, an empty directory the caller
 /// made for it on the state directory's filesystem, held from where it was
-/// made; what this makes there is removed before it returns. Root gets a
+/// made; what this makes there is removed before it returns, except for a
+/// shifted range ([`BuildIds::shifted_root`]): `dir` is then given to the
+/// range's first ids, and nothing in it is deleted here, so the caller
+/// removes it with the range's rights alone. Root gets a
 /// map of every id it has ([`IdMap::Ranges`]), else one id; another user
 /// gets `newuidmap` with `subordinate`, else one id. Each map is one
 /// attempt, in its own child, until one works or `unshare` itself is
@@ -448,7 +451,13 @@ struct Targets {
 fn probe_in(root: &RootPath, ids: BuildIds) -> Result<UsernsReport> {
     let span = tracing::debug_span!("rnk_sandbox.probe_userns", ok = Empty, map = Empty);
     let _entered = span.enter();
-    let targets = make_targets(root, ids.shifted_root())?;
+    let given = ids.shifted_root();
+    let targets = make_targets(root, given)?;
+    // What was given away is left to the caller.
+    let remove = |targets: Targets| match given {
+        Some(_) => drop(targets),
+        None => remove_targets(root, targets),
+    };
     let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
     let mut maps = Vec::new();
@@ -467,7 +476,7 @@ fn probe_in(root: &RootPath, ids: BuildIds) -> Result<UsernsReport> {
             // A child still there may still work in the directory.
             Err(e @ Error::ProbeChildLeft { .. }) => return Err(e),
             Err(e) => {
-                remove_targets(root, targets);
+                remove(targets);
                 return Err(e);
             }
         };
@@ -478,7 +487,7 @@ fn probe_in(root: &RootPath, ids: BuildIds) -> Result<UsernsReport> {
             break;
         }
     }
-    remove_targets(root, targets);
+    remove(targets);
     let report = report_of(maps, last);
     // Whether the steps work at all: the caller weighs the operator's
     // request for an rbind of `/proc`.
@@ -526,7 +535,8 @@ fn report_of(maps: Vec<(IdMap, StepResult)>, last: Option<(Plan, Attempt)>) -> U
 /// Makes the [`Targets`], given to `owner` with the probe's directory
 /// when the namespace's root is not this process's ids
 /// ([`BuildIds::shifted_root`]): its capabilities there cover only files of
-/// mapped ids. On a failure, removes what it made first.
+/// mapped ids. On a failure, removes what it made first, which nothing
+/// after the directory is given can cause.
 fn make_targets(root: &RootPath, owner: Option<(u32, u32)>) -> Result<Targets> {
     let mut made = Vec::new();
     let r = make_each(root, owner, &mut made);
@@ -549,6 +559,7 @@ fn make_each(
     made.push(("sys", true));
     let chown = root.open_at("chown", &OpenHow::write().create_new(0o600))?;
     made.push(("chown", false));
+    let dir = root.open_at(".", &OpenHow::path().directory())?;
     if let Some((uid, gid)) = owner {
         let meta = rnk_rootfs::Meta {
             uid: Some(uid),
@@ -561,7 +572,6 @@ fn make_each(
             root.set_meta(name, &meta)?;
         }
     }
-    let dir = root.open_at(".", &OpenHow::path().directory())?;
     Ok(Targets { dir, chown })
 }
 

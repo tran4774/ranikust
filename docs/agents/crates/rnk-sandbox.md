@@ -53,7 +53,8 @@ them for both.
   `newuidmap`/`newgidmap` with the subordinate ids the caller read, else one
   id; root with `--userns`, `BuildIds::Shifted`: that range alone, `0 S C`,
   root's own ids unmapped, its children taking the range's first ids before
-  each step, which the probe's files are given to); `chown` to a mapped id
+  each step, which the probe's files are given to, then left to the caller,
+  nothing in them deleted outside the namespace); `chown` to a mapped id
   other than 0; `unshare(CLONE_NEWNS)`, a second
   call after the map, so that the mount namespace is owned by the new user
   namespace and a refusal names its step (with a ranged map Ubuntu 24.04
@@ -151,7 +152,7 @@ pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]; Display: "
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
 impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; `ranikust` calls it for --allow proc.rbind): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's files of /proc/<pid> not under ptrace's check (cmdline, status, stat, mountinfo, cgroup, net/*…), not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6), and writes nothing there: the bind is read-only (ADR-0132); this crate does not scan for a shared PID namespace: `ranikust` runs the peer scan (ADR-0129) and the check of ADR-0134 before it enters the build's user namespace
 pub enum RootEntry { PivotRoot, MoveMount }
-pub fn probe_user_namespace(dir: &RootPath, ids: BuildIds) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
+pub fn probe_user_namespace(dir: &RootPath, ids: BuildIds) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty, except under a shifted range: then given to the range with what the probe made, nothing in it deleted, for the caller to remove with the range's rights
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(allowed: Fallbacks): the first step a RUN needs that failed, an rbind of /proc passing `proc` only where allowed has allow_proc_rbind (ADR-0126), one of /sys always; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId, Shifted } // #[non_exhaustive]; "multi-range", "newuidmap", "one uid", "shifted range"
 pub enum BuildIds { Own(Option<SubordinateIds>), Shifted(SubordinateIds) } // exhaustive, so that a caller decides for each; Own: the caller's ids, with its subordinate ranges if any; Shifted: root's --userns range (ADR-0104), only as root and not from 0, else Error::NoUserNamespace { tried } before any change, the map NotRun; shifted_root(): the range's first uid and gid

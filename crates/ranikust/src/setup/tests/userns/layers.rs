@@ -953,6 +953,10 @@ fn root_deletes_nothing_in_a_probe_directory_it_gave_away() {
     });
     assert_eq!(out, "moved\tprobed");
     assert!(probe_dir.join("victim/deep/keep").exists());
+    // What the probe made, too, is left to the store.
+    for made in ["chown", "proc", "sys"] {
+        assert!(probe_dir.join(made).exists(), "{made}");
+    }
 
     let out = in_child(None, || {
         match rnk_sandbox::enter_build_user_namespace(ids) {
