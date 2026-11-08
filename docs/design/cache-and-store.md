@@ -159,7 +159,8 @@ maps once, when it opens, and `rnk-snapshot` keys its layers by them.
   published. Under root's `--mode=auto`, rootless overlay mode refused so is
   passed over for kaniko mode, as for its other refusals before the build's
   user namespace, and the refusal, with its way out, is logged as a warning
-  (the others as information).
+  (the others as information): kaniko mode on `/` then refuses a state
+  directory that holds data (ADR-0077), so this line names the cause.
 - **Older layers:** version 2 of the key's tag came with the canary, so a
   layer extracted before it is extracted again, never reused unguarded; the
   old one stays until `prune --all`.

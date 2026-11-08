@@ -502,8 +502,9 @@ fn open_store(root: &Path, state_dir: &Path, euid: u32) -> Result<Store, Refusal
 /// [`Kind::IdMapChanged`], any other of [`Kind::Other`].
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
     use rnk_store::Error;
-    let reason = match e {
-        Error::Io { path, .. } if path == state_dir => e.to_string(),
+    let (reason, kind) = match e {
+        Error::Io { path, .. } if path == state_dir => (e.to_string(), Kind::Other),
+        Error::IdMapChanged { .. } => (e.to_string(), Kind::IdMapChanged),
         Error::NotAStateDir { .. }
         | Error::NoFlock { .. }
         | Error::Busy { .. }
@@ -511,26 +512,25 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
         | Error::NotPruned { .. }
         | Error::NotAbandoned { .. }
         | Error::PruneCutShort { .. }
-        | Error::IdMapChanged { .. }
         | Error::StateNotEmpty { .. }
         | Error::NotEmptied { .. }
         | Error::Unmarked { .. }
         | Error::UsedOnSlash { .. }
         | Error::AnonymousFile { .. }
-        | Error::NameOutlivesUnlink { .. } => e.to_string(),
+        | Error::NameOutlivesUnlink { .. } => (e.to_string(), Kind::Other),
         Error::Io { .. }
         | Error::BadEntry { .. }
         | Error::Cancelled
         | Error::Anonymous { .. }
         | Error::Random(_)
         | Error::Rootfs(_)
-        | Error::Fill { .. } => format!("cannot open the store in {}: {e}", state_dir.display()),
+        | Error::Fill { .. } => (
+            format!("cannot open the store in {}: {e}", state_dir.display()),
+            Kind::Other,
+        ),
     };
     Refusal {
-        kind: match e {
-            Error::IdMapChanged { .. } => Kind::IdMapChanged,
-            _ => Kind::Other,
-        },
+        kind,
         reason,
         guidance: match crate::prune::unfinished_prune(e) {
             Some((crate::prune::Unfinished::CutShort, dir)) => {

@@ -38,8 +38,8 @@ extract the same digest at once.
   initial one (`user_namespace_proc`), for its own directories' group and
   `rnk-snapshot`'s layer keys and device nodes; that namespace's id maps
   (`IdMaps`), read once by `open`. `IdMaps` is the only reader and parser
-  of `/proc/self/{uid,gid}_map` (with `rnk_rootfs::MappedIds::parse`): the
-  others take the maps from it, `rnk-sandbox` apart (ADR-0098;
+  of `/proc/self/{uid,gid}_map`: the others take the maps from it,
+  `rnk-sandbox` apart (ADR-0098;
   [ARCHITECTURE](../../../ARCHITECTURE.md#rnk-store)).
 - The canary of each id map (ADR-0128, #183): made with the map's first
   layer, checked by `open`, `check_state_dir` and the reuse of a layer of

@@ -121,11 +121,20 @@ fn extract(state: &Path) -> String {
 
 /// Rootless overlay mode's plan ([`crate::setup::rootless::plan`]), which
 /// checks and holds the state directory, then probes in it, before the
-/// build's user namespace exists: `planned`, or `refused\t<refusal>`.
+/// build's user namespace exists: `planned`, or `refused\t<refusal>`, with
+/// `warns\t` before the refusal where root's `--mode=auto` would log it as a
+/// warning.
 fn plan(state: &Path) -> String {
     match crate::setup::rootless::plan(state, false, false, None) {
         Ok(_) => "planned".to_owned(),
-        Err(n) => format!("refused\t{}", n.refusal),
+        Err(n) => {
+            let warns = if n.refusal.warns_on_fallback() {
+                "warns\t"
+            } else {
+                ""
+            };
+            format!("refused\t{warns}{}", n.refusal)
+        }
     }
 }
 
@@ -135,8 +144,8 @@ const CHANGED: &str = "holds layers extracted under other ids";
 /// Asserts that rootless overlay mode's plan under the range from `first`,
 /// before the build's user namespace exists, and the store's open in that
 /// namespace each refuse the state directory `state` for its canary's
-/// `uid-1` owned by `owner`, with the way out, and that `state` is still as
-/// it was.
+/// `uid-1` owned by `owner`, with the way out, the plan's a warning on
+/// fallback, and that `state` is still as it was.
 fn assert_refused(
     run: impl Fn(u32, fn(&Path) -> String) -> String,
     first: u32,
@@ -144,7 +153,9 @@ fn assert_refused(
     state: &Path,
 ) {
     let before = tree(state);
-    for out in [run(first, plan), run(first, extract)] {
+    let planned = run(first, plan);
+    assert!(planned.starts_with("refused\twarns\t"), "{planned}");
+    for out in [planned, run(first, extract)] {
         assert!(out.starts_with("refused\t"), "{out}");
         assert!(out.contains(CHANGED), "{out}");
         assert!(
