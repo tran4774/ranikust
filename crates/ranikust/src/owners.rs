@@ -160,8 +160,8 @@ fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String 
             "the build's user namespace maps one uid and one gid, as for a user without \
              newuidmap and newgidmap or without ranges of its own: install uidmap (Ubuntu \
              does not by default) and give this user a first range in /etc/subuid and \
-             /etc/subgid of at least {} ({NO_OVERLAP}), run ranikust as root, or run it in a \
-             container",
+             /etc/subgid, in decimal with no leading 0, of at least {} ({NO_OVERLAP}), run \
+             ranikust as root, or run it in a container",
             needed_text(uid, gid)
         ),
         (Namespace::UserOneId, Some(too_few)) => format!(
@@ -255,8 +255,8 @@ mod tests {
             "maps one uid and one gid,",
             "install uidmap",
             "Ubuntu does not by default",
-            "a first range in /etc/subuid and /etc/subgid of at least 1000 subordinate uids \
-             and 1000 subordinate gids",
+            "a first range in /etc/subuid and /etc/subgid, in decimal with no leading 0, of \
+             at least 1000 subordinate uids and 1000 subordinate gids",
             "run ranikust as root",
             "in a container",
         ] {

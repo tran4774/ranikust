@@ -149,8 +149,9 @@ overlay mount options.
   their owners and refuses the image where one is not mapped, naming the
   owners, the files that have them and the ways out: install `uidmap`
   (Ubuntu does not by default) and give the user a first range in
-  `/etc/subuid` and `/etc/subgid` that reaches them, widen the one it has,
-  run as root, or run in a container (whose ranges must reach them too). A
+  `/etc/subuid` and `/etc/subgid`, in decimal with no leading 0 (such a line
+  is passed over), that reaches them, widen the one it has, run as root, or
+  run in a container (whose ranges must reach them too). A
   range must not overlap another user's range or a real account's ids, so
   for an owner past 65536 (`useradd`'s default count) ranikust asks for no
   wider range and names root or a container instead. A `COPY --chown` or a
@@ -161,6 +162,72 @@ overlay mount options.
   first; on `/`, in a rootless container, where they are streamed, each is
   checked just before it is extracted, so the layers before the refused one
   may already be there ([ADR-0137]).
+
+### `--userns`
+
+As root, `--userns` builds in rootless overlay mode in a user namespace whose
+root is an unprivileged uid of the host, so that a process escaping a `RUN`
+is not the host's root ([ADR-0104]). That uid and its gid are the first of a
+`ranikust` range you add to `/etc/subuid` and `/etc/subgid`:
+
+```text
+ranikust:<start>:65536
+```
+
+in both files, in decimal with no leading 0, with a `<start>` above 0 that no
+account, no other range and no other tool's range (below) uses. Without it
+the build is refused before anything is written, and so it is where:
+
+- the range shares an id with another line of those files, as any version of
+  `newuidmap` may read that line, or with an account of `/etc/passwd` or
+  `/etc/group`;
+- a line of those files has a start or count that versions of `newuidmap`
+  read differently or not at all: a `-` sign, an empty field, anything else
+  in the field (letters, `0b`, an 8 or 9 after a leading 0) or a value past
+  64 bits; white space, a `+` or `0x` before the number are read as
+  `newuidmap` reads them;
+- a line of those files has a NUL byte;
+- an account is named `ranikust` in `/etc/passwd` (`+ranikust` too), or a
+  file is named like a systemd userdb record of one (`ranikust.user` in
+  `/etc/userdb` and the other drop-in directories): `newuidmap` would give
+  it the range.
+
+Only these files and the names of userdb records are checked: not accounts from
+LDAP or SSSD, the ids of userdb records, nor `systemd-homed` and `DynamicUser`
+accounts, so do not name a `DynamicUser=` unit `ranikust` (it gets an account
+by that name that only NSS knows). Nor are the ranges other tools hand out, so
+keep `<start>` outside those in use on the host: an NSS `subid:` module such as
+SSSD's or FreeIPA's (`newuidmap` then reads it instead of the files, and
+ranikust warns of it); the kubelet's pod user namespaces, which take every id
+above 65535 unless an account named `kubelet` exists and `getsubids` is
+installed, so with them on, create that account and give it lines in those
+files, which the check counts; systemd's `DynamicUser` (61184–65519); and
+`systemd-nspawn --private-users=pick` (524288–1879048191). Every `--userns`
+build runs as that range: they are kept apart from the host, not from each
+other.
+
+- **State directory.** The range's first uid owns it: pass a `--state-dir` of
+  its own, below directories only root owns and may write, each searchable by
+  that uid through its mode bits (ACLs are not supported), such as
+  `/var/lib/ranikust-userns` (ranikust makes a missing one). Root's own state
+  directory is refused, never given away, and so is any at, below or above
+  root's default, `/var/lib/ranikust`, whether it exists or not ([ADR-0139]).
+  A build killed while it makes a missing one, or a missing directory
+  above it, may leave an empty `.ranikust-new-*` directory in the parent of
+  the one it was making. One killed while its probe's files were being made
+  may leave a `.ranikust-anon-userns-probe-*` directory of root's, not
+  empty, in the state directory, which the next builds warn of. ranikust
+  removes neither: remove them by hand, as root.
+- **What the build reaches** it reaches as that uid: the context, the
+  Dockerfile, the working directory (where a relative `--dockerfile` is
+  looked for first), `--secret` files, the registry credentials and the
+  outputs. Root is to read the credentials and secrets itself first
+  ([#206](https://github.com/tran4774/ranikust/issues/206)); until then that
+  uid must be able to read them.
+- **No other mode.** Where a step of the user namespace fails, the build is
+  refused; it never falls back to a mode without it. `--mode=kaniko` with
+  `--userns` is a usage error, and so is `--userns` from a user other than
+  root, whose build already runs in a user namespace of its own.
 
 ## kaniko mode
 
@@ -369,6 +436,7 @@ absent, and where the state directory is on overlayfs.
 | You run ranikust as | Mode | What separates `RUN` from the machine |
 |---|---|---|
 | root on a host or VM | overlay | namespaces, a private root, reduced capabilities |
+| root on a host or VM, with `--userns` | overlay, rootless | the same, inside a user namespace whose root is an unprivileged uid of the host |
 | root in a privileged container | overlay | the same, inside the container |
 | a regular user allowed user namespaces | overlay, rootless | the same, inside a user namespace |
 | root in a container that forbids mounts, with a volume at the state directory | overlay, rootless (with `--allow proc.rbind` where `/proc` is masked) | the same, inside a user namespace |
@@ -417,6 +485,7 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0098]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md
 [ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
+[ADR-0104]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md
 [ADR-0107]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
 [ADR-0126]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md
@@ -428,4 +497,5 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md
 [ADR-0134]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md
 [ADR-0137]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md
+[ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md
 [ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md

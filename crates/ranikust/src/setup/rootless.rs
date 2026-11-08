@@ -3,14 +3,16 @@
 //! process unchanged; the build is then set up in that namespace
 //! ([`set_up`]), from which no other mode may follow in that process: root's
 //! `--mode=auto` sets up in a child, to fall back to kaniko mode in the
-//! parent (ADR-0136).
+//! parent (ADR-0136). Root's `--userns` takes the same path with its
+//! `ranikust` range ([`rnk_sandbox::BuildIds::Shifted`]), and never falls
+//! back.
 
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
 use rnk_sandbox::{
-    Fallbacks, KernelFs, MountResult, Sandbox, StepResult, SubordinateIds, UsernsCapabilities,
+    BuildIds, Fallbacks, KernelFs, MountResult, Sandbox, StepResult, UsernsCapabilities,
     UsernsReport,
 };
 use rnk_store::{BuildPaths, Store};
@@ -22,8 +24,8 @@ use crate::config::Seccomp;
 /// What the probe before the build's user namespace found: how to enter
 /// it, and what the sandbox may bind there.
 pub(crate) struct Plan {
-    /// The subordinate ids the probe's maps used.
-    subordinate: Option<SubordinateIds>,
+    /// The ids the probe's maps used.
+    ids: BuildIds,
     /// The operator's request and what the probe needed.
     fallbacks: Fallbacks,
     /// Whether the build binds `/proc`.
@@ -69,6 +71,11 @@ const PROC_RBIND: &str = "a RUN needs a new proc, which this user namespace may 
      another mount namespace that ranikust can open as it starts are refused (ADR-0126, \
      ADR-0129, ADR-0130, ADR-0134)";
 
+/// Guidance where a step of `--userns`'s user namespace fails.
+const USERNS_UNUSABLE: &str = "--userns needs a user namespace in which root's ranikust range \
+     may mount: run ranikust as root on a host or in a VM, or in a container started with \
+     --privileged";
+
 /// Guidance where another step of the user namespace fails.
 const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), or in a \
      container: kaniko mode, or overlay mode when it is started with --privileged";
@@ -76,14 +83,24 @@ const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), o
 /// The test hook's `no-userns` (`env`, the hook's variable): rootless
 /// overlay mode refused before its probe, the process unchanged, with the
 /// guidance for the effective uid `euid` where no user namespace is
-/// usable, `binary` as for [`plan`].
-pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> NotHere {
+/// usable, under `--userns` with `userns`, `binary` as for [`plan`].
+pub(crate) fn refused_by_hook(
+    env: &str,
+    euid: u32,
+    userns: bool,
+    binary: Option<&Path>,
+) -> NotHere {
+    let what = if userns {
+        "--userns"
+    } else {
+        "rootless overlay mode"
+    };
     NotHere {
         refusal: Refusal {
             kind: Kind::Other,
-            reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
+            reason: format!("{what} cannot run here: refused by {env}=no-userns"),
             // As a user namespace without capabilities stops.
-            guidance: guidance("hook", Stop::InNamespace, false, euid, binary),
+            guidance: guidance("hook", Stop::InNamespace, false, euid, userns, binary),
         },
         probed: false,
     }
@@ -91,52 +108,87 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> No
 
 /// The user namespace probe for rootless overlay mode, before the build's
 /// user namespace: for a user other than root, whether it gets one with
-/// capabilities, with nothing written ([`capabilities`]); the state
-/// directory's check ([`state_dir_for_probe`]), the subordinate ids of this
-/// user ([`crate::subids`]), then the steps and the overlay mount in a user
-/// namespace, in a directory made for them in the state directory, named
-/// as the leftovers an anonymous store removes, and removed after. Logs
-/// the probe's line, whose verdict counts an rbind of `/proc` only with
-/// `proc_rbind` (`--allow proc.rbind`, ADR-0126).
-/// `binary` is the path ranikust started from, which the advice where no
-/// user namespace is usable weighs ([`super::no_userns`]). Call while
-/// single-threaded.
+/// capabilities, with nothing written ([`capabilities`]); the ids to map
+/// (this user's subordinate ids, [`crate::subids::lookup`]; with `userns`,
+/// root's `ranikust` range, [`crate::subids::root_range`], refused where
+/// missing), the state directory's check for the namespace's root
+/// ([`state_dir_for_probe`]), then the steps and the overlay mount in a
+/// user namespace, in a directory made for them in the state directory,
+/// named as the leftovers a store removes: removed after, or, with
+/// `userns`, left to the build's store, which removes it from inside the
+/// namespace, as it does an earlier build's; this process removes only an
+/// earlier build's it had not yet given away
+/// ([`super::remove_own_probe_leftovers`]). Logs the probe's line, whose
+/// verdict counts an rbind of `/proc` only with `proc_rbind` (`--allow
+/// proc.rbind`, ADR-0126). `binary` is the path ranikust started from,
+/// which the advice where no user namespace is usable weighs
+/// ([`super::no_userns`]): a user other than root's, never `--userns`'s.
+/// Call while single-threaded.
 ///
 /// # Errors
 ///
 /// [`NotHere`]: the step that failed and what to do instead, with the
-/// process unchanged.
+/// process unchanged; with `userns`, nothing written where the range is
+/// missing or the state directory refused.
 pub(crate) fn plan(
     state_dir: &Path,
     proc_rbind: bool,
+    userns: bool,
     binary: Option<&Path>,
 ) -> Result<Plan, NotHere> {
     let euid = rustix::process::geteuid().as_raw();
-    // With capabilities, AppArmor's switch is not what stops any step.
-    let capable = euid != 0 && capabilities(euid, binary)?;
+    let what = if userns {
+        "--userns"
+    } else {
+        "rootless overlay mode"
+    };
+    // With capabilities, AppArmor's switch is not what stops any step;
+    // root's `--userns` is not a user's case.
+    let capable = !userns && euid != 0 && capabilities(euid, binary)?;
     let unprobed = |refusal| NotHere {
         refusal,
         probed: false,
     };
-    let held = state_dir_for_probe(state_dir, euid).map_err(unprobed)?;
-    let subordinate = crate::subids::lookup(euid).map_err(|e| {
-        unprobed(Refusal {
-            kind: Kind::Other,
-            reason: format!("cannot read this user's subordinate ids: {e}"),
-            guidance: "".into(),
-        })
-    })?;
+    // Read first: a `--userns` state directory is checked for, and made
+    // for, the range's first ids.
+    let (ids, owner) = if userns {
+        let sub = crate::subids::root_range().map_err(|reason| {
+            unprobed(Refusal {
+                kind: Kind::Other,
+                reason: format!("--userns cannot run here: {reason}"),
+                guidance: crate::subids::ROOT_RANGE_GUIDANCE.into(),
+            })
+        })?;
+        let owner = crate::statedir::Owner::Mapped {
+            uid: sub.uids.start,
+            gid: sub.gids.start,
+        };
+        (BuildIds::Shifted(sub), owner)
+    } else {
+        let subordinate = crate::subids::lookup(euid).map_err(|e| {
+            unprobed(Refusal {
+                kind: Kind::Other,
+                reason: format!("cannot read this user's subordinate ids: {e}"),
+                guidance: "".into(),
+            })
+        })?;
+        (BuildIds::Own(subordinate), crate::statedir::Owner::me())
+    };
+    let held = state_dir_for_probe(state_dir, euid, owner, what).map_err(unprobed)?;
+    if userns {
+        // The store, in the namespace, removes those it was given.
+        super::remove_own_probe_leftovers(state_dir);
+    }
     let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
     let _entered = span.enter();
     let name = format!("{}{}", rnk_store::USERNS_PROBE_PREFIX, unique());
-    let probed = super::probe_in_dir(state_dir, &name, subordinate).map_err(|e| {
+    let probed = super::probe_in_dir(state_dir, &name, ids).map_err(|e| {
         tracing::warn!("ranikust: user namespace probe could not run: {e}");
         NotHere {
             refusal: Refusal {
                 kind: Kind::Other,
                 reason: format!(
-                    "rootless overlay mode cannot run here: the user namespace probe could not \
-                     run: {e}"
+                    "{what} cannot run here: the user namespace probe could not run: {e}"
                 ),
                 guidance: "".into(),
             },
@@ -151,7 +203,7 @@ pub(crate) fn plan(
     let not_here = |reason: String, guidance| NotHere {
         refusal: Refusal {
             kind: Kind::Other,
-            reason: format!("rootless overlay mode cannot run here: {reason}"),
+            reason: format!("{what} cannot run here: {reason}"),
             guidance,
         },
         probed: true,
@@ -161,13 +213,13 @@ pub(crate) fn plan(
         let stop = stop_for(step, capable, &Steps::probed(report));
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
-            guidance(step, stop, rbind, euid, binary),
+            guidance(step, stop, rbind, euid, userns, binary),
         ));
     }
     if let Some(e) = probed.overlay_error() {
         return Err(not_here(
             format!("an overlay mount in the user namespace: {e}"),
-            guidance("overlay", Stop::Unknown, false, euid, binary),
+            guidance("overlay", Stop::Unknown, false, euid, userns, binary),
         ));
     }
     let bind_proc = proc_rbind && matches!(report.proc, MountResult::Rbind { .. });
@@ -177,7 +229,7 @@ pub(crate) fn plan(
         report.fallbacks()
     };
     Ok(Plan {
-        subordinate,
+        ids,
         fallbacks,
         proc_rbind: bind_proc,
         held,
@@ -219,6 +271,7 @@ fn capabilities(euid: u32, binary: Option<&Path>) -> Result<bool, NotHere> {
                 stop_for(step, false, &Steps::checked(&found)),
                 false,
                 euid,
+                false,
                 binary,
             ),
         },
@@ -283,43 +336,64 @@ fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
 }
 
 /// The state directory the probe may write in, made if missing: private
-/// (ADR-0050), not on overlayfs, as for overlay mode as root, and one the
-/// store would take, checked without writing (Q-111, (a)); its shared lock
-/// held from then on, `euid` naming what to do with a prune cut short.
-fn state_dir_for_probe(state_dir: &Path, euid: u32) -> Result<rnk_store::StateDirHold, Refusal> {
-    super::prepare_state_dir(state_dir)?;
-    if crate::statedir::on_overlayfs(state_dir) {
+/// (ADR-0050) and `owner`'s ([`crate::statedir::prepare_for`]), not on
+/// overlayfs, as for overlay mode as root, and one the store would take,
+/// checked without writing (Q-111, (a)); its shared lock held from then
+/// on, `euid` naming what to do with a prune cut short. Each refusal comes
+/// before anything is made or changed: overlayfs is told from the nearest
+/// directory that exists, and the store's check runs before the mode is
+/// set. `what` names the mode in messages.
+fn state_dir_for_probe(
+    state_dir: &Path,
+    euid: u32,
+    owner: crate::statedir::Owner,
+    what: &str,
+) -> Result<rnk_store::StateDirHold, Refusal> {
+    let refusal = |refused: crate::statedir::Refused| Refusal {
+        kind: Kind::Other,
+        reason: refused.0,
+        guidance: "".into(),
+    };
+    // A missing state directory would be made on its nearest parent's
+    // filesystem.
+    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
         return Err(Refusal {
             kind: Kind::Other,
             reason: format!(
-                "rootless overlay mode cannot run here: the state directory {} is on overlayfs, \
-                 a container's own root, where it cannot keep its upper directories",
+                "{what} cannot run here: the state directory {} is on overlayfs, a container's \
+                 own root, where it cannot keep its upper directories",
                 state_dir.display()
             ),
             guidance: ON_OVERLAYFS.into(),
         });
     }
-    rnk_store::Store::check_state_dir(state_dir)
-        .map_err(|e| super::store_refusal(&e, state_dir, euid))
+    let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
+    let held = rnk_store::Store::check_state_dir(state_dir)
+        .map_err(|e| super::store_refusal(&e, state_dir, euid))?;
+    staged.finish().map_err(refusal)?;
+    Ok(held)
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`
 /// for its overlay mount, `hook` for the test hook's refusal before it, as
-/// where no user namespace is usable) for the effective uid `euid`; `stop`
-/// is what stopped it there, as the advice where no user namespace is
-/// usable weighs it ([`Stop::at`]); `rbind` says an rbind of `/proc` worked
-/// there; `binary` as for [`plan`]. A user namespace without capabilities
-/// (Ubuntu's AppArmor switch) stops a user other than root at the map, the
-/// `chown` or the mount namespace.
+/// where no user namespace is usable) for the effective uid `euid`, under
+/// `--userns` with `userns`; `stop` is what stopped it there, as the advice
+/// where no user namespace is usable weighs it ([`Stop::at`]); `rbind` says
+/// an rbind of `/proc` worked there; `binary` as for [`plan`]. A user
+/// namespace without capabilities (Ubuntu's AppArmor switch) stops a user
+/// other than root at the map, the `chown` or the mount namespace.
 fn guidance(
     step: &str,
     stop: Stop,
     rbind: bool,
     euid: u32,
+    userns: bool,
     binary: Option<&Path>,
 ) -> Cow<'static, str> {
     match step {
         "proc" if rbind => PROC_RBIND.into(),
+        // Root's `--userns` has no other mode to say what to do.
+        _ if userns => USERNS_UNUSABLE.into(),
         // Root gets here only where it may not mount: its own refusal, or
         // kaniko mode, says what to do.
         _ if euid == 0 => "".into(),
@@ -382,16 +456,17 @@ pub(crate) fn set_up(
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
     let Plan {
-        subordinate,
+        ids,
         fallbacks,
         held,
         ..
     } = plan;
-    // `plan`'s probe passed: what refuses now is not known.
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate).map_err(|e| {
-        let no_userns = super::no_userns::guidance(then.binary, Stop::Unknown);
-        super::userns_refusal(e, euid, no_userns.into())
-    })?;
+    let shifted = match ids {
+        BuildIds::Own(_) => false,
+        BuildIds::Shifted(_) => true,
+    };
+    let userns = rnk_sandbox::enter_build_user_namespace(ids)
+        .map_err(|e| entry_refusal(e, euid, shifted, then.binary))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let mut held = Some(held);
     let opened = match then.child {
@@ -407,7 +482,9 @@ pub(crate) fn set_up(
     let store = opened.map_err(super::inside_userns)?;
     // The store holds the directory now.
     drop(held);
-    match in_store(state_dir, &store, fallbacks, scanned, seccomp, then) {
+    match in_store(
+        state_dir, &store, fallbacks, scanned, seccomp, then, shifted,
+    ) {
         Ok((outcome, sandbox)) => Ok(Setup {
             outcome,
             state_dir: state_dir.to_path_buf(),
@@ -425,7 +502,7 @@ pub(crate) fn set_up(
 }
 
 /// [`set_up`]'s steps once the store is open: the outcome and the
-/// sandbox.
+/// sandbox, under `--userns` with `userns`.
 fn in_store(
     state_dir: &Path,
     store: &rnk_store::Store,
@@ -433,34 +510,42 @@ fn in_store(
     scanned: bool,
     seccomp: &Seccomp,
     then: &Then<'_>,
+    userns: bool,
 ) -> Result<(Outcome, Sandbox), Refusal> {
+    let what = if userns {
+        "--userns"
+    } else {
+        "rootless overlay mode"
+    };
+    let fail = |reason: String| broken(what, &reason);
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, fallbacks)
-            .map_err(|e| broken(format!("the RUN sandbox cannot run here: {e}")))?;
+            .map_err(|e| fail(format!("the RUN sandbox cannot run here: {e}")))?;
         span.record("steps", 1_u64);
         if caps.proc() == KernelFs::Rbind && !scanned {
-            return Err(broken(
+            return Err(fail(
                 "the RUN sandbox would bind /proc, yet no peer scan ran".to_owned(),
             ));
         }
-        let overlay = super::probe_overlay(store.build_dir(), 0).map_err(|r| broken(r.reason))?;
+        let overlay = super::probe_overlay(store.build_dir(), 0).map_err(|r| fail(r.reason))?;
         span.record("steps", 2_u64);
         (caps, overlay)
     };
     let outcome = Outcome::OverlayRootless {
         sandbox: caps,
         overlay,
+        userns,
     };
-    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| broken(e.to_string()))?;
+    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| fail(e.to_string()))?;
     if then.userns_network {
         sandbox.allow_userns_network();
     }
     seccomp.apply(&mut sandbox);
     if let Some(env) = then.broken_by {
-        return Err(broken(format!("refused by {env}=rootless-broken")));
+        return Err(fail(format!("refused by {env}=rootless-broken")));
     }
     // Once nothing is left to fail, so that a fallback logs one mode.
     tracing::info!("ranikust: {outcome}");
@@ -491,12 +576,35 @@ fn abandon(store: rnk_store::Store) {
     }
 }
 
-/// A failure in the build's user namespace: no other mode may follow in
-/// this process.
-fn broken(reason: String) -> Refusal {
+/// Why the build's user namespace was not entered, for the effective uid
+/// `euid`: `NoUserNamespace` gets, with `--userns` (`shifted`),
+/// [`USERNS_UNUSABLE`], as the probe's stop does, else the advice where no
+/// user namespace is usable, `binary` as for [`plan`]: [`plan`]'s probe
+/// passed, so what refuses now is not known.
+fn entry_refusal(
+    e: rnk_sandbox::Error,
+    euid: u32,
+    shifted: bool,
+    binary: Option<&Path>,
+) -> Refusal {
+    if shifted {
+        let no_map = matches!(e, rnk_sandbox::Error::NoUserNamespace { .. });
+        let mut refusal = super::userns_refusal(e, euid, "".into());
+        if no_map {
+            refusal.guidance = USERNS_UNUSABLE.into();
+        }
+        return refusal;
+    }
+    let no_userns = super::no_userns::guidance(binary, Stop::Unknown);
+    super::userns_refusal(e, euid, no_userns.into())
+}
+
+/// A failure in the build's user namespace, `what` naming the mode: no
+/// other mode may follow in this process.
+fn broken(what: &str, reason: &str) -> Refusal {
     Refusal {
         kind: Kind::Broken,
-        reason: format!("rootless overlay mode: {reason}"),
+        reason: format!("{what}: {reason}"),
         guidance: "".into(),
     }
 }
@@ -506,6 +614,32 @@ mod tests {
     use rnk_sandbox::StepFailure;
 
     use super::*;
+
+    /// A map refused at entry: `--userns` gets its own guidance, a user
+    /// other than root the advice where no user namespace is usable, root
+    /// nothing more; failures once inside name the mode they stop.
+    #[test]
+    fn userns_failures_name_userns_and_guide_as_its_probe() {
+        let none = || rnk_sandbox::Error::NoUserNamespace { tried: Vec::new() };
+        let binary = Some(Path::new("/home/u/bin/ranikust"));
+        let r = entry_refusal(none(), 0, true, binary);
+        assert_eq!(
+            (r.kind, r.guidance.as_ref()),
+            (Kind::Other, USERNS_UNUSABLE)
+        );
+        let r = entry_refusal(none(), 0, false, binary);
+        assert_eq!(r.guidance, "");
+        let r = entry_refusal(none(), 1000, false, binary);
+        assert_eq!(
+            r.guidance,
+            super::super::no_userns::guidance(binary, Stop::Unknown)
+        );
+        let r = broken("--userns", "the RUN sandbox cannot run here: x");
+        assert_eq!(r.kind, Kind::Broken);
+        assert_eq!(r.reason, "--userns: the RUN sandbox cannot run here: x");
+        let r = broken("rootless overlay mode", "x");
+        assert_eq!(r.reason, "rootless overlay mode: x");
+    }
 
     /// A user other than root whose user namespace has no capabilities
     /// (Ubuntu 24.04 stops it at the mount namespace), or who has none (the
@@ -525,7 +659,7 @@ mod tests {
         for step in ["unshare", "map", "chown", "mount namespace", "hook"] {
             for stop in stops {
                 assert_eq!(
-                    guidance(step, stop, false, 1000, binary),
+                    guidance(step, stop, false, 1000, false, binary),
                     super::super::no_userns::guidance(binary, stop),
                     "{step}, {stop:?}"
                 );
@@ -542,18 +676,29 @@ mod tests {
             "hook",
         ] {
             for stop in stops {
-                assert_eq!(guidance(step, stop, false, 0, binary), "", "{step}");
+                assert_eq!(guidance(step, stop, false, 0, false, binary), "", "{step}");
+                // `--userns` has no other mode to say what to do.
+                assert_eq!(
+                    guidance(step, stop, false, 0, true, binary),
+                    USERNS_UNUSABLE,
+                    "{step}"
+                );
             }
         }
         assert_eq!(
-            guidance("proc", Stop::Unknown, true, 1000, binary),
+            guidance("proc", Stop::Unknown, true, 1000, false, binary),
             PROC_RBIND
         );
-        assert_eq!(guidance("proc", Stop::Unknown, true, 0, binary), PROC_RBIND);
+        for userns in [false, true] {
+            assert_eq!(
+                guidance("proc", Stop::Unknown, true, 0, userns, binary),
+                PROC_RBIND
+            );
+        }
         for step in ["proc", "sysfs", "overlay"] {
             for stop in stops {
                 assert_eq!(
-                    guidance(step, stop, false, 1000, binary),
+                    guidance(step, stop, false, 1000, false, binary),
                     UNUSABLE,
                     "{step}"
                 );
@@ -689,7 +834,8 @@ mod tests {
         std::fs::create_dir(&foreign).unwrap();
         private(&foreign);
         std::fs::write(foreign.join("precious"), "x").unwrap();
-        let refusal = state_dir_for_probe(&foreign, 1000).unwrap_err();
+        let me = crate::statedir::Owner::me();
+        let refusal = state_dir_for_probe(&foreign, 1000, me, "rootless").unwrap_err();
         assert!(
             refusal
                 .reason
@@ -699,7 +845,7 @@ mod tests {
         );
         assert_eq!(names(&foreign), ["precious"]);
         let new = tmp.path().join("new");
-        let held = state_dir_for_probe(&new, 1000).unwrap();
+        let held = state_dir_for_probe(&new, 1000, me, "rootless").unwrap();
         assert!(names(&new).is_empty());
         // Held until the store opens: no prune empties it meanwhile.
         let pruned = rnk_store::Store::prune_all(&new);
@@ -708,5 +854,70 @@ mod tests {
             "{pruned:?}"
         );
         drop(held);
+    }
+
+    /// A missing state directory whose nearest parent is on overlayfs (a
+    /// container's own root) is refused before anything is made; checked
+    /// where the temporary directory is on overlayfs.
+    #[test]
+    fn a_missing_state_directory_on_overlayfs_is_refused_unmade() {
+        let tmp = tempfile::tempdir().unwrap();
+        if !crate::statedir::on_overlayfs(tmp.path()) {
+            eprintln!("skipped: the temporary directory is not on overlayfs");
+            return;
+        }
+        let me = crate::statedir::Owner::me();
+        let state = tmp.path().join("a/state");
+        let refusal = state_dir_for_probe(&state, 1000, me, "rootless").unwrap_err();
+        assert!(
+            refusal.reason.contains("is on overlayfs"),
+            "{}",
+            refusal.reason
+        );
+        assert!(!tmp.path().join("a").exists());
+    }
+
+    /// The store's refusals of the state directory come before its mode
+    /// is changed: one another process holds alone, and one a kaniko-mode
+    /// build on `/` used, keep the mode they had.
+    #[test]
+    fn a_state_directory_the_store_refuses_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        if crate::statedir::on_overlayfs(tmp.path()) {
+            eprintln!("skipped: the temporary directory is on overlayfs");
+            return;
+        }
+        let set = |p: &Path, mode| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+        set(tmp.path(), 0o700);
+        let me = crate::statedir::Owner::me();
+        let open = tmp.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        set(&open, 0o755);
+        let euid = rustix::process::geteuid().as_raw();
+        let alone = crate::setup::tests::LockedElsewhere::new(&open);
+        let refusal = state_dir_for_probe(&open, euid, me, "rootless").unwrap_err();
+        assert!(
+            refusal.reason.contains("another build is using"),
+            "{}",
+            refusal.reason
+        );
+        assert_eq!(mode(&open), 0o755);
+        drop(alone);
+        std::fs::write(open.join(rnk_store::BUILDING_MARKER), "").unwrap();
+        let refusal = state_dir_for_probe(&open, euid, me, "rootless").unwrap_err();
+        assert!(
+            refusal.reason.contains("kaniko-mode build on /"),
+            "{}",
+            refusal.reason
+        );
+        assert_eq!(mode(&open), 0o755);
+        // Taken, it is made private.
+        std::fs::remove_file(open.join(rnk_store::BUILDING_MARKER)).unwrap();
+        drop(state_dir_for_probe(&open, euid, me, "rootless").unwrap());
+        assert_eq!(mode(&open), 0o700);
     }
 }

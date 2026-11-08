@@ -74,6 +74,14 @@ Rootless overlay mode opens the persistent store inside the build's user
 namespace, with `--allow proc.rbind` too, since its `RUN`s reach no other
 process's files through `/proc`
 ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
+Root's `--userns` does too, in a state directory of its own: owned by the
+first ids of root's `ranikust` range, which the build runs as on the host,
+never root's own, whose layers are extracted with real ids
+([sandbox](sandbox.md#--userns),
+[ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md)).
+Its store removes the probe's directory root gave it, from inside the
+namespace. Its layers are kept apart from root's by
+that directory, and within it by their map, as below.
 
 In a user namespace other than the initial one (a rootless or `--userns`
 build, or ranikust started in a rootless container), an extracted layer's key
@@ -81,7 +89,8 @@ is the `sha256` of a tag of its own, the layer's chain ID and the namespace's
 uid and gid maps as `/proc/self` shows them, sorted: one state directory holds
 one copy per map
 ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
-#77). The tag puts the keys in a space of their own (`KEY_DOMAIN` in
+#77; two `--userns` maps with the same first ids, T2). The tag puts the keys
+in a space of their own (`KEY_DOMAIN` in
 [`userns.rs`](../../crates/rnk-snapshot/src/userns.rs)). The maps are relative to
 the parent namespace, so nested namespaces with the same maps under parents
 with different ones share a key, and a build in one sees the owners of a

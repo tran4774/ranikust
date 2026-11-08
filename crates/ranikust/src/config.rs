@@ -213,6 +213,9 @@ pub(crate) struct BuildConfig {
     pub(crate) snapshot_workers: NonZeroUsize,
     /// The requested mode.
     pub(crate) mode: Mode,
+    /// `--userns`: root builds in a user namespace of its `ranikust`
+    /// range (ADR-0104).
+    pub(crate) userns: bool,
     /// The state directory, absolute: `--state-dir`, else
     /// [`default_state_dir`] (ADR-0050).
     pub(crate) state_dir: PathBuf,
@@ -318,6 +321,11 @@ impl BuildConfig {
     ///
     /// [`Invalid`] with a message for the user.
     pub(crate) fn from_args(args: &BuildArgs) -> Result<Self, Invalid> {
+        Self::from_args_as(args, rustix::process::geteuid().as_raw())
+    }
+
+    /// [`BuildConfig::from_args`] for the effective uid `euid`.
+    fn from_args_as(args: &BuildArgs, euid: u32) -> Result<Self, Invalid> {
         let compression = args.compression.unwrap_or_default();
         // kaniko `cmd/executor/cmd/root.go:200-202`.
         if !args.no_push && args.destinations.is_empty() {
@@ -403,6 +411,25 @@ impl BuildConfig {
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }
+        // `--userns` builds in overlay mode in the build's user namespace
+        // (ADR-0104); kaniko mode has no user namespace to build in.
+        if args.userns && args.mode == Mode::Kaniko {
+            return Err(Invalid(
+                "--userns cannot be used with --mode=kaniko: it builds in overlay mode, in a user \
+                 namespace; drop one of them"
+                    .to_owned(),
+            ));
+        }
+        // Only root may map the `ranikust` range (ADR-0104); any other
+        // user's build is in a user namespace of its own already.
+        if args.userns && euid != 0 {
+            return Err(Invalid(
+                "--userns needs root: it maps the ranikust range of /etc/subuid and /etc/subgid, \
+                 which only root may map; a build as a user other than root already runs in a \
+                 user namespace of its own; drop --userns"
+                    .to_owned(),
+            ));
+        }
         // One stage per build (ADR-0049): kaniko's list builds the stages
         // after the first and throws them away.
         if args.targets.len() > 1 {
@@ -475,12 +502,10 @@ impl BuildConfig {
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
             mode: args.mode,
+            userns: args.userns,
             state_dir: match args.state_dir.as_deref() {
                 Some(dir) => absolute(dir),
-                None => default_state_dir(
-                    rustix::process::geteuid().as_raw(),
-                    std::env::var_os("HOME").as_deref(),
-                )?,
+                None => default_state_dir(euid, std::env::var_os("HOME").as_deref())?,
             },
             jobs: args.jobs,
             network: args.network,
@@ -539,6 +564,7 @@ impl BuildConfig {
             "snapshot_mode": name(self.snapshot_mode),
             "snapshot_workers": self.snapshot_workers.get(),
             "targets": self.targets.len(),
+            "userns": self.userns,
         })
     }
 }
@@ -673,9 +699,15 @@ pub(crate) fn kaniko_only_flag(args: &BuildArgs) -> Option<&'static str> {
 /// other refused kaniko flags, before the arguments are parsed, ADR-0065.)
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
     if let Some(flag) = kaniko_only_flag(args) {
+        // `--userns` with `--mode=kaniko` is itself a usage error.
+        let way_out = if args.userns {
+            "drop it: --userns builds in overlay mode only"
+        } else {
+            "drop it, or use --mode=kaniko outside a container"
+        };
         return Err(Invalid(format!(
             "{flag} takes effect in kaniko mode only (ADR-0049); overlay mode would build a \
-             different image: drop it, or use --mode=kaniko outside a container"
+             different image: {way_out}"
         )));
     }
     let mut warnings = Vec::new();

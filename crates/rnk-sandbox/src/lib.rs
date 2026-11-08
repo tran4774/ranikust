@@ -14,11 +14,14 @@
 //! crate: namespaces, the uid map, `proc`, `pivot_root` or `MS_MOVE`, and
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
-//! user namespace would need: root only reports it, rootless overlay mode
-//! routes on it, after [`probe_user_namespace_capabilities`], which tells
-//! with nothing written whether a user namespace here has capabilities.
+//! user namespace would need: root only reports it in its own modes;
+//! rootless overlay mode and root's `--userns` route on it, a user other
+//! than root after [`probe_user_namespace_capabilities`], which tells with
+//! nothing written whether a user namespace here has capabilities.
 //! [`enter_build_user_namespace`] moves the process into the build's user
-//! namespace, each id map tried in a forked child first.
+//! namespace, each id map tried in a forked child first; with root's
+//! `--userns` range ([`BuildIds::Shifted`], ADR-0104) root's own ids stay
+//! unmapped and the process becomes the range's first ids.
 //! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
 //! `/sys` where the user-namespace probe found a new `sysfs` refused
 //! ([`UsernsReport::fallbacks`]), a `RUN` with a network namespace of its
@@ -108,6 +111,7 @@ pub use spec::{
 pub use stop::{StopSignal, StopSignals, block_stop_signals};
 pub use supervise::{FORWARDED_STOP, Forked, Supervised, Waiting, fork_to_wait};
 pub use userns::{
-    BuildUserNamespace, IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds,
-    UsernsCapabilities, UsernsReport, probe_user_namespace, probe_user_namespace_capabilities,
+    BuildIds, BuildUserNamespace, IdMap, IdRange, MountResult, StepFailure, StepResult,
+    SubordinateIds, UsernsCapabilities, UsernsReport, probe_user_namespace,
+    probe_user_namespace_capabilities,
 };

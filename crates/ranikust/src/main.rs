@@ -538,6 +538,23 @@ fn build(
             ns
         }
     });
+    // Root's `--userns` builds in a user namespace of its `ranikust` range
+    // whether or not it may mount, and is refused rather than built in a
+    // mode without one (ADR-0104).
+    if config.userns && rustix::process::geteuid().is_root() {
+        let span = tracing::debug_span!("ranikust.setup");
+        let started_in = started_in.as_ref().map_err(|&e| e);
+        return rootless(
+            &config,
+            &seccomp,
+            &span,
+            started_in,
+            Via::Userns(args),
+            fault,
+            path,
+        )
+        .refused();
+    }
     match config.mode {
         config::Mode::Kaniko => {
             // Whether root may mount picks how `RUN` is isolated on a root
@@ -786,12 +803,12 @@ enum Rootless {
 
 impl Rootless {
     /// The run's result where nothing may follow rootless overlay mode: a
-    /// user other than root.
+    /// user other than root, or root's `--userns`.
     fn refused(self) -> Result<(), Failure> {
         match self {
             Self::Built(built) => built,
             Self::NotHere(not_here) => Err(Failure::refused(not_here.refusal)),
-            // Never: only root falls back.
+            // Never: only root's `--mode=auto` falls back.
             Self::FellBack(reason) => Err(Failure::error(reason)),
         }
     }
@@ -808,6 +825,9 @@ enum Via<'a> {
     /// mode follows where the set-up fails in the build's user namespace
     /// (ADR-0136).
     AutoRoot(&'a BuildArgs),
+    /// `--userns` as root, with its flags, in either mode it allows: the
+    /// `ranikust` range, never another mode (ADR-0104).
+    Userns(&'a BuildArgs),
 }
 
 impl Via<'_> {
@@ -816,13 +836,16 @@ impl Via<'_> {
         match self {
             Self::Overlay => "--mode=overlay",
             Self::AutoUser(_) | Self::AutoRoot(_) => "--mode=auto",
+            Self::Userns(_) => "--userns",
         }
     }
 
     /// Whether a set-up that fails in the build's user namespace falls
     /// back to kaniko mode: root's `--mode=auto` only, which had kaniko
     /// mode before rootless overlay mode; never a user other than root,
-    /// whom kaniko mode refuses, nor `--mode=overlay` (ADR-0136).
+    /// whom kaniko mode refuses, nor `--mode=overlay` (ADR-0136), nor
+    /// `--userns`, whose build kaniko mode would run as the host's root
+    /// (ADR-0104).
     fn falls_back(self) -> bool {
         matches!(self, Self::AutoRoot(_))
     }
@@ -866,8 +889,9 @@ fn rootless_kept_off() -> Option<String> {
 /// files with no ptrace check (ADR-0134), and the warnings for what the
 /// rbind exposes, all before the build's user namespace, where ranikust
 /// could no longer open the other processes; then overlay mode's flags, where
-/// `flags` gives them (`--mode=auto`; `--mode=overlay` checked them
-/// first); then the set-up in the namespace and the build. Where `via`
+/// `via` gives them (`--mode=auto`; `--mode=overlay` checked them first,
+/// and `--userns` before the probe, so that its usage error comes before
+/// any write); then the set-up in the namespace and the build. Where `via`
 /// falls back ([`Via::falls_back`]), a child enters the namespace, sets up
 /// and builds, and this process waits outside it
 /// ([`rnk_sandbox::fork_to_wait`]): it returns only where the child's
@@ -886,16 +910,24 @@ fn rootless(
     binary: Option<&Path>,
 ) -> Rootless {
     let how = via.flag();
+    // `--userns` has no other mode to try: its usage error precedes any write.
+    if let Via::Userns(args) = via
+        && let Err(failure) = overlay_flags(args)
+    {
+        return Rootless::Built(Err(failure));
+    }
+    let userns = matches!(via, Via::Userns(_));
     let plan = match span.in_scope(|| {
         if fault == Some("no-userns") {
             let euid = rustix::process::geteuid().as_raw();
             return Err(setup::rootless::refused_by_hook(
                 DEBUG_FAULT_ENV,
                 euid,
+                userns,
                 binary,
             ));
         }
-        setup::rootless::plan(&config.state_dir, config.allow_proc_rbind, binary)
+        setup::rootless::plan(&config.state_dir, config.allow_proc_rbind, userns, binary)
     }) {
         Ok(plan) => plan,
         Err(not_here) => return Rootless::NotHere(not_here),
@@ -2360,12 +2392,20 @@ mod tests {
 
     /// The test hook's refusal leaves the process unchanged and gives a
     /// user other than root the advice for no user namespace, root nothing
-    /// more.
+    /// more, root's `--userns` its own, named.
     #[test]
     fn the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe() {
-        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, None);
+        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, false, None);
         assert_eq!(as_root.refusal.guidance, "");
-        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000, None);
+        let userns = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, true, None).refusal;
+        assert!(
+            userns.reason.starts_with("--userns cannot run here"),
+            "{}",
+            userns.reason
+        );
+        assert!(userns.guidance.starts_with("--userns needs"));
+        assert!(!userns.guidance.contains("AppArmor"));
+        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000, false, None);
         assert!(!not_here.probed);
         assert_eq!(not_here.refusal.kind, setup::Kind::Other);
         assert!(
@@ -2423,6 +2463,9 @@ mod tests {
         assert!(Via::AutoRoot(&args).falls_back());
         assert!(!Via::AutoUser(&args).falls_back());
         assert!(!Via::Overlay.falls_back());
+        // `--userns` is refused rather than built without its namespace.
+        assert!(!Via::Userns(&args).falls_back());
+        assert_eq!(Via::Userns(&args).flag(), "--userns");
         assert_eq!(Via::AutoRoot(&args).flag(), "--mode=auto");
         assert_eq!(Via::Overlay.flag(), "--mode=overlay");
     }

@@ -21,10 +21,10 @@ use rustix::process::{DumpableBehavior, Pid, Signal};
 use rustix::thread::UnshareFlags;
 
 use super::{
-    ATTEMPT_DEADLINE, CLOSURE_OK, CLOSURE_REFUSED, DONE, IdMap, NO_MAP, Plan, REAP_GRACE, SLAVE,
-    SLAVE_OP, STOPPED, StepFailure, StepResult, SubordinateIds, Supervised, UNSHARE_MOUNT,
-    assemble, enter, enter_mount_namespace, ids, plans, read_records, reap, result_frame, send,
-    supervise, write_all, write_map, write_own,
+    ASSUME_OP, ATTEMPT_DEADLINE, BuildIds, CLOSURE_OK, CLOSURE_REFUSED, DONE, IdMap, NO_MAP, Plan,
+    REAP_GRACE, SLAVE, SLAVE_OP, STOPPED, StepFailure, StepResult, Supervised, UNSHARE_MOUNT,
+    assemble, assume_root, enter, enter_mount_namespace, ids, plans, read_records, reap,
+    result_frame, send, supervise, write_all, write_map, write_own,
 };
 use crate::child;
 use crate::error::{Error, Result, sys_err};
@@ -92,14 +92,15 @@ enum Trial {
 
 /// [`crate::enter_build_user_namespace`] once its checks passed: the maps
 /// of the probe's order (root: its own ranges, then one id; another user:
-/// `newuidmap` with `subordinate`, then one id), each tried in a child,
-/// then the first that passed, for this process.
-pub(crate) fn enter_build(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace> {
+/// `newuidmap` with its subordinate ids, then one id; root's shifted range
+/// alone), each tried in a child, then the first that passed, for this
+/// process.
+pub(crate) fn enter_build(ids_wanted: BuildIds) -> Result<BuildUserNamespace> {
     let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
     let user = euid != 0;
     let mut tried = Vec::new();
-    for candidate in plans(euid, egid, subordinate) {
+    for candidate in plans(euid, egid, ids_wanted) {
         let plan = match candidate {
             Ok(plan) => plan,
             Err((kind, result)) => {
@@ -174,6 +175,13 @@ fn judge(plan: &Plan, run: Supervised) -> Trial {
 /// as the trial did. Before the `unshare`, an error leaves this process as
 /// it was; after it, [`Error::UserNamespaceBroken`].
 fn enter_with(plan: &Plan, user: bool) -> Result<()> {
+    // Cleared by the change of ids a shifted map makes, then set again.
+    let pdeath = if plan.assumes_root() {
+        rustix::process::parent_process_death_signal()
+            .map_err(|e| sys_err("read the parent-death signal", e))?
+    } else {
+        None
+    };
     let helper = if plan.by_parent() {
         Some(MapHelper::start(plan)?)
     } else {
@@ -211,7 +219,13 @@ fn enter_with(plan: &Plan, user: bool) -> Result<()> {
     let undumped = undumpable(user);
     mapped.map_err(Error::UserNamespaceBroken)?;
     undumped.map_err(Error::UserNamespaceBroken)?;
-    // Every map makes this process's own ids 0 inside.
+    if plan.assumes_root() {
+        assume_root(pdeath).map_err(|e| {
+            Error::UserNamespaceBroken(StepFailure::errno(ASSUME_OP, e.raw_os_error()))
+        })?;
+    }
+    // Every map makes this process's own ids 0 inside, or, shifted, the
+    // process took them.
     if !rustix::process::geteuid().is_root() {
         return Err(Error::UserNamespaceBroken(StepFailure::other(
             "check the map",

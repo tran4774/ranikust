@@ -35,14 +35,15 @@ root, and root that may not mount where ADR-0107 lets it, build in the build's
 user namespace, which the process enters after the probe has routed
 ([step 2](#probe-order---modeauto); how:
 [rnk-sandbox](../agents/crates/rnk-sandbox.md#owns),
-[ranikust](../agents/crates/ranikust.md#owns)). Root's builds that may mount
-keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko mode is
-set up by `set_up_kaniko`. The refusal of an image with an owner the
+[ranikust](../agents/crates/ranikust.md#owns)). Root's `--userns` takes the
+same path whether or not it may mount, with its `ranikust` range, and never
+another mode ([sandbox](sandbox.md#--userns),
+[#83](https://github.com/tran4774/ranikust/issues/83)). Root's builds that may
+mount keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko
+mode is set up by `set_up_kaniko`. The refusal of an image with an owner the
 namespace does not map and the AppArmor advice for a user with no usable
 user namespace ([#81](https://github.com/tran4774/ranikust/issues/81)) are
-built, under [Refusal and guidance](#refusal-and-guidance). **Planned,
-Phase 3** (tracking issue
-[#41](https://github.com/tran4774/ranikust/issues/41)): `--userns`.
+built, under [Refusal and guidance](#refusal-and-guidance).
 
 ## Where environments land
 
@@ -145,13 +146,19 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      directory, once the store's check, which writes nothing, takes it as one
      (Q-111, (a)), and holds the state directory's lock until the store
      opens; named `.ranikust-anon-userns-probe-<pid>-<nanos>`
-     (`rnk_store::USERNS_PROBE_PREFIX`) and held by its exclusive `flock`
-     while the probe uses it, so that a build cut short there leaves nothing
-     the next start counts as foreign: the store, once it opens, removes each
-     such directory whose lock it takes
-     ([cache and store](cache-and-store.md)); it takes the
-     process's gid and no setgid bit, as the store's own directories do
-     ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
+     (`rnk_store::USERNS_PROBE_PREFIX`; `-again` added once where another
+     build's start took the first for a leftover before it was held) and held
+     by its exclusive `flock` while the probe uses it, so that a build cut
+     short there leaves nothing the next start counts as foreign: the store,
+     once it opens, removes each such directory whose lock it takes
+     ([cache and store](cache-and-store.md)); it takes the process's gid and
+     no setgid bit, as the store's own directories do
+     ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
+     Under root's `--userns` it is given to the range, so root deletes
+     nothing in it: it is left, unlocked, to the build's store, which
+     removes it from inside the namespace, and root removes only an empty
+     one of its own that a build killed before giving it away left
+     ([sandbox](sandbox.md#--userns));
    - where it only reports (`report_user_namespace`, root only: it checks the
      effective uid), in a directory of the build under the state directory
      (`userns-probe`, or a name the next start removes when the store is
@@ -308,7 +315,9 @@ build's user namespace, RUN enters its root with pivot_root, proc: a new
 instance, sysfs: a read-only rbind (for a RUN with --network=none, a new
 instance where it mounts, else the rbind with no network device), overlay
 mounts with fsconfig(lowerdir+)`;
-`proc: a read-only rbind` is the one that needs the flag.
+`proc: a read-only rbind` is the one that needs the flag. Root's `--userns`
+says `overlay mode with --userns, in the build's user namespace of the
+ranikust range` in place of the first part.
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode
 that cannot work fails with the probe's diagnosis
@@ -369,6 +378,17 @@ Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
   `--mode=overlay` there builds rootless or is refused with both reasons: the
   mount's, with the advice to use kaniko mode (`NEEDS_KANIKO_MODE`), and
   rootless overlay mode's.
+- Root's `--userns` builds in the build's user namespace of its `ranikust`
+  range or is refused, before anything is written, where the range is
+  missing (naming the line to add to `/etc/subuid` and `/etc/subgid`),
+  shares an id with an account or another range or sits beside a line it
+  cannot read as `newuidmap` may (naming it), or an account is named
+  `ranikust`, or the
+  state directory is not one for the range's first uid (saying what it must
+  be), and otherwise where a step of the namespace fails, never in another
+  mode (`USERNS_UNUSABLE`, never the advice
+  [below](#no-usable-user-namespace), which is a user's, nor its capability
+  check); with `--mode=kaniko` it is a usage error.
 - A process that is not root builds in rootless overlay mode or is refused
   with the step it stopped at and the way out: where no user namespace is
   usable (`unshare`, the map, `chown` or the mount namespace failed), the
@@ -526,15 +546,15 @@ every id maps and nothing is checked.
   failed; `-1`, which `chown` reads as "unchanged", is none): with one id
   (a user without `newuidmap` and `newgidmap`, or without ranges), install
   `uidmap` (Ubuntu does not by default) and give the user a first range in
-  `/etc/subuid` and `/etc/subgid` of at least as many ids as the highest
-  one named, run as root, or run in a container; with a user's ranges,
-  widen the first range to that count (ranikust maps only that one, and id
-  N is its N-th); in a namespace ranikust was started in, or root's copy
-  of its map (a single uid or gid where it maps no more, or where its
-  ranges could not be mapped), widen its ranges (rootless Podman: its
-  user's, then `podman system migrate`), or run as root on a host or in a
-  rootful container. Each range asked for comes with the rule that it must
-  not overlap another user's range or a real account's ids. Past 65536
+  `/etc/subuid` and `/etc/subgid`, in decimal with no leading 0, of at least
+  as many ids as the highest one named, run as root, or run in a container;
+  with a user's ranges, widen the first range to that count (ranikust maps
+  only that one, and id N is its N-th); in a namespace ranikust was started
+  in, or root's copy of its map (a single uid or gid where it maps no more,
+  or where its ranges could not be mapped), widen its ranges (rootless
+  Podman: its user's, then `podman system migrate`), or run as root on a
+  host or in a rootful container. Each range asked for comes with the rule that
+  it must not overlap another user's range or a real account's ids. Past 65536
   ids, `useradd`'s default count, no wider range is asked for: the ways
   out name the ids and say to run as root or in a container.
 

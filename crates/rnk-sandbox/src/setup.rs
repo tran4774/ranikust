@@ -55,13 +55,18 @@ pub fn enter_build_namespace() -> Result<()> {
 ///
 /// The map is the first of [`crate::probe_user_namespace`]'s order whose
 /// steps pass here, each tried in a forked child first, since a map that
-/// failed would leave this process in the namespace for good. Root maps
-/// every id it has, each to itself ([`crate::IdMap::Ranges`], written by a
-/// helper forked before the `unshare`); another user maps its own ids as 0
-/// and `subordinate` from 1 through `newuidmap` and `newgidmap`
-/// ([`crate::IdMap::Newuidmap`]); else one id, its own as 0, with
-/// `setgroups` denied ([`crate::IdMap::OneId`], ADR-0098). The process is
-/// dumpable only while its map is written (ADR-0051). The map and
+/// failed would leave this process in the namespace for good. With
+/// [`crate::BuildIds::Own`], root maps every id it has, each to itself
+/// ([`crate::IdMap::Ranges`], written by a helper forked before the
+/// `unshare`); another user maps its own ids as 0 and its subordinate ids
+/// from 1 through `newuidmap` and `newgidmap` ([`crate::IdMap::Newuidmap`]);
+/// else one id, its own as 0, with `setgroups` denied
+/// ([`crate::IdMap::OneId`], ADR-0098). With [`crate::BuildIds::Shifted`]
+/// (`--userns`, ADR-0104), root maps the range alone, from 0, then takes
+/// the namespace's root as its ids, so that it is the range's first id on
+/// the host, without supplementary groups ([`crate::IdMap::Shifted`]); no
+/// other map is tried. The process is dumpable only while its map is
+/// written (ADR-0051). The map and
 /// `setgroups` returned are read back from `/proc/self` once inside: a map
 /// that gives one id is [`crate::IdMap::OneId`], whichever was written.
 /// Whether the process's uid in the initial user namespace is 0 is
@@ -80,9 +85,7 @@ pub fn enter_build_namespace() -> Result<()> {
 /// a fork) or a refused `unshare` that leave the process as it was;
 /// [`Error::UserNamespaceBroken`] when a step failed once the process was
 /// in the new user namespace: it must end.
-pub fn enter_build_user_namespace(
-    subordinate: Option<crate::SubordinateIds>,
-) -> Result<crate::BuildUserNamespace> {
+pub fn enter_build_user_namespace(ids: crate::BuildIds) -> Result<crate::BuildUserNamespace> {
     require_single_thread()?;
     // As for the mount namespace alone: say why before changing anything.
     if crate::probe::slash_is_mount_root()? == Some(false) {
@@ -91,7 +94,7 @@ pub fn enter_build_user_namespace(
     // Which delegation marks a `RUN`'s cgroups trust depends on the uid
     // ranikust has here, which the new namespace's map hides (ADR-0135).
     crate::cgroup::record_kernel_root();
-    crate::userns::enter_build(subordinate)
+    crate::userns::enter_build(ids)
 }
 
 /// Kaniko mode on `/` (ADR-0078): gives ranikust's own process the

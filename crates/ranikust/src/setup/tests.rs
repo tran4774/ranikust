@@ -6,6 +6,117 @@ use rnk_sandbox::Step;
 
 use super::*;
 
+std::thread_local! {
+    /// What [`probes_ran`] runs once, set by a test.
+    static PROBES_RAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Sets what [`probe_in_dir`] runs once its probes ended, on this thread.
+pub(super) fn on_probes_ran(f: Box<dyn FnOnce()>) {
+    PROBES_RAN.with(|h| *h.borrow_mut() = Some(f));
+}
+
+/// [`probe_in_dir`]'s hook, after the probes, before their directory is
+/// removed or left.
+pub(super) fn probes_ran() {
+    if let Some(f) = PROBES_RAN.with(|h| h.borrow_mut().take()) {
+        f();
+    }
+}
+
+/// What another build does to a new probe directory before it is held.
+enum Taken {
+    /// Removes it as a leftover.
+    Removed,
+    /// Holds its lock, as a store about to remove it does.
+    Locked,
+}
+
+std::thread_local! {
+    /// What [`before_hold`] does, in turn, set by a test.
+    static TAKEN_BEFORE_HOLD: std::cell::RefCell<std::collections::VecDeque<Taken>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// The locks [`Taken::Locked`] took, until the test clears them.
+    static LOCKED_BEFORE_HOLD: std::cell::RefCell<Vec<LockedElsewhere>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// [`make_probe_dir`]'s hook, between the directory `dir` made and held:
+/// takes it as another build would, as a test asked on this thread.
+pub(super) fn before_hold(dir: &Path) {
+    match TAKEN_BEFORE_HOLD.with(|t| t.borrow_mut().pop_front()) {
+        Some(Taken::Removed) => remove_own_probe_leftovers(dir.parent().unwrap()),
+        Some(Taken::Locked) => {
+            LOCKED_BEFORE_HOLD.with(|l| l.borrow_mut().push(LockedElsewhere::new(dir)));
+        }
+        None => {}
+    }
+}
+
+/// A probe directory another build's start removes, or a store locks,
+/// before it is held is made again under a name of its own, once.
+#[test]
+fn a_probe_directory_taken_before_it_is_held_is_made_again() {
+    let tmp = private_tempdir();
+    let root = RootPath::open(tmp.path()).unwrap();
+    let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let again = format!("{name}-again");
+    let names = || {
+        let mut n: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        n.sort();
+        n
+    };
+    let take = |t: Vec<Taken>| TAKEN_BEFORE_HOLD.with(|q| *q.borrow_mut() = t.into());
+    for (taken, left) in [
+        (Taken::Removed, vec![again.clone()]),
+        (Taken::Locked, vec![name.clone(), again.clone()]),
+    ] {
+        take(vec![taken]);
+        let (made, _, held) = make_probe_dir_again(&root, tmp.path(), &name).unwrap();
+        assert_eq!(made, again);
+        assert_eq!(names(), left);
+        assert!(held.is_some());
+        drop(held);
+        LOCKED_BEFORE_HOLD.with(|l| l.borrow_mut().clear());
+        for n in names() {
+            fs::remove_dir(tmp.path().join(n)).unwrap();
+        }
+    }
+    take(vec![Taken::Removed, Taken::Removed]);
+    let Err(e) = make_probe_dir_again(&root, tmp.path(), &name) else {
+        panic!("a probe directory removed twice before it was held");
+    };
+    assert!(e.contains("taken by another build"), "{e}");
+    assert!(names().is_empty());
+}
+
+/// A probe directory removed between its `mkdirat` and its listing was taken
+/// by another build's start: its name is made again, as when it is taken
+/// before it is held. Another failure, or the `mkdirat`'s own, is not.
+#[test]
+fn a_probe_directory_gone_once_made_is_taken_not_an_error() {
+    let io = |op, errno: Errno| rnk_rootfs::Error::Io {
+        op,
+        path: "p".into(),
+        source: std::io::Error::from_raw_os_error(errno.raw_os_error()),
+    };
+    assert!(removed_once_made(&io("open", Errno::NOENT)));
+    assert!(removed_once_made(&io("readdir", Errno::NOENT)));
+    assert!(removed_once_made(&rnk_rootfs::Error::Changed {
+        path: "p".into()
+    }));
+    assert!(!removed_once_made(&io("open", Errno::ACCESS)));
+    assert!(!removed_once_made(&io("mkdir", Errno::NOENT)));
+    assert!(!removed_once_made(&rnk_rootfs::Error::InvalidPath {
+        path: "p".into(),
+        reason: "the directory just made is not empty",
+    }));
+}
+
 /// Linux's `EACCES`, without a dependency on `libc` for one constant.
 const EACCES: i32 = 13;
 
@@ -390,19 +501,181 @@ fn the_probe_directory_drops_a_setgid_parents_bit() {
     let tmp = private_tempdir();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o2700)).unwrap();
     let root = RootPath::open(tmp.path()).unwrap();
-    root.create_sub_root("probe", 0o700).unwrap();
+    let probe = root.create_sub_root("probe", 0o700).unwrap();
     let before = fs::metadata(tmp.path().join("probe")).unwrap();
     // A filesystem that ignores the bit leaves nothing to check.
     if before.mode() & 0o2000 == 0 {
         eprintln!("skipped: no setgid inheritance here");
         return;
     }
-    assert!(own_group(&root, "probe").unwrap());
+    assert!(own_group(&probe).unwrap());
     let after = fs::metadata(tmp.path().join("probe")).unwrap();
     assert_eq!(after.mode() & 0o7777, 0o700);
     assert_eq!(after.gid(), rustix::process::getegid().as_raw());
     // Once owned, nothing more changes.
-    assert!(!own_group(&root, "probe").unwrap());
+    assert!(!own_group(&probe).unwrap());
+}
+
+/// The probe directory's group is set through its verified descriptor:
+/// whatever has its name by then is left as it is.
+#[test]
+fn the_probe_directory_s_group_is_set_through_its_descriptor() {
+    let tmp = private_tempdir();
+    let root = RootPath::open(tmp.path()).unwrap();
+    let probe = root.create_sub_root("probe", 0o700).unwrap();
+    fs::rename(tmp.path().join("probe"), tmp.path().join("made")).unwrap();
+    let other = tmp.path().join("probe");
+    fs::write(&other, "").unwrap();
+    // A setgid bit the change would clear, on an entry of this user's group.
+    fs::set_permissions(&other, fs::Permissions::from_mode(0o2600)).unwrap();
+    let before = fs::metadata(&other).unwrap();
+    // A filesystem that drops the bit leaves nothing to check.
+    if before.mode() & 0o2000 == 0 {
+        eprintln!("skipped: no setgid bit kept here");
+        return;
+    }
+    fs::set_permissions(tmp.path().join("made"), fs::Permissions::from_mode(0o2700)).unwrap();
+    assert!(own_group(&probe).unwrap());
+    let after = fs::metadata(&other).unwrap();
+    assert_eq!(
+        (after.mode(), after.gid(), after.ino()),
+        (before.mode(), before.gid(), before.ino())
+    );
+    let made = fs::metadata(tmp.path().join("made")).unwrap();
+    assert_eq!(made.mode() & 0o7777, 0o700);
+}
+
+/// A probe directory a build killed before it gave it away is removed,
+/// only where it is this user's own, empty, mode 0700 (setgid too, as a
+/// setgid state directory makes it), a real directory no probe holds;
+/// anything else of a probe's name, and any other name, is left as found.
+#[test]
+fn only_an_empty_private_probe_directory_of_one_s_own_is_removed() {
+    let tmp = private_tempdir();
+    let dir = |name: &str, mode| {
+        let p = tmp.path().join(name);
+        fs::create_dir(&p).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+        p
+    };
+    let probe = |s: &str| format!("{}{s}", rnk_store::USERNS_PROBE_PREFIX);
+    dir(&probe("empty"), 0o700);
+    dir(&probe("setgid"), 0o2700);
+    dir(&probe("open"), 0o755);
+    dir(&probe("setuid"), 0o4700);
+    let full = dir(&probe("full"), 0o700);
+    fs::write(full.join("f"), "x").unwrap();
+    let held = dir(&probe("held"), 0o700);
+    let lock = LockedElsewhere::new(&held);
+    let target = dir("target", 0o700);
+    std::os::unix::fs::symlink(&target, tmp.path().join(probe("link"))).unwrap();
+    fs::write(tmp.path().join(probe("file")), "").unwrap();
+    dir("other", 0o700);
+    let names = || {
+        let mut n: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        n.sort();
+        n
+    };
+    let mut kept = names();
+    kept.retain(|n| *n != probe("empty") && *n != probe("setgid"));
+    remove_own_probe_leftovers(tmp.path());
+    assert_eq!(names(), kept);
+    assert!(full.join("f").exists());
+    drop(lock);
+    remove_own_probe_leftovers(tmp.path());
+    kept.retain(|n| *n != probe("held"));
+    assert_eq!(names(), kept);
+}
+
+/// An exclusive `flock` of the directory `path`, held by a child process
+/// of its own until dropped: one this process took would outlive its drop
+/// in the children other tests fork meanwhile.
+pub(crate) struct LockedElsewhere(libc::pid_t);
+
+impl LockedElsewhere {
+    pub(crate) fn new(path: &Path) -> Self {
+        let path_c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let keep = u32::try_from(std::os::fd::AsRawFd::as_raw_fd(&w)).unwrap();
+        // The standard streams and `w` stay open in the child.
+        assert!(keep >= 3, "the pipe took a standard stream's number");
+        let (below, above) = (keep - 1, keep + 1);
+        // SAFETY: the child makes only async-signal-safe system calls, on
+        // memory made before the fork, and never returns.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // SAFETY: plain system calls on a path, bounds and descriptors
+            // made before the fork; the child waits to be killed. It
+            // closes first every descriptor above the standard streams
+            // but `w`, so that it holds no other test's lock, and says it
+            // failed where it cannot.
+            unsafe {
+                let closed = (keep == 3
+                    || libc::syscall(libc::SYS_close_range, 3_u32, below, 0_u32) == 0)
+                    && libc::syscall(libc::SYS_close_range, above, u32::MAX, 0_u32) == 0;
+                let fd = libc::open(
+                    path_c.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                );
+                let locked = u8::from(
+                    closed && fd >= 0 && libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) == 0,
+                );
+                libc::write(
+                    std::os::fd::AsRawFd::as_raw_fd(&w),
+                    (&raw const locked).cast(),
+                    1,
+                );
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        assert!(pid > 0, "fork: {}", io::Error::last_os_error());
+        let held = Self(pid);
+        drop(w);
+        let mut locked = [0];
+        assert_eq!(rustix::io::read(&r, &mut locked).unwrap(), 1);
+        assert_eq!(
+            locked,
+            [1],
+            "the child cannot close its other descriptors or lock {}",
+            path.display()
+        );
+        held
+    }
+}
+
+impl Drop for LockedElsewhere {
+    fn drop(&mut self) {
+        // SAFETY: plain system calls on this test's own child.
+        unsafe {
+            libc::kill(self.0, libc::SIGKILL);
+            libc::waitpid(self.0, std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+/// A probe directory given to a range is left to the store, so it must
+/// bear a name the store removes.
+#[test]
+fn a_probe_directory_for_a_range_bears_a_name_the_store_removes() {
+    let tmp = private_tempdir();
+    let range = rnk_sandbox::IdRange {
+        start: 300_000,
+        count: 65_536,
+    };
+    let ids = rnk_sandbox::BuildIds::Shifted(rnk_sandbox::SubordinateIds {
+        uids: range,
+        gids: range,
+    });
+    let Err(e) = probe_in_dir(tmp.path(), "probe", ids) else {
+        panic!("a range's probe in a directory the store never removes");
+    };
+    assert!(e.contains("not a name the store removes"), "{e}");
+    assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
 }
 
 /// A directory under a fresh temp dir, mode 0755, for a state directory.
@@ -833,7 +1106,7 @@ fn only_a_probe_directory_a_store_would_remove_is_held() {
         rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).is_ok()
     };
     let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
-    let (_, held) = make_probe_dir(&root, dir.path(), &name).unwrap();
+    let (_, held) = make_probe_dir(&root, dir.path(), &name).unwrap().unwrap();
     assert!(held.is_some());
     assert!(!lock(&name), "held");
     drop(held);
@@ -846,7 +1119,9 @@ fn only_a_probe_directory_a_store_would_remove_is_held() {
         }
     });
     assert!(released, "released");
-    let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe").unwrap();
+    let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe")
+        .unwrap()
+        .unwrap();
     assert!(held.is_none());
     assert!(lock("userns-probe"));
 }

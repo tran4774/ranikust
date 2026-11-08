@@ -148,7 +148,7 @@ gets the code.
 | `ranikust.prune` | | The `prune` subcommand: the state directory's checks, the build's user namespace and `rnk_store.prune` inside it (ADR-0105). |
 | `ranikust.setup` | | Mount namespace, the state directory's checks (ADR-0050), the kaniko-mode root, store open, probes, spawner start: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
-| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, or a user's build (#79), inside `ranikust.setup`: the user-namespace probe, reported only for root's own modes (#74), routing for rootless overlay mode; `passes` when every step a `RUN` there needs, with an rbind of `/proc` only where `--allow proc.rbind` has it, and the overlay mount in the namespace worked; its start-up cost. |
+| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, root's `--userns` (#83), or a user's build (#79), inside `ranikust.setup`: the user-namespace probe, reported only for root's own modes (#74), routing for rootless overlay mode and `--userns`; `passes` when every step a `RUN` there needs, with an rbind of `/proc` only where `--allow proc.rbind` has it, and the overlay mount in the namespace worked; its start-up cost. |
 
 ### `rnk-dockerfile`
 
@@ -213,7 +213,7 @@ No span per HTTP request or body chunk.
 | `rnk_sandbox.run` | `user_ns`, `sys_ns`, `max_rss_kb`, `minflt`, `majflt`, `inblock`, `oublock`, `nvcsw`, `nivcsw`, `failed` | One `RUN` process from fork to reap; rusage from `wait4` (the child and the descendants it waited for). Becomes kaniko's `run.child`, `child_*` and `overhead_ns`; `exp-02`, `exp-15`. |
 | `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal, the `RUN`'s cgroups where it gets them. |
 | `rnk_sandbox.probe` | `ok` | One probe step (userns, `proc`, `pivot_root`, `sysfs`); start-up cost. |
-| `rnk_sandbox.probe_userns` | `ok`, `map` | The user-namespace steps, every map tried, each in forked children; `ok` when every step a `RUN` there needs worked, `map` the one that did (`multi-range`, `newuidmap`, `one uid`). What runs in the namespace's own child (the overlay probe) records no span here. |
+| `rnk_sandbox.probe_userns` | `ok`, `map` | The user-namespace steps, every map tried, each in forked children; `ok` when every step a `RUN` there needs worked, `map` the one that did (`multi-range`, `newuidmap`, `one uid`, `shifted range`). What runs in the namespace's own child (the overlay probe) records no span here. |
 | `rnk_sandbox.probe_userns_capabilities` | `ok` | A user other than root's check, before rootless overlay mode writes anything: one forked child's user namespace and, unmapped, mount namespace; `ok` when neither was refused, a child cut short included, where the probe decides (#81). |
 | `rnk_sandbox.cgroups` | `layout` (`nested`, `single`, `none`) | Finding and probing the `RUN` cgroups at `Sandbox::start` ([sandbox](sandbox.md#run-cgroups)); start-up cost. |
 
@@ -284,7 +284,7 @@ indent, final newline. Times in nanoseconds; integers only.
 | Section | Holds |
 |---|---|
 | `schema` | `ranikust.metrics/v1`; bumped on any incompatible change |
-| `meta` | `ranikust_version`, `os`, `arch`, `num_cpu`, `pid`, `file`, `start`, `end` (RFC 3339 UTC), `wall_ns`; for `build`, `mode` (the `--mode` asked for) and `options`: `compression`, `jobs`, `limits` (each `--limit` in force by name, sizes in bytes, durations in milliseconds, ADR-0079), `mode`, `network`, `no_push`, `outputs` (`destinations` count, `oci_layout` and `tar` booleans), `reproducible`, `snapshot_mode`, `targets` count (`Telemetry::set_meta`; never a destination, path, build argument, secret or credential) |
+| `meta` | `ranikust_version`, `os`, `arch`, `num_cpu`, `pid`, `file`, `start`, `end` (RFC 3339 UTC), `wall_ns`; for `build`, `mode` (the `--mode` asked for) and `options`: `compression`, `jobs`, `limits` (each `--limit` in force by name, sizes in bytes, durations in milliseconds, ADR-0079), `mode`, `network`, `no_push`, `outputs` (`destinations` count, `oci_layout` and `tar` booleans), `reproducible`, `snapshot_mode`, `targets` count, `userns` (`Telemetry::set_meta`; never a destination, path, build argument, secret or credential) |
 | `exit` | `status` (`success`, `error`, `panic`), `code`, `message` (500 characters at most); `panics` when an unwinding build panicked earlier; `spans_unavailable` when the panic hook could not read the span state |
 | `phases` | per span name: `count`, `total_ns` (sum), `max_ns`, `wall_ns` (time at least one was open), `open` (still open at exit), and the summed fields |
 | `stages`, `commands`, `snapshots` | records: `build` (always 0), `stage`, `index`, `line`, `kind`, `name`, `text`, `cache_hit`, `start_ns` (from process start), `wall_ns`, `incomplete` (open at exit), `values` (the record span's own fields), `phases` (spans nested in it: `count`, `total_ns`, `max_ns`, fields) |

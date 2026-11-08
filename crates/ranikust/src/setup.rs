@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use rnk_rootfs::RootPath;
 use rustix::fs::FlockOperation;
+use rustix::io::Errno;
 
 use rnk_sandbox::{Caps, Error as SandboxError, Sandbox};
 use rnk_snapshot::{Error as SnapshotError, MountApi, OverlayCaps};
@@ -53,6 +54,9 @@ pub(crate) enum Outcome {
         sandbox: Caps,
         /// For `rnk-snapshot`.
         overlay: OverlayCaps,
+        /// Root's `--userns`, in the `ranikust` range's namespace (ADR-0003,
+        /// ADR-0139), rather than a user's rootless build.
+        userns: bool,
     },
 }
 
@@ -63,8 +67,17 @@ impl fmt::Display for Outcome {
                 f.write_str("overlay mode as root")?;
                 (sandbox, overlay)
             }
-            Outcome::OverlayRootless { sandbox, overlay } => {
-                f.write_str("overlay mode, rootless, in the build's user namespace")?;
+            Outcome::OverlayRootless {
+                sandbox,
+                overlay,
+                userns,
+            } => {
+                f.write_str(if *userns {
+                    "overlay mode with --userns, in the build's user namespace of the ranikust \
+                     range"
+                } else {
+                    "overlay mode, rootless, in the build's user namespace"
+                })?;
                 (sandbox, overlay)
             }
         };
@@ -292,7 +305,7 @@ pub(crate) fn enter_build_userns(
         guidance: "".into(),
         reason: format!("cannot read this user's subordinate ids: {e}"),
     })?;
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
+    let userns = rnk_sandbox::enter_build_user_namespace(rnk_sandbox::BuildIds::Own(subordinate))
         .map_err(|e| userns_refusal(e, euid, no_userns))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     Ok(userns)
@@ -777,30 +790,50 @@ fn probe_user_namespace(store: &Store) -> Result<Probed, String> {
     } else {
         (None, store.build_dir(), "userns-probe".to_owned())
     };
-    probe_in_dir(parent, &name, None)
+    probe_in_dir(parent, &name, rnk_sandbox::BuildIds::Own(None))
 }
 
-/// The probes, for the subordinate ids `subordinate`, in `parent/name`,
-/// made for them and removed after, unless a child of the probe was left
-/// there. A directory with the name a store removes
+/// The probes, for the ids `ids` maps, in `parent/name` (or the name
+/// [`make_probe_dir_again`] takes instead), made for them and removed
+/// after, unless a child of the probe was left there. With a
+/// shifted range (`--userns`), the namespace's root owns what its children
+/// write in: the directory and the overlay probe's; this process, which
+/// gave it away, deletes nothing in it, and leaves it, its lock released,
+/// to the store, which removes it from inside the build's user namespace
+/// with the range's rights alone (its name must then be one the store
+/// removes). A directory with the name a store removes
 /// ([`rnk_store::USERNS_PROBE_PREFIX`]) is held by its exclusive `flock`
 /// while the probes use it, and for this process's life when a child was
 /// left: the store removes one only where it takes that lock.
 pub(crate) fn probe_in_dir(
     parent: &Path,
     name: &str,
-    subordinate: Option<rnk_sandbox::SubordinateIds>,
+    ids: rnk_sandbox::BuildIds,
 ) -> Result<Probed, String> {
+    let given = ids.shifted_root().is_some();
+    if given && !name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
+        return Err(format!(
+            "{name} is not a name the store removes, for a directory given away"
+        ));
+    }
     let root = RootPath::open(parent).map_err(|e| e.to_string())?;
-    let (scratch, held) = make_probe_dir(&root, parent, name)?;
-    let (r, left) = match own_group(&root, name) {
-        Ok(_) => probe_in_scratch(&scratch, &parent.join(name), subordinate),
+    let (name, scratch, held) = make_probe_dir_again(&root, parent, name)?;
+    let name = name.as_str();
+    let (r, left) = match own_group(&scratch) {
+        Ok(_) => probe_in_scratch(&scratch, &parent.join(name), ids),
         Err(e) => (Err(e.to_string()), false),
     };
+    #[cfg(test)]
+    tests::probes_ran();
     if left {
         // The child may still write there; the error in the line says so.
         // Its lock stays held as long as this process, and that child, live.
         std::mem::forget(held);
+        return r;
+    }
+    if given {
+        // The range's processes may move anything of theirs in meanwhile.
+        drop(held);
         return r;
     }
     let removed = rnk_rootfs::delete_contents(&scratch, &rnk_rootfs::IgnoreList::new())
@@ -814,51 +847,237 @@ pub(crate) fn probe_in_dir(
     r
 }
 
+/// [`make_probe_dir`] with `name`, then once more with a name of its own
+/// where another build took the first for a leftover before it was held
+/// (removed it, [`remove_own_probe_leftovers`], or locked it to remove
+/// it, as a store does): the name made.
+fn make_probe_dir_again(
+    root: &RootPath,
+    parent: &Path,
+    name: &str,
+) -> Result<(String, RootPath, Option<OwnedFd>), String> {
+    let again = format!("{name}-again");
+    for name in [name, &again] {
+        if let Some((scratch, held)) = make_probe_dir(root, parent, name)? {
+            return Ok((name.to_owned(), scratch, held));
+        }
+    }
+    Err(format!(
+        "{} was taken by another build (removed, or locked to be removed) before it could \
+         be held",
+        parent.join(again).display()
+    ))
+}
+
 /// Makes the directory `name` in `root` (at `parent`) for the probe, and
 /// holds it where the store would take it for a leftover: one named
 /// [`rnk_store::USERNS_PROBE_PREFIX`]. Others (in a build's directory) are
-/// never held.
+/// never held. `None` where another build took it before it was held
+/// (removed it, or locked it to remove it).
 fn make_probe_dir(
     root: &RootPath,
     parent: &Path,
     name: &str,
-) -> Result<(RootPath, Option<OwnedFd>), String> {
-    let scratch = root
-        .create_sub_root(name, 0o700)
-        .map_err(|e| e.to_string())?;
+) -> Result<Option<(RootPath, Option<OwnedFd>)>, String> {
+    let scratch = match root.create_sub_root(name, 0o700) {
+        Ok(scratch) => scratch,
+        Err(e) if removed_once_made(&e) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
     if !name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
-        return Ok((scratch, None));
+        return Ok(Some((scratch, None)));
     }
+    #[cfg(test)]
+    tests::before_hold(&parent.join(name));
     match hold_dir(&scratch) {
-        Ok(held) => Ok((scratch, Some(held))),
+        Ok(Some(held)) => Ok(Some((scratch, Some(held)))),
+        Ok(None) => Ok(None),
         Err(e) => {
-            // The lock's error is the one to report; an empty directory
-            // left is one the store removes.
+            // This error is the one to report; an empty directory left is a
+            // leftover the next start removes.
             let _ = root.remove_dir(name);
-            Err(format!("cannot lock {}: {e}", parent.join(name).display()))
+            Err(format!("cannot hold {}: {e}", parent.join(name).display()))
         }
     }
 }
 
-/// A descriptor of the directory `dir` holding its exclusive `flock`, taken
-/// without waiting: it was just made, so only a store about to remove it
-/// as a leftover holds it.
-fn hold_dir(dir: &RootPath) -> Result<OwnedFd, String> {
-    let fd = dir
-        .open_at(".", &rnk_rootfs::OpenHow::read().directory().no_follow())
-        .map_err(|e| e.to_string())?;
-    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| e.to_string())?;
-    Ok(fd)
+/// Whether `e`, from [`RootPath::create_sub_root`], says the directory it
+/// made was gone when it opened or listed it: another build's start may
+/// remove it for a leftover ([`remove_own_probe_leftovers`]) right after
+/// `mkdirat`.
+fn removed_once_made(e: &rnk_rootfs::Error) -> bool {
+    match e {
+        rnk_rootfs::Error::Io {
+            op: "open" | "readdir",
+            source,
+            ..
+        } => source.raw_os_error() == Some(Errno::NOENT.raw_os_error()),
+        rnk_rootfs::Error::Changed { .. } => true,
+        _ => false,
+    }
 }
 
-/// Gives the directory `name` in `root` the process's gid and no setgid
-/// bit, as the store's own directories get (ADR-0099): a setgid parent's
-/// gid, which no map holds, would stop the probe's `chown` in the user
-/// namespace.
-fn own_group(root: &RootPath, name: &str) -> rnk_rootfs::Result<bool> {
-    const SETGID: u32 = 0o2000;
+/// Removes each directory of the user namespace probe in `parent`
+/// ([`rnk_store::USERNS_PROBE_PREFIX`]) that this process's user made and
+/// had not yet given away when its build was killed: the store, in the
+/// build's user namespace under `--userns`, cannot open it. Only an empty
+/// directory of this user's, mode `0700` (with the setgid bit a setgid
+/// `parent` gives it before [`own_group`] clears it), on `parent`'s mount and
+/// no mount point, that no probe holds (its `flock`), told through its
+/// descriptor; then its name alone is removed, which fails where it is no
+/// longer empty. Nothing inside a directory is ever deleted. A failure is
+/// logged: it must not stop the build.
+pub(crate) fn remove_own_probe_leftovers(parent: &Path) {
+    let root = match RootPath::open(parent) {
+        Ok(root) => root,
+        Err(e) => {
+            tracing::warn!(
+                "ranikust: cannot look for the user namespace probe's leftovers in {}: {e}",
+                parent.display()
+            );
+            return;
+        }
+    };
+    let names = match root.read_names(".") {
+        Ok(names) => names,
+        Err(e) => {
+            tracing::warn!(
+                "ranikust: cannot look for the user namespace probe's leftovers in {}: {e}",
+                parent.display()
+            );
+            return;
+        }
+    };
+    let prefix = rnk_store::USERNS_PROBE_PREFIX.as_bytes();
+    for name in names
+        .iter()
+        .filter(|n| n.as_encoded_bytes().starts_with(prefix))
+    {
+        match remove_if_own_and_empty(&root, name) {
+            Ok(true) => tracing::info!(
+                "ranikust: removed {} left by an earlier build",
+                parent.join(name).display()
+            ),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(
+                "ranikust: {} left by an earlier build not removed: {e}",
+                parent.join(name).display()
+            ),
+        }
+    }
+}
+
+/// [`remove_own_probe_leftovers`] for `name` of `root`: whether it was
+/// removed.
+fn remove_if_own_and_empty(root: &RootPath, name: &std::ffi::OsStr) -> Result<bool, String> {
+    let euid = rustix::process::geteuid().as_raw();
+    let st = match root.statx(name) {
+        Ok(st) => st,
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    let own = st.file_type() == rnk_rootfs::FileType::Directory
+        && !st.mount_root
+        && st.mnt_id == root.mnt_id()
+        && st.uid == euid
+        && st.mode & 0o7777 & !SETGID == 0o700;
+    if !own {
+        return Ok(false);
+    }
+    let fd = match root.open_at(name, &rnk_rootfs::OpenHow::read().directory().no_follow()) {
+        Ok(fd) => fd,
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    let held = rustix::fs::fstat(&fd).map_err(|e| e.to_string())?;
+    let listed = rustix::fs::makedev(st.dev_major, st.dev_minor);
+    if (held.st_dev, held.st_ino, held.st_uid) != (listed, st.ino, euid)
+        || held.st_mode & 0o7777 & !SETGID != 0o700
+    {
+        return Ok(false);
+    }
+    match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => {}
+        // A probe uses it.
+        Err(Errno::WOULDBLOCK) => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    }
+    for entry in rustix::fs::Dir::read_from(&fd).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !matches!(entry.file_name().to_bytes(), b"." | b"..") {
+            return Ok(false);
+        }
+    }
+    // The name alone: `rmdir` takes only an empty directory, whatever is
+    // there now.
+    match root.remove_dir(name) {
+        Ok(()) => Ok(true),
+        Err(e)
+            if [Errno::NOENT, Errno::NOTEMPTY]
+                .map(Errno::raw_os_error)
+                .map(Some)
+                .contains(&e.raw_os_error()) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// A descriptor of the directory `dir` holding its exclusive `flock`, taken
+/// without waiting. It was just made, empty and this user's, so a store or
+/// a build's start may have taken it for a leftover meanwhile: `None` where
+/// one holds it or removed it. Errors name their step.
+fn hold_dir(dir: &RootPath) -> Result<Option<OwnedFd>, String> {
+    let fd = dir
+        .open_at(".", &rnk_rootfs::OpenHow::read().directory().no_follow())
+        .map_err(|e| format!("open: {e}"))?;
+    match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => {}
+        Err(Errno::WOULDBLOCK) => return Ok(None),
+        Err(e) => return Err(format!("flock: {e}")),
+    }
+    let st = rustix::fs::fstat(&fd).map_err(|e| format!("fstat: {e}"))?;
+    Ok((st.st_nlink > 0).then_some(fd))
+}
+
+/// Gives the directory `name` in `root`, which this process just made, to
+/// `owner`'s uid and gid, checked on the pinned entry: in a directory
+/// another process of that uid may write, a name swapped meanwhile for
+/// anything but a directory of this process's is left as it is, and
+/// refused.
+fn give_dir(root: &RootPath, name: &str, owner: (u32, u32)) -> Result<(), String> {
+    let euid = rustix::process::geteuid().as_raw();
+    let given = root
+        .set_meta_if(name, |st| {
+            (st.file_type() == rnk_rootfs::FileType::Directory && st.uid == euid).then(|| {
+                rnk_rootfs::Meta {
+                    uid: Some(owner.0),
+                    gid: Some(owner.1),
+                    ..rnk_rootfs::Meta::default()
+                }
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    if given {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name} is no longer the directory made for the probe"
+        ))
+    }
+}
+
+/// A mode's setgid bit, which a directory made in a setgid one gets.
+const SETGID: u32 = 0o2000;
+
+/// Gives the directory `dir` the process's gid and no setgid bit, through
+/// its own descriptor, as the store's own directories get (ADR-0099): a
+/// setgid parent's gid, which no map holds, would stop the probe's `chown`
+/// in the user namespace.
+fn own_group(dir: &RootPath) -> rnk_rootfs::Result<bool> {
     let egid = rustix::process::getegid().as_raw();
-    root.set_meta_if(name, |st| {
+    dir.set_meta_if(".", |st| {
         (st.mode & SETGID != 0 || st.gid != egid).then(|| rnk_rootfs::Meta {
             gid: Some(egid),
             mode: Some(st.permissions() & !SETGID),
@@ -873,16 +1092,23 @@ fn own_group(root: &RootPath, name: &str) -> rnk_rootfs::Result<bool> {
 fn probe_in_scratch(
     scratch: &RootPath,
     path: &Path,
-    subordinate: Option<rnk_sandbox::SubordinateIds>,
+    ids: rnk_sandbox::BuildIds,
 ) -> (Result<Probed, String>, bool) {
-    let report = match rnk_sandbox::probe_user_namespace(scratch, subordinate) {
+    let report = match rnk_sandbox::probe_user_namespace(scratch, ids) {
         Ok(report) => report,
         Err(e) => return (Err(e.to_string()), keeps_dir(Some(&e), None)),
     };
     let overlay = match report.map() {
         Some(_) => {
-            if let Err(e) = scratch.create_dir("overlay", 0o700) {
-                return (Err(e.to_string()), false);
+            let made = scratch
+                .create_dir("overlay", 0o700)
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    ids.shifted_root()
+                        .map_or(Ok(()), |owner| give_dir(scratch, "overlay", owner))
+                });
+            if let Err(e) = made {
+                return (Err(e), false);
             }
             report.in_namespace(overlay_in_namespace, &path.join("overlay"))
         }
@@ -1030,7 +1256,6 @@ fn overlay_refusal(e: &SnapshotError, euid: u32) -> Refusal {
 /// memory, descriptors, processes or disk, or an I/O error, which say
 /// nothing about overlayfs.
 fn kernel_refused_mount(e: &SnapshotError) -> bool {
-    use rustix::io::Errno;
     match e {
         SnapshotError::Mount { step, errno, .. } => {
             !step.starts_with("start the mount thread")

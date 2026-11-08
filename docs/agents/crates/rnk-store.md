@@ -127,7 +127,9 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
   told by `statx` without following) do not count: `check_marker` marks the
   directory, and `open` then removes each whose `flock` it takes (a probe
-  holds its own while it uses it), through descriptors; every emptying
+  holds its own while it uses it), through descriptors; under `--userns`
+  this is how the probe's directory goes, which root gave the range and
+  deletes nothing in (ADR-0139); every emptying
   (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
   takes the same lock, leaves one held, and keeps a store with no data
   beside it. A new state directory is `0700`; one owned by another user or
@@ -204,7 +206,7 @@ Design: [locks](../../design/cache-and-store.md#locks),
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout), [`#locks`](../../design/cache-and-store.md#locks), [`#atomic-publication`](../../design/cache-and-store.md#atomic-publication), [`#prune`](../../design/cache-and-store.md#prune), [`#ownership`](../../design/cache-and-store.md#ownership), [`#failure-handling`](../../design/cache-and-store.md#failure-handling); [`design/overlay-snapshot.md#state-directory-layout`](../../design/overlay-snapshot.md#state-directory-layout); [threat model T7, T13, T14](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (in rootless mode every operation on extracted layers runs inside the build's user namespace, and the store's directories carry mapped ids, #77), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune_all`, for `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (in rootless mode and under `--userns` extracted layers are keyed by their id map in the same state directory: `rnk-snapshot` makes the key, #77)
+- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (in rootless mode every operation on extracted layers runs inside the build's user namespace, and the store's directories carry mapped ids, #77), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune_all`, for `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (in rootless mode and under `--userns` extracted layers are keyed by their id map: `rnk-snapshot` makes the key, #77; `--userns` uses a state directory of its range's first uid, never root's, [sandbox](../../design/sandbox.md#--userns))
 - **Open:** [#1](https://github.com/tran4774/ranikust/issues/1) (which digest names an extracted layer, where locks live; it must include the id map of a rootless or `--userns` build, ADR-0104; interim: layers named by the digest the caller gives, `rnk-snapshot` uses the chain ID, and in a user namespace a digest of the chain ID and the id map), [#2](https://github.com/tran4774/ranikust/issues/2) (proving the lock protocol under crashes and races), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds)
 - **Evidence:** [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) §5 (parallel extraction 0.37 s against 0.88 s), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) finding 4 (a state directory in the walked root leaks), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) finding 9 (a hardlink farm corrupts the store)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/config/init.go:41` (`KanikoDir`), `:49-81` (its per-purpose directories); `pkg/util/fs_util.go:72-89` (the ignore list starts with `KanikoDir`). kaniko keeps no store between builds and takes no locks.
@@ -290,7 +292,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `setup/tests/userns/layers.rs` (#77): base layers filled and published in
   the namespace, `0555` roots included; a `SIGKILL`ed fill publishes nothing
   and the next build removes it; in T2, from a setgid state directory of a
-  gid no map holds. `setup/tests/userns/layers/hostile.rs`: in the
+  gid no map holds; as real root with two shifted ranges of the same first
+  ids (`--userns`, #83), each map's own copies, the first's found again.
+  `setup/tests/userns/layers/hostile.rs`: in the
   namespace, a store directory of another owner keeps its owner and setgid
   bit, and one that is a symlink leaves its target, root's, unchanged.
 - **T0** `tests/prune.rs` (`prune_all`, the test user's own files): every

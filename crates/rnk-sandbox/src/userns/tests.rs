@@ -94,12 +94,12 @@ fn root_tries_its_ranges_then_one_id_and_a_user_newuidmap_then_one_id() {
             })
             .collect::<Vec<_>>()
     };
-    let root = kinds(plans(0, 0, None));
+    let root = kinds(plans(0, 0, BuildIds::Own(None)));
     assert_eq!(root.len(), 2);
     assert_eq!(root[0].0, IdMap::Ranges);
     assert_eq!(root[1], (IdMap::OneId, None));
 
-    let user = kinds(plans(1000, 1001, None));
+    let user = kinds(plans(1000, 1001, BuildIds::Own(None)));
     assert_eq!(
         user,
         [
@@ -120,17 +120,78 @@ fn root_tries_its_ranges_then_one_id_and_a_user_newuidmap_then_one_id() {
             count: 65536,
         },
     };
-    let user = kinds(plans(1000, 1001, Some(sub)));
+    let user = kinds(plans(1000, 1001, BuildIds::Own(Some(sub))));
     assert_eq!(user[0].0, IdMap::Newuidmap);
     let tools = tool("newuidmap").is_some() && tool("newgidmap").is_some();
     assert_eq!(user[0].1.is_none(), tools);
-    match plans(1000, 1001, None).pop() {
+    match plans(1000, 1001, BuildIds::Own(None)).pop() {
         Some(Ok(Plan::OneId { uid_map, gid_map })) => {
             assert_eq!(uid_map, b"0 1000 1\n");
             assert_eq!(gid_map, b"0 1001 1\n");
         }
         other => panic!("{other:?}"),
     }
+}
+
+pub(super) fn shifted_ids() -> SubordinateIds {
+    SubordinateIds {
+        uids: IdRange {
+            start: 300_000,
+            count: 65536,
+        },
+        gids: IdRange {
+            start: 400_000,
+            count: 1000,
+        },
+    }
+}
+
+#[test]
+fn a_shifted_build_tries_its_range_only_and_never_one_id() {
+    let mut root = plans(0, 0, BuildIds::Shifted(shifted_ids()));
+    assert_eq!(root.len(), 1, "{root:?}");
+    match root.pop() {
+        Some(Ok(p @ Plan::Shifted { .. })) => {
+            assert_eq!(p.kind(), IdMap::Shifted);
+            assert!(p.by_parent());
+            assert!(p.assumes_root());
+            assert_eq!(p.own_map(), None);
+            assert_eq!(p.other_ids(), Some((1, 1)));
+            let Plan::Shifted { uid_map, gid_map } = p else {
+                unreachable!()
+            };
+            assert_eq!(uid_map, b"0 300000 65536\n");
+            assert_eq!(gid_map, b"0 400000 1000\n");
+        }
+        other => panic!("{other:?}"),
+    }
+    // A user cannot write it, and one id would be its own: nothing to try.
+    let user = plans(1000, 1001, BuildIds::Shifted(shifted_ids()));
+    assert!(
+        matches!(
+            user.as_slice(),
+            [Err((IdMap::Shifted, StepResult::NotRun(_)))]
+        ),
+        "{user:?}"
+    );
+    // A range of one id gives no other id to `chown` to.
+    let one = SubordinateIds {
+        uids: IdRange {
+            start: 300_000,
+            count: 1,
+        },
+        ..shifted_ids()
+    };
+    match plans(0, 0, BuildIds::Shifted(one)).pop() {
+        Some(Ok(p)) => assert_eq!(p.other_ids(), None),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        BuildIds::Shifted(shifted_ids()).shifted_root(),
+        Some((300_000, 400_000))
+    );
+    assert_eq!(BuildIds::Own(None).shifted_root(), None);
+    assert!(!ranges().assumes_root() && !one_id(0).assumes_root());
 }
 
 #[test]
@@ -645,7 +706,7 @@ fn a_child_is_reaped_within_its_grace_else_reported_left() {
 /// [`probe_in`] in the directory at `dir`, opened as a caller that did
 /// not make it would.
 fn probe_at(dir: &Path, subordinate: Option<SubordinateIds>) -> Result<UsernsReport> {
-    probe_in(&RootPath::open(dir)?, subordinate)
+    probe_in(&RootPath::open(dir)?, BuildIds::Own(subordinate))
 }
 
 /// The records the witnesses in a closure's child send: the panic hook's,
@@ -910,6 +971,71 @@ fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker
         run_closure(plan, refused, dir.path()).unwrap(),
         Err("refused".to_owned())
     );
+}
+
+/// T2: as root with a shifted range (`--userns`, ADR-0104): every step a
+/// `RUN` needs passes, the probe's directory and its mount points are given
+/// to the range's first ids (the file the `chown` step gave to the
+/// namespace's id 1 is the range's second ids') and nothing in it is
+/// deleted from outside the namespace, and a closure runs as root of the
+/// namespace with no supplementary group, a file it makes owned on the host
+/// by the range's first ids.
+#[test]
+#[ignore = "T2: real root probes a shifted range"]
+fn the_user_namespace_steps_of_a_shifted_range_pass_as_its_first_ids() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let sub = shifted_ids();
+    let tmp = tempfile::tempdir().unwrap();
+    // Searchable by the range's first uid, as a state directory's parents.
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    let dir = tmp.path().join("probe");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let report = probe_in(&RootPath::open(&dir).unwrap(), BuildIds::Shifted(sub)).unwrap();
+    measured(&format!("user namespace with a shifted range: {report}"));
+    let mut left: Vec<(String, u32, u32)> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            let m = e.metadata().unwrap();
+            (e.file_name().into_string().unwrap(), m.uid(), m.gid())
+        })
+        .collect();
+    left.sort();
+    let (u, g) = (sub.uids.start, sub.gids.start);
+    assert_eq!(
+        left,
+        [
+            ("chown".into(), u + 1, g + 1),
+            ("proc".into(), u, g),
+            ("sys".into(), u, g)
+        ]
+    );
+    let meta = fs::metadata(&dir).unwrap();
+    assert_eq!((meta.uid(), meta.gid()), (sub.uids.start, sub.gids.start));
+    assert_eq!(report.stop(ANY), None, "{report}");
+    assert_eq!(report.map(), Some(IdMap::Shifted));
+    assert_eq!(report.chown, StepResult::Ok);
+    assert!(is_eperm(&report.mknod), "{report}");
+    let plan = report.plan.as_ref().unwrap();
+    let inside = |p: &Path| {
+        let groups = fs::read_to_string("/proc/self/status")
+            .map_err(|e| e.to_string())?
+            .lines()
+            .find_map(|l| l.strip_prefix("Groups:").map(|g| g.trim().to_owned()))
+            .ok_or("no Groups line")?;
+        fs::write(p.join("made"), b"").map_err(|e| e.to_string())?;
+        let euid = rustix::process::geteuid().as_raw();
+        let egid = rustix::process::getegid().as_raw();
+        Ok(format!("{euid} {egid} groups=[{groups}]"))
+    };
+    assert_eq!(
+        run_closure(plan, inside, &dir).unwrap(),
+        Ok("0 0 groups=[]".to_owned())
+    );
+    let made = fs::metadata(dir.join("made")).unwrap();
+    assert_eq!((made.uid(), made.gid()), (sub.uids.start, sub.gids.start));
 }
 
 /// The first range of `file` (`/etc/subuid` or `/etc/subgid`) for `name`

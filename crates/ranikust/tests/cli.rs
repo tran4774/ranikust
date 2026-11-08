@@ -285,6 +285,35 @@ fn without_root_the_set_up_never_makes_the_default_state_dir() {
     }
 }
 
+/// `--userns` from a user other than root is a usage error, before
+/// anything is written: neither the state directory nor the default one
+/// is made.
+#[test]
+fn userns_as_a_user_other_than_root_is_a_usage_error() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).expect("home");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let home_env = [("HOME", home.to_str().expect("utf-8 temp dir"))];
+    for state in [&["--state-dir=state"][..], &[]] {
+        let mut argv = vec!["--no-push", "--context", "ctx", "--userns"];
+        argv.extend_from_slice(state);
+        let out = ranikust(tmp.path(), &argv, &home_env);
+        assert_eq!(out.status.code(), Some(2), "{argv:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("--userns needs root"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(!tmp.path().join("state").exists(), "{argv:?}");
+        let made: Vec<_> = fs::read_dir(&home).expect("home").collect();
+        assert!(made.is_empty(), "{argv:?}: {made:?}");
+    }
+}
+
 /// A user with no user namespace is told, in order: `sudo`; where AppArmor
 /// restricts user namespaces and ranikust runs unconfined in the host's
 /// user namespace and in no container, the profile, after installing the

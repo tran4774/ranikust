@@ -10,7 +10,8 @@ where root may not mount, in kaniko mode (on a container's `/`, as kaniko, or
 in a directory per stage elsewhere). As a regular user allowed user
 namespaces, or as root in a container that may not mount but has a volume at
 the state directory, it builds in rootless overlay mode (where the container's
-`/proc` is masked, only with `--allow proc.rbind`). It pushes the image
+`/proc` is masked, only with `--allow proc.rbind`); with `--userns`, root
+builds there too, as an unprivileged uid of the host. It pushes the image
 or writes an OCI layout or a Docker tar ([Command line](usage.md)). Overlay
 mode as root and kaniko mode have been compared with kaniko on three test
 workloads in a VM, not yet on real projects. With `--metrics-file=<path>` it writes a JSON report of where the run
@@ -24,7 +25,6 @@ The work is planned in phases, without dates. The
 
 | Missing | Phase |
 |---|---|
-| `--userns` | 3, [#41](https://github.com/tran4774/ranikust/issues/41) |
 | The layer cache (`--cache`) | 4 |
 | `ADD` of a URL, a git repository or an archive, and `ADD --checksum`, `--keep-git-dir` and `--unpack=true`; `COPY` and `ADD` with `--link` or `--exclude`; `COPY --parents`; `RUN --mount=type=bind`, `tmpfs` and `type=cache,from=` (on a container's `/`, a bind is copied in and `from=` is refused, [ADR-0121](https://github.com/tran4774/ranikust/blob/main/docs/adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md), decided and not built yet); `ONBUILD`; git, tar and HTTPS build contexts; registry mirrors; external credential helpers; `prune` by size and age (only `prune --all` works now) | 5 |
 | kaniko's 200 integration Dockerfiles in every mode, fuzzing, the host-safety test suite, packaging | 6 |

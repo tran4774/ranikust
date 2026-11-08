@@ -30,6 +30,9 @@ other than root builds in rootless overlay mode, and so does root where it may
 not mount and the state directory is not on a container's own root; where a
 container masks `/proc`, that needs `--allow proc.rbind`
 ([modes and detection](docs/design/modes-and-detection.md#probe-order---modeauto)).
+With `--userns`, root builds in rootless overlay mode too, as the first ids
+of a `ranikust` range of `/etc/subuid` and `/etc/subgid`, never in another
+mode ([sandbox](docs/design/sandbox.md#--userns)).
 
 ranikust keeps its own files, including the persistent store and every build
 root it makes, in one state directory (`--state-dir`, default
@@ -169,7 +172,8 @@ In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). It also moves the process into the build's user
 namespace, each id map tried in a forked child first (rootless overlay mode,
 [#75](https://github.com/tran4774/ranikust/issues/75),
-[#79](https://github.com/tran4774/ranikust/issues/79)); the subordinate ids
+[#79](https://github.com/tran4774/ranikust/issues/79), and root's `--userns`,
+[#83](https://github.com/tran4774/ranikust/issues/83)); the subordinate ids
 come from `ranikust`. Where its `RUN`s get an rbind of `/proc`, they take
 turns, whatever `--jobs` allows
 ([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).
@@ -396,7 +400,10 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
   `/` in a container (kaniko mode) or a directory it makes in its state
   directory. The state directory is owned by the user running ranikust, not
   writable by others, made `0700`, below directories only root or that user
-  may write, checked by descriptor before anything is created (ADR-0050).
+  may write, checked by descriptor before anything is created (ADR-0050);
+  under root's `--userns` (ADR-0139), by the first ids of its range instead,
+  below directories only root may write, never root's own nor at, below or
+  above its default ([sandbox](docs/design/sandbox.md#--userns)).
 - In kaniko mode on `/` the state directory is on the ignore list: never
   walked, snapshotted or deleted.
 - `RUN` enters its root with `pivot_root` (or `MS_MOVE`), never a bare `chroot`
