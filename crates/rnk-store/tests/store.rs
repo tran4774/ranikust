@@ -12,6 +12,9 @@ use std::time::Duration;
 use rnk_oci::Digest;
 use rnk_store::{BuildPaths, CacheSharing, EntryKey, Error, Store, TmpEntry};
 
+mod common;
+use common::{Opens, unblocked};
+
 fn digest(n: u8) -> Digest {
     Digest::from_sha256_bytes(&[n; 32])
 }
@@ -222,6 +225,243 @@ fn check_state_dir_holds_the_directory_until_dropped() {
     assert!(matches!(err, Error::InUse { .. }), "{err}");
     store.close().unwrap();
     assert!(Store::prune_all(state).unwrap());
+}
+
+/// Each of the store's directories, replaced by a symlink that stays in
+/// the state directory or by a file, is refused at open, named, with
+/// nothing changed; `check_state_dir` refuses it too. The control: the
+/// layout as the store made it opens.
+#[test]
+fn a_store_directory_that_is_not_a_real_directory_is_refused_unchanged() {
+    for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
+        for plant in ["a symlink", "a regular file"] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = dir.path().join(".ranikust");
+            Store::open(&paths(dir.path())).unwrap().close().unwrap();
+            let moved = format!("{d}.moved");
+            fs::rename(state.join(d), state.join(&moved)).unwrap();
+            if plant == "a symlink" {
+                std::os::unix::fs::symlink(&moved, state.join(d)).unwrap();
+            } else {
+                fs::write(state.join(d), b"").unwrap();
+            }
+            let case = format!("{d} as {plant}");
+            let before = tree(&state);
+            let refused = |e: Error| {
+                let shown = e.to_string();
+                assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {shown}");
+                assert!(
+                    shown.contains(&format!("holds {d}, which is {plant}")),
+                    "{case}: {shown}"
+                );
+                assert_eq!(
+                    shown.contains("or move"),
+                    plant == "a symlink",
+                    "{case}: {shown}"
+                );
+            };
+            refused(Store::open(&paths(dir.path())).expect_err(&case));
+            assert_eq!(tree(&state), before, "{case}");
+            refused(Store::check_state_dir(&state).expect_err(&case));
+            fs::remove_file(state.join(d)).unwrap();
+            fs::rename(state.join(&moved), state.join(d)).unwrap();
+            Store::open(&paths(dir.path())).unwrap().close().unwrap();
+        }
+    }
+}
+
+/// Red team: a special file, a dead link, a link to itself or to a FIFO as a store directory (T4).
+#[test]
+fn red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened() {
+    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    use std::os::unix::fs::symlink;
+    let top = tempfile::tempdir().unwrap();
+    let fifo_out = top.path().join("fifo-out");
+    mkfifo(&fifo_out);
+    Opens::control(top.path());
+    let mut planted = 0;
+    for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
+        for plant in [
+            "a FIFO",
+            "a socket",
+            "a character device",
+            "a dead link",
+            "a link to itself",
+            "a link to a FIFO out",
+        ] {
+            for marked in [true, false] {
+                let dir = tempfile::tempdir_in(top.path()).unwrap();
+                let base = dir.path().to_owned();
+                let state = base.join(".ranikust");
+                if marked {
+                    Store::open(&paths(&base)).unwrap().close().unwrap();
+                    fs::remove_dir_all(state.join(d)).unwrap();
+                } else {
+                    fs::create_dir(&state).unwrap();
+                }
+                let at = state.join(d);
+                match plant {
+                    "a FIFO" => mkfifo(&at),
+                    "a socket" => drop(std::os::unix::net::UnixListener::bind(&at).unwrap()),
+                    "a character device" => {
+                        // 0:0, a whiteout: the only device node a user may make.
+                        let made = mknodat(
+                            CWD,
+                            &at,
+                            FileType::CharacterDevice,
+                            Mode::from_raw_mode(0o600),
+                            0,
+                        );
+                        if let Err(e) = made {
+                            eprintln!("skipped {plant}: {e}");
+                            continue;
+                        }
+                    }
+                    "a dead link" => symlink("missing", &at).unwrap(),
+                    "a link to itself" => symlink(d, &at).unwrap(),
+                    _ => symlink(&fifo_out, &at).unwrap(),
+                }
+                planted += 1;
+                let case = format!("{d} as {plant}, marked {marked}");
+                let says = match (marked, plant.contains("link")) {
+                    (true, true) => format!("holds {d}, which is a symlink"),
+                    (true, false) => format!("holds {d}, which is a special file"),
+                    // An unmarked directory is refused for its names before its directories.
+                    (false, _) => "has no regular file .ranikust-state".to_owned(),
+                };
+                let opens = match plant {
+                    "a FIFO" => Some(Opens::watch(&[&at])),
+                    "a link to a FIFO out" => Some(Opens::watch(&[&fifo_out])),
+                    _ => None,
+                };
+                let before = tree(&state);
+                let check = |r: Result<(), Error>| {
+                    let e = r.err().unwrap_or_else(|| panic!("{case}: taken"));
+                    assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {e}");
+                    assert!(e.to_string().contains(&says), "{case}: {e}");
+                    assert_eq!(tree(&state), before, "{case}");
+                };
+                let opened = base.clone();
+                check(unblocked(&case, move || {
+                    Store::open(&paths(&opened)).map(|s| s.close().unwrap())
+                }));
+                let checked = state.clone();
+                check(unblocked(&case, move || {
+                    Store::check_state_dir(&checked).map(drop)
+                }));
+                assert!(!opens.is_some_and(|o| o.seen()), "{case}: opened");
+            }
+        }
+    }
+    assert!(planted >= 6 * 5 * 2, "planted {planted}");
+}
+
+/// Red team: a link out of the state directory, or to a FIFO out, below a store directory (T13).
+#[test]
+fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
+    use std::os::unix::fs::symlink;
+    let top = tempfile::tempdir().unwrap();
+    for at in ["layers/v3", "layers/v3/sha256", "blobs/sha256", "caches/"] {
+        for aim in [
+            "an absolute link out",
+            "a link climbing out",
+            "a link to a FIFO out",
+        ] {
+            let dir = tempfile::tempdir_in(top.path()).unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let state = base.join(".ranikust");
+            let outside = base.join("outside");
+            fs::create_dir(&outside).unwrap();
+            let store = Store::open(&paths(&base)).unwrap();
+            store
+                .fill(&EntryKey::Layer(digest(9)), |_| -> io::Result<u64> {
+                    Ok(0)
+                })
+                .unwrap();
+            store
+                .fill(&EntryKey::Blob(digest(9)), |e| write_blob(e, b"x"))
+                .unwrap();
+            let cache = store.cache_dir("the-id").unwrap();
+            let at = if at == "caches/" {
+                cache.strip_prefix(&state).unwrap().to_owned()
+            } else {
+                PathBuf::from(at)
+            };
+            let key = match at.components().next().unwrap().as_os_str().to_str() {
+                Some("layers") => Some(EntryKey::Layer(digest(1))),
+                Some("blobs") => Some(EntryKey::Blob(digest(2))),
+                _ => None,
+            };
+            // Where the link leads, an entry the store would publish if it followed the link.
+            match &key {
+                Some(key) => {
+                    let below = if at.ends_with("v3") {
+                        PathBuf::from("sha256")
+                    } else {
+                        PathBuf::new()
+                    };
+                    let found = outside.join(below).join(key.digest().encoded());
+                    let own = state.join(&at).join(found.strip_prefix(&outside).unwrap());
+                    if matches!(key, EntryKey::Layer(_)) {
+                        fs::create_dir(&own).unwrap();
+                        fs::write(own.join("f"), "host").unwrap();
+                    } else {
+                        fs::write(&own, "host").unwrap();
+                    }
+                    assert!(store.get(key).unwrap().is_some(), "the control: published");
+                    fs::create_dir_all(found.parent().unwrap()).unwrap();
+                    fs::rename(&own, &found).unwrap();
+                }
+                None => fs::write(outside.join("in-the-cache"), "host").unwrap(),
+            }
+            store.close().unwrap();
+            let fifo = outside.join("fifo");
+            mkfifo(&fifo);
+            fs::remove_dir_all(state.join(&at)).unwrap();
+            let up = "../".repeat(at.components().count());
+            match aim {
+                "an absolute link out" => symlink(&outside, state.join(&at)).unwrap(),
+                "a link climbing out" => symlink(format!("{up}outside"), state.join(&at)).unwrap(),
+                _ => symlink(&fifo, state.join(&at)).unwrap(),
+            }
+            let case = format!("{} as {aim}", at.display());
+            let before = tree(&outside);
+            let opened = base.clone();
+            let handed = unblocked(&case, move || {
+                let store = Store::open(&paths(&opened)).unwrap();
+                let mut handed = Vec::new();
+                // A refusal passes: what is judged is any path the store hands back.
+                match &key {
+                    Some(key) => {
+                        handed.extend(store.get(key).ok().flatten());
+                        let filled = match key {
+                            EntryKey::Layer(_) => store.fill(key, |e| -> io::Result<u64> {
+                                fs::write(e.path().join("f"), "store")?;
+                                Ok(0)
+                            }),
+                            _ => store.fill(key, |e| write_blob(e, b"store")),
+                        };
+                        handed.extend(filled.ok());
+                        handed.extend(store.get(key).ok().flatten());
+                    }
+                    None => handed.extend(store.cache_dir("the-id").ok()),
+                }
+                store.close().unwrap();
+                handed
+            });
+            assert_eq!(tree(&outside), before, "{case}");
+            for p in handed {
+                if let Ok(real) = fs::canonicalize(&p) {
+                    assert!(
+                        real.starts_with(&state),
+                        "{case}: {} is {}",
+                        p.display(),
+                        real.display()
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// A probe directory of a build cut short before its store opened is
@@ -1620,7 +1860,9 @@ fn tree(dir: &Path) -> Vec<(PathBuf, u32, u32, u32, i64, i64, u64)> {
     out
 }
 
-/// Red team: a store directory planted as a symlink out never has its target changed (T13).
+/// Red team: a store directory planted as a symlink out never has its target changed (T13):
+/// the open refuses one planted before it; through one planted while the store is open, the
+/// store's own writes stay in the state directory.
 #[test]
 fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1631,43 +1873,51 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
         .map(rustix::process::Gid::as_raw)
         .find(|&g| g != egid)
         .unwrap_or(egid);
-    let mut opened = 0;
+    let mut filled = 0;
     for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
         for absolute in [false, true] {
             for twin in [false, true] {
-                // Not under /tmp: the twin of an absolute target would be in
-                // the store's own tmp/.
-                let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-                let base = fs::canonicalize(dir.path()).unwrap();
-                let state = base.join(".ranikust");
-                Store::open(&paths(&base)).unwrap().close().unwrap();
-                let outside = base.join("outside");
-                fs::create_dir_all(outside.join("sub")).unwrap();
-                fs::write(outside.join("sub/file"), b"kept").unwrap();
-                for p in [outside.join("sub"), outside.clone()] {
-                    std::os::unix::fs::chown(&p, None, Some(group)).unwrap();
-                    // The bit and gid `own_group` takes off a store directory.
-                    fs::set_permissions(&p, fs::Permissions::from_mode(0o2750)).unwrap();
-                }
-                let (target, inside) = if absolute {
-                    (
-                        outside.clone(),
-                        state.join(outside.strip_prefix("/").unwrap()),
-                    )
-                } else {
-                    (PathBuf::from("../outside"), state.join("outside"))
-                };
-                if twin {
-                    fs::create_dir_all(&inside).unwrap();
-                }
-                fs::remove_dir_all(state.join(d)).unwrap();
-                std::os::unix::fs::symlink(&target, state.join(d)).unwrap();
-                let before = tree(&outside);
+                for while_open in [false, true] {
+                    // Not under /tmp: the twin of an absolute target would be in
+                    // the store's own tmp/.
+                    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+                    let base = fs::canonicalize(dir.path()).unwrap();
+                    let state = base.join(".ranikust");
+                    Store::open(&paths(&base)).unwrap().close().unwrap();
+                    let outside = base.join("outside");
+                    fs::create_dir_all(outside.join("sub")).unwrap();
+                    fs::write(outside.join("sub/file"), b"kept").unwrap();
+                    for p in [outside.join("sub"), outside.clone()] {
+                        std::os::unix::fs::chown(&p, None, Some(group)).unwrap();
+                        // The bit and gid `own_group` takes off a store directory.
+                        fs::set_permissions(&p, fs::Permissions::from_mode(0o2750)).unwrap();
+                    }
+                    let (target, inside) = if absolute {
+                        (
+                            outside.clone(),
+                            state.join(outside.strip_prefix("/").unwrap()),
+                        )
+                    } else {
+                        (PathBuf::from("../outside"), state.join("outside"))
+                    };
+                    if twin {
+                        fs::create_dir_all(&inside).unwrap();
+                    }
+                    let case = format!(
+                        "{d} -> {} (twin {twin}, while open {while_open})",
+                        target.display()
+                    );
+                    let open = while_open.then(|| Store::open(&paths(&base)).unwrap());
+                    fs::remove_dir_all(state.join(d)).unwrap();
+                    std::os::unix::fs::symlink(&target, state.join(d)).unwrap();
+                    let before = tree(&outside);
 
-                let case = format!("{d} -> {} (twin {twin})", target.display());
-                let mut seen = Vec::new();
-                if let Ok(store) = Store::open(&paths(&base)) {
-                    opened += 1;
+                    let Some(store) = open else {
+                        let e = Store::open(&paths(&base)).expect_err(&case);
+                        assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {e}");
+                        assert_eq!(tree(&outside), before, "{case}");
+                        continue;
+                    };
                     let layer = store.fill(
                         &EntryKey::Layer(digest(1)),
                         |e| -> rnk_rootfs::Result<u64> {
@@ -1679,25 +1929,39 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
                     let cache = store
                         .cache_lease("c", CacheSharing::Shared, None, &never)
                         .map(|l| l.path().to_owned());
-                    seen.extend([layer, blob, cache].into_iter().filter_map(Result::ok));
+                    // A directory swapped while the store is open may fail its close.
                     let _ = store.close();
-                }
-                assert_eq!(tree(&outside), before, "{case}");
-                // What the store hands out never resolves out of it.
-                for p in &seen {
-                    if let Ok(real) = fs::canonicalize(p) {
-                        assert!(real.starts_with(&state), "{case}: {}", real.display());
+                    assert_eq!(tree(&outside), before, "{case}");
+                    for (through, done) in [("layers", layer), ("blobs", blob), ("caches", cache)] {
+                        // A fill needs `locks/`, `tmp/` and its own directory, a lease
+                        // `locks/` and `caches/`.
+                        assert!(
+                            done.is_ok() || through == d || matches!(d, "locks" | "tmp"),
+                            "{case}: {through}"
+                        );
+                        let Ok(p) = done else { continue };
+                        if through != d {
+                            let real = fs::canonicalize(&p)
+                                .unwrap_or_else(|e| panic!("{case}: {}: {e}", p.display()));
+                            assert!(real.starts_with(&state), "{case}: {}", real.display());
+                            continue;
+                        }
+                        // The store wrote where the symlink leads in the state directory;
+                        // resolved on the host, the path it hands back follows the symlink
+                        // out, to nothing here.
+                        assert!(twin, "{case}");
+                        filled += 1;
+                        let rest = p
+                            .strip_prefix(state.join(d))
+                            .unwrap_or_else(|e| panic!("{case}: {}: {e}", p.display()));
+                        assert!(inside.join(rest).symlink_metadata().is_ok(), "{case}");
+                        let e = fs::canonicalize(&p).unwrap_err();
+                        assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{case}");
                     }
-                }
-                // The twin, in the root, is what the symlink led to.
-                if twin && d == "layers" && !seen.is_empty() {
-                    assert!(
-                        inside.join("v3/sha256").join(digest(1).encoded()).is_dir(),
-                        "{case}"
-                    );
                 }
             }
         }
     }
-    assert!(opened >= 8, "the store opened on {opened} plants only");
+    // Each twin of `blobs`, `layers` and `caches`, absolute or climbing.
+    assert_eq!(filled, 6, "the store filled through {filled} plants");
 }

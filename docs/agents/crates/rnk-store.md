@@ -58,8 +58,8 @@ pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs c
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
-    pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
-    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker and BUILDING checks, writing nothing: before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
+    pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, build lock, clean-up
+    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING and store-directory checks, writing nothing: before overlay mode sets the state directory's mode and before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -125,16 +125,20 @@ Design: [locks](../../design/cache-and-store.md#locks),
   refused, so clean-up never runs in a directory the user pointed at by
   mistake; only the user-namespace probe's own directories
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
-  told by `statx` without following) do not count: `check_marker` marks the
-  directory, and `open` then removes each whose `flock` it takes (a probe
-  holds its own while it uses it), through descriptors; under `--userns`
-  this is how the probe's directory goes, which root gave the range and
-  deletes nothing in (ADR-0139); every emptying
-  (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
-  takes the same lock, leaves one held, and keeps a store with no data
-  beside it. A new state directory is `0700`; one owned by another user or
-  writable by others is used with a warning. The store's directories the
-  user owns take the process's gid and no setgid bit, each pinned once
+  told by `statx` without following) do not count: `open` marks the
+  directory once every refusal has passed, then removes each whose
+  `flock` it takes (a probe holds its own while it uses it), through
+  descriptors; under `--userns` this is how the probe's directory goes,
+  which root gave the range and deletes nothing in (ADR-0139); every
+  emptying (`empty_if_unused`, `prune_all`, `open_anonymous`, an
+  anonymous `close`) takes the same lock, leaves one held, and keeps a
+  store with no data beside it. Each of the store's directories that is
+  there must be a directory, opened `O_PATH | O_NOFOLLOW`: a symlink, even
+  one that stays inside, or a file is `Error::NotAStateDir`, named, before
+  anything is written (`check_dirs`, in `open` and `check_state_dir`). A
+  new state directory is `0700`; one owned by another user or writable by
+  others is used with a warning. The store's directories the user owns
+  take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in
   [atomic publication](../../design/cache-and-store.md#atomic-publication).
 - The per-digest lock holds twice: an in-process lock among the store's
@@ -224,9 +228,30 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`); a directory
   holding only the probe's directories is marked and they are removed, and
   anything else with them still refused
-  (`open_marks_a_directory_holding_only_ranikusts_leftovers`); another
-  anonymous name, a file or a symlink with the probe's prefix is refused and
-  left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
+  (`open_marks_a_directory_holding_only_ranikusts_leftovers`); each store
+  directory replaced by a symlink inside the state directory or by a file
+  refused by `open` and `check_state_dir`, named, the tree unchanged
+  (`a_store_directory_that_is_not_a_real_directory_is_refused_unchanged`),
+  and one planted once `open` found the directory unmarked refused before
+  the marker is written
+  (`a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked`,
+  in `src/store/tests.rs`); a FIFO, a socket, a character device, a dead
+  link, a link to itself or to a FIFO outside at each store directory's
+  name refused by `open` and by `check_state_dir` without blocking, the
+  tree unchanged and, under an inotify watch, a FIFO at the name or where
+  the link leads never opened: in a marked directory for the store
+  directory, named, in an unmarked one for having no marker
+  (`red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened`);
+  a link out of the state directory, absolute or climbing, or to a FIFO
+  outside, at `layers/v3`, `layers/v3/sha256`, `blobs/sha256` or a cache
+  directory, where it leads an entry of the type the store publishes for
+  the key (a directory for a layer, a file for a blob): the store's `get`,
+  `fill` and `cache_dir` never block, change anything outside or hand back
+  what is there
+  (`red_team_a_link_out_below_a_store_directory_changes_nothing_outside`);
+  another anonymous name, a file or a symlink
+  with the probe's prefix is refused and left as it was
+  (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
   (`open_removes_only_the_probe_directories_no_probe_holds`), by every
   emptying too (`a_probe_directory_a_probe_holds_is_kept`,
@@ -247,7 +272,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   tells no build cut short
   (`a_probe_directory_left_tells_no_build_cut_short`). `src/store/tests.rs`:
   every directory the store makes is one that holds data or a build's
-  own (`each_store_directory_holds_data_or_a_builds_own_files`).
+  own (`each_store_directory_holds_data_or_a_builds_own_files`); the
+  warning for a probe directory not removed names both builds it may
+  belong to (`a_probe_directory_not_removed_is_named_by_what_the_store_tells`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a
@@ -271,11 +298,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `chmod`, or `EPERM` from a step before them, is an error everywhere
   (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
   symlink of another group at a store directory's name keeps its group and
-  the open fails on it
+  the open refuses it, and `own_group` leaves it alone
   (`a_symlink_at_a_store_directory_s_name_keeps_its_group`); a symlink out
   of the state directory at each store directory's name, absolute or
-  climbing, leaves what it leads to, setgid and of another group, unchanged
-  through the open, a fill and a cache lease
+  climbing, is refused at open; planted while the store is open, the
+  store's own writes through it stay in the state directory; either way
+  what it leads to, setgid and of another group, is unchanged
   (`red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead
@@ -308,8 +336,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `NotPruned`, and `open` refused while anything stays (a `0555` directory
   as a user); the rename before any removal and no file made (the order of
   inotify events); a prune cut short inside a layer, or after the last
-  entry, keeps every store out (`PruneCutShort`, nothing changed) until a
-  prune finishes; a `.ranikust-pruning` that is not a regular file refused
+  entry, keeps every store out (`PruneCutShort`, from `check_state_dir`
+  too, nothing changed) until a prune finishes; a `.ranikust-pruning` that
+  is not a regular file refused
   by both until removed; `abandon` empties a store with no data, whoever
   made it, what dead builds and the sandbox left included, and leaves as
   `close` does one with an entry in `blobs/`, `layers/` or `caches/`, one
@@ -326,7 +355,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   symlink on it, last or not, told apart (`is_symlink_on`) from a
   missing, unmarked or symlinked-marker one; in a cache mount, symlinks out
   (absolute, climbing), a hardlink and a FIFO, and a build directory that
-  is a symlink out, removed, what they lead to unchanged.
+  is a symlink out, removed, what they lead to unchanged; each store
+  directory planted as a link out (absolute, climbing, to a FIFO), a FIFO
+  or a socket removed without blocking, what a link leads to unchanged
+  and, under an inotify watch, the FIFO a link leads to never opened
+  (`red_team_prune_all_never_reaches_through_a_planted_store_directory`).
 - To do: `prune` by size and age (Phase 5); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device
   nodes, foreign owners).

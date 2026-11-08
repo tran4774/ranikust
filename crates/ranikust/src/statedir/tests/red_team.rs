@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::*;
 use super::{BEFORE_RENAME, private_tempdir};
+use crate::test_util::{Base, snapshot};
 
 /// A range of the host's ids, as `--userns` gives its state directory to.
 const RANGE: Owner = Owner::Mapped {
@@ -18,40 +19,6 @@ const RANGE: Owner = Owner::Mapped {
 const RANGE_IDS: (u32, u32) = (310_000, 410_000);
 /// A third user's ids, neither root's nor the range's.
 const FAR: (u32, u32) = (520_000, 520_000);
-
-/// Every entry below `dir`, `dir` included, never following a symlink:
-/// its path, type, owner, mode, link count and content (a file's bytes, a
-/// symlink's target).
-fn snapshot(dir: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        let m = fs::symlink_metadata(&p).unwrap();
-        let ft = m.file_type();
-        let content = if ft.is_file() {
-            String::from_utf8_lossy(&fs::read(&p).unwrap()).into_owned()
-        } else if ft.is_symlink() {
-            fs::read_link(&p).unwrap().display().to_string()
-        } else {
-            String::new()
-        };
-        out.push(format!(
-            "{} {:o} {}:{} {} {content}",
-            p.display(),
-            m.mode(),
-            m.uid(),
-            m.gid(),
-            m.nlink()
-        ));
-        if ft.is_dir() {
-            for e in fs::read_dir(&p).unwrap() {
-                stack.push(e.unwrap().path());
-            }
-        }
-    }
-    out.sort();
-    out
-}
 
 /// A layout `--userns` refuses, for any user: a missing chain below a
 /// parent root does not own, a symlink on the way, an existing directory
@@ -88,31 +55,6 @@ fn red_team_userns_refusals_make_nothing_whatever_the_layout() {
             );
             assert_eq!(snapshot(tmp.path()), before, "{}", state.display());
         }
-    }
-}
-
-/// A fresh directory for a test's state directories, root's, mode
-/// `0755`, below `/var/lib`, whose parents root alone owns and writes
-/// (a temporary directory is below a sticky `/tmp`, which `--userns`
-/// refuses); removed after.
-struct Base(PathBuf);
-
-impl Base {
-    fn new(what: &str) -> Self {
-        let p = PathBuf::from(format!(
-            "/var/lib/rnk-red-team-{what}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&p);
-        fs::create_dir(&p).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-        Self(p)
-    }
-}
-
-impl Drop for Base {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -298,10 +240,10 @@ fn red_team_what_the_range_plants_before_the_rename_reaches_nothing_of_root_s() 
         ["victim", "vdir", "far"]
             .iter()
             .flat_map(|n| snapshot(&b.join(n)))
-            // A hard link the range made adds to the count only.
+            // A hard link the range made changes the count and the ctime only.
             .map(|l| {
                 let mut f: Vec<&str> = l.split(' ').collect();
-                f[3] = "-";
+                (f[3], f[6]) = ("-", "-");
                 f.join(" ")
             })
             .collect()

@@ -186,7 +186,12 @@ needs the same ownership).
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
 `.ranikust-state` file is refused, so this clean-up never runs in a directory
-the user pointed at by mistake. Only the directories of ranikust's own
+the user pointed at by mistake. So is one where a store directory (`blobs/`,
+`layers/`, `caches/`, `locks/`, `tmp/`, `builds/`) is there but is not a
+directory, told through an `O_PATH | O_NOFOLLOW` descriptor: a symlink, even
+one that stays in the state directory, would carry every path the store hands
+back (a layer's lowerdir, a cache mount). The refusal names it, before
+anything is written. Only the directories of ranikust's own
 user-namespace probe (a rootless build cut short before its store opened)
 do not count, each a real directory on the state directory's mount, told
 without following a link: such a directory is a new store and gets the
@@ -194,8 +199,15 @@ marker, and the store removes each whose lock it takes, through
 descriptors (a probe holds its own while it uses it). So does every
 emptying of the directory (an anonymous store's start and end, a store with
 no data emptied, `prune --all`): one a probe holds stays, and keeps a store
-with no data as it is. `check_state_dir`,
-which rootless overlay mode runs before its probe, keeps the state
+with no data as it is. One the store cannot remove stays, with a warning
+that names it as the probe's directory and both builds it may belong to,
+an earlier one or one starting: in the namespace of a `--userns` build,
+another build's start may have made it and not yet given it to the range.
+`check_state_dir` runs `Store::open`'s refusals, a prune cut short
+included, writing nothing; overlay mode, as root, rootless or under
+`--userns`, runs it before it sets the state directory's mode (and, in a
+user namespace, before its probe), so that every refusal of the state
+directory comes before anything there is changed, and keeps the state
 directory's shared lock until the store opens. In overlay mode an upper
 directory written under `volatile` is never trusted after a crash.
 

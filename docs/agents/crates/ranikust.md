@@ -108,7 +108,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   does `loose`); local files only, with a warning where `/etc/nsswitch.conf`
   names a `subid:` module (`subid_module`); else refused with
   `ROOT_RANGE_GUIDANCE`), then checks the state directory for
-  the range's first ids in `rootless::state_dir_for_probe`: overlayfs from
+  the range's first ids in `rootless::state_dir_for_probe`
+  (`setup::hold_state_dir`): overlayfs from
   `statedir::nearest_existing`, then `statedir::stage` with
   `Owner::Mapped` (missing directories made by `make_given` under a
   `.ranikust-new-` name, given, then renamed with `RENAME_NOREPLACE`), then
@@ -201,7 +202,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O; `--userns` refused with `--mode=kaniko` and for a user other than root), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `probe_in_dir` (its `BuildIds`), `give_dir`, `remove_own_probe_leftovers`, `volume_hint`; `setup/rootless.rs`: `plan` (`userns` for `--userns`; for a user other than root, with `capabilities`, `shown_capable`, `Steps` and `stop_for`), `state_dir_for_probe`, `NotHere`, `set_up`, `refused_by_hook`, `USERNS_UNUSABLE`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed; never `--userns`'s), `Stop` (the step that stopped the probe, which says whether AppArmor may be what refused), `LOCAL` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `hold_state_dir` (overlay mode's state-directory checks, as root, rootless or `--userns`), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `probe_in_dir` (its `BuildIds`), `give_dir`, `remove_own_probe_leftovers`, `volume_hint`; `setup/rootless.rs`: `plan` (`userns` for `--userns`; for a user other than root, with `capabilities`, `shown_capable`, `Steps` and `stop_for`), `state_dir_for_probe`, `NotHere`, `set_up`, `refused_by_hook`, `USERNS_UNUSABLE`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed; never `--userns`'s), `Stop` (the step that stopped the probe, which says whether AppArmor may be what refused), `LOCAL` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `prepare_for`, `stage` (the checks and the missing directories, no mode changed yet) and its `Staged::finish` (the modes), `nearest_existing`, and `Owner` (`Me`, or `Mapped`: `--userns`'s range's first ids own the state directory, parents only root's, not writable even sticky, searchable by those ids through mode bits alone; a missing one made under a temporary name, given to them, then renamed into place, missing parents `0711`; an existing one of root's, and one at, below or above root's default, refused), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; `root_range`, `ROOT_ENTRY`, `ROOT_RANGE_GUIDANCE`: root's `ranikust` range for `--userns`, sharing no id with another range or a local account, with no account of that name; `subid_module`: the NSS `subid:` module it warns of; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
@@ -313,8 +314,12 @@ Each step before the next; design in
    (`Via::Userns`); any other user's is a usage error (`config`).
 5. **Overlay mode** (`setup::set_up`): `enter_namespace`
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
-   `unshare(CLONE_NEWNS)`, `/` rslave) → `statedir::prepare`, refused on
-   overlayfs (a container's root: mount a volume) → `rnk_store::Store::open`
+   `unshare(CLONE_NEWNS)`, `/` rslave) → `setup::hold_state_dir`, every
+   refusal before anything in the state directory is changed, as in
+   rootless overlay mode: overlayfs from `statedir::nearest_existing` (a
+   container's root: mount a volume), `statedir::stage`,
+   `Store::check_state_dir`, and only then `Staged::finish` sets the
+   modes → `rnk_store::Store::open`
    (marker, start-up clean-up) → with `--mode=auto`,
    `report_user_namespace` (before the overlay probe, whose joined `mount(2)`
    thread may still be counted) → `rnk_sandbox::probe` in
@@ -530,11 +535,25 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_userns_refusals_make_nothing_whatever_the_layout`, a missing
   chain below a parent root does not own, a symlink on the way, a
   non-empty directory or a `..` refused with nothing made or changed),
-  `setup/rootless.rs` (refusals before anything is made or changed:
+  `setup/rootless.rs` (refusals before anything in the state directory is
+  changed:
   `a_missing_state_directory_on_overlayfs_is_refused_unmade`, run only
   where the temporary directory is on overlayfs, and
-  `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (the probe's
-  directory: `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
+  `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (root's
+  overlay mode's refusal order through `setup::set_up`, run unprivileged
+  and skipped as root: `overlay_mode_refuses_its_state_directory_unchanged`
+  and `overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade`;
+  red team of overlay mode's check, `setup/tests/red_team.rs`, through
+  `set_up` and the `hold_state_dir` rootless overlay mode shares: a store
+  directory planted as a FIFO, a socket, a character device or a link
+  (out, dead, to a FIFO), a directory that is no store, a marker that is
+  not a file, and a path at or below a FIFO, a regular file, a dead link,
+  a socket or a character device, each refused without blocking, the
+  FIFOs never opened under an inotify watch, nothing below the temporary
+  directory changed, its times included,
+  `red_team_a_planted_state_directory_is_refused_unchanged_by_overlay_mode_s_check`;
+  the probe's directory:
+  `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
   `a_probe_directory_taken_before_it_is_held_is_made_again`,
   `a_probe_directory_gone_once_made_is_taken_not_an_error`), `subids`
@@ -904,10 +923,19 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   swapped, probe directories moved, removed or their entries swapped for
   hard links and links out; root's set-up never blocks, nothing of
   root's or a third user's outside the state directories changes, and
-  root's directory gets no name of the range's); the quick case
-  `userns-reach` (a `--userns` `RUN`'s descriptors, writes and reach,
-  processes it leaves, ranikust's own processes as the range's first ids
-  see them, ranikust killed while a `RUN` waits:
+  root's directory gets no name of the range's); `setup/tests/red_team.rs`
+  `red_team_root_refuses_system_directories_and_device_nodes_unchanged`
+  (unit suite: root's overlay check, `hold_state_dir`, on `/` and each
+  listed system directory, each refused for the first rule it breaks, and
+  `set_up` and root's and the range's `hold_state_dir` on a state
+  directory whose `blobs`, `builds` or `tmp` is a real device node, a
+  FIFO, a socket or a link to `/etc` or `/dev/zero`: each refused, the
+  FIFOs and the device nodes never opened under an inotify watch, nothing
+  below the test's directory changed, its times included, the owner and
+  mode of `/etc` and `/dev/zero` kept); the
+  quick case `userns-reach` (a `--userns` `RUN`'s descriptors, writes and
+  reach, processes it leaves, ranikust's own processes as the range's
+  first ids see them, ranikust killed while a `RUN` waits:
   [testing](../../testing.md#quick-smoke-cases));
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
   from a sealed memfd (ADR-0101);

@@ -55,6 +55,8 @@ mod setup;
 mod startup;
 mod statedir;
 mod subids;
+#[cfg(test)]
+mod test_util;
 
 use std::borrow::Cow;
 use std::io::Write as _;

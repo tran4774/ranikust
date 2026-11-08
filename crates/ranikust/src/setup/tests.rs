@@ -730,6 +730,116 @@ fn a_state_dir_others_may_write_is_refused() {
     assert!(refusal.reason.contains("writable"), "{refusal}");
 }
 
+/// Whether the test runs as root, where a [`set_up`] that took its state
+/// directory would mount outside any namespace of the build: skipped.
+fn as_root() -> bool {
+    let root = rustix::process::geteuid().is_root();
+    if root {
+        eprintln!("skipped: as root, a set-up that took the state directory would mount");
+    }
+    root
+}
+
+/// [`set_up`] for `state`, which a test expects refused before any probe.
+fn set_up_refusal(state: &Path) -> Refusal {
+    match set_up(state, false, &Seccomp::Unset, &mut false, false, false) {
+        Ok(_) => panic!("overlay mode took {}", state.display()),
+        Err(refusal) => refusal,
+    }
+}
+
+/// Root's overlay mode refuses its state directory before it changes
+/// anything there, as rootless overlay mode does: one another process
+/// holds alone, one a kaniko-mode build on `/` used, one a `prune --all`
+/// cut short, and one whose store directory is a symlink keep their modes
+/// and names.
+#[test]
+fn overlay_mode_refuses_its_state_directory_unchanged() {
+    if as_root() {
+        return;
+    }
+    let tmp = private_tempdir();
+    // Refused on overlayfs before the store's checks this test is about.
+    if crate::statedir::on_overlayfs(tmp.path()) {
+        eprintln!("skipped: the temporary directory is on overlayfs");
+        return;
+    }
+    let state = tmp.path().join("state");
+    Store::open(&BuildPaths::new(&state, &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    for p in [&state, &state.join("builds")] {
+        fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let seen = || {
+        let mut names: Vec<_> = fs::read_dir(&state)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        let mode = |p: &Path| fs::metadata(p).unwrap().mode() & 0o7777;
+        (names, mode(&state), mode(&state.join("builds")))
+    };
+    let check = |what: &str, says: &str| {
+        let before = seen();
+        let refusal = set_up_refusal(&state);
+        assert!(refusal.reason.contains(says), "{what}: {refusal}");
+        assert_eq!(seen(), before, "{what}: {refusal}");
+        refusal
+    };
+
+    let alone = LockedElsewhere::new(&state);
+    check("held alone", "another build is using");
+    drop(alone);
+
+    let building = state.join(rnk_store::BUILDING_MARKER);
+    fs::write(&building, "").unwrap();
+    check("used on /", "kaniko-mode build on /");
+    fs::remove_file(&building).unwrap();
+
+    let (marker, pruning) = (
+        state.join(rnk_store::STATE_MARKER),
+        state.join(rnk_store::PRUNING_MARKER),
+    );
+    fs::rename(&marker, &pruning).unwrap();
+    let refusal = check("a prune cut short", "did not finish emptying");
+    assert!(refusal.guidance.contains("prune --all"), "{refusal}");
+    fs::rename(&pruning, &marker).unwrap();
+
+    let blobs = state.join("blobs");
+    fs::remove_dir(&blobs).unwrap();
+    std::os::unix::fs::symlink("layers", &blobs).unwrap();
+    check("a symlink as blobs", "holds blobs, which is a symlink");
+    fs::remove_file(&blobs).unwrap();
+
+    // The control: taken, it is made private.
+    let euid = rustix::process::geteuid().as_raw();
+    let me = crate::statedir::Owner::me();
+    drop(hold_state_dir(&state, euid, me, || unreachable!("on overlayfs")).unwrap());
+    assert_eq!(seen().1, 0o700);
+}
+
+/// A missing state directory whose nearest parent is on overlayfs (a
+/// container's own root) is refused by root's overlay mode before
+/// anything is made, routed as overlayfs unusable; checked where the
+/// temporary directory is on overlayfs.
+#[test]
+fn overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade() {
+    if as_root() {
+        return;
+    }
+    let tmp = private_tempdir();
+    if !crate::statedir::on_overlayfs(tmp.path()) {
+        eprintln!("skipped: the temporary directory is not on overlayfs");
+        return;
+    }
+    let refusal = set_up_refusal(&tmp.path().join("a/state"));
+    assert_eq!(refusal.kind, Kind::OverlayUnusable, "{refusal}");
+    assert!(refusal.reason.contains("is on overlayfs"), "{refusal}");
+    assert!(!tmp.path().join("a").exists());
+}
+
 #[test]
 fn kaniko_mode_on_a_host_without_mounts_is_refused() {
     // Q-330: never a bare chroot on the host; in a container, or with mount
@@ -1092,6 +1202,7 @@ fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
     }
 }
 
+pub(crate) mod red_team;
 pub(crate) mod userns;
 
 /// Only a probe directory named as the store's leftovers is held while the

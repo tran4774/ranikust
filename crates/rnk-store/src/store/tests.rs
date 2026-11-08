@@ -53,6 +53,24 @@ fn a_probe_directory_gone_before_it_is_opened_is_skipped() {
     assert!(!dir.path().join(&name).exists());
 }
 
+/// A directory of the probe the store could not remove (in a user
+/// namespace, one root made and has not yet given to its range) may be a
+/// starting build's: the warning names an earlier build and a starting one.
+#[test]
+fn a_probe_directory_not_removed_is_named_by_what_the_store_tells() {
+    let e = Error::BadEntry {
+        path: ".ranikust-anon-userns-probe-1-2".into(),
+        reason: "changed while it was being locked; not deleted",
+    };
+    assert_eq!(
+        probe_dir_not_removed(Path::new("/s/.ranikust-anon-userns-probe-1-2"), &e),
+        "/s/.ranikust-anon-userns-probe-1-2, a directory of the user namespace probe, not \
+         removed (an earlier build's, or one a starting build still uses): \
+         state directory entry .ranikust-anon-userns-probe-1-2: changed while it was being locked; \
+         not deleted"
+    );
+}
+
 /// An emptying of the state directory removes a probe directory only under
 /// its lock: one a probe holds stays, and is named; one no probe holds,
 /// and anything else of a probe's name, goes with the rest.
@@ -474,8 +492,9 @@ fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
 }
 
 /// A symlink of another group planted at a store directory's name keeps
-/// its owner, group and ctime when the store opens: only a directory takes
-/// the process's group. The open then fails on the symlink.
+/// its owner, group and ctime when the store opens: the open refuses it
+/// before any directory takes the process's group, and `own_group` leaves
+/// it alone.
 #[test]
 fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     use std::os::unix::fs::MetadataExt as _;
@@ -511,10 +530,10 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     let opened = Store::open(&BuildPaths::new(dir.path(), &state));
     assert_eq!(seen(), before, "{:?}", opened.as_ref().err());
     let e = opened.expect_err("a symlink as tmp/ fails the open");
-    assert!(
-        matches!(&e, Error::Rootfs(r) if r.raw_os_error() == Some(Errno::NOTDIR.raw_os_error())),
-        "{e}"
-    );
+    assert!(matches!(&e, Error::NotAStateDir { .. }), "{e}");
+    // One swapped in after the open's check: `own_group` takes directories only.
+    own_group(&RootPath::open(&state).unwrap(), "tmp").unwrap();
+    assert_eq!(seen(), before);
 }
 
 /// An open that fails once it took the state directory as a store, its
@@ -531,7 +550,7 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
 
     let state = dir.path().join("plain");
     let paths = BuildPaths::new(&state, &state);
-    assert!(failed(Store::open_with(&paths, None::<fn()>, fail)));
+    assert!(failed(Store::open_with(&paths, None::<fn()>, |_| {}, fail)));
     assert!(state.join(STATE_MARKER).is_file());
 
     let state = dir.path().join("made");
@@ -542,6 +561,7 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(failed(Store::open_with(
         &paths,
         Some(|| drop(hold.take())),
+        |_| {},
         fail
     )));
     assert!(hold.is_none());
@@ -559,6 +579,7 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(failed(Store::open_with(
         &paths,
         Some(|| undone = true),
+        |_| {},
         fail
     )));
     assert!(undone);
@@ -573,11 +594,35 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(failed(Store::open_with(
         &paths,
         Some(|| undone = true),
+        |_| {},
         fail
     )));
     assert!(undone);
     assert!(state.join(STATE_MARKER).is_file());
     assert!(state.join("caches/go").is_dir());
+}
+
+/// A store directory that turns up once the open found the state directory
+/// unmarked is refused before the marker is written: the open writes
+/// nothing before its refusals.
+#[test]
+fn a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let paths = BuildPaths::new(dir.path(), &state);
+    let plant = |_: &RootPath| std::os::unix::fs::symlink("layers", state.join("blobs")).unwrap();
+    let e = Store::open_with(&paths, None::<fn()>, plant, |_| Ok(()))
+        .expect_err("a symlink as blobs/ fails the open");
+    assert!(matches!(&e, Error::NotAStateDir { .. }), "{e}");
+    assert!(
+        e.to_string().contains("holds blobs, which is a symlink"),
+        "{e}"
+    );
+    let left: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["blobs"]);
 }
 
 /// A directory the store makes either holds what later builds reuse,

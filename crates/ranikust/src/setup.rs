@@ -343,9 +343,10 @@ fn userns_refusal(e: SandboxError, euid: u32, no_userns: Cow<'static, str>) -> R
 }
 
 /// Sets overlay mode up for a build whose state directory is `state_dir`,
-/// once [`enter_namespace`] succeeded: the state directory's check
-/// ([`crate::statedir::prepare`]; refused on overlayfs, a container's own
-/// root, ADR-0050), the store (marker check, start-up clean-up), the probes of
+/// once [`enter_namespace`] succeeded: the state directory's checks, each
+/// refusal before anything in it is changed ([`hold_state_dir`]; refused
+/// on overlayfs, a container's own root, ADR-0050), the store (marker
+/// check, start-up clean-up), the probes of
 /// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
 /// Before the spawner, the only other thread is the overlay probe's
 /// `mount(2)` attempt, which it joins: the process is single-threaded
@@ -370,21 +371,20 @@ pub(crate) fn set_up(
     refuse_overlay: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    prepare_state_dir(state_dir)?;
-    if crate::statedir::on_overlayfs(state_dir) {
-        return Err(Refusal {
-            kind: Kind::OverlayUnusable,
-            reason: format!(
-                "the state directory {} is on overlayfs, a container's own root, where overlay \
-                 mode cannot keep its upper directories",
-                state_dir.display()
-            ),
-            guidance: ON_OVERLAYFS.into(),
-        });
-    }
+    let held = hold_state_dir(state_dir, euid, crate::statedir::Owner::me(), || Refusal {
+        kind: Kind::OverlayUnusable,
+        reason: format!(
+            "the state directory {} is on overlayfs, a container's own root, where overlay \
+             mode cannot keep its upper directories",
+            state_dir.display()
+        ),
+        guidance: ON_OVERLAYFS.into(),
+    })?;
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
     let store = open_store(state_dir, state_dir, euid)?;
+    // The store's own shared lock holds the state directory now.
+    drop(held);
     // Before the overlay probe: a thread it joined may still be counted.
     if std::mem::take(userns_probe) {
         report_user_namespace(&store, allowed(proc_rbind));
@@ -425,6 +425,40 @@ pub(crate) fn set_up(
         store: Arc::new(store),
         sandbox,
     })
+}
+
+/// The state directory of a build as `owner`, made where missing, each
+/// refusal before anything in it is changed: overlayfs first, told from
+/// the nearest directory that exists, where a missing one would be made
+/// (refused with `on_overlayfs()`); then [`crate::statedir::stage`]'s
+/// checks; then [`Store::check_state_dir`], which writes nothing (Q-111,
+/// (a)); only then the mode [`crate::statedir::Staged::finish`] sets.
+/// `euid` names what to do with a prune cut short. The hold keeps the
+/// state directory's shared lock until the caller's [`Store::open`] has
+/// its own.
+///
+/// # Errors
+///
+/// `on_overlayfs()` where the state directory would be on overlayfs; any
+/// other refusal is of [`Kind::Other`].
+pub(crate) fn hold_state_dir(
+    state_dir: &Path,
+    euid: u32,
+    owner: crate::statedir::Owner,
+    on_overlayfs: impl FnOnce() -> Refusal,
+) -> Result<rnk_store::StateDirHold, Refusal> {
+    let refusal = |refused: crate::statedir::Refused| Refusal {
+        kind: Kind::Other,
+        reason: refused.0,
+        guidance: "".into(),
+    };
+    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
+        return Err(on_overlayfs());
+    }
+    let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
+    let held = Store::check_state_dir(state_dir).map_err(|e| store_refusal(&e, state_dir, euid))?;
+    staged.finish().map_err(refusal)?;
+    Ok(held)
 }
 
 /// Guidance where overlay mode's state directory is on overlayfs.

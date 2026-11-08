@@ -359,7 +359,9 @@ impl Store {
     /// only directories of the user namespace probe
     /// ([`USERNS_PROBE_PREFIX`]: each a directory on the state directory's
     /// mount, not a symlink or a mount point). Once the store is open, each
-    /// such directory no probe holds is removed, through descriptors. A
+    /// such directory no probe holds is removed, through descriptors. One
+    /// of the store's own directories that is there but is not a directory
+    /// (a symlink, even one that stays inside, or a file) is refused. A
     /// state directory owned by another user or writable by others is used
     /// with a warning.
     /// The store's own directories take the process's gid and no setgid
@@ -380,15 +382,16 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::NotAStateDir`] for a foreign directory, [`Error::Busy`]
-    /// while an anonymous store holds it, [`Error::UsedOnSlash`] for the
+    /// [`Error::NotAStateDir`] for a foreign directory or a store
+    /// directory that is not one, [`Error::Busy`] while an anonymous store
+    /// holds it, [`Error::UsedOnSlash`] for the
     /// marker of a kaniko-mode build on `/`, [`Error::PruneCutShort`] for
     /// [`PRUNING_MARKER`], [`Error::NoFlock`] when its
     /// filesystem has no `flock`, [`Error::Io`] or [`Error::Rootfs`] when
     /// it cannot be created or opened (including
     /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8).
     pub fn open(paths: &BuildPaths) -> Result<Self> {
-        Self::open_with(paths, None::<fn()>, |_| Ok(()))
+        Self::open_with(paths, None::<fn()>, |_| {}, |_| Ok(()))
     }
 
     /// As [`Store::open`], for a set-up that falls back to kaniko mode on
@@ -402,15 +405,17 @@ impl Store {
     ///
     /// As [`Store::open`].
     pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self> {
-        Self::open_with(paths, Some(undoing), |_| Ok(()))
+        Self::open_with(paths, Some(undoing), |_| {}, |_| Ok(()))
     }
 
     /// [`Store::open`], with `undoing` as [`Store::open_or_abandon`] takes
-    /// it, and `registered` run once the build is registered: a test's
-    /// failure.
+    /// it, `marker_checked` run after the marker's check and before the
+    /// store directories' check (where a test plants one), and `registered`
+    /// once the build is registered (where a test fails the open).
     fn open_with(
         paths: &BuildPaths,
         undoing: Option<impl FnOnce()>,
+        marker_checked: impl FnOnce(&RootPath),
         registered: impl FnOnce(&RootPath) -> Result<()>,
     ) -> Result<Self> {
         let host_err = |op, source| Error::Io {
@@ -436,9 +441,15 @@ impl Store {
                 });
             }
         }
+        // In `check_state_dir`'s order, every refusal before the marker is written.
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
-        check_marker(&state, &state_path)?;
+        let unmarked = needs_marker(&state, &state_path)?;
+        marker_checked(&state);
+        check_dirs(&state, &state_path)?;
+        if unmarked {
+            mark(&state, &state_path)?;
+        }
         let filled = (|| {
             for d in DIRS {
                 state.create_dir_all(d, DIR_MODE)?;
@@ -488,19 +499,20 @@ impl Store {
     /// Checks, writing nothing, that [`Store::open`] would take the
     /// existing directory `state` as a state directory now: it takes its
     /// shared `flock`, and it holds [`STATE_MARKER`] or only directories of
-    /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), and no
-    /// [`BUILDING_MARKER`]. For a step that writes there before the store
-    /// opens (Q-111, (a)): the lock stays held by the [`StateDirHold`]
-    /// returned, which the caller drops once [`Store::open`] has returned,
-    /// so that nothing that takes the directory alone (`prune --all`, an
-    /// anonymous store) runs in between.
+    /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), neither
+    /// [`BUILDING_MARKER`] nor [`PRUNING_MARKER`], and no store directory
+    /// that is not a directory. For a step that writes there before the
+    /// store opens (Q-111, (a)): the lock stays held by the
+    /// [`StateDirHold`] returned, which the caller drops once
+    /// [`Store::open`] has returned, so that nothing that takes the
+    /// directory alone (`prune --all`, an anonymous store) runs in between.
     ///
     /// # Errors
     ///
-    /// [`Error::Busy`], [`Error::NoFlock`], [`Error::NotAStateDir`] and
-    /// [`Error::UsedOnSlash`] as [`Store::open`], [`Error::Io`] when
-    /// `state` cannot be resolved or read, [`Error::Rootfs`] when it cannot
-    /// be opened.
+    /// [`Error::Busy`], [`Error::NoFlock`], [`Error::NotAStateDir`],
+    /// [`Error::UsedOnSlash`] and [`Error::PruneCutShort`] as
+    /// [`Store::open`], [`Error::Io`] when `state` cannot be resolved or
+    /// read, [`Error::Rootfs`] when it cannot be opened.
     pub fn check_state_dir(state: &Path) -> Result<StateDirHold> {
         let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
             op: "resolve",
@@ -520,7 +532,9 @@ impl Store {
             }
         }
         refuse_used_on_slash(&root, &state_path)?;
+        refuse_cut_short_prune(&root, &state_path)?;
         needs_marker(&root, &state_path)?;
+        check_dirs(&root, &state_path)?;
         Ok(StateDirHold { _lock: state_lock })
     }
 
@@ -1933,7 +1947,7 @@ fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
 }
 
 /// Removes a regular [`MARKER`] a `RUN` forged in an anonymous store's state
-/// directory, before anything else there: without it, `check_marker` and
+/// directory, before anything else there: without it, `needs_marker` and
 /// `ranikust`'s state-directory check refuse a non-empty directory, so a
 /// persistent store never opens what is left if the build is killed while
 /// the rest is emptied. Anything else under the name, or a failure, is left
@@ -2347,14 +2361,10 @@ fn shown_names(names: &[OsString]) -> String {
     s
 }
 
-/// Refuses a non-empty state directory without a regular-file marker, and
-/// marks an empty one. A directory of the user namespace probe
-/// ([`is_probe_dir`]: of a build cut short before its store) does not
-/// count.
-fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
-    if !needs_marker(state, state_path)? {
-        return Ok(());
-    }
+/// Writes the marker in a directory [`needs_marker`] found unmarked; where
+/// a build starting at the same time wrote it first, takes the directory
+/// if that marker is a regular file.
+fn mark(state: &RootPath, state_path: &Path) -> Result<()> {
     match state.open_at(MARKER, &OpenHow::write().create_new(0o644)) {
         Ok(_) => Ok(()),
         Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => match marker(state)? {
@@ -2365,9 +2375,10 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
-/// Whether `state` still needs its marker, as [`check_marker`] decides,
-/// writing nothing: `false` where it has one, `true` where it holds only
-/// directories of the user namespace probe; any other name refuses it.
+/// Whether `state` still needs its marker, writing nothing: `false` where
+/// it has a regular-file one, `true` where it holds only directories of
+/// the user namespace probe ([`is_probe_dir`]: of a build cut short before
+/// its store); any other name refuses it.
 fn needs_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
     match marker(state)? {
         Some(true) => return Ok(false),
@@ -2442,11 +2453,21 @@ fn remove_probe_leftovers(state: &RootPath, state_path: &Path) {
             Ok(ProbeDir::Held | ProbeDir::NotOne) => {}
             Err(e) => tracing::warn!(
                 target: "rnk_store",
-                "{} left by an earlier build not removed: {e}",
-                state_path.join(rel).display()
+                "{}",
+                probe_dir_not_removed(&state_path.join(rel), &e)
             ),
         }
     }
+}
+
+/// What [`remove_probe_leftovers`] logs of the directory of the user
+/// namespace probe at `path` it could not remove for `e`.
+fn probe_dir_not_removed(path: &Path, e: &Error) -> String {
+    format!(
+        "{}, a directory of the user namespace probe, not removed (an earlier build's, or one \
+         a starting build still uses): {e}",
+        path.display()
+    )
 }
 
 /// What [`remove_probe_dir`] and [`remove_probe_named`] did with a name.
@@ -2581,6 +2602,43 @@ fn not_a_state_dir(state_path: &Path) -> Error {
         path: state_path.to_owned(),
         why: UNMARKED.to_owned(),
     }
+}
+
+/// Refuses a state directory where one of [`DIRS`] is there but is not a
+/// directory, each opened `O_PATH | O_NOFOLLOW`: every path the store hands
+/// back would resolve through a symlink there, even one that stays inside.
+/// A missing one is made later.
+fn check_dirs(state: &RootPath, state_path: &Path) -> Result<()> {
+    for d in DIRS {
+        let fd = match state.open_at(d, &OpenHow::path().no_follow()) {
+            Ok(fd) => fd,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let st = rustix::fs::fstat(&fd).map_err(|e| Error::Io {
+            op: "stat",
+            path: state_path.join(d),
+            source: e.into(),
+        })?;
+        let (what, or_move) = match rustix::fs::FileType::from_raw_mode(st.st_mode) {
+            rustix::fs::FileType::Directory => continue,
+            rustix::fs::FileType::Symlink => (
+                "a symlink",
+                ", or move the directory it stands for to its name",
+            ),
+            rustix::fs::FileType::RegularFile => ("a regular file", ""),
+            _ => ("a special file", ""),
+        };
+        return Err(Error::NotAStateDir {
+            path: state_path.to_owned(),
+            why: format!(
+                "holds {d}, which is {what}, where the store keeps a directory of its own; \
+                 refusing to use it as the state directory (remove {d}, and ranikust makes it \
+                 again{or_move})"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Gives `d`, one of [`DIRS`] and this user's, the effective gid and no
