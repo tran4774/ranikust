@@ -89,6 +89,13 @@ const UNCHANGED: [Secret; 2] = [
     ("/secret-gid", (42, u32::MAX)),
 ];
 
+/// A secret whose owner the build's user namespace maps, then one whose
+/// uid it does not: the `RUN` is refused at the second, naming it.
+const UNMAPPED_SECRET: [Secret; 2] = [
+    ("/secret-mapped", (0, 0)),
+    ("/secret-unmapped", (3_000_000_000, 0)),
+];
+
 /// One `RUN`: its `USER`, network, script and secrets.
 type Run = (&'static str, Network, &'static str, &'static [Secret]);
 
@@ -781,7 +788,8 @@ fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
 /// ranikust's init, and `sysfs`, whose network namespace the user does not
 /// own, an rbind of `/sys`, which needs no request; a `--network=none`
 /// `RUN`, whose network namespace the build owns, a new `sysfs` showing
-/// `lo` alone.
+/// `lo` alone. A secret whose uid the namespace does not map is refused,
+/// naming it (ADR-0098).
 #[test]
 #[ignore = "T2: drops from root to the sudo user to run RUNs in the build's user namespace"]
 fn runs_in_the_build_user_namespace_of_a_regular_user() {
@@ -806,8 +814,14 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
         Some(rustix::fs::Gid::from_raw(gid)),
     )
     .unwrap();
+    let runs = [
+        RUNS[0],
+        RUNS[1],
+        RUNS[2],
+        ("", Network::Host, "true", &UNMAPPED_SECRET),
+    ];
     let out = as_user(uid, gid, || {
-        runs_in_build_namespace(dir.path(), Some(sub), false, &RUNS)
+        runs_in_build_namespace(dir.path(), Some(sub), false, &runs)
     });
     measured(&format!(
         "RUNs in the build's user namespace of {name} (restricted: {restricted}): {}",
@@ -831,6 +845,12 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
     assert_eq!(value(&out, "2:netdevs"), "lo", "{out}");
+    assert_eq!(
+        value(&out, "run3"),
+        "error RUN sandbox: chown /secret-unmapped to 3000000000:0: an id this user namespace \
+         does not map",
+        "{out}"
+    );
 }
 
 /// T1: root of rootless Podman, where the user-namespace probe found that

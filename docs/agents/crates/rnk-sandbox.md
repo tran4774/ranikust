@@ -112,7 +112,10 @@ them for both.
   other than the initial one (`OwnNamespace::user_ns`, by the inode of
   `/proc/self/ns/user`) and with at most `NGROUPS_MAX` (65536) groups;
   otherwise the step's error stays. The dump flag's `prctl` after the
-  switch is `Step::Dumpable`.
+  switch is `Step::Dumpable`. A secret file's `fchown` that fails is
+  `Step::SecretOwner`, the file's index in the failure record's item; with
+  `EINVAL`, in such a namespace, it is `Error::Unmapped` naming the file's
+  first target and owner.
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
   (`cgroup.rs`, ADR-0110): the start-up probe, the nesting, and each `RUN`'s
   cgroups, killed and removed when it ends.
@@ -200,7 +203,7 @@ pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
 pub struct NofileLimit { pub soft: Option<u64>, pub hard: Option<u64> } // NofileLimit::current(); None = unlimited
-pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), SetupKilled { signal, seccomp }, InitExited { code }, Unmapped(rnk_rootfs::Unmapped), .. }  // the init killed (seccomp: SIGSYS under a profile) or exited with no record before the command's status; Unmapped: Step::Groups, Gid or Uid failed with EINVAL (a USER the map lacks, ADR-0098)
+pub enum Error { Setup { step: Step, .. }, Cgroup { op, path, .. }, Exec { program, .. }, InvalidSpec, Privilege, Direct(String), SetupKilled { signal, seccomp }, InitExited { code }, Unmapped(rnk_rootfs::Unmapped), .. }  // the init killed (seccomp: SIGSYS under a profile) or exited with no record before the command's status; Unmapped: Step::Groups, Gid or Uid failed with EINVAL (a USER the map lacks, ADR-0098), or Step::SecretOwner (a secret file's owner)
 impl Error { pub fn ran_no_command(&self) -> bool; } // before execve (Cgroup: before the clone): no RUN process can outlive it (ADR-0056); false for Cancelled
 ```
 
@@ -253,12 +256,12 @@ What a change here must keep, with where it lives:
   `wait4` reaps it: the kill never reaches a reused pid.
 - **Between `clone` and `execve`** the child only makes system calls (rustix's
   raw backend, a few `libc` calls) on arguments built before the clone. A
-  failing step writes `(step, errno)` to a close-on-exec pipe and exits 127;
-  end-of-file on the pipe means `execve` succeeded. Right after the clone the
-  child closes every descriptor it copied from ranikust but the few it needs
-  (`close_inherited`, `Full` and `Direct` alike), then puts the stdio sources
-  on 0-2 (`early_stdio`). `/dev/null` is never opened by name in the child:
-  `Full` opens its fresh `/dev` tmpfs's node by descriptor before any
+  failing step writes `(step, item, errno)` to a close-on-exec pipe and exits
+  127; end-of-file on the pipe means `execve` succeeded. Right after the clone
+  the child closes every descriptor it copied from ranikust but the few it
+  needs (`close_inherited`, `Full` and `Direct` alike), then puts the stdio
+  sources on 0-2 (`early_stdio`). `/dev/null` is never opened by name in the
+  child: `Full` opens its fresh `/dev` tmpfs's node by descriptor before any
   `RUN --mount` (read-only bind); `Direct` gets the host's from the parent
   (`host_null`: no symlink, char device 1:3).
 - **Namespaces:** mount, PID, UTS, IPC; network for `--network=none` (the
@@ -744,8 +747,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
   _apt` refused at `setgid` as `Error::Unmapped`, naming its ids (ADR-0098;
-  T0: `a_user_switch_refused_with_einval_names_the_ids` and
-  `a_user_switch_refused_with_einval_for_another_cause_names_no_id` in
+  T0: `a_user_switch_refused_with_einval_names_the_ids`,
+  `a_user_switch_refused_with_einval_for_another_cause_names_no_id` and
+  `a_secret_s_owner_refused_with_einval_names_the_file` and its red team
+  `red_team_a_refused_secret_owner_names_its_own_mount_and_no_value` in
   `spawner.rs`, `the_own_namespace_is_told_by_its_inode` in
   `userns/tests.rs`);
   `an_rbind_of_proc_needs_a_request`: unasked,
@@ -813,7 +818,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   where AppArmor restricts, elsewhere, with no request, a new `proc`, PID 2
   under `ranikust-init`, where the `RUN` writes its own `oom_score_adj`,
   and an rbind of `/sys`, but a new `sysfs` showing `lo` alone for a
-  `--network=none` `RUN`);
+  `--network=none` `RUN`; a secret owned by a uid the map lacks, after one
+  it maps, refused as `Error::Unmapped` naming that secret's target);
   `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
   T1 mount red team as real root, whose map is every id);
   `the_user_namespace_steps_of_a_shifted_range_pass_as_its_first_ids`

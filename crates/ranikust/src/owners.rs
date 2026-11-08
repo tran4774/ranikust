@@ -5,14 +5,9 @@
 //! on who made the namespace and how. No flag lets a refused `chown` pass.
 
 use std::error::Error;
-use std::fs::File;
-use std::io::Read as _;
 
 use rnk_rootfs::{MappedIds, Unmapped};
-use rustix::fs::{Mode, OFlags};
-
-/// Read no more of a map: the kernel writes at most 340 lines.
-const MAP_MAX: u64 = 64 * 1024;
+use rnk_snapshot::UserNamespace;
 
 /// The user namespace the build runs in, as the ways out tell it apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,54 +41,24 @@ pub(crate) fn find<'a>(e: &'a (dyn Error + 'static)) -> Option<&'a Unmapped> {
 /// The ways out of `found`, in the user namespace this process runs in;
 /// `made` when ranikust made it (rootless overlay mode).
 pub(crate) fn guidance(found: &Unmapped, made: bool) -> String {
-    let maps = match read_maps() {
-        Ok(maps) => maps,
+    let ns = match UserNamespace::current() {
+        Ok(ns) => ns,
         Err(e) => {
             tracing::debug!("the user namespace's maps cannot be read: {e}");
             None
         }
     };
-    let ids = maps
-        .as_ref()
-        .and_then(|(uid_map, gid_map)| MappedIds::parse(uid_map, gid_map));
-    ways_out(found, namespace(made, maps.as_ref()), ids.as_ref())
+    let ids = ns.as_ref().map(UserNamespace::ids);
+    let root_outside = ns.as_ref().and_then(UserNamespace::root_uid_outside);
+    ways_out(found, namespace(made, root_outside, ids), ids)
 }
 
-/// The process's `uid_map` and `gid_map`, or `None` in the initial user
-/// namespace.
-fn read_maps() -> Result<Option<(String, String)>, String> {
-    let Some(dir) = rnk_store::user_namespace_proc().map_err(|e| e.to_string())? else {
-        return Ok(None);
-    };
-    let read = |name: &str| -> Result<String, String> {
-        let fd = rustix::fs::openat(&dir, name, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
-            .map_err(|e| format!("{name}: {e}"))?;
-        let mut text = String::new();
-        File::from(fd)
-            .take(MAP_MAX)
-            .read_to_string(&mut text)
-            .map_err(|e| format!("{name}: {e}"))?;
-        Ok(text)
-    };
-    Ok(Some((read("uid_map")?, read("gid_map")?)))
-}
-
-/// Who made the namespace whose maps are `maps` and how: by the uid its
-/// root is outside, a user's own unless 0.
-fn namespace(made: bool, maps: Option<&(String, String)>) -> Namespace {
-    let Some((uid_map, gid_map)) = maps.filter(|_| made) else {
+/// Who made the namespace whose maps give `ids` and how: by the uid its
+/// root has outside, `root_outside`, a user's own unless 0.
+fn namespace(made: bool, root_outside: Option<u32>, ids: Option<&MappedIds>) -> Namespace {
+    let Some(ids) = ids.filter(|_| made) else {
         return Namespace::Container;
     };
-    let Some(ids) = MappedIds::parse(uid_map, gid_map) else {
-        return Namespace::Container;
-    };
-    let root_outside = uid_map.lines().find_map(|line| {
-        let mut n = line.split_ascii_whitespace().map(|w| w.parse::<u32>().ok());
-        match (n.next(), n.next(), n.next()) {
-            (Some(Some(0)), Some(Some(outside)), Some(Some(1..))) => Some(outside),
-            _ => None,
-        }
-    });
     match (root_outside, ids.is_one_id()) {
         (None, _) => Namespace::Container,
         (Some(0), true) => Namespace::RootOneId,
@@ -213,8 +178,8 @@ mod tests {
 
     use super::*;
 
-    fn maps(uid_map: &str, gid_map: &str) -> Option<(String, String)> {
-        Some((uid_map.to_owned(), gid_map.to_owned()))
+    fn ids(uid_map: &str, gid_map: &str) -> MappedIds {
+        MappedIds::parse(uid_map, gid_map).unwrap()
     }
 
     /// Who made the namespace, and with which map, picks the ways out: a
@@ -222,35 +187,37 @@ mod tests {
     /// otherwise.
     #[test]
     fn the_ways_out_follow_who_made_the_namespace_and_its_map() {
-        let one = maps("0 1000 1\n", "0 1000 1\n");
-        let gid_one = maps("0 1000 1\n1 100000 65536\n", "0 1000 1\n");
-        let ranges = maps(
-            "         0       1000          1\n         1     100000      65536\n",
-            "0 1000 1\n1 100000 65536\n",
-        );
-        let root = maps("0 0 1\n1 100000 65536\n", "0 0 1\n1 100000 65536\n");
-        let root_one = maps("0 0 1\n", "0 0 1\n");
-        assert_eq!(namespace(true, one.as_ref()), Namespace::UserOneId);
-        assert_eq!(namespace(true, gid_one.as_ref()), Namespace::UserOneId);
-        assert_eq!(namespace(true, ranges.as_ref()), Namespace::UserRanges);
-        assert_eq!(namespace(true, root.as_ref()), Namespace::Container);
-        assert_eq!(namespace(true, root_one.as_ref()), Namespace::RootOneId);
-        assert_eq!(namespace(false, root_one.as_ref()), Namespace::Container);
-        assert_eq!(namespace(false, one.as_ref()), Namespace::Container);
-        assert_eq!(namespace(false, ranges.as_ref()), Namespace::Container);
-        assert_eq!(namespace(true, None), Namespace::Container);
+        let one = ids("0 1000 1\n", "0 1000 1\n");
+        let ranges = ids("0 1000 1\n1 100000 65536\n", "0 1000 1\n1 100000 65536\n");
+        let root = ids("0 0 1\n1 100000 65536\n", "0 0 1\n1 100000 65536\n");
+        let root_one = ids("0 0 1\n", "0 0 1\n");
+        // Root's own ids mirrored, one gid among them: what root's build
+        // makes in a container whose gid map gives one id.
+        let root_mixed = ids("0 0 65536\n", "0 0 1\n");
+        let user = Some(1000);
+        assert_eq!(namespace(true, user, Some(&one)), Namespace::UserOneId);
+        assert_eq!(namespace(true, user, Some(&ranges)), Namespace::UserRanges);
+        assert_eq!(namespace(true, Some(0), Some(&root)), Namespace::Container);
         assert_eq!(
-            namespace(true, maps("x", "0 0 1\n").as_ref()),
+            namespace(true, Some(0), Some(&root_one)),
+            Namespace::RootOneId
+        );
+        assert_eq!(
+            namespace(true, Some(0), Some(&root_mixed)),
+            Namespace::RootOneId
+        );
+        assert_eq!(
+            namespace(false, Some(0), Some(&root_one)),
             Namespace::Container
         );
+        assert_eq!(namespace(false, user, Some(&one)), Namespace::Container);
+        assert_eq!(namespace(false, user, Some(&ranges)), Namespace::Container);
+        // Maps that cannot be read, or that leave root unmapped.
+        assert_eq!(namespace(true, user, None), Namespace::Container);
+        assert_eq!(namespace(true, None, Some(&one)), Namespace::Container);
 
-        let parsed = |m: &Option<(String, String)>| {
-            m.as_ref()
-                .and_then(|(u, g)| MappedIds::parse(u, g))
-                .unwrap()
-        };
         let chown = Unmapped::chown(Path::new("/app"), Some(1000), Some(1000));
-        let one_id = ways_out(&chown, Namespace::UserOneId, Some(&parsed(&one)));
+        let one_id = ways_out(&chown, Namespace::UserOneId, Some(&one));
         for part in [
             "maps one uid and one gid,",
             "install uidmap",
@@ -263,22 +230,22 @@ mod tests {
             assert!(one_id.contains(part), "{part}: {one_id}");
         }
         // The primary gid 0 is mapped: only the uid is named.
-        let narrow = maps("0 1000 1\n1 100000 1000\n", "0 1000 1\n1 100000 1000\n");
+        let narrow = ids("0 1000 1\n1 100000 1000\n", "0 1000 1\n1 100000 1000\n");
         let user = Unmapped::user("set the user id", 5000, 0, &[]);
-        let widen = ways_out(&user, Namespace::UserRanges, Some(&parsed(&narrow)));
+        let widen = ways_out(&user, Namespace::UserRanges, Some(&narrow));
         assert!(
             widen.contains("widen that range to at least 5000 subordinate uids (a range must"),
             "{widen}"
         );
         // Maps that hold every id named (an EINVAL of another cause) name
         // them all, but 0, which is the user's own.
-        let all = maps("0 0 4294967295\n", "0 0 4294967295\n");
-        let unknown = ways_out(&user, Namespace::UserRanges, Some(&parsed(&all)));
+        let all = ids("0 0 4294967295\n", "0 0 4294967295\n");
+        let unknown = ways_out(&user, Namespace::UserRanges, Some(&all));
         assert!(
             unknown.contains("at least 5000 subordinate uids (a range must"),
             "{unknown}"
         );
-        let root_only = ways_out(&user, Namespace::RootOneId, Some(&parsed(&root_one)));
+        let root_only = ways_out(&user, Namespace::RootOneId, Some(&root_one));
         assert!(
             root_only.contains(
                 "maps a single uid or gid, not uid 5000: the user namespace ranikust was started \

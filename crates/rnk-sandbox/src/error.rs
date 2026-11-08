@@ -112,10 +112,12 @@ pub enum Step {
     /// Clearing the dump flag the switch to the `RUN`'s user set
     /// (`prctl(PR_SET_DUMPABLE)`).
     Dumpable,
+    /// Giving a `RUN --mount=type=secret` file its owner on its tmpfs.
+    SecretOwner,
 }
 
 impl Step {
-    const ALL: [Step; 46] = [
+    const ALL: [Step; 47] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -162,6 +164,7 @@ impl Step {
         Step::JoinCgroup,
         Step::CgroupNamespace,
         Step::Dumpable,
+        Step::SecretOwner,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -237,6 +240,7 @@ impl Step {
             Step::JoinCgroup => "join the RUN's cgroup",
             Step::CgroupNamespace => "make the RUN's cgroup namespace",
             Step::Dumpable => "make the process not dumpable",
+            Step::SecretOwner => "give a secret file its owner",
         }
     }
 }
@@ -272,8 +276,9 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
-    /// The `RUN` child's switch to its user failed with `EINVAL`, before
-    /// `execve`: the user, group or a supplementary group is an id the user
+    /// The `RUN` child's switch to its user, or its `chown` of a secret
+    /// file, failed with `EINVAL`, before `execve`: the user, group or a
+    /// supplementary group, or the secret's owner, is an id the user
     /// namespace does not map (ADR-0098). No flag lets it pass.
     #[error("RUN sandbox: {0}")]
     Unmapped(#[source] rnk_rootfs::Unmapped),

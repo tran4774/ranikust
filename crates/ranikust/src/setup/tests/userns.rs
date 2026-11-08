@@ -724,7 +724,13 @@ fn rootless_build(
             return format!("error: layer: {e}");
         }
         let cache = store
-            .cache_lease("cache", rnk_store::CacheSharing::Shared, None, &|| false)
+            .cache_lease(
+                "cache",
+                rnk_store::CacheSharing::Shared,
+                None,
+                Path::new("/cache"),
+                &|| false,
+            )
             .map_err(|e| e.to_string())
             .and_then(|lease| plant(lease.path()).map_err(|e| e.to_string()));
         if let Err(e) = cache {

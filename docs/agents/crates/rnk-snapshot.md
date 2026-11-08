@@ -77,6 +77,10 @@ pub struct LayerDir;                               // layers/<algo>/<hex>/: diff
 pub struct LayerDiff;                              // upper + lowers; new(upper, lowers), is_empty(), entries(), export(o, out)
 pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check; also as root of a user namespace (ranikust's #74 probe, in a child)
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
+pub struct UserNamespace;                          // src/userns.rs: reads /proc/self/{uid,gid}_map for the layer keys, the owner checks and the binary's guidance (ADR-0098)
+impl UserNamespace { pub fn current() -> Result<Option<Self>>; // None in the initial one (rnk_store::user_namespace_proc); Error::Io naming uid_map or gid_map when one cannot be read or parsed
+    pub fn ids(&self) -> &MappedIds; pub fn uid_map(&self) -> &str; pub fn gid_map(&self) -> &str; // the maps in canonical form, the layer key's input (ADR-0104)
+    pub fn root_uid_outside(&self) -> Option<u32>; } // the uid outside that uid 0 inside has: who made it, for the binary's ways out
 pub const OVERLAY_OPTIONS: &str = "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile"; // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // refused beyond, no merging yet (ADR-0032)
 
@@ -149,19 +153,25 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   the namespace's maps (ADR-0104), in a space of its own by the tag
   (`KEY_DOMAIN`), and devices are left out with `DeviceNodes::Skip`
   (ADR-0106).
-- `check_owners` (`src/owners.rs`, ADR-0098): in a user namespace other
-  than the initial one, each blob is decompressed once more and its headers
-  read as its extraction reads them (`rnk_rootfs::scan_owners` for overlay,
-  `check_headers_and_owners` for kaniko mode), its diff ID verified, and
-  every owner the namespace's maps (`UserNamespace`'s `MappedIds`) lack is
+- `check_owners` (`src/owners.rs`, ADR-0098): in a user namespace other than
+  the initial one, each blob is decompressed once more and its headers read as
+  its extraction reads them (`rnk_rootfs::scan_owners` for overlay,
+  `check_headers_and_owners` for kaniko mode, which on `/` skips the paths the
+  ignore list keeps as `extract_live` does: for pulled blobs only with the
+  stages kept as tars, `pulled_owners_skip_ignored`, since without them
+  `prepare_source` unpacks a `COPY --from` image whole), its diff ID verified,
+  and every owner the namespace's maps (`UserNamespace`'s `MappedIds`) lack is
   named in one refusal; overlay skips a layer whose key is already in the
-  store. Off `/`, in a user namespace (`in_initial_user_namespace`, read
-  once per snapshotter), kaniko mode streams no base layer, so its layers
-  come as blobs and are all checked first. On `/` a streamed layer is not
-  a blob: the spool pass (`Spooled::of`) notes its owners in the same read
-  as its headers and refuses once the layer is verified, before it is
-  extracted (ADR-0137). A `chown`
-  that fails with `EINVAL` during extraction is refused the same way
+  store. Off `/`, in a user namespace (`in_initial_user_namespace`, read once
+  per snapshotter), kaniko mode streams no base layer, so its layers come as
+  blobs and are all checked first, every path. On `/` a streamed layer is not
+  a blob: the spool pass (`Spooled::of`) notes its owners in the same read as
+  its headers, against the namespace each kaniko snapshotter reads once
+  (`UserNamespace::once`), and refuses once the layer is verified, before it
+  is extracted (ADR-0137). A `COPY --from` image on `/` is unpacked with no
+  ignore list: its spool, or its kept blob, is checked again for the ignored
+  paths before any directory is made (`Shared::spool`). A `chown` that fails
+  with `EINVAL` during extraction is refused the same way
   (`rnk_rootfs::Error::Unmapped`).
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
   from a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
@@ -204,17 +214,19 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
 - Roots are emptied only through `rnk-rootfs` (`mnt_id`, never `st_dev`);
   per-stage roots are extracted or copied, never hardlinked (ADR-0017).
 - A cached layer (`apply_layer`) is hostile image content: it takes the
-  base-layer path only (`extract_checked`), never a path of its own. On `/`
-  a streamed layer is spooled and verified before `/` changes; a store
-  blob's compressed digest is checked when the store fills it, and its diff
-  ID at the end of the extraction. Once the layer opens, the walk's record
-  is stale (`walked = false`), so the next `begin_layer` re-baselines. A
-  failure after the first entry may have landed marks the root broken
-  (`broken`): every later layer, applied layer, view, keep and child stage
-  is refused. The shared root is usable again once a new base empties it;
-  a broken stage root is only released. Running the stage again from its base,
-  the bad entry a miss, is the builder's, in both modes: at most once and with no
-  cache, the new base emptying `/`
+  base-layer path only (`extract_checked`), never a path of its own. In a user
+  namespace its owners are read first, as a base layer's are
+  (`check_cached_owners`; the ignored paths skipped on `/` only, ADR-0144), so
+  a refused one leaves the root as it was. On `/` a streamed layer is spooled
+  and verified before `/` changes; a store blob's compressed digest is checked
+  when the store fills it, and its diff ID at the end of the extraction. Once
+  the layer opens, the walk's record is stale (`walked = false`), so the next
+  `begin_layer` re-baselines. A failure after the first entry may have landed
+  marks the root broken (`broken`): every later layer, applied layer, view,
+  keep and child stage is refused. The shared root is usable again once a new
+  base empties it; a broken stage root is only released. Running the stage
+  again from its base, the bad entry a miss, is the builder's, in both modes:
+  at most once and with no cache, the new base emptying `/`
   ([ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md),
   [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md),
   [#130](https://github.com/tran4774/ranikust/issues/130), decided, not built;
@@ -222,14 +234,14 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   (`Spooled::of`) also checks the tar headers and `--limit`, in the same
   decompression, by `rnk_rootfs::check_headers` (ADR-0123), so for a streamed
   layer only a failure while writing breaks `/`; this crate has no tar parser
-  of its own.
-  A run of hits takes no walk, so a warm stage walks no more than a cold one
+  of its own. A run of hits takes no walk, so a warm stage walks no more than
+  a cold one
   ([ADR-0117](../../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md)).
 
 ## Refs
 
 - **Design:** [`design/overlay-snapshot.md#one-layer-per-instruction`](../../design/overlay-snapshot.md#one-layer-per-instruction), [`#mounting`](../../design/overlay-snapshot.md#mounting), [`#the-volatile-lifecycle`](../../design/overlay-snapshot.md#the-volatile-lifecycle), [`#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [`design/kaniko-mode.md#walk-hash-and-diff`](../../design/kaniko-mode.md#walk-hash-and-diff), [`#stage-roots-on-the-shared-root`](../../design/kaniko-mode.md#stage-roots-on-the-shared-root), [`#per-stage-directories`](../../design/kaniko-mode.md#per-stage-directories), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list) (what `ignore_list` builds from `IgnoreSpec`), [`#lazy-snapshots`](../../design/kaniko-mode.md#lazy-snapshots), [`#a-cache-hit`](../../design/kaniko-mode.md#a-cache-hit); [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout)
-- **Decisions:** [ADR-0002](../../adr/0002-two-snapshot-modes.md) (two modes, one interface), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (accepted differences), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (sequential on `/`), [ADR-0016](../../adr/0016-overlay-mount-options.md) (options, `EXDEV`), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (no hardlink farms), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`layers/` through `rnk-store`), [ADR-0022](../../adr/0022-common-state-dir.md) (state directory ignored), [ADR-0046](../../adr/0046-snapshotter-signature.md) (the traits), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (a build in a user namespace scans base layers' owners and refuses an image with one the namespace does not map: `check_owners`, the spool pass on `/`), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (rootless mode extracts and publishes inside the user namespace, #77), [ADR-0106](../../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md) (device nodes skipped there, #77), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (an extracted layer keyed by its id map, #77), [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (a bad cache entry is a miss; per stage a bad streamed hit runs the stage again, #130), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (hits up to a stage's first miss), [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md) (the spool pass also checks the tar headers and `--limit` by a call into `rnk-rootfs`, built, #174; planned: a broken stage root or `/` starts the stage again at most once, with no cache, #130), [ADR-0117](../../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md) (warm and partial builds no slower than kaniko's cache)
+- **Decisions:** [ADR-0002](../../adr/0002-two-snapshot-modes.md) (two modes, one interface), [ADR-0012](../../adr/0012-accept-divergence-between-modes.md) (accepted differences), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (sequential on `/`), [ADR-0016](../../adr/0016-overlay-mount-options.md) (options, `EXDEV`), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (no hardlink farms), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`layers/` through `rnk-store`), [ADR-0022](../../adr/0022-common-state-dir.md) (state directory ignored), [ADR-0046](../../adr/0046-snapshotter-signature.md) (the traits), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (a build in a user namespace scans base layers' owners and refuses an image with one the namespace does not map: `check_owners`, the spool pass on `/`), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (rootless mode extracts and publishes inside the user namespace, #77), [ADR-0106](../../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md) (device nodes skipped there, #77), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (an extracted layer keyed by its id map, #77), [ADR-0113](../../adr/0113-the-cache-key-holds-buildkits-fields-and-a-hit-is-looked-up-with-its-encoding.md) (a bad cache entry is a miss; per stage a bad streamed hit runs the stage again, #130), [ADR-0114](../../adr/0114-every-cache-key-is-computed-before-the-build-and-fully-cached-stages-are-skipped.md) (hits up to a stage's first miss), [ADR-0123](../../adr/0123-a-cache-hit-that-fails-makes-its-stage-start-again-once-with-no-cache.md) (the spool pass also checks the tar headers and `--limit` by a call into `rnk-rootfs`, built, #174; planned: a broken stage root or `/` starts the stage again at most once, with no cache, #130), [ADR-0117](../../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md) (warm and partial builds no slower than kaniko's cache), [ADR-0144](../../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md) (the owner check skips the ignored paths on `/` only)
 - **Open:** [#18](https://github.com/tran4774/ranikust/issues/18) (one mount across instructions)
 - **Evidence:** [exp-01](../../research/experiments/01-overlay-semantics.md) (upper contents, limits), [exp-06](../../research/experiments/06-overlay-vs-walk.md) (`volatile`), [exp-06a](../../research/experiments/06a-root-rerun.md), [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (exporter), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) (walk of 269k entries in 0.10-0.15 s), [exp-10](../../research/experiments/10-exdev-package-managers.md), [exp-11](../../research/experiments/11-root-extras.md), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (kernel 5.15)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/snapshot/snapshot.go:116` `Init`, `:237` `scanFullFilesystem` (syncfs, full walk), `:432` `addParentDirectories`; `pkg/snapshot/layered_map.go:28` `LayeredMap`, `:156` `CheckFileChange`; `pkg/util/stat_hash_cache.go:41` the 2 s window, `:54` `statKey`; `pkg/filesystem/resolve.go:39` `ResolvePaths` (2.48 s of a W1 build, exp-07); `pkg/executor/build.go:2179` `DeleteFilesystem` after each stage
@@ -244,15 +256,16 @@ that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
-  `tests/layers.rs`); the id map's canonical form and the mapped key, apart
-  from every chain ID (`src/userns.rs`); the owner check of every layer
-  not kept, before any extraction, a kept one unread (`src/owners.rs`,
-  ADR-0098; red team: an owner in a later gzip member, or a zstd frame
-  past a skippable one, named; a blob behind a skippable frame refused by
-  the check and the extraction alike; a layer whose extraction failed on
-  an owner read again); `spawn_as_caller`, which starts the mount thread,
-  carries its caller's dispatcher over (`src/mount.rs`; the mount itself
-  needs root).
+  `tests/layers.rs`); the id map's canonical form, root's outside uid, a map
+  that does not parse named `uid_map` or `gid_map`, and the mapped key,
+  unchanged and apart from every chain ID (`src/userns.rs`); the owner check
+  of every layer not kept, before any extraction, a kept one unread
+  (`src/owners.rs`, ADR-0098; red team: an owner in a later gzip member, or a
+  zstd frame past a skippable one, named; a blob behind a skippable frame
+  refused by the check and the extraction alike; a layer whose extraction
+  failed on an owner read again); `spawn_as_caller`, which starts the mount
+  thread, carries its caller's dispatcher over (`src/mount.rs`; the mount
+  itself needs root).
 - **T0, walk and exporter** (`src/kaniko/walk/tests.rs`,
   `src/kaniko/export/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
@@ -278,7 +291,20 @@ that found a bug stay as its regression test.
   directory or the marker). ADR-0058 (`src/kaniko/root/tests.rs`): steps that
   only delete, replace a directory by an empty one, or change a mode or an
   mtime never encode to the empty tar's diff ID; a step that changes nothing,
-  or undoes what it did, does.
+  or undoes what it did, does. A `Kaniko` on a root other than `/` checks
+  the owners on the ignored paths too
+  (`off_slash_kaniko_s_owner_check_covers_the_ignored_paths`, ADR-0144); a
+  cached blob with an owner the namespace lacks is refused before the root
+  changes, on `/` one only on an ignored path passing and off `/` refused
+  (ADR-0144;
+  `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`);
+  on `/` pulled blobs skip the ignored paths only with the stages kept as
+  tars
+  (`on_slash_pulled_blobs_skip_the_ignored_paths_only_with_the_stages_kept_as_tars`;
+  red team: each use of a kept spool checked for itself, image or base
+  first, `red_team_a_spool_s_uses_in_any_order_each_get_their_own_check`;
+  a cached blob's names checked cleaned as the extraction cleans them,
+  `red_team_a_cached_blob_s_names_are_checked_cleaned_as_the_extraction_cleans_them`).
 - **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
   ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
   `FROM <stage>` copied with no inode shared, a parent with a layer open
@@ -287,37 +313,41 @@ that found a bug stay as its regression test.
   the same layer digest, falls back to a copy when it moved nothing or a
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
   bases cannot reach outside `rootfs/`; in a user namespace no base layer is
-  streamed into a stage directory (ADR-0098). In a binary of its own
+  streamed into a stage directory, and the owner check covers the ignored
+  paths (ADR-0098, ADR-0144;
+  `off_slash_the_owner_check_covers_the_ignored_paths`), a cached blob's
+  too, before the root changes
+  (`a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`).
+  In a binary of its own
   (`tests/deep_chain.rs`, the soft `RLIMIT_NOFILE` raised to the hard one):
   a chain of up to 100,000 levels (as many as the copy holds descriptors
   for; skipped below 30,000) copied and handed over in time linear in its
   depth.
 - **T0, a cache hit** (`tests/apply.rs`, both roots, the shared one also as
   `/`): the next diff is empty, or only the next step's; whiteouts and opaque
-  directories remove lower entries once; a root built by running a step and
-  by applying its layer is the same, and so is the next step's layer; device
+  directories remove lower entries once; a root built by running a step and by
+  applying its layer is the same, and so is the next step's layer; device
   nodes and FIFOs left out; refusals; a failure before the first entry leaves
   the root usable, a later one breaks it; hostile layers (`..`, links to a
   sibling stage, `/`, `/proc`, the state directory, an ignored path or a
-  volume, whiteouts of them) reach nothing outside the root. Red team of
-  what a `RUN` left before the layer: FIFOs at names it writes as a file, a
-  directory, a parent, a hardlink's or a whiteout's target are never opened
-  or blocked on; symlinks out (absolute or by `..`), a hardlink to a file
-  outside and a loop are followed only inside the root, replaced rather than
-  written through, never followed by a deletion; a directory swapped for a
-  symlink out while the layer lands keeps it in the root (T3); an oversized
-  tar header is refused, breaking a per-stage root; a bad blob on `/` touches no
-  ignored path. On `/` a streamed layer whose tar has a header every extraction
+  volume, whiteouts of them) reach nothing outside the root. Red team of what
+  a `RUN` left before the layer: FIFOs at names it writes as a file, a
+  directory, a parent, a hardlink's or a whiteout's target are never opened or
+  blocked on; symlinks out (absolute or by `..`), a hardlink to a file outside
+  and a loop are followed only inside the root, replaced rather than written
+  through, never followed by a deletion; a directory swapped for a symlink out
+  while the layer lands keeps it in the root (T3); an oversized tar header is
+  refused, breaking a per-stage root; a bad blob on `/` touches no ignored
+  path. On `/` a streamed layer whose tar has a header every extraction
   refuses (a value over the kernel's limits included, #179), or one over
-  `--limit`, after a good first entry, changes nothing and
-  leaves `/` usable, and a body its source refuses reports the source's error
-  first; the same layer from the store breaks `/` (the control). Red team of
-  #179 on `/`: each value over the kernel's limits, in the encoding that
-  hides it best, is refused before `/` changes, and `/` stays usable; a
-  layer that fails for where its entries land (below a symlink to a
-  directory at the limit, a loop, below a file, a hardlink to a directory)
-  breaks `/` with nothing written past the limit or outside, until the next
-  `prepare` empties it. Red team of
+  `--limit`, after a good first entry, changes nothing and leaves `/` usable,
+  and a body its source refuses reports the source's error first; the same
+  layer from the store breaks `/` (the control). Red team of #179 on `/`: each
+  value over the kernel's limits, in the encoding that hides it best, is
+  refused before `/` changes, and `/` stays usable; a layer that fails for
+  where its entries land (below a symlink to a directory at the limit, a loop,
+  below a file, a hardlink to a directory) breaks `/` with nothing written
+  past the limit or outside, until the next `prepare` empties it. Red team of
   that check on `/` (ADR-0123): a name out of the root is refused before `/`
   changes whether the blob is plain, gzip or zstd, in a second gzip member or
   zstd frame included; entries past the end-of-archive block reach nothing; a
@@ -329,9 +359,13 @@ that found a bug stay as its regression test.
   `src/kaniko/root/tests.rs`, a base or `COPY --from` image layer with a bad
   header is refused before any of it is written or any directory made, and
   keeps no spool; in a user namespace only `/` takes a streamed base layer
-  (ADR-0098, ADR-0137). `tests/spans.rs`: on `/` a streamed layer is decoded
-  once before its extraction, a refused one once and never extracted
-  (ADR-0123).
+  (ADR-0098, ADR-0137), its owners checked in the spool pass against the
+  namespace the build read, the ignore list's paths skipped for a base and not
+  for a `COPY --from` image, from its own spool, a base's or a kept blob
+  (`on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass`;
+  red team in `rnk-rootfs`'s `tests/red_team_owners.rs`). `tests/spans.rs`: on
+  `/` a streamed layer is decoded once before its extraction, a refused one
+  once and never extracted (ADR-0123).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings. The
   `kaniko-flags` case's kaniko leg: `probe` passes in the user namespace
@@ -372,8 +406,9 @@ Rows: [design/metrics.md](../../design/metrics.md#rnk-snapshot).
 - Spans: `prepare` (`layers`), `apply` (a cached layer), `mount`, `umount`,
   `empty`, `keep` (`paths`; 0 for the whole root), `hand_over` (inside
   `prepare` with `handed_over = true`, `rnk_rootfs.prune` in it),
-  `release`, `probe`, `check_owners` (`layers`, `layers_scanned`; per image, in a
-  user namespace); records `diff`
+  `release`, `probe`, `check_owners` (`layers`, `layers_scanned`; in a user
+  namespace, per image, or per layer for a cached blob or, on `/`, a
+  `COPY --from` layer read again); records `diff`
   (`files_added`, `whiteouts`, `bytes`, ...), `walk` (`entries`,
   `files_hashed`, `bytes_hashed`, `stat_cache_hits`, `max_threads`),
   `baseline` (`entries`), `export` (`entries`, `bytes_read`).

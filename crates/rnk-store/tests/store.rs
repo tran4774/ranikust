@@ -782,18 +782,36 @@ fn shared_cache_leases_use_one_directory() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&paths(dir.path())).unwrap();
     let a = store
-        .cache_lease("npm", CacheSharing::Shared, None, &never)
+        .cache_lease(
+            "npm",
+            CacheSharing::Shared,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert!(a.created());
     let b = store
-        .cache_lease("npm", CacheSharing::Shared, None, &never)
+        .cache_lease(
+            "npm",
+            CacheSharing::Shared,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert!(!b.created());
     assert_eq!(a.path(), b.path());
     assert_eq!(a.path(), store.cache_dir("npm").unwrap());
     drop((a, b));
     let c = store
-        .cache_lease("npm", CacheSharing::Shared, None, &never)
+        .cache_lease(
+            "npm",
+            CacheSharing::Shared,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert!(!c.created(), "kept between builds");
 }
@@ -803,25 +821,43 @@ fn a_private_cache_lease_gets_a_new_directory_while_one_is_held() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&paths(dir.path())).unwrap();
     let a = store
-        .cache_lease("k", CacheSharing::Private, None, &never)
+        .cache_lease(
+            "k",
+            CacheSharing::Private,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     fs::write(a.path().join("x"), b"x").unwrap();
     let b = store
-        .cache_lease("k", CacheSharing::Private, None, &never)
+        .cache_lease(
+            "k",
+            CacheSharing::Private,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert!(b.created());
     assert_ne!(a.path(), b.path());
     assert!(names(b.path()).is_empty(), "a new cache, not a copy");
     // A shared user beside a private holder gets another directory too.
     let s = store
-        .cache_lease("k", CacheSharing::Shared, None, &never)
+        .cache_lease("k", CacheSharing::Shared, None, Path::new("/cache"), &never)
         .unwrap();
     assert_ne!(s.path(), a.path());
     assert_ne!(s.path(), b.path());
     let a_path = a.path().to_owned();
     drop((a, b, s));
     let again = store
-        .cache_lease("k", CacheSharing::Private, None, &never)
+        .cache_lease(
+            "k",
+            CacheSharing::Private,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert_eq!(again.path(), a_path, "a free directory is reused");
     assert!(!again.created());
@@ -832,7 +868,7 @@ fn a_locked_cache_lease_waits_for_the_holder() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&paths(dir.path())).unwrap();
     let held = store
-        .cache_lease("k", CacheSharing::Locked, None, &never)
+        .cache_lease("k", CacheSharing::Locked, None, Path::new("/cache"), &never)
         .unwrap();
     let path = held.path().to_owned();
     let start = std::time::Instant::now();
@@ -842,7 +878,7 @@ fn a_locked_cache_lease_waits_for_the_holder() {
             drop(held);
         });
         let next = store
-            .cache_lease("k", CacheSharing::Locked, None, &never)
+            .cache_lease("k", CacheSharing::Locked, None, Path::new("/cache"), &never)
             .unwrap();
         assert_eq!(next.path(), path, "the same cache, after the holder");
         assert!(!next.created());
@@ -850,9 +886,15 @@ fn a_locked_cache_lease_waits_for_the_holder() {
     assert!(start.elapsed() >= Duration::from_millis(250));
     // A cancel ends the wait.
     let _held = store
-        .cache_lease("k", CacheSharing::Locked, None, &never)
+        .cache_lease("k", CacheSharing::Locked, None, Path::new("/cache"), &never)
         .unwrap();
-    let r = store.cache_lease("k", CacheSharing::Locked, None, &|| true);
+    let r = store.cache_lease(
+        "k",
+        CacheSharing::Locked,
+        None,
+        Path::new("/cache"),
+        &|| true,
+    );
     assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
 }
 
@@ -863,7 +905,7 @@ fn a_cache_lease_refuses_a_planted_entry() {
     let path = store.cache_dir("k").unwrap();
     fs::remove_dir(&path).unwrap();
     std::os::unix::fs::symlink("/", &path).unwrap();
-    let r = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    let r = store.cache_lease("k", CacheSharing::Shared, None, Path::new("/cache"), &never);
     assert!(matches!(r, Err(Error::BadEntry { .. })), "{r:?}");
 }
 
@@ -1042,7 +1084,13 @@ fn a_new_cache_gets_its_owner_and_mode_once() {
         mode: 0o4710,
     };
     let a = store
-        .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
+        .cache_lease(
+            "k",
+            CacheSharing::Shared,
+            Some(owner),
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert!(a.created());
     let meta = fs::metadata(a.path()).unwrap();
@@ -1052,7 +1100,13 @@ fn a_new_cache_gets_its_owner_and_mode_once() {
     drop(a);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
     let b = store
-        .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
+        .cache_lease(
+            "k",
+            CacheSharing::Shared,
+            Some(owner),
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap();
     assert!(!b.created());
     assert_eq!(
@@ -1093,7 +1147,13 @@ fn a_new_cache_owned_by_u32_max_keeps_the_processs_id() {
             .unwrap()
             .gid();
         let a = store
-            .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
+            .cache_lease(
+                "k",
+                CacheSharing::Shared,
+                Some(owner),
+                Path::new("/cache"),
+                &never,
+            )
             .unwrap_or_else(|e| panic!("{n}: {owner:?}: {e}"));
         assert!(a.created());
         let meta = fs::metadata(a.path()).unwrap();
@@ -1128,11 +1188,17 @@ fn a_failed_new_cache_leaves_nothing() {
         gid: 0,
         mode: 0o755,
     };
-    let r = store.cache_lease("k", CacheSharing::Shared, Some(owner), &never);
+    let r = store.cache_lease(
+        "k",
+        CacheSharing::Shared,
+        Some(owner),
+        Path::new("/cache"),
+        &never,
+    );
     assert!(r.is_err(), "{r:?}");
     assert!(names(store.state_dir().join("caches")).is_empty());
     // The next attempt is not blocked by a leftover.
-    let ok = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    let ok = store.cache_lease("k", CacheSharing::Shared, None, Path::new("/cache"), &never);
     assert!(ok.unwrap().created());
 }
 
@@ -1164,7 +1230,7 @@ fn an_anonymous_store_keeps_nothing_in_the_state_directory() {
     });
     assert!(matches!(layer, Err(Error::Anonymous { .. })), "{layer:?}");
     let never = || false;
-    let cache = store.cache_lease("k", CacheSharing::Shared, None, &never);
+    let cache = store.cache_lease("k", CacheSharing::Shared, None, Path::new("/cache"), &never);
     assert!(matches!(cache, Err(Error::Anonymous { .. })));
     store.close().unwrap();
     assert!(names(&state).is_empty());
@@ -1927,7 +1993,7 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
                     );
                     let blob = store.fill(&EntryKey::Blob(digest(2)), |e| write_blob(e, b"x"));
                     let cache = store
-                        .cache_lease("c", CacheSharing::Shared, None, &never)
+                        .cache_lease("c", CacheSharing::Shared, None, Path::new("/cache"), &never)
                         .map(|l| l.path().to_owned());
                     // A directory swapped while the store is open may fail its close.
                     let _ = store.close();

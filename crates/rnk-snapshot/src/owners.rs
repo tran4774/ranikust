@@ -6,18 +6,19 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use rnk_oci::Digest;
-use rnk_rootfs::{MappedIds, Unmapped};
+use rnk_rootfs::{IgnoreList, MappedIds, Unmapped};
 
 use crate::error::{Error, Result};
 use crate::layer::chain_above;
 
 /// How the layers are extracted, which tells the entries that get an owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Form {
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Form<'a> {
     /// In the overlay form, devices left out ([`rnk_rootfs::scan_owners`]).
     Overlay,
-    /// Into a live root ([`rnk_rootfs::check_headers_and_owners`]).
-    Live,
+    /// Into a live root with this ignore list, whose paths it skips
+    /// ([`rnk_rootfs::check_headers_and_owners`]).
+    Live(&'a IgnoreList),
 }
 
 /// Refuses the base layers `layers` (diff ID and blob, image order) when an
@@ -34,7 +35,7 @@ pub(crate) enum Form {
 pub(crate) fn check(
     layers: &[(Digest, PathBuf)],
     ids: &MappedIds,
-    form: Form,
+    form: Form<'_>,
     mut kept: impl FnMut(&Digest) -> Result<bool>,
 ) -> Result<()> {
     let span = tracing::debug_span!(
@@ -61,7 +62,9 @@ pub(crate) fn check(
         let mut decoder = rnk_layer::Decoder::new(file)?;
         match form {
             Form::Overlay => rnk_rootfs::scan_owners(&mut decoder, &mut found)?,
-            Form::Live => rnk_rootfs::check_headers_and_owners(&mut decoder, &mut found)?,
+            Form::Live(keep) => {
+                rnk_rootfs::check_headers_and_owners(&mut decoder, keep, &mut found)?;
+            }
         }
         let actual = Digest::from_sha256_bytes(decoder.finish()?.as_bytes());
         if &actual != diff_id {
@@ -140,7 +143,20 @@ mod tests {
         assert_eq!(asked[0], layers[0].0);
         assert_eq!(asked[1], chain_above(Some(&layers[0].0), &layers[1].0));
 
-        let e = check(&layers, &one, Form::Live, |chain| Ok(chain != &asked[0])).unwrap_err();
+        let e = check(&layers, &one, Form::Live(&IgnoreList::new()), |chain| {
+            Ok(chain != &asked[0])
+        })
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "owners this user namespace does not map: gid 42 (/etc/shadow); it maps uid 0 \
+             and gid 0"
+        );
+        // What the ignore list covers is not named: a live extraction skips
+        // it.
+        let mut home = IgnoreList::new();
+        home.insert("/home").unwrap();
+        let e = check(&layers, &one, Form::Live(&home), |_| Ok(false)).unwrap_err();
         assert_eq!(
             e.to_string(),
             "owners this user namespace does not map: gid 42 (/etc/shadow); it maps uid 0 \
@@ -210,7 +226,7 @@ mod tests {
         let one = MappedIds::parse("0 1000 1\n", "0 1000 1\n").unwrap();
         for (n, bytes) in [gz, zst].iter().enumerate() {
             let layers = vec![blob(dir.path(), n, bytes, &tar)];
-            for form in [Form::Overlay, Form::Live] {
+            for form in [Form::Overlay, Form::Live(&IgnoreList::new())] {
                 let e = check(&layers, &one, form, |_| Ok(false)).unwrap_err();
                 assert!(
                     matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
@@ -231,7 +247,7 @@ mod tests {
         let bytes = [skippable(&[0; 504]), zstd(&tar)].concat();
         let layers = vec![blob(dir.path(), 0, &bytes, &tar)];
         let map = MappedIds::parse("0 0 4294967295\n", "0 0 4294967295\n").unwrap();
-        for form in [Form::Overlay, Form::Live] {
+        for form in [Form::Overlay, Form::Live(&IgnoreList::new())] {
             let e = check(&layers, &map, form, |_| Ok(false)).unwrap_err();
             assert!(
                 !matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),

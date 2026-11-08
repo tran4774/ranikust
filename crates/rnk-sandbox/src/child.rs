@@ -8,8 +8,8 @@
 //! passes through without copying), and `libc` for the few calls rustix
 //! lacks. Every string and table was built before the clone ([`ChildArgs`]).
 //!
-//! A failing step writes `(step, errno)` to the error pipe and exits with
-//! 127; the pipe is close-on-exec, so the parent reads end-of-file once
+//! A failing step writes `(step, item, errno)` to the error pipe and exits
+//! with 127; the pipe is close-on-exec, so the parent reads end-of-file once
 //! `execve` succeeds.
 
 use std::ffi::{CStr, CString, c_char};
@@ -1851,7 +1851,7 @@ fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets, args:
             Mode::empty(),
         ),
     );
-    for s in &secrets.files {
+    for (item, s) in secrets.files.iter().enumerate() {
         let f = check(
             err,
             step,
@@ -1871,7 +1871,15 @@ fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets, args:
                 Err(e) => fail(err, step, e),
             }
         }
-        check(err, step, rustix::fs::fchown(&f, s.uid, s.gid));
+        if let Err(e) = rustix::fs::fchown(&f, s.uid, s.gid) {
+            // The parent names the file whose owner was refused by its index.
+            fail_on(
+                err,
+                Step::SecretOwner,
+                u16::try_from(item).unwrap_or(u16::MAX),
+                e,
+            );
+        }
         check(err, step, rustix::fs::fchmod(&f, s.mode));
         for target in &s.targets {
             let t = resolve_target(err, root, target, mount_api);
@@ -3203,7 +3211,14 @@ pub(crate) fn check<T>(err: RawFd, step: Step, r: rustix::io::Result<T>) -> T {
 
 /// Reports `(step, errno)` on the error pipe and exits with 127.
 pub(crate) fn fail(err: RawFd, step: Step, errno: Errno) -> ! {
-    let record = encode_failure(step, errno.raw_os_error());
+    fail_on(err, step, 0, errno)
+}
+
+/// Reports `(step, item, errno)` on the error pipe, `item` naming what of
+/// the step failed (the secret file of [`Step::SecretOwner`]), and exits
+/// with 127.
+pub(crate) fn fail_on(err: RawFd, step: Step, item: u16, errno: Errno) -> ! {
+    let record = encode_failure(step, item, errno.raw_os_error());
     // SAFETY: `err` is the child's write end of the error pipe, open until
     // `execve` or exit. Eight bytes are below PIPE_BUF, so the write is
     // atomic; if the parent is gone there is no one left to tell.
@@ -3213,18 +3228,25 @@ pub(crate) fn fail(err: RawFd, step: Step, errno: Errno) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// The 8-byte failure record: step code and errno, little-endian.
-pub(crate) fn encode_failure(step: Step, errno: i32) -> [u8; 8] {
-    let s = step.code().to_le_bytes();
+/// The 8-byte failure record: step code and item, 16 bits each, and errno,
+/// little-endian.
+pub(crate) fn encode_failure(step: Step, item: u16, errno: i32) -> [u8; 8] {
+    let s = u16::try_from(step.code()).unwrap_or(u16::MAX).to_le_bytes();
+    let i = item.to_le_bytes();
     let e = errno.to_le_bytes();
-    [s[0], s[1], s[2], s[3], e[0], e[1], e[2], e[3]]
+    [s[0], s[1], i[0], i[1], e[0], e[1], e[2], e[3]]
 }
 
-/// The step and errno of a failure record; `None` for an unknown step.
-pub(crate) fn decode_failure(record: [u8; 8]) -> Option<(Step, i32)> {
-    let [s0, s1, s2, s3, e0, e1, e2, e3] = record;
-    let step = Step::from_code(u32::from_le_bytes([s0, s1, s2, s3]))?;
-    Some((step, i32::from_le_bytes([e0, e1, e2, e3])))
+/// The step, item and errno of a failure record; `None` for an unknown
+/// step.
+pub(crate) fn decode_failure(record: [u8; 8]) -> Option<(Step, u16, i32)> {
+    let [s0, s1, i0, i1, e0, e1, e2, e3] = record;
+    let step = Step::from_code(u32::from(u16::from_le_bytes([s0, s1])))?;
+    Some((
+        step,
+        u16::from_le_bytes([i0, i1]),
+        i32::from_le_bytes([e0, e1, e2, e3]),
+    ))
 }
 
 #[cfg(test)]
@@ -3259,7 +3281,8 @@ mod tests {
             }
             assert_eq!(libc::WEXITSTATUS(status), 127, "{rule}");
             assert_eq!(n, 8, "{rule}");
-            Some(decode_failure(record).expect("a failure record"))
+            let (step, _, errno) = decode_failure(record).expect("a failure record");
+            Some((step, errno))
         }
 
         /// A refused keyring join (ADR-0109), by an LSM or a filter around
@@ -4042,10 +4065,18 @@ mod tests {
         assert!(!none.push(1));
     }
 
+    /// A record holds the step, the item it failed on and the errno.
     #[test]
     fn failure_records_round_trip() {
-        let rec = encode_failure(Step::PivotRoot, libc::EPERM);
-        assert_eq!(decode_failure(rec), Some((Step::PivotRoot, libc::EPERM)));
+        let rec = encode_failure(Step::PivotRoot, 0, libc::EPERM);
+        assert_eq!(decode_failure(rec), Some((Step::PivotRoot, 0, libc::EPERM)));
+        let rec = encode_failure(Step::SecretOwner, 300, libc::EINVAL);
+        assert_eq!(
+            decode_failure(rec),
+            Some((Step::SecretOwner, 300, libc::EINVAL))
+        );
+        let rec = encode_failure(Step::Dumpable, u16::MAX, -1);
+        assert_eq!(decode_failure(rec), Some((Step::Dumpable, u16::MAX, -1)));
         assert_eq!(decode_failure([0xff; 8]), None);
     }
 

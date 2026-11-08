@@ -273,7 +273,8 @@ pub(crate) fn run_mounts(
                     Some(Sharing::Locked) => CacheSharing::Locked,
                     Some(Sharing::Private) => CacheSharing::Private,
                 };
-                let lease = store.cache_lease(key, sharing, cache_owner(m), cancelled)?;
+                let target = mount_target(&m.target, workdir);
+                let lease = store.cache_lease(key, sharing, cache_owner(m), &target, cancelled)?;
                 let path = lease.path().to_owned();
                 out.leases.push(lease);
                 leased.insert(key, path.clone());

@@ -3,11 +3,14 @@
 //! extracts by the namespace's id map (ADR-0104), so a layer extracted with
 //! one map is never a lower under another. The map is relative to the parent
 //! namespace: nested namespaces with one map under parents with different
-//! ones share keys.
+//! ones share keys. For the layer keys, the owner checks and the binary's
+//! guidance the maps are read here and parsed by [`MappedIds::parse`]
+//! (ADR-0098).
 
 use std::fs::File;
 use std::io::{self, Read as _};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use rnk_oci::Digest;
 use rnk_rootfs::MappedIds;
@@ -28,7 +31,7 @@ const KEY_DOMAIN: &[u8] = b"ranikust layer extracted in a user namespace, v1\0";
 /// A user namespace other than the initial one, with its maps as this
 /// process reads them: relative to the namespace that created it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UserNamespace {
+pub struct UserNamespace {
     /// `/proc/self/uid_map` in [`canonical`] form.
     uid_map: String,
     /// `/proc/self/gid_map` in [`canonical`] form.
@@ -45,53 +48,98 @@ impl UserNamespace {
     /// # Errors
     ///
     /// [`Error::Store`] when `/proc/self` is not procfs or the namespace
-    /// cannot be told; [`Error::Io`] when a map cannot be read or parsed.
-    pub(crate) fn current() -> Result<Option<Self>> {
+    /// cannot be told; [`Error::Io`] naming `uid_map` or `gid_map` when one
+    /// cannot be read or parsed.
+    pub fn current() -> Result<Option<Self>> {
         let Some(dir) = rnk_store::user_namespace_proc()? else {
             return Ok(None);
-        };
-        let proc = Path::new("/proc/self");
-        let io = |path: &str, source: io::Error| Error::Io {
-            op: "read",
-            path: proc.join(path),
-            source,
-        };
-        let not_a_map = |name| {
-            io(
-                name,
-                io::Error::new(io::ErrorKind::InvalidData, "not an id map"),
-            )
         };
         let map = |name: &'static str| -> Result<String> {
             let fd =
                 rustix::fs::openat(&dir, name, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
-                    .map_err(|e| io(name, e.into()))?;
+                    .map_err(|e| map_err(name, e.into()))?;
             let mut text = String::new();
             File::from(fd)
                 .take(MAP_MAX)
                 .read_to_string(&mut text)
-                .map_err(|e| io(name, e))?;
-            canonical(&text).ok_or_else(|| not_a_map(name))
+                .map_err(|e| map_err(name, e))?;
+            Ok(text)
         };
-        let (uid_map, gid_map) = (map("uid_map")?, map("gid_map")?);
-        // Each map read alone tells which one does not parse.
-        let ids = MappedIds::parse(&uid_map, &gid_map).ok_or_else(|| {
-            not_a_map(if MappedIds::parse(&uid_map, &uid_map).is_none() {
+        Self::from_maps(&map("uid_map")?, &map("gid_map")?).map(Some)
+    }
+
+    /// [`UserNamespace::current`] read into `cell` at its first use and
+    /// kept: a snapshotter holds its layers to one namespace's ids.
+    ///
+    /// # Errors
+    ///
+    /// As [`UserNamespace::current`]; an error is not kept, so the next
+    /// call reads again.
+    pub(crate) fn once(cell: &OnceLock<Option<Self>>) -> Result<Option<&Self>> {
+        if let Some(ns) = cell.get() {
+            return Ok(ns.as_ref());
+        }
+        // Another thread may have read it first: the same namespace.
+        let _ = cell.set(Self::current()?);
+        Ok(cell.get().and_then(Option::as_ref))
+    }
+
+    /// The namespace whose `uid_map` and `gid_map` read `uid_map` and
+    /// `gid_map`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] naming the map that does not parse.
+    pub(crate) fn from_maps(uid_map: &str, gid_map: &str) -> Result<Self> {
+        let not_a_map = |name| {
+            map_err(
+                name,
+                io::Error::new(io::ErrorKind::InvalidData, "not an id map"),
+            )
+        };
+        let ids = MappedIds::parse(uid_map, gid_map).ok_or_else(|| {
+            // Each map read alone tells which one does not parse.
+            not_a_map(if MappedIds::parse(uid_map, uid_map).is_none() {
                 "uid_map"
             } else {
                 "gid_map"
             })
         })?;
-        Ok(Some(Self {
-            uid_map,
-            gid_map,
+        Ok(Self {
+            uid_map: canonical(ids.uid_lines()),
+            gid_map: canonical(ids.gid_lines()),
             ids,
-        }))
+        })
     }
 
     /// The ids inside the namespace that its maps give.
-    pub(crate) fn ids(&self) -> &MappedIds {
+    #[must_use]
+    pub fn ids(&self) -> &MappedIds {
         &self.ids
+    }
+
+    /// The uid map in canonical form: each line `inside outside count`
+    /// with single spaces, the lines sorted, whatever order the map was
+    /// written in and however the kernel pads it.
+    #[must_use]
+    pub fn uid_map(&self) -> &str {
+        &self.uid_map
+    }
+
+    /// The gid map, as [`UserNamespace::uid_map`].
+    #[must_use]
+    pub fn gid_map(&self) -> &str {
+        &self.gid_map
+    }
+
+    /// The uid outside the namespace that its root, uid 0 inside, has:
+    /// `None` when the namespace does not map uid 0.
+    #[must_use]
+    pub fn root_uid_outside(&self) -> Option<u32> {
+        self.ids
+            .uid_lines()
+            .iter()
+            .find_map(|&[inside, outside, _]| (inside == 0).then_some(outside))
     }
 
     /// The store key of the layer whose chain ID is `chain`, extracted in
@@ -108,33 +156,22 @@ impl UserNamespace {
     }
 }
 
-/// `map`'s lines, each `inside outside count`, sorted and with single
-/// spaces: one text for one map, whatever order it was written in and
-/// however the kernel pads it. `None` unless every line is three numbers,
-/// a count above zero, and there is at least one.
-fn canonical(map: &str) -> Option<String> {
-    let mut lines = map
-        .lines()
-        .map(|line| {
-            let mut n = line.split_ascii_whitespace().map(|w| w.parse::<u32>().ok());
-            match (n.next(), n.next(), n.next(), n.next()) {
-                (Some(Some(inside)), Some(Some(outside)), Some(Some(count)), None) if count > 0 => {
-                    Some([inside, outside, count])
-                }
-                _ => None,
-            }
-        })
-        .collect::<Option<Vec<_>>>()?;
-    if lines.is_empty() {
-        return None;
+/// The error of the map `name` of `/proc/self`.
+fn map_err(name: &str, source: io::Error) -> Error {
+    Error::Io {
+        op: "read",
+        path: Path::new("/proc/self").join(name),
+        source,
     }
-    lines.sort_unstable();
-    Some(
-        lines
-            .iter()
-            .map(|[inside, outside, count]| format!("{inside} {outside} {count}\n"))
-            .collect(),
-    )
+}
+
+/// `lines`, sorted, each `inside outside count\n`: one text for one map,
+/// the input of the layer key.
+fn canonical(lines: &[[u32; 3]]) -> String {
+    lines
+        .iter()
+        .map(|[inside, outside, count]| format!("{inside} {outside} {count}\n"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -142,21 +179,25 @@ mod tests {
     use super::*;
 
     fn ns(uid_map: &str, gid_map: &str) -> UserNamespace {
-        UserNamespace {
-            uid_map: canonical(uid_map).unwrap(),
-            gid_map: canonical(gid_map).unwrap(),
-            ids: MappedIds::parse(uid_map, gid_map).unwrap(),
-        }
+        UserNamespace::from_maps(uid_map, gid_map).unwrap()
     }
 
     #[test]
     fn a_map_reads_the_same_however_it_is_padded_or_ordered() {
         let kernel = "         1     100000      65536\n         0       1000          1\n";
-        assert_eq!(
-            canonical(kernel).as_deref(),
-            Some("0 1000 1\n1 100000 65536\n")
-        );
-        assert_eq!(canonical("0 1000 1\n1 100000 65536"), canonical(kernel));
+        let padded = ns(kernel, kernel);
+        assert_eq!(padded.uid_map(), "0 1000 1\n1 100000 65536\n");
+        assert_eq!(padded.gid_map(), padded.uid_map());
+        assert_eq!(padded, ns("0 1000 1\n1 100000 65536", kernel));
+        assert_eq!(padded.root_uid_outside(), Some(1000));
+        assert_eq!(ns("0 0 1\n", "0 0 1\n").root_uid_outside(), Some(0));
+        assert_eq!(ns("1 1000 1\n", "0 0 1\n").root_uid_outside(), None);
+    }
+
+    /// A map that does not parse is named, whichever of the two it is.
+    #[test]
+    fn a_map_that_does_not_parse_is_named() {
+        let good = "0 1000 1\n";
         for bad in [
             "",
             "\n",
@@ -166,8 +207,17 @@ mod tests {
             "0 -1 1\n",
             "0 1000 1\nx 1 1\n",
             "0 4294967296 1\n",
+            "4294967295 0 2\n",
         ] {
-            assert_eq!(canonical(bad), None, "{bad:?}");
+            for (uid_map, gid_map, name) in [(bad, good, "uid_map"), (good, bad, "gid_map")] {
+                let e = UserNamespace::from_maps(uid_map, gid_map).unwrap_err();
+                assert_eq!(
+                    e.to_string(),
+                    format!("read /proc/self/{name}: not an id map"),
+                    "{bad:?}"
+                );
+                assert!(matches!(e, Error::Io { op: "read", .. }), "{e:?}");
+            }
         }
     }
 
@@ -189,6 +239,11 @@ mod tests {
         // the chain ID.
         let identity = ns("0 0 4294967295\n", "0 0 4294967295\n");
         assert_ne!(identity.layer_key(&chain), chain);
+        // The key's input is unchanged: layers already extracted keep it.
+        assert_eq!(
+            key.to_string(),
+            "sha256:67b5e4e77cbbab7489aa2a70843aebef9ac293daf674985aa1e6b37ed12bf50c"
+        );
     }
 
     /// In a user namespace other than the initial one, `current` holds this
@@ -196,13 +251,11 @@ mod tests {
     #[test]
     fn the_current_namespace_has_this_process_s_maps() {
         if let Some(ns) = UserNamespace::current().unwrap() {
-            let own = |name: &str| canonical(&std::fs::read_to_string(name).unwrap()).unwrap();
-            assert_eq!(ns.uid_map, own("/proc/self/uid_map"));
-            assert_eq!(ns.gid_map, own("/proc/self/gid_map"));
-            assert_eq!(
-                Some(ns.ids()),
-                MappedIds::parse(&ns.uid_map, &ns.gid_map).as_ref()
-            );
+            let read = |name: &str| std::fs::read_to_string(name).unwrap();
+            let own =
+                UserNamespace::from_maps(&read("/proc/self/uid_map"), &read("/proc/self/gid_map"))
+                    .unwrap();
+            assert_eq!(ns, own);
         }
     }
 }
