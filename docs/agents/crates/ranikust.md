@@ -543,12 +543,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   overlay mode's refusal order through `setup::set_up`, run unprivileged
   and skipped as root: `overlay_mode_refuses_its_state_directory_unchanged`
   and `overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade`;
-  red team, through `set_up` and the `hold_state_dir` rootless overlay
-  mode shares: a store directory planted as a FIFO, a socket, a character
-  device or a link (out, dead, to a FIFO), a directory that is no store, a
-  marker that is not a file, and a path at or below a special file, each
-  refused without blocking, nothing below the temporary directory changed,
-  `red_team_a_planted_state_directory_is_refused_unchanged_by_each_set_up`;
+  red team of overlay mode's check, `setup/tests/red_team.rs`, through
+  `set_up` and the `hold_state_dir` rootless overlay mode shares: a store
+  directory planted as a FIFO, a socket, a character device or a link
+  (out, dead, to a FIFO), a directory that is no store, a marker that is
+  not a file, and a path at or below a FIFO, a regular file, a dead link,
+  a socket or a character device, each refused without blocking, the
+  special files never opened under an inotify watch, nothing below the
+  temporary directory changed,
+  `red_team_a_planted_state_directory_is_refused_unchanged_by_overlay_mode_s_check`;
   the probe's directory:
   `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
@@ -920,12 +923,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   swapped, probe directories moved, removed or their entries swapped for
   hard links and links out; root's set-up never blocks, nothing of
   root's or a third user's outside the state directories changes, and
-  root's directory gets no name of the range's); `setup/tests.rs`
+  root's directory gets no name of the range's); `setup/tests/red_team.rs`
   `red_team_root_refuses_system_directories_and_device_nodes_unchanged`
-  (unit suite: root's overlay set-up on `/` and each listed system
-  directory, and root's and the range's check of a state directory whose
-  `blobs`, `builds` or `tmp` is a real device node, a FIFO, a socket or a
-  link out: each refused, unopened, owner, mode and names unchanged); the
+  (unit suite: root's overlay check, `hold_state_dir`, on `/` and each
+  listed system directory, each refused for the first rule it breaks, and
+  root's and the range's check of a state directory whose `blobs`,
+  `builds` or `tmp` is a real device node, a FIFO, a socket or a link to
+  `/etc` or `/dev/zero`: each refused, the special files never opened
+  under an inotify watch, owner, mode and names unchanged, those of
+  `/etc` and `/dev/zero` too); the
   quick case `userns-reach` (a `--userns` `RUN`'s descriptors, writes and
   reach, processes it leaves, ranikust's own processes as the range's
   first ids see them, ranikust killed while a `RUN` waits:
