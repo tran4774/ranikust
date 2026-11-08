@@ -592,8 +592,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   named as the init's (`src/error.rs`); how a `RUN` ends
   (`a_runs_end_is_its_status_its_record_or_its_inits_end` in
   `src/spawner.rs`: its status, a failure record, a killed init winning
-  over an init's record and losing to any other, an init's own code
-  losing to every record and never passed off as the command's). Moby's
+  over an init's record and losing to any other, an init's own code, 0
+  included, losing to every record and never passed off as the command's;
+  through `execute`, with a forked child standing in for the init, a
+  record or a cancel winning over an init that exited 0 without the
+  command's status,
+  `a_record_or_a_cancel_wins_over_an_init_that_exited_0_without_the_status`;
+  a status record that cannot be read returned as the error, the record,
+  the init's end and the cancel logged,
+  `an_unreadable_status_is_the_error_and_the_rest_is_logged`). Moby's
   profile's argument-rule form
   (`docker_default_restricts_arguments_by_allowing_values`) and its refusal
   of `clone3` and `io_uring_*`
@@ -796,6 +803,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `Step::Init` with that errno and its command leaves no mark, which it
   leaves under a control profile; a profile refusing `close` alone still
   starts the command, whose status ends the `RUN`;
+  `an_init_that_ends_without_the_commands_status_fails_the_run_as_such`:
+  under a profile refusing `wait4` the `RUN` fails as `Error::InitExited`
+  (125); under one refusing the init's status write, as a status that could
+  not be read, unless the command left a failure record (`execve` of a
+  missing program), which wins;
   `a_profile_cannot_fake_the_steps_before_it`: profiles answering `prctl`,
   `setsid`, `umask`, `seccomp` or `capset` with `EINVAL` or 0 (which
   `--seccomp` refuses; compiled for the test) leave the bounding set, the
