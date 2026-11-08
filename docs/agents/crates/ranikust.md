@@ -394,6 +394,24 @@ Each step before the next; design in
   `config.allow_proc_rbind`, ADR-0126): in rootless overlay mode, where a new
   `proc` is refused, each `RUN` gets a read-only rbind of `/proc`; `--help`
   says what that exposes.
+- An owner the build's user namespace does not map (ADR-0098): the
+  libraries refuse with `rnk_rootfs::Unmapped` (a base layer's owners before
+  any is extracted, a `chown` or a `RUN`'s user that failed with `EINVAL`);
+  `build::Failed` carries it out of the build, found among the error's
+  sources (`owners::find`), and `owners::guidance` gives the ways out by who
+  made the namespace and its maps (`/proc/self/uid_map`, `gid_map`), naming
+  only the ids they lack: a user's one id (`Namespace::UserOneId`), install
+  `uidmap` and add a first range of at least the highest id named, run as
+  root or in a container; a user's ranges (`UserRanges`), widen the first
+  one to that count; root's with a single uid or gid (`RootOneId`: the
+  namespace ranikust was started in maps no more, or its ranges could not
+  be mapped), root's copy of a container's ranges, or a namespace ranikust
+  was started in (`made` false: kaniko mode, root's overlay mode;
+  `Container`), widen its ranges. A range asked for comes with
+  `NO_OVERLAP` (it must not overlap another user's range or a real
+  account); past `RANGE_MAX` (65536, `useradd`'s default count) no range
+  is asked for: the ids are named, and root or a container is the way out.
+  No flag lets it pass.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read
   inside the context through its `RootPath`, never by a host path.
@@ -432,7 +450,7 @@ kaniko flag or an invalid combination.
 ## Refs
 
 - **Design:** [design/modes-and-detection.md](../../design/modes-and-detection.md) ([probe order](../../design/modes-and-detection.md#probe-order---modeauto), [build root and state directory](../../design/modes-and-detection.md#build-root-and-state-directory), [refusal and guidance](../../design/modes-and-detection.md#refusal-and-guidance)); [design/sandbox.md#process-set-up-once-per-build](../../design/sandbox.md#process-set-up-once-per-build); [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks)
-- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map, reading the map from `/proc/self/uid_map` and `gid_map` in the second case), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune --all`, refused when root runs it), [ADR-0133](../../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md) (root's `prune --all` commands: only the owner's ids in a user's directory, only for a directory a build would accept), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (rootless overlay mode's routing and the volume hint, [#79](https://github.com/tran4774/ranikust/issues/79)), [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) (`--allow proc.rbind`), [ADR-0129](../../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md) and [ADR-0130](../../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) (the peer scan before the namespace, the persistent store), [ADR-0134](../../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md) (with the rbind, the PID namespace told from files with no ptrace check)
+- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map; `owners.rs` adds the ways out, reading the maps from `/proc/self/uid_map` and `gid_map`), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune --all`, refused when root runs it), [ADR-0133](../../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md) (root's `prune --all` commands: only the owner's ids in a user's directory, only for a directory a build would accept), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (rootless overlay mode's routing and the volume hint, [#79](https://github.com/tran4774/ranikust/issues/79)), [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) (`--allow proc.rbind`), [ADR-0129](../../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md) and [ADR-0130](../../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) (the peer scan before the namespace, the persistent store), [ADR-0134](../../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md) (with the rbind, the PID namespace told from files with no ptrace check)
 - **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries the probe outcome), [#4](https://github.com/tran4774/ranikust/issues/4) (where the probe mounts its test overlay); tasks [#38](https://github.com/tran4774/ranikust/issues/38) (`unit_chain`); Phase 3 [#41](https://github.com/tran4774/ranikust/issues/41)
 - **Evidence:** [exp-05 Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (5.1 MB static-pie runs in an empty rootfs), [Q2](../../research/experiments/05-rust-ecosystem.md#q2-allocator) (musl 2.8 Mops/s vs 663-753 with mimalloc, 16 threads)
 - **kaniko:** `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:336-389` (build flags), `:391-410` (registry flags), `:71-119` (env, mirrors), `:177-188` and `:200-202` (output checks), `:240-245` (container check), `:595-633` (context); `cmd/executor/cmd/push.go:40-80`; `login.go:46-60`
@@ -443,9 +461,13 @@ kaniko flag or an invalid combination.
 
 Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 
-- **T0, unit** (`src/*/tests.rs`): `cli` (kaniko spellings per accepted flag,
-  pflag booleans, `--target` lists, every refused flag with its reason all
-  at once, nothing after `--`, clap errors; `--parallel-stages` and
+- **T0, unit** (`src/*/tests.rs`): `owners` (the ways out by who made the
+  namespace and its map, none a flag; the refusal found through the
+  libraries' wrappers, ADR-0098; owners under hostile names reach the
+  terminal escaped, on two lines, sixteen named:
+  `red_team_unmapped_owners_under_hostile_names_reach_the_terminal_escaped`);
+  `cli` (kaniko spellings per accepted flag, pflag booleans, `--target`
+  lists, every refused flag with its reason all at once, nothing after `--`, clap errors; `--parallel-stages` and
   `--single-snapshot` refused whatever the spelling; `--allow proc.rbind`
   parsed, and `--help` saying what it exposes:
   `the_help_says_what_proc_rbind_exposes`), `config` (kaniko's
@@ -587,7 +609,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
-  reached, what cannot be told, the bound counted in threads; `walk`'s
+  reached, the entry named by ranikust's own pid probed as any other, what
+  cannot be told, the bound counted in threads; ranikust's own entry, as
+  `/proc/self` names it, passing the real probe in a process of its own,
+  not dumpable, with a second thread; `walk`'s
   on fake threads: a later thread reached, threads passed over or gone, a
   process whose threads may not be listed; the real probe on each of
   ranikust's own threads and a missing pid; one thread, or the process
@@ -596,7 +621,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   reach; a denied `ns/mnt` gone only with its `ns`; the handle on a
   namespace, an open `O_PATH`, close-on-exec descriptor of its nsfs file;
   a zombie passed over as gone, its roots opening for no one; escaped
-  names, a process named by its pid alone; the credential warning's text; the
+  names, a process named by its pid alone; the credential warning's text,
+  ranikust's own entry, as `/proc/self` names it, left out of it; the
   build-argument warning's text for each `Reach`,
   `a_build_arg_warning_names_how_a_run_reads_the_command_line`;
   `check_pid_namespace`'s decision on fixture `mountinfo` and `stat` text,
@@ -728,6 +754,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `measured:` line in the lane's log, while `security.rnktest`, a name no
   security module claims, is refused with `EPERM` everywhere) and
   `a_killed_extraction_in_the_user_namespace_publishes_nothing`;
+  `setup/tests/userns/layers/owners.rs`
+  `an_owner_past_the_container_s_ranges_is_refused_before_extraction`
+  (ADR-0098: images of root's and of several owners in the container's
+  ranges checked and extracted; one with an owner past them refused by the
+  check, naming it and its path, with the container's ways out, which ask
+  for no range past 65536 ids, as its extraction is; kaniko mode per stage
+  in the same namespace streams no base layer and its check refuses the
+  far owner) and
+  `red_team_hostile_owner_headers_are_refused_where_the_kernel_refuses_them`
+  (PAX ids, the root, a symlink, a FIFO, a device, a hardlink's header,
+  whiteouts, a GNU long name's header and a later duplicate: the check
+  refuses exactly the images whose extraction the kernel refuses);
   `setup/tests/userns/layers/hostile.rs`
   `red_team_layers_extracted_under_one_map_are_never_used_under_another`
   (one layer extracted with the container's map and in the build's
@@ -807,7 +845,21 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   owner outside the map and of `security.selinux` and `security.rnktest`
   xattrs, which real root publishes, refused, the `security.selinux` case
   skipped where SELinux runs; a `SIGKILL`ed
-  extraction publishes nothing).
+  extraction publishes nothing);
+  `setup/tests/userns/layers/owners.rs` (ADR-0098; refused on 24.04, run on
+  22.04): `a_user_without_uidmap_is_refused_an_image_of_several_owners`
+  (`newuidmap` and `newgidmap` hidden under `/dev/null` binds in a mount
+  namespace of the test's) and
+  `a_user_without_ranges_is_refused_an_image_of_several_owners` (a uid
+  with no subordinate ids): one id mapped, an image of root's checked and
+  extracted, one of several owners (a group's file, a user's home) and one
+  of a far owner refused by the check, naming each id and its first path,
+  with the ways out (install `uidmap` and ranges for the several owners;
+  for the far one, past 65536 ids, root or a container), as their
+  extraction is; `an_owner_past_a_user_s_ranges_is_refused_before_extraction`
+  (`newuidmap`: several owners pass, the far one refused, its ways out
+  asking for no wider range). In each, kaniko mode per stage in the
+  namespace streams no base layer and its check refuses the far owner.
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
   ranikust build is using / in this container"); `exposure.rs`, profile

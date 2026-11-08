@@ -47,7 +47,10 @@ Where none of that works a regular user is refused (see
   [Where to run it](where-to-run.md#cgroups-of-run-commands)), the stage's
   root as its `/`, and the capabilities and the seccomp profile Docker gives a
   container by default: about the isolation of `docker build` ([ADR-0003];
-  `--seccomp` changes the profile, [ADR-0109]).
+  `--seccomp` changes the profile, [ADR-0109]). It gets no SELinux label of
+  its own: it keeps the context of the process that started ranikust, so on a
+  host with SELinux enforcing the sandbox holds it, not policy as for a
+  container ([ADR-0140]).
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]). ranikust itself runs from a copy of its
@@ -134,6 +137,24 @@ overlay mount options.
   mode, as it did before rootless overlay mode, and logs why. `SIGINT` and
   `SIGTERM` reach the build through the waiting process, and the exit code
   is the build's.
+- **Owners.** A file can only be given an owner, uid or gid, that the user
+  namespace maps: without `newuidmap` and `newgidmap`, or without ranges,
+  that is one id. Before extracting any layer of an image, ranikust reads
+  their owners and refuses the image where one is not mapped, naming the
+  owners, the files that have them and the ways out: install `uidmap`
+  (Ubuntu does not by default) and give the user a first range in
+  `/etc/subuid` and `/etc/subgid` that reaches them, widen the one it has,
+  run as root, or run in a container (whose ranges must reach them too). A
+  range must not overlap another user's range or a real account's ids, so
+  for an owner past 65536 (`useradd`'s default count) ranikust asks for no
+  wider range and names root or a container instead. A `COPY --chown` or a
+  `USER` the map lacks is refused the same way, when it comes. No flag lets
+  a failed `chown` through: the file would get the wrong owner
+  ([ADR-0098]). This holds in any user namespace, kaniko mode's too: with
+  a directory per stage the layers are downloaded whole and all checked
+  first; on `/`, in a rootless container, where they are streamed, each is
+  checked just before it is extracted, so the layers before the refused one
+  may already be there ([ADR-0137]).
 
 ## kaniko mode
 
@@ -387,6 +408,7 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
+[ADR-0098]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md
 [ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
 [ADR-0107]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md
@@ -399,3 +421,5 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0131]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md
 [ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md
 [ADR-0134]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md
+[ADR-0137]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md
+[ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md

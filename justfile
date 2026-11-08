@@ -175,8 +175,9 @@ test-aarch64 *args:
     if grep -qs '^enabled' /proc/sys/fs/binfmt_misc/qemu-aarch64; then
       cargo-zigbuild test --workspace --locked --target $target "$@" -- "${skip[@]}"
     else
-      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics, rnk-store's processes, rnk-sandbox's sealed-copy interpreter test and closure's child test)" >&2
-      skip+=(--skip concurrent_fills_from_processes_run_the_filler_once
+      echo "warning: no binfmt_misc entry for aarch64: skipping the tests that spawn a binary (ranikust's cli and metrics and its own-entry peer scan test, rnk-store's processes, rnk-sandbox's sealed-copy interpreter test and closure's child test)" >&2
+      skip+=(--skip exposure::tests::ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable
+        --skip concurrent_fills_from_processes_run_the_filler_once
         --skip a_build_killed_mid_fill_leaves_nothing_behind
         --skip seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec
         --skip userns::tests::a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent)

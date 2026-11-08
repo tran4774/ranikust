@@ -124,8 +124,8 @@ fn malformed_patterns_are_refused() {
     }
 }
 
-/// `covers` as it was before it bounded the prefixes it looks at: every
-/// ancestor looked up. The reference for the property below.
+/// `covers` by cleaning the whole path and looking up every ancestor: the
+/// reference for the property below.
 fn covers_by_every_ancestor(l: &IgnoreList, p: &Path) -> bool {
     let Some(c) = path::clean(p) else {
         return false;
@@ -173,6 +173,163 @@ proptest::proptest! {
             proptest::prop_assert_eq!(l.covers(p), covers_by_every_ancestor(&l, p), "{}", p.display());
         }
     }
+}
+
+/// `has_below` by cleaning the whole path and comparing every entry: the
+/// reference for the property below.
+fn has_below_by_every_entry(l: &IgnoreList, p: &Path) -> bool {
+    let Some(c) = path::clean(p) else {
+        return false;
+    };
+    let strictly_below = |e: &PathBuf| e != &c && e.starts_with(&c);
+    if l.paths.iter().chain(&l.below).any(strictly_below) {
+        return true;
+    }
+    let names: Vec<&OsStr> = c.iter().collect();
+    l.globs.iter().any(|g| g.has_below(&names))
+}
+
+/// `p` with a `..` before its name number `at` (counting neither `.` nor
+/// empty names), or after the last; its slashes and leading `/` or `.`
+/// kept.
+fn with_parent_before(p: &str, at: usize) -> String {
+    let mut out = String::new();
+    let mut seen = 0;
+    let mut put = false;
+    for (i, name) in p.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        if !put && !name.is_empty() && name != "." {
+            if seen == at {
+                out.push_str("../");
+                put = true;
+            }
+            seen += 1;
+        }
+        out.push_str(name);
+    }
+    if !put {
+        if !out.is_empty() && !out.ends_with('/') {
+            out.push('/');
+        }
+        out.push_str("..");
+    }
+    out
+}
+
+/// A list of `lit`, `below` and `globs`, skipping what each refuses.
+fn list_of(lit: &[String], below: &[String], globs: &[String]) -> IgnoreList {
+    let mut l = IgnoreList::new();
+    for p in lit {
+        // A refused entry (the root, or above it) is not on the list.
+        let _ = l.insert(p);
+    }
+    for p in below {
+        // As above.
+        let _ = l.insert_below(p);
+    }
+    for p in globs {
+        // As above, and a malformed pattern.
+        let _ = l.insert_glob(p);
+    }
+    l
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+    /// `covers` and `has_below` answer as the references do on any path,
+    /// `..` included, and the walk's forms answer the same on every path
+    /// without `..`, and on one with a `..` among the names they read or
+    /// right after them: random lists (literal, below-only and glob
+    /// entries, shallower and deeper than the paths, empty too) over a
+    /// small alphabet, paths with and without a leading `/`, `.`, doubled
+    /// and trailing slashes.
+    #[test]
+    fn the_walks_forms_answer_as_cleaning_the_whole_path_does(
+        lit in proptest::collection::vec("(/?(a|b|ab|\\.|\\.\\.)){1,5}/?", 0..4),
+        below in proptest::collection::vec("(/?(a|b|ab)){1,5}", 0..3),
+        globs in proptest::collection::vec("(/?(a|b|\\*|a\\*|\\?|\\[ab\\])){1,5}", 0..3),
+        any in proptest::collection::vec("/?((a|b|ab|\\.|\\.\\.)/{1,2}){0,7}(a|b|ab|\\.|\\.\\.)?", 1..12),
+        walked in proptest::collection::vec("/?((a|b|ab|\\.)/{1,2}){0,7}(a|b|ab|\\.)?", 1..12),
+    ) {
+        let l = list_of(&lit, &below, &globs);
+        for p in &any {
+            let p = Path::new(p);
+            proptest::prop_assert_eq!(l.covers(p), covers_by_every_ancestor(&l, p), "covers {}", p.display());
+            proptest::prop_assert_eq!(l.has_below(p), has_below_by_every_entry(&l, p), "has_below {}", p.display());
+        }
+        for p in &walked {
+            let p = Path::new(p);
+            let covers = covers_by_every_ancestor(&l, p);
+            proptest::prop_assert_eq!(l.covers_walked(p), covers, "covers_walked {}", p.display());
+            proptest::prop_assert_eq!(l.covers(p), covers, "covers {}", p.display());
+            let below = has_below_by_every_entry(&l, p);
+            proptest::prop_assert_eq!(l.has_below_walked(p), below, "has_below_walked {}", p.display());
+            // A `..` after each count of names the walk's forms read.
+            let names = p.iter().filter(|n| *n != "/" && *n != ".").count();
+            let reach = l.max_parts.max(l.glob_parts);
+            for at in 0..=reach.min(names) {
+                let q = with_parent_before(p.to_str().unwrap(), at);
+                let q = Path::new(&q);
+                proptest::prop_assert_eq!(l.covers_walked(q), l.covers(q), "covers_walked {}", q.display());
+                proptest::prop_assert_eq!(l.has_below_walked(q), l.has_below(q), "has_below_walked {}", q.display());
+            }
+        }
+    }
+}
+
+/// A `..` past the names the walk's forms read breaks their precondition:
+/// a debug build panics rather than answer, past `PATH_MAX` too when it is
+/// the last name.
+#[test]
+#[cfg(debug_assertions)]
+fn a_walked_path_with_a_parent_past_the_names_read_panics_in_a_debug_build() {
+    let l = list(&["a/b"], &["c"], &["d*/e"]);
+    let deep: String = (0..1000).map(|i| format!("/d{i}")).collect();
+    let refused = |r: std::thread::Result<bool>| {
+        r.err()
+            .and_then(|e| e.downcast::<String>().ok())
+            .is_some_and(|m| m.contains("a `..` past the names read"))
+    };
+    for p in ["x/y/z/../../../a/b", "a/b/c/..", &format!("{deep}/..")] {
+        assert!(
+            refused(std::panic::catch_unwind(|| l.covers_walked(p))),
+            "{p}"
+        );
+        assert!(
+            refused(std::panic::catch_unwind(|| l.has_below_walked(p))),
+            "{p}"
+        );
+    }
+}
+
+/// The walk's forms read past the names an entry can match only to tell
+/// whether more follow: a deep path gets its answer from its first names.
+#[test]
+fn the_walks_forms_answer_for_a_deep_path_from_its_first_names() {
+    let deep: String = (0..3000).map(|i| format!("/d{i}")).collect();
+    let l = list(&["d0/d1"], &["d0/d1/d2/d3"], &["d0/d[0-9]/d2/x*"]);
+    assert!(l.covers_walked(format!("{deep}/x")));
+    assert!(l.covers_walked("d0/d1"));
+    assert!(!l.covers_walked("d0"));
+    assert!(l.has_below_walked("/d0"));
+    assert!(!l.has_below_walked(&deep));
+    let below = list(&[], &["d0/d1/d2/d3"], &["d0/d[0-9]/d2/x*"]);
+    assert!(!below.covers_walked("d0/d1/d2/d3"));
+    assert!(below.covers_walked("d0/d1/d2/d3/x"));
+    assert!(below.covers_walked(format!("{deep}/x")));
+    assert!(below.covers_walked("./d0//d1/d2/xy/"));
+    assert!(!below.covers_walked("d0/d1/d2/y"));
+    assert!(below.has_below_walked("d0/d1/d2"));
+    assert!(!below.has_below_walked("d0/d1/d2/d3"));
+    // A `..` among the first names is cleaned as `covers` cleans it.
+    assert!(below.covers_walked("d0/../d0/d1/d2/xy"));
+    assert!(!below.covers_walked("d0/d1/../d2/xy"));
+    assert!(below.has_below_walked("x/../d0"));
+    let none = IgnoreList::new();
+    assert!(!none.covers_walked(&deep) && !none.covers(&deep));
+    assert!(!none.has_below_walked("") && !none.has_below(""));
 }
 
 #[test]

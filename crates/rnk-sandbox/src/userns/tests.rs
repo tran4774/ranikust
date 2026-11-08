@@ -205,10 +205,11 @@ fn a_map_fails_where_it_was_written() {
 
 #[test]
 fn the_own_namespace_allows_setgroups_and_maps_tty_from_its_files() {
-    let own = |setgroups, gid_map| OwnNamespace::parse(setgroups, gid_map);
+    let own = |setgroups, gid_map| OwnNamespace::parse(setgroups, gid_map, None);
     let initial = OwnNamespace {
         setgroups: true,
         tty_gid: true,
+        user_ns: false,
     };
     assert_eq!(
         own(Some("allow\n"), Some("         0          0 4294967295\n")),
@@ -219,7 +220,8 @@ fn the_own_namespace_allows_setgroups_and_maps_tty_from_its_files() {
         own(Some("deny\n"), Some("0 1000 1\n")),
         OwnNamespace {
             setgroups: false,
-            tty_gid: false
+            tty_gid: false,
+            user_ns: false,
         }
     );
     // `newgidmap`'s ranges: 5 is the fifth subordinate id.
@@ -231,9 +233,31 @@ fn the_own_namespace_allows_setgroups_and_maps_tty_from_its_files() {
     assert_eq!(own(Some("other"), Some("0 x 1\n")), initial);
 }
 
+/// A namespace is told by its inode, not its map: one that maps every id
+/// as the initial one does is still another. Unknown counts as the
+/// initial one, where a refused user switch names no unmapped id.
+#[test]
+fn the_own_namespace_is_told_by_its_inode() {
+    let full = Some("0 0 4294967295\n");
+    let user_ns = |ino| OwnNamespace::parse(None, full, ino).user_ns;
+    assert!(!user_ns(Some(0xEFFF_FFFD)));
+    assert!(user_ns(Some(0xF000_0000)));
+    assert!(user_ns(Some(4_026_532_000)));
+    assert!(!user_ns(None));
+    // This test's own process: the initial namespace in T0.
+    let own = OwnNamespace::read();
+    let link = std::fs::read_link("/proc/self/ns/user").unwrap();
+    assert_eq!(
+        own.user_ns,
+        link.as_os_str() != "user:[4026531837]",
+        "{}",
+        link.display()
+    );
+}
+
 #[test]
 fn setgroups_is_skipped_only_where_denied_in_a_one_id_map() {
-    let calls = |setgroups, gid_map| OwnNamespace::parse(Some(setgroups), gid_map).setgroups;
+    let calls = |setgroups, gid_map| OwnNamespace::parse(Some(setgroups), gid_map, None).setgroups;
     assert!(!calls("deny\n", Some("0 1000 1\n")));
     assert!(!calls("deny", Some("\n         0       1000          1\n")));
     // Denied with several ids: called, so the `RUN` fails at `Step::Groups`
@@ -244,7 +268,7 @@ fn setgroups_is_skipped_only_where_denied_in_a_one_id_map() {
     assert!(calls("allow\n", Some("0 1000 1\n")));
     assert!(calls("denied\n", Some("0 1000 1\n")));
     // A file that cannot be read or parsed never leads to a skip.
-    assert!(OwnNamespace::parse(None, Some("0 1000 1\n")).setgroups);
+    assert!(OwnNamespace::parse(None, Some("0 1000 1\n"), None).setgroups);
     assert!(calls("deny\n", None));
     assert!(calls("deny\n", Some("0 x 1\n")));
     assert!(calls("deny\n", Some("")));

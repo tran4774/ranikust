@@ -51,7 +51,8 @@ Boundaries: `crates/rnk-rootfs/src/lib.rs`. In short:
 
 Paths are `impl AsRef<Path>`, absolute or relative, both taken relative to
 the root. Errors: one `Error` enum (`Unsupported`, `Io { op, path, source }`,
-`InvalidPath`, ...). Design: [design/rootfs.md](../../design/rootfs.md).
+`InvalidPath`, `Unmapped`: an owner the user namespace does not map, a
+`chown`'s `EINVAL` included, ...). Design: [design/rootfs.md](../../design/rootfs.md).
 
 ```rust
 pub struct RootPath { /* O_PATH | O_DIRECTORY | O_CLOEXEC fd, mnt_id */ }
@@ -79,6 +80,10 @@ pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped; a link to one the same layer left out past a 1 MiB budget for the names remembered (one warning, ADR-0128), or that a lower layer left out (ADR-0131), is linked to what the layer has at that name, else copied from the nearest lower layer that shows it (ADR-0012), else refused; FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
 pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors, a directory path held to 4094 bytes as extract_live on / holds it; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
+pub fn check_headers_and_owners(tar: impl Read, found: &mut Unmapped) -> Result<()>; // check_headers, noting in `found` each owner extract_live would set that its map lacks (rnk-snapshot's spool pass, ADR-0098)
+pub fn scan_owners(tar: impl Read, found: &mut Unmapped) -> Result<()>; // the same for extract_overlay (devices skipped as in a user namespace, ADR-0106; FIFOs made): Snapshotter::check_owners before any layer is extracted
+pub struct MappedIds; // parse(uid_map, gid_map): the ids a user namespace maps, from /proc/<pid>/{uid,gid}_map; maps_uid, maps_gid, is_one_id (either map)
+pub struct Unmapped;  // Error::Unmapped's refusal (ADR-0098): owners(map) filled by the scans (8 ids of each kind named, each with its first path, the rest counted), chown(path, uid, gid) (a chown that failed with EINVAL: set_meta, rnk-store's cache owner), user(step, uid, gid, groups) (rnk-sandbox's RUN user switch; 8 groups named, the rest counted); highest_uid(map), highest_gid(map): the highest ids met that map lacks (all where None; u32::MAX, chown's "unchanged", never), for the ways out (ranikust). No flag lets one pass
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
@@ -89,7 +94,7 @@ pub fn reach(path, fence: &Fence) -> Result<Reached>; // walks a host path to re
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;
 pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // deletes what `remove` names (with what is below), every touched directory's times set back, overlay's own xattrs (is_overlay_own) removed from kept entries and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root
 pub fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()>; // Error::InvalidPath when root is this process's own / by device and inode, whatever name or mount reaches it: prune's guard, also rnk-store's prune_all's (ADR-0061)
-pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
+pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, covers_walked (a walk's path: a start with no `..` and listed names, none `.` or `..`; reads only as many leading names as the longest entry has, so asking about every entry is linear in the entries whatever their depth; a `..` past those names and the one after them panics a debug build, only as the last name past `PATH_MAX`), has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
 pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>, MountInfoError>; // proc(5) lines, \NNN unescaped; MountInfo { mount_id, parent_id, device, fs_root, mount_point, fs_type, read_only (ro first in the mount's or the file system's options), root_deleted (the kernel's `//deleted` mark, read off fs_root) }; fields after the file system's options ignored (a value spilled past a space); a line of another shape, or file-system options not starting ro or rw, is an error, never skipped
@@ -150,7 +155,7 @@ pub fn probe_support() -> Result<(), Unsupported>;             // start-up check
 ## Refs
 
 - **Design:** [`design/rootfs.md`](../../design/rootfs.md) (resolution, `EAGAIN`, metadata order, extraction, copy, users, deletion); [`design/kaniko-mode.md#safe-deletion`](../../design/kaniko-mode.md#safe-deletion), [`#host-safety-checks`](../../design/kaniko-mode.md#host-safety-checks), [`#ignore-list`](../../design/kaniko-mode.md#ignore-list); [`design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer`](../../design/overlay-snapshot.md#exporting-a-diff-as-an-oci-layer); [threat model T1-T4, T7](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0006](../../adr/0006-persistent-store.md) (extract to a temporary directory, rename), [ADR-0016](../../adr/0016-overlay-mount-options.md) (`userxattr`, hence the escaping), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (copy or `FICLONE`, never hardlinks to the store), [ADR-0032](../../adr/0032-observable-behaviour-follows-buildkit.md) (`copy` follows BuildKit where it differs from kaniko), [ADR-0075](../../adr/0075-layer-trusted-xattrs-are-never-set.md) (no `trusted.*`), [ADR-0076](../../adr/0076-the-build-context-owner-is-a-lower-trust-principal.md) (outputs, context files), [ADR-0079](../../adr/0079-resource-limits-with-a-limit-flag.md) (`tar-header`), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (extracted layers are published by rename from inside the user namespace, #77), [ADR-0106](../../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md) (extraction in a user namespace skips device nodes: `DeviceNodes::Skip`, #77), [ADR-0128](../../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md) (the budget for the names of devices left out; a lower entry stays visible at a device's name)
+- **Decisions:** [ADR-0006](../../adr/0006-persistent-store.md) (extract to a temporary directory, rename), [ADR-0016](../../adr/0016-overlay-mount-options.md) (`userxattr`, hence the escaping), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (copy or `FICLONE`, never hardlinks to the store), [ADR-0032](../../adr/0032-observable-behaviour-follows-buildkit.md) (`copy` follows BuildKit where it differs from kaniko), [ADR-0075](../../adr/0075-layer-trusted-xattrs-are-never-set.md) (no `trusted.*`), [ADR-0076](../../adr/0076-the-build-context-owner-is-a-lower-trust-principal.md) (outputs, context files), [ADR-0079](../../adr/0079-resource-limits-with-a-limit-flag.md) (`tar-header`), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (extracted layers are published by rename from inside the user namespace, #77), [ADR-0106](../../adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md) (extraction in a user namespace skips device nodes: `DeviceNodes::Skip`, #77), [ADR-0128](../../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md) (the budget for the names of devices left out; a lower entry stays visible at a device's name), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (`Unmapped`: the owner scans, a `chown`'s `EINVAL` refused, no flag lets it pass)
 - **Evidence:** [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) §A.2 (cases D1-D3), [exp-01](../../research/experiments/01-overlay-semantics.md) finding 7, [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) (image check), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) (rootfs preparation)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/util/fs_util.go:292` `DeleteFilesystem` (path walk, string ignore list: port as fd + `mnt_id`); `:399` `ExtractFile`, whose `:405-418` resolves only the parent; `:630` ignore list from mountinfo; `pkg/util/command_util.go:534` `LookupUser`, which reads the process's own `/etc/passwd`
 - **External:** <https://man7.org/linux/man-pages/man2/openat2.2.html>, <https://man7.org/linux/man-pages/man2/statx.2.html>, <https://docs.rs/rustix>
@@ -163,6 +168,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `extract` (`..`, symlinks out, chains and loops, `/proc/self/root`,
   `../etc/passwd`, hardlinks out, real magic links under `/proc/<pid>`, a
   thread swapping a directory for a symlink out during every operation);
+  the owner scans and `MappedIds` (ADR-0098, `src/owners.rs`,
+  `src/extract/tests.rs`: what each extraction form would `chown`, read to
+  the end, the header check's errors; a `chown`'s `EINVAL` in `src/meta.rs`
+  as `Error::Unmapped`); their red team (`tests/red_team_owners.rs`:
+  hostile headers, PAX, global PAX, GNU long names, base-256, duplicates,
+  whiteouts, hardlinks, special files, framing and entries past the end,
+  each scanned as both extraction forms `chown`, or refused alike; a
+  refusal of 5,000 owners under hostile names names 16;
+  `tests/red_team_owners_memory.rs`: 200,000 owners and PAX sets near the
+  `tar-header` limit scanned in under 4 MiB);
   deletion of a 3,004-level tree; raw modes 1777 and 4755. Unit tests per
   module, with the same racing swap under `extract`, `delete_contents` and
   `copy`, and one `set_meta_if`'s `decide` makes itself
@@ -183,8 +198,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `prune` on trees 2,000 levels deep with only the 32 or 64 fds they
   promise left free under the soft `RLIMIT_NOFILE`, `prune` keeping its
   entries and setting every level's times back; `prune` on a chain of
-  100,000 levels within 20 times the time it took to make, and both on a
-  comb whose teeth are deeper than those fds, every other tooth kept;
+  100,000 levels within 20 times the time it took to make, and so, asking
+  an ignore list about every entry, `delete_contents` with an empty list
+  and with one, and a whiteout and an opaque marker in a live root; both
+  on a comb whose teeth are deeper than those fds, every other tooth kept;
   `tests/memory.rs`: that chain pruned in memory linear in its depth. A
   directory reopened through `..` must be the one left
   (`a_directory_reopened_through_dotdot_must_be_the_one_left`,
@@ -222,7 +239,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   searchable stops the walk with `EACCES`; the parent of a mount root is
   never reopened (`EXDEV`). The glob matcher is linear
   (`the_linear_matcher_agrees_with_every_split`, proptest against the old
-  matcher as oracle).
+  matcher as oracle). `covers`, `covers_walked` and `has_below` answer as
+  cleaning the whole path and comparing every entry does, on random lists
+  and paths (`the_walks_forms_answer_as_cleaning_the_whole_path_does`,
+  proptest; the walk's forms on paths with a `..` only among the names
+  they read or right after them); a `..` past those names panics a debug
+  build (`a_walked_path_with_a_parent_past_the_names_read_panics_in_a_debug_build`).
   `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
   (`src/extract/limit/tests.rs`, proptest): the `tar-header` bound never
   changes what the `tar` crate hands on and never lets a name or PAX record

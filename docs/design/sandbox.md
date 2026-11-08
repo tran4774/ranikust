@@ -253,9 +253,17 @@ The steps, in order:
    groups, as rootless runc does. Denied with several ids, the call is
    still made and fails the `RUN` (`Step::Groups`): there the skip would
    hand a `USER` groups that are not its own. `devpts` gets no `gid=5`
-   where gid 5 is unmapped (3.4). A `USER` whose ids the map lacks fails
-   at the first step 7 call that names one (`Step::Groups`, `Step::Gid` or
-   `Step::Uid`).
+   where gid 5 is unmapped (3.4). A `USER` whose ids the map lacks is
+   refused at the first step 7 call that fails with `EINVAL`
+   (`Step::Groups`, `Step::Gid` or `Step::Uid`), as `Error::Unmapped`
+   naming the ids (up to eight supplementary groups, the rest counted),
+   which `ranikust` gives with the ways out
+   ([modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
+   Only where nothing else explains the `EINVAL`: in a user namespace other
+   than the initial one (told by the inode of `/proc/self/ns/user`) and
+   with no more groups than the kernel's `NGROUPS_MAX` (65536); otherwise
+   the step's error stays. The `prctl(PR_SET_DUMPABLE)` after the switch
+   reports `Step::Dumpable`.
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
    out ([below](#hardening-planned-for-phase-3)).
 3. **Mounts**, in this order:
@@ -867,6 +875,11 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   binds and `devpts` is `nodev`.
 - `/dev/null` and the other nodes are read-only binds: `chmod` and `chown` on
   them fail with `EROFS`.
+- A `RUN` gets no SELinux label or AppArmor profile of its own: it keeps the
+  context of the process that started ranikust, where a container runtime
+  gives a container `container_t` with its own MCS pair on an SELinux host
+  ([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md);
+  labelling is revisited in Phase 6, [#89](https://github.com/tran4774/ranikust/issues/89)).
 - A `RUN` gets no resource limits, so a fork bomb is bounded only by the
   environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)). Where a
   delegated tree exists it gets cgroups of its own, limited only in how many

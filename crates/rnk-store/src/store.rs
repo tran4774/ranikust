@@ -1265,7 +1265,17 @@ impl Store {
                 Some(rustix::fs::Uid::from_raw(owner.uid)),
                 Some(rustix::fs::Gid::from_raw(owner.gid)),
             )
-            .map_err(|e| self.io_err("chown", tmp, e.into()))?;
+            .map_err(|e| match e {
+                // An owner the user namespace does not map (ADR-0098).
+                rustix::io::Errno::INVAL => {
+                    Error::Rootfs(rnk_rootfs::Error::Unmapped(rnk_rootfs::Unmapped::chown(
+                        &Path::new("caches").join(name),
+                        Some(owner.uid),
+                        Some(owner.gid),
+                    )))
+                }
+                e => self.io_err("chown", tmp, e.into()),
+            })?;
         }
         rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(owner.mode & 0o1777))
             .map_err(|e| self.io_err("chmod", tmp, e.into()))?;

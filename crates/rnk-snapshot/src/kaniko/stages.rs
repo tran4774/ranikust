@@ -46,7 +46,10 @@ use rnk_rootfs::{
 };
 use rnk_store::Store;
 
-use super::root::{BROKEN, KanikoLayer, extract_blob, extract_checked};
+use super::root::{
+    BROKEN, KanikoLayer, check_live_owners, extract_blob, extract_checked,
+    in_initial_user_namespace,
+};
 use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
@@ -74,6 +77,10 @@ struct StagesShared {
     ignore: IgnoreList,
     walk: WalkOptions,
     next: AtomicU64,
+    /// This process runs in the initial user namespace
+    /// ([`in_initial_user_namespace`]): base layers are streamed into the
+    /// stage directories only then.
+    initial_ns: bool,
 }
 
 impl KanikoStages {
@@ -105,6 +112,7 @@ impl KanikoStages {
                 ignore,
                 walk,
                 next: AtomicU64::new(0),
+                initial_ns: in_initial_user_namespace(),
             }),
         })
     }
@@ -150,7 +158,8 @@ fn copy_stage(from: &RootPath, into: &RootPath, ignore: &IgnoreList) -> Result<(
         skip_special: true,
         ..CopyOpts::default()
     };
-    copy_filtered(from, "", into, "", &opts, &|p, _| !ignore.covers(p))?;
+    // From the root, the copy's paths are the names it read: no `..`.
+    copy_filtered(from, "", into, "", &opts, &|p, _| !ignore.covers_walked(p))?;
     let mut meta = root_meta(from)?;
     let xattrs = std::mem::take(&mut meta.xattrs);
     for x in xattrs {
@@ -217,8 +226,16 @@ impl Snapshotter for KanikoStages {
         Ok(KanikoLayer::from_blob(diff_id, blob))
     }
 
+    fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
+        check_live_owners(layers)
+    }
+
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
-        Some(KanikoLayer::from_stream(diff_id, open))
+        // A stage directory takes a layer as it arrives: in a user namespace
+        // it comes as a blob instead, its owners checked first (ADR-0098).
+        self.shared
+            .initial_ns
+            .then(|| KanikoLayer::from_stream(diff_id, open))
     }
 
     fn prepare(&self, base: Base<'_, KanikoStage, KanikoLayer>) -> Result<KanikoStage> {
@@ -371,7 +388,7 @@ impl KanikoStage {
         let ignore = &self.shared.ignore;
         // The same filter as the copy in `fill`: what the ignore list
         // covers, and device nodes, FIFOs and sockets.
-        let pruned = prune(&self.root, &|p, t| ignore.covers(p) || special(t))?;
+        let pruned = prune(&self.root, &|p, t| ignore.covers_walked(p) || special(t))?;
         if pruned.linked_outside {
             tracing::warn!(
                 "a stage root holds a file hardlinked from outside it: copied, not handed over"

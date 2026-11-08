@@ -819,7 +819,7 @@ fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
     }
 }
 
-mod userns;
+pub(crate) mod userns;
 
 /// Only a probe directory named as the store's leftovers is held while the
 /// probe runs: a store removes those it can lock. One in a build's

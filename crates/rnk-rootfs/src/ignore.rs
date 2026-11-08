@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::path;
@@ -36,6 +36,9 @@ pub struct IgnoreList {
     /// components can equal no literal entry, so [`IgnoreList::covers`]
     /// looks at no longer prefix.
     max_parts: usize,
+    /// Components of the longest glob entry, which matches no more of a
+    /// path's leading names.
+    glob_parts: usize,
 }
 
 impl IgnoreList {
@@ -109,6 +112,7 @@ impl IgnoreList {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        self.glob_parts = self.glob_parts.max(parts.len());
         self.globs.push(Glob { parts });
         Ok(())
     }
@@ -125,50 +129,134 @@ impl IgnoreList {
     /// root is not.
     #[must_use]
     pub fn covers(&self, p: impl AsRef<Path>) -> bool {
-        let Some(c) = path::clean(p.as_ref()) else {
-            return false;
-        };
-        if c.as_os_str().is_empty() {
+        if self.is_empty() {
             return false;
         }
-        // The cleaned path is `a/b/c`: its leading components are the bytes
-        // before each `/`, and the whole path. Only prefixes of at most
-        // `max_parts` components can equal a literal entry, so a deep path
-        // costs its length once, not its depth times its length.
-        let bytes = c.as_os_str().as_bytes();
-        let ends = bytes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &b)| (b == b'/').then_some(i))
-            .chain(std::iter::once(bytes.len()))
-            .take(self.max_parts);
-        for end in ends {
-            let a = Path::new(OsStr::from_bytes(bytes.get(..end).unwrap_or_default()));
-            let whole = end == bytes.len();
-            if self.paths.contains(a) || (!whole && self.below.contains(a)) {
-                return true;
-            }
-        }
-        if self.globs.is_empty() {
+        path::clean(p.as_ref())
+            .and_then(|c| self.lead(&c).map(|lead| self.covers_lead(&lead)))
+            .unwrap_or(false)
+    }
+
+    /// [`IgnoreList::covers`] for a path a walk built: its start, with no
+    /// `..`, and the names it listed, none of them `.` or `..` (a leading
+    /// `/`, `.` and doubled or trailing slashes are read as `covers` reads
+    /// them).
+    ///
+    /// It reads only as many leading names as the longest entry has, and
+    /// one more, so a walk asking about each entry takes time linear in its
+    /// entries however deep they lie, where cleaning each whole path would
+    /// take the square of the depth. A path that breaks the precondition
+    /// with a `..` among those names, or right after them, is still
+    /// answered as `covers` answers it. One further on is not read for the
+    /// answer: a debug build checks for it and panics (every name in a path
+    /// within `PATH_MAX`, only the last in a longer one); otherwise the
+    /// answer may let a caller remove or copy what the list holds. Give a
+    /// path that may break the precondition to `covers`.
+    #[must_use]
+    pub fn covers_walked(&self, p: impl AsRef<Path>) -> bool {
+        if self.is_empty() {
             return false;
         }
-        let names: Vec<&OsStr> = c.iter().collect();
-        self.globs.iter().any(|g| g.covers(&names))
+        let p = p.as_ref();
+        match self.walked_lead(p) {
+            Some(lead) => self.covers_lead(&lead),
+            None => self.covers(p),
+        }
     }
 
     /// Whether an entry lies strictly below `p`: removing `p` whole would
     /// remove something ignored (kaniko's `childDirInIgnoreList`).
     #[must_use]
     pub fn has_below(&self, p: impl AsRef<Path>) -> bool {
-        let Some(c) = path::clean(p.as_ref()) else {
+        if self.is_empty() {
             return false;
-        };
+        }
+        path::clean(p.as_ref())
+            .and_then(|c| self.lead(&c).map(|lead| self.has_below_lead(&lead)))
+            .unwrap_or(false)
+    }
+
+    /// [`IgnoreList::has_below`] for a path a walk built, under the
+    /// precondition of [`IgnoreList::covers_walked`], read as it reads it.
+    pub(crate) fn has_below_walked(&self, p: impl AsRef<Path>) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let p = p.as_ref();
+        match self.walked_lead(p) {
+            Some(lead) => self.has_below_lead(&lead),
+            None => self.has_below(p),
+        }
+    }
+
+    /// The leading names of `p` as [`path::clean`] reads them, as many as
+    /// the longest entry has; `None` when a `..` is among those names or
+    /// the one after them, which only cleaning the whole path resolves.
+    fn lead<'p>(&self, p: &'p Path) -> Option<Lead<'p>> {
+        self.lead_of(&mut p.components())
+    }
+
+    /// [`IgnoreList::lead`] of a walk's path `p`, whose names past those
+    /// read a debug build checks for a `..` ([`no_parent_in`]).
+    fn walked_lead<'p>(&self, p: &'p Path) -> Option<Lead<'p>> {
+        let mut rest = p.components();
+        let lead = self.lead_of(&mut rest)?;
+        debug_assert!(
+            no_parent_in(p, rest),
+            "a walk's path holds a `..` past the names read: {}",
+            p.display()
+        );
+        Some(lead)
+    }
+
+    /// [`IgnoreList::lead`] from `components`, left past the names read
+    /// and the one after them.
+    fn lead_of<'p>(&self, components: &mut Components<'p>) -> Option<Lead<'p>> {
+        let reach = self.max_parts.max(self.glob_parts);
+        let mut names = Vec::new();
+        for c in components.by_ref() {
+            let name = match c {
+                Component::RootDir | Component::CurDir => continue,
+                Component::ParentDir => return None,
+                Component::Normal(n) => n,
+                Component::Prefix(n) => n.as_os_str(),
+            };
+            if names.len() == reach {
+                return Some(Lead { names, more: true });
+            }
+            names.push(name);
+        }
+        Some(Lead { names, more: false })
+    }
+
+    fn covers_lead(&self, lead: &Lead<'_>) -> bool {
+        if !self.paths.is_empty() || !self.below.is_empty() {
+            let mut prefix = PathBuf::new();
+            for (i, name) in lead.names.iter().take(self.max_parts).enumerate() {
+                prefix.push(name);
+                let whole = i + 1 == lead.names.len() && !lead.more;
+                if self.paths.contains(&prefix) || (!whole && self.below.contains(&prefix)) {
+                    return true;
+                }
+            }
+        }
+        // `lead` holds as many names as the longest glob has, so it holds
+        // fewer than a glob's only when the path does.
+        self.globs.iter().any(|g| g.covers(&lead.names))
+    }
+
+    fn has_below_lead(&self, lead: &Lead<'_>) -> bool {
+        // An entry strictly below a path has more names than the path, and
+        // none has more than `lead` can hold.
+        if lead.more {
+            return false;
+        }
+        let c: PathBuf = lead.names.iter().collect();
         let strictly_below = |e: &PathBuf| e != &c && e.starts_with(&c);
         if self.paths.iter().chain(&self.below).any(strictly_below) {
             return true;
         }
-        let names: Vec<&OsStr> = c.iter().collect();
-        self.globs.iter().any(|g| g.has_below(&names))
+        self.globs.iter().any(|g| g.has_below(&lead.names))
     }
 
     /// Number of entries.
@@ -196,6 +284,24 @@ fn cleaned(p: &Path) -> Result<PathBuf> {
             path: p.to_owned(),
             reason: "an ignore-list entry cannot leave the root",
         }),
+    }
+}
+
+/// A path's leading names, as many as the list's longest entry has.
+struct Lead<'p> {
+    names: Vec<&'p OsStr>,
+    /// The path has more names than `names` holds.
+    more: bool,
+}
+
+/// Whether `rest`, the components of `p` past those a walk's form read,
+/// holds no `..`: each of them where `p` fits in [`path::PATH_MAX`], else
+/// the last, so that the check keeps a deep walk linear in a debug build.
+fn no_parent_in(p: &Path, mut rest: Components<'_>) -> bool {
+    if p.as_os_str().len() <= path::PATH_MAX {
+        rest.all(|c| c != Component::ParentDir)
+    } else {
+        rest.next_back() != Some(Component::ParentDir)
     }
 }
 
