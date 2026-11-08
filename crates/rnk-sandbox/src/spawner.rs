@@ -624,7 +624,7 @@ fn receive(chan: &OwnedFd) -> io::Result<Option<OwnedFd>> {
         match (n, data) {
             (1, [child::READY, ..]) => Ok(fds.pop()),
             (8, record) => match child::decode_failure(record) {
-                Some((_, errno)) => Err(io::Error::from_raw_os_error(errno)),
+                Some((_, _, errno)) => Err(io::Error::from_raw_os_error(errno)),
                 None => Err(io::Error::from(io::ErrorKind::InvalidData)),
             },
             _ => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
@@ -1999,6 +1999,8 @@ fn execute(
         },
         user_ns: job.user_ns,
     };
+    // And what a refused owner of a secret file names ([`unmapped_secret`]).
+    let secrets = secret_owners(job.args.secrets.as_ref());
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
@@ -2095,9 +2097,61 @@ fn execute(
             );
         }
     })?;
+    let item = failure.map_or(0, |(_, item, _)| item);
+    let failure = failure.map(|(step, _, errno)| (step, errno));
     ending(status, unreported, failure, profile, program)
         .map_err(|e| unmapped_user(e, &user))
+        .map_err(|e| unmapped_secret(e, item, &secrets, user.user_ns))
         .map(|s| (s, usage))
+}
+
+/// A secret file of a `RUN`, as a refused `chown` of it names it: the
+/// first target it is bound at, and its owner.
+#[derive(Debug)]
+struct SecretOwner {
+    target: PathBuf,
+    uid: Option<u32>,
+    gid: Option<u32>,
+}
+
+/// The owners of `secrets`' files, in the child's order: the item of a
+/// record of [`Step::SecretOwner`] is an index here.
+fn secret_owners(secrets: Option<&ChildSecrets>) -> Vec<SecretOwner> {
+    let files = secrets.map_or(&[][..], |s| &s.files);
+    files
+        .iter()
+        .map(|f| SecretOwner {
+            target: f
+                .targets
+                .first()
+                .map(|t| PathBuf::from(OsStr::from_bytes(t.as_bytes())))
+                .unwrap_or_default(),
+            uid: f.uid.map(Uid::as_raw),
+            gid: f.gid.map(Gid::as_raw),
+        })
+        .collect()
+}
+
+/// `e`, or, for the `chown` of the secret file `item` of `secrets` refused
+/// with `EINVAL` in a user namespace other than the initial one
+/// (`user_ns`), [`Error::Unmapped`] naming the file and its owner
+/// (ADR-0098): `fchown` returns it for an id the namespace does not map
+/// alone, and every id but `-1` maps in the initial one. An item past the
+/// files, or the child's `u16::MAX` for one it could not number, names
+/// nothing.
+fn unmapped_secret(e: Error, item: u16, secrets: &[SecretOwner], user_ns: bool) -> Error {
+    if let Error::Setup {
+        step: Step::SecretOwner,
+        source,
+    } = &e
+        && source.raw_os_error() == Some(libc::EINVAL)
+        && user_ns
+        && item != u16::MAX
+        && let Some(s) = secrets.get(usize::from(item))
+    {
+        return Error::Unmapped(rnk_rootfs::Unmapped::chown(&s.target, s.uid, s.gid));
+    }
+    e
 }
 
 /// The ids a `RUN` switches to before `execve`.
@@ -2212,9 +2266,9 @@ fn ending(
     }
 }
 
-/// The child's failure record, or `None` at end-of-file (it executed the
-/// command, which closed the pipe).
-fn read_failure(fd: &OwnedFd) -> Result<Option<(Step, i32)>> {
+/// The child's failure record (step, item, errno), or `None` at end-of-file
+/// (it executed the command, which closed the pipe).
+fn read_failure(fd: &OwnedFd) -> Result<Option<(Step, u16, i32)>> {
     const OP: &str = "read the RUN set-up result";
     let mut record = [0u8; 8];
     let mut len = 0;
@@ -2541,12 +2595,12 @@ mod tests {
         assert_eq!(read_failure(&r).unwrap(), None);
 
         let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
-        let rec = child::encode_failure(Step::MountProc, libc::EPERM);
+        let rec = child::encode_failure(Step::SecretOwner, 2, libc::EINVAL);
         rustix::io::write(&w, &rec).unwrap();
         drop(w);
         assert_eq!(
             read_failure(&r).unwrap(),
-            Some((Step::MountProc, libc::EPERM))
+            Some((Step::SecretOwner, 2, libc::EINVAL))
         );
 
         let (r, w) = rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
@@ -2639,6 +2693,64 @@ mod tests {
             ),
             "{e}"
         );
+    }
+
+    /// A secret file's `chown` refused with `EINVAL` in a user namespace
+    /// names the file the record numbers, by its first target, and its
+    /// owner, and still ran no command; another errno, step or namespace,
+    /// or an item that numbers no file, stays as it was.
+    #[test]
+    fn a_secret_s_owner_refused_with_einval_names_the_file() {
+        let file = |name: &std::ffi::CStr,
+                    uid: Option<u32>,
+                    gid: Option<u32>,
+                    targets: &[&std::ffi::CStr]| ChildSecret {
+            name: name.into(),
+            data: std::sync::Arc::from(&b"s"[..]),
+            uid: uid.map(Uid::from_raw),
+            gid: gid.map(Gid::from_raw),
+            mode: Mode::RUSR,
+            targets: targets.iter().map(|&t| t.into()).collect(),
+        };
+        let owners = secret_owners(Some(&ChildSecrets {
+            dir: c"/scratch".into(),
+            options: c"size=16k".into(),
+            files: vec![
+                file(c"0", Some(0), Some(0), &[c"/run/secrets/a", c"/a2"]),
+                file(c"1", Some(3_000_000_000), None, &[c"/b"]),
+            ],
+        }));
+        assert!(secret_owners(None).is_empty());
+        let setup = |step, errno| Error::Setup {
+            step,
+            source: io::Error::from_raw_os_error(errno),
+        };
+        let e = unmapped_secret(setup(Step::SecretOwner, libc::EINVAL), 1, &owners, true);
+        assert!(e.ran_no_command());
+        assert_eq!(
+            e.to_string(),
+            "RUN sandbox: chown /b to uid 3000000000: an id this user namespace does not map"
+        );
+        let e = unmapped_secret(setup(Step::SecretOwner, libc::EINVAL), 0, &owners, true);
+        let source = std::error::Error::source(&e).and_then(|s| s.downcast_ref());
+        assert_eq!(
+            source,
+            Some(&rnk_rootfs::Unmapped::chown(
+                Path::new("/run/secrets/a"),
+                Some(0),
+                Some(0)
+            ))
+        );
+        for (step, errno, item, user_ns) in [
+            (Step::SecretOwner, libc::EPERM, 1, true),
+            (Step::Secret, libc::EINVAL, 1, true),
+            (Step::SecretOwner, libc::EINVAL, 1, false),
+            (Step::SecretOwner, libc::EINVAL, 2, true),
+            (Step::SecretOwner, libc::EINVAL, u16::MAX, true),
+        ] {
+            let e = unmapped_secret(setup(step, errno), item, &owners, user_ns);
+            assert!(matches!(e, Error::Setup { .. }), "{step} {errno} {item}");
+        }
     }
 
     /// A `RUN`'s end: its status, or the child's record from before
@@ -2791,7 +2903,7 @@ mod tests {
         let pipe = || rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
         let (failures, err_w) = pipe();
         if let Some((step, errno)) = record {
-            rustix::io::write(&err_w, &child::encode_failure(step, errno)).unwrap();
+            rustix::io::write(&err_w, &child::encode_failure(step, 0, errno)).unwrap();
         }
         drop(err_w);
         let (status, status_w) = pipe();
@@ -2929,7 +3041,10 @@ mod tests {
             "{r:?}"
         );
         let want = [
-            format!("record={:?}", Ok::<_, Error>(Some(record))),
+            format!(
+                "record={:?}",
+                Ok::<_, Error>(Some((record.0, 0u16, record.1)))
+            ),
             format!("init={}", ExitStatus::from_raw(libc::SIGKILL)),
             "cancelled=true".to_owned(),
         ];
