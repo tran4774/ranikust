@@ -799,7 +799,7 @@ pub(crate) fn probe_in_dir(
 ) -> Result<Probed, String> {
     let root = RootPath::open(parent).map_err(|e| e.to_string())?;
     let (scratch, held) = make_probe_dir(&root, parent, name)?;
-    let (r, left) = match own_group(&root, name) {
+    let (r, left) = match own_group(&scratch) {
         Ok(_) => probe_in_scratch(&scratch, &parent.join(name), ids),
         Err(e) => (Err(e.to_string()), false),
     };
@@ -884,14 +884,14 @@ fn give_dir(root: &RootPath, name: &str, owner: (u32, u32)) -> Result<(), String
     }
 }
 
-/// Gives the directory `name` in `root` the process's gid and no setgid
-/// bit, as the store's own directories get (ADR-0099): a setgid parent's
-/// gid, which no map holds, would stop the probe's `chown` in the user
-/// namespace.
-fn own_group(root: &RootPath, name: &str) -> rnk_rootfs::Result<bool> {
+/// Gives the directory `dir` the process's gid and no setgid bit, through
+/// its own descriptor, as the store's own directories get (ADR-0099): a
+/// setgid parent's gid, which no map holds, would stop the probe's `chown`
+/// in the user namespace.
+fn own_group(dir: &RootPath) -> rnk_rootfs::Result<bool> {
     const SETGID: u32 = 0o2000;
     let egid = rustix::process::getegid().as_raw();
-    root.set_meta_if(name, |st| {
+    dir.set_meta_if(".", |st| {
         (st.mode & SETGID != 0 || st.gid != egid).then(|| rnk_rootfs::Meta {
             gid: Some(egid),
             mode: Some(st.permissions() & !SETGID),

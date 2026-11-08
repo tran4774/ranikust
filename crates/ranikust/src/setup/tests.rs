@@ -387,19 +387,48 @@ fn the_probe_directory_drops_a_setgid_parents_bit() {
     let tmp = private_tempdir();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o2700)).unwrap();
     let root = RootPath::open(tmp.path()).unwrap();
-    root.create_sub_root("probe", 0o700).unwrap();
+    let probe = root.create_sub_root("probe", 0o700).unwrap();
     let before = fs::metadata(tmp.path().join("probe")).unwrap();
     // A filesystem that ignores the bit leaves nothing to check.
     if before.mode() & 0o2000 == 0 {
         eprintln!("skipped: no setgid inheritance here");
         return;
     }
-    assert!(own_group(&root, "probe").unwrap());
+    assert!(own_group(&probe).unwrap());
     let after = fs::metadata(tmp.path().join("probe")).unwrap();
     assert_eq!(after.mode() & 0o7777, 0o700);
     assert_eq!(after.gid(), rustix::process::getegid().as_raw());
     // Once owned, nothing more changes.
-    assert!(!own_group(&root, "probe").unwrap());
+    assert!(!own_group(&probe).unwrap());
+}
+
+/// The probe directory's group is set through its verified descriptor:
+/// whatever has its name by then is left as it is.
+#[test]
+fn the_probe_directory_s_group_is_set_through_its_descriptor() {
+    let tmp = private_tempdir();
+    let root = RootPath::open(tmp.path()).unwrap();
+    let probe = root.create_sub_root("probe", 0o700).unwrap();
+    fs::rename(tmp.path().join("probe"), tmp.path().join("made")).unwrap();
+    let other = tmp.path().join("probe");
+    fs::write(&other, "").unwrap();
+    // A setgid bit the change would clear, on an entry of this user's group.
+    fs::set_permissions(&other, fs::Permissions::from_mode(0o2600)).unwrap();
+    let before = fs::metadata(&other).unwrap();
+    // A filesystem that drops the bit leaves nothing to check.
+    if before.mode() & 0o2000 == 0 {
+        eprintln!("skipped: no setgid bit kept here");
+        return;
+    }
+    fs::set_permissions(tmp.path().join("made"), fs::Permissions::from_mode(0o2700)).unwrap();
+    assert!(own_group(&probe).unwrap());
+    let after = fs::metadata(&other).unwrap();
+    assert_eq!(
+        (after.mode(), after.gid(), after.ino()),
+        (before.mode(), before.gid(), before.ino())
+    );
+    let made = fs::metadata(tmp.path().join("made")).unwrap();
+    assert_eq!(made.mode() & 0o7777, 0o700);
 }
 
 /// A directory under a fresh temp dir, mode 0755, for a state directory.
