@@ -919,9 +919,11 @@ fn red_team_a_deep_chain_costs_no_more_than_the_square_of_its_depth() {
 }
 
 /// Levels of a chain a `RUN` makes in seconds, as many as the copy can
-/// hold descriptors for (two a level) under the hard `RLIMIT_NOFILE`, which
-/// kaniko mode raises the soft limit to: 100,000 at most.
-fn deepest_copyable() -> usize {
+/// hold descriptors for (two a level) in half the hard `RLIMIT_NOFILE`,
+/// which kaniko mode raises the soft limit to: 100,000 at most, none below
+/// 50,000, too few levels for a cost growing with the square of the depth
+/// to show.
+fn deepest_copyable() -> Option<usize> {
     use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
     let was = getrlimit(Resource::Nofile);
     // Raising the soft limit takes nothing from the other tests; where it
@@ -934,10 +936,9 @@ fn deepest_copyable() -> usize {
         },
     );
     let soft = getrlimit(Resource::Nofile).current.unwrap_or(u64::MAX);
-    // Room for what the other tests in this binary hold meanwhile.
-    usize::try_from(soft.saturating_sub(4096) / 2)
-        .unwrap_or(usize::MAX)
-        .min(100_000)
+    // The other half for what the other tests in this binary hold meanwhile.
+    let depth = usize::try_from(soft / 4).unwrap_or(usize::MAX).min(100_000);
+    (depth >= 50_000).then_some(depth)
 }
 
 /// A parent holding a deep chain is copied into a child, and handed over
@@ -945,7 +946,10 @@ fn deepest_copyable() -> usize {
 /// linear in the chain's depth.
 #[test]
 fn a_deep_chain_is_copied_and_handed_over_in_time_linear_in_its_depth() {
-    let depth = deepest_copyable();
+    let Some(depth) = deepest_copyable() else {
+        eprintln!("skipped: the hard RLIMIT_NOFILE holds no chain of 50,000 levels");
+        return;
+    };
     let f = Fixture::new();
     let made = std::time::Instant::now();
     let parent = unwalked(&f, |p| chain_named(p, depth, "d"));

@@ -124,8 +124,8 @@ fn malformed_patterns_are_refused() {
     }
 }
 
-/// `covers` as it was before it bounded the prefixes it looks at: every
-/// ancestor looked up. The reference for the property below.
+/// `covers` by cleaning the whole path and looking up every ancestor: the
+/// reference for the property below.
 fn covers_by_every_ancestor(l: &IgnoreList, p: &Path) -> bool {
     let Some(c) = path::clean(p) else {
         return false;
@@ -175,9 +175,8 @@ proptest::proptest! {
     }
 }
 
-/// `has_below` as it was before it read only the leading names: the whole
-/// path cleaned, every entry compared. The reference for the property
-/// below.
+/// `has_below` by cleaning the whole path and comparing every entry: the
+/// reference for the property below.
 fn has_below_by_every_entry(l: &IgnoreList, p: &Path) -> bool {
     let Some(c) = path::clean(p) else {
         return false;

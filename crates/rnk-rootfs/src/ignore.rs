@@ -144,9 +144,10 @@ impl IgnoreList {
     /// It reads only as many leading names as the longest entry has, and
     /// one more, so a walk asking about each entry takes time linear in its
     /// entries however deep they lie, where cleaning each whole path would
-    /// take the square of the depth. A `..` among those names is cleaned as
-    /// `covers` cleans it; one past them is not seen: give any path that
-    /// may hold one to `covers`.
+    /// take the square of the depth. A `..` among those names, or right
+    /// after them, is cleaned as `covers` cleans it; one further on is not
+    /// seen, and the answer may then let a caller remove or copy what the
+    /// list holds: give any path that may hold one to `covers`.
     #[must_use]
     pub fn covers_walked(&self, p: impl AsRef<Path>) -> bool {
         if self.is_empty() {
@@ -185,8 +186,8 @@ impl IgnoreList {
     }
 
     /// The leading names of `p` as [`path::clean`] reads them, as many as
-    /// the longest entry has; `None` when a `..` comes before that many,
-    /// which only cleaning the whole path resolves.
+    /// the longest entry has; `None` when a `..` is among those names or
+    /// the one after them, which only cleaning the whole path resolves.
     fn lead<'p>(&self, p: &'p Path) -> Option<Lead<'p>> {
         let reach = self.max_parts.max(self.glob_parts);
         let mut names = Vec::new();

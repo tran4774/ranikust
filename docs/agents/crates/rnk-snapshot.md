@@ -267,8 +267,8 @@ that found a bug stay as its regression test.
   the same layer digest, falls back to a copy when it moved nothing or a
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
   bases cannot reach outside `rootfs/`; a chain of up to 100,000 levels (as
-  many as the hard `RLIMIT_NOFILE` lets the copy hold) copied and handed
-  over in time linear in its depth.
+  many as half the hard `RLIMIT_NOFILE` lets the copy hold; skipped below
+  50,000) copied and handed over in time linear in its depth.
 - **T0, a cache hit** (`tests/apply.rs`, both roots, the shared one also as
   `/`): the next diff is empty, or only the next step's; whiteouts and opaque
   directories remove lower entries once; a root built by running a step and

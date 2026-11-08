@@ -2,10 +2,10 @@
 //! whatever the depth of the tree, and take time linear in its depth, as
 //! do a live root's whiteouts.
 //!
-//! A test binary of its own: each test lowers this process's soft
-//! `RLIMIT_NOFILE` around the call so that exactly the descriptors the
-//! function's doc promises are free, far fewer than the depth of the trees.
-//! No other test should run under such a limit.
+//! A test binary of its own: each deletion and pruning test lowers this
+//! process's soft `RLIMIT_NOFILE` around the call so that exactly the
+//! descriptors the function's doc promises are free, far fewer than the
+//! depth of the trees. No other test should run under such a limit.
 
 use std::ffi::OsString;
 use std::fs;
