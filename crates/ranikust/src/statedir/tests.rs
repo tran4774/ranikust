@@ -3,6 +3,20 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 
 use super::*;
 
+std::thread_local! {
+    /// What [`before_rename`] runs once, set by a test.
+    static BEFORE_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// [`make_given`]'s hook, after the directory is given and before it is
+/// moved into place.
+pub(super) fn before_rename() {
+    if let Some(f) = BEFORE_RENAME.with(|h| h.borrow_mut().take()) {
+        f();
+    }
+}
+
 fn dir(path: &str, uid: u32, mode: u32) -> ChainDir {
     ChainDir {
         path: PathBuf::from(path),
@@ -499,6 +513,65 @@ fn a_plain_directory_is_not_overlayfs() {
     // that the call answers for a real directory and refuses a missing one.
     let _ = on_overlayfs(tmp.path());
     assert!(!on_overlayfs(&tmp.path().join("missing")));
+}
+
+/// `--userns`'s missing state directory is made under a name of its own,
+/// given to the range's first ids, then moved into place without
+/// replacing anything: one cut short before the move leaves nothing at the
+/// state directory's name, and one that appeared meanwhile is the one
+/// taken. The effective ids stand in for the range's, which only root may
+/// give.
+#[test]
+fn a_userns_state_directory_is_given_before_it_takes_its_name() {
+    let tmp = private_tempdir();
+    let ids = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    let owner = Owner::Mapped {
+        uid: ids.0,
+        gid: ids.1,
+    };
+    let at = || open_dir(tmp.path(), OFlags::PATH).unwrap();
+    let names = || {
+        let mut n: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        n.sort();
+        n
+    };
+    let state = tmp.path().join("state");
+    BEFORE_RENAME.with(|h| *h.borrow_mut() = Some(Box::new(|| panic!("killed"))));
+    let cut = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        create_missing(at(), tmp.path(), &state, owner)
+    }));
+    assert!(cut.is_err(), "the hook never ran");
+    assert!(!state.exists());
+    let left = names();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(left[0].starts_with(NEW_PREFIX), "{left:?}");
+    fs::remove_dir(tmp.path().join(&left[0])).unwrap();
+
+    let fd = create_missing(at(), tmp.path(), &state, owner).unwrap();
+    let st = rustix::fs::fstat(&fd).unwrap();
+    let new = fs::metadata(&state).unwrap();
+    assert_eq!((st.st_dev, st.st_ino), (new.dev(), new.ino()));
+    assert_eq!(
+        (new.uid(), new.gid(), new.mode() & 0o7777),
+        (ids.0, ids.1, 0o700)
+    );
+    assert_eq!(names(), ["state"]);
+
+    let other = tmp.path().join("other");
+    let planted = other.clone();
+    BEFORE_RENAME.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || fs::create_dir(&planted).unwrap()));
+    });
+    let fd = create_missing(at(), tmp.path(), &other, owner).unwrap();
+    let st = rustix::fs::fstat(&fd).unwrap();
+    assert_eq!(st.st_ino, fs::metadata(&other).unwrap().ino());
+    assert_eq!(names(), ["other", "state"]);
 }
 
 /// Where a missing state directory would be made: its nearest existing

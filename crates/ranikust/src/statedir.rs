@@ -9,7 +9,7 @@ use std::fmt;
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 
-use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags};
+use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, RenameFlags, ResolveFlags};
 use rustix::io::Errno;
 
 /// Why a state directory cannot be used.
@@ -377,64 +377,31 @@ fn create_missing(
         )
         .map_err(|e| stat_err(state_dir, e));
     }
+    let mapped = match owner {
+        Owner::Mapped { uid, gid } => Some((uid, gid)),
+        Owner::Me(_) => None,
+    };
     let mut at = parent;
     let mut path = existing.to_path_buf();
     for (i, name) in names.iter().enumerate() {
         path.push(name);
-        let made = match rustix::fs::mkdirat(&at, *name, Mode::from_raw_mode(0o700)) {
-            Ok(()) => true,
-            Err(Errno::EXIST) => false,
-            Err(e) => {
-                return Err(Refused(format!(
-                    "cannot create the state directory {}: {e}",
-                    path.display()
-                )));
-            }
-        };
         let last = i + 1 == names.len();
-        let mapped = match owner {
-            Owner::Mapped { uid, gid } => Some((uid, gid)),
-            Owner::Me(_) => None,
+        let given = match mapped {
+            Some(ids) => make_given(&at, name, &path, last, ids)?,
+            None => match rustix::fs::mkdirat(&at, *name, Mode::from_raw_mode(0o700)) {
+                Ok(()) | Err(Errno::EXIST) => None,
+                Err(e) => {
+                    return Err(Refused(format!(
+                        "cannot create the state directory {}: {e}",
+                        path.display()
+                    )));
+                }
+            },
         };
-        // Root, which reads any directory, changes the mode or owner of
-        // what it made through the descriptor it checks.
-        let how = if last || mapped.is_some() {
-            OFlags::RDONLY
-        } else {
-            OFlags::PATH
+        let next = match given {
+            Some(next) => next,
+            None => open_beneath(&at, name, &path, last || mapped.is_some())?,
         };
-        let next = rustix::fs::openat2(
-            &at,
-            *name,
-            how | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_XDEV,
-        )
-        .map_err(|e| {
-            Refused(format!(
-                "cannot open {} as a directory without following a symlink: {e}",
-                path.display()
-            ))
-        })?;
-        if let (true, Some((uid, gid))) = (made, mapped) {
-            let given = if last {
-                rustix::fs::fchown(
-                    &next,
-                    Some(rustix::fs::Uid::from_raw(uid)),
-                    Some(rustix::fs::Gid::from_raw(gid)),
-                )
-            } else {
-                rustix::fs::fchmod(&next, Mode::from_raw_mode(0o711))
-            };
-            given.map_err(|e| {
-                let what = if last {
-                    "the --userns build's own"
-                } else {
-                    "searchable"
-                };
-                Refused(format!("cannot make {} {what}: {e}", path.display()))
-            })?;
-        }
         if !last {
             let st = rustix::fs::fstat(&next).map_err(|e| stat_err(&path, e))?;
             let dir = ChainDir {
@@ -448,6 +415,96 @@ fn create_missing(
         at = next;
     }
     Ok(at)
+}
+
+/// Opens the directory `name` of `at` (at `path`) with no symlink
+/// followed and without entering another mount; for reading with
+/// `readable` (root, which reads any directory, changes the mode or owner
+/// of what it made through the descriptor it checks), else `O_PATH`.
+fn open_beneath(
+    at: &OwnedFd,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    readable: bool,
+) -> Result<OwnedFd, Refused> {
+    let how = if readable {
+        OFlags::RDONLY
+    } else {
+        OFlags::PATH
+    };
+    rustix::fs::openat2(
+        at,
+        name,
+        how | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_XDEV,
+    )
+    .map_err(|e| {
+        Refused(format!(
+            "cannot open {} as a directory without following a symlink: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// The prefix of the name [`make_given`] makes a directory under before
+/// it takes its own.
+const NEW_PREFIX: &str = ".ranikust-new-";
+
+/// Makes the missing directory `name` of `at` (at `path`) for
+/// [`Owner::Mapped`]'s `ids`: under a name of its own first
+/// ([`NEW_PREFIX`]), given through its descriptor (the state directory,
+/// `last`, to `ids`; a parent the mode `0711`), then moved to `name`
+/// without replacing anything, so that a process killed on the way leaves
+/// nothing at `name` that the next run would refuse. Returns it, opened
+/// for reading; `None` where `name` exists or appeared meanwhile, for the
+/// caller to open and check. What was made is removed on failure, only
+/// while empty.
+fn make_given(
+    at: &OwnedFd,
+    name: &std::ffi::OsStr,
+    path: &Path,
+    last: bool,
+    (uid, gid): (u32, u32),
+) -> Result<Option<OwnedFd>, Refused> {
+    match rustix::fs::statat(at, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => return Ok(None),
+        Err(Errno::NOENT) => {}
+        Err(e) => return Err(stat_err(path, e)),
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let new = format!("{NEW_PREFIX}{}-{nanos}", std::process::id());
+    let cannot = |what: &str, e: Errno| Refused(format!("cannot {what} {}: {e}", path.display()));
+    rustix::fs::mkdirat(at, new.as_str(), Mode::from_raw_mode(0o700))
+        .map_err(|e| cannot("create the state directory", e))?;
+    let moved = open_beneath(at, new.as_ref(), path, true).and_then(|fd| {
+        let given = if last {
+            rustix::fs::fchown(
+                &fd,
+                Some(rustix::fs::Uid::from_raw(uid)),
+                Some(rustix::fs::Gid::from_raw(gid)),
+            )
+            .map_err(|e| cannot("give --userns's ids", e))
+        } else {
+            rustix::fs::fchmod(&fd, Mode::from_raw_mode(0o711))
+                .map_err(|e| cannot("make searchable", e))
+        };
+        given?;
+        #[cfg(test)]
+        tests::before_rename();
+        match rustix::fs::renameat_with(at, new.as_str(), at, name, RenameFlags::NOREPLACE) {
+            Ok(()) => Ok(Some(fd)),
+            Err(Errno::EXIST) => Ok(None),
+            Err(e) => Err(cannot("move into place", e)),
+        }
+    });
+    if !matches!(moved, Ok(Some(_))) {
+        // A single empty directory: never anything the build's uid put in it.
+        let _ = rustix::fs::unlinkat(at, new.as_str(), AtFlags::REMOVEDIR);
+    }
+    moved
 }
 
 /// Refuses `fd` when it is the root directory `/`: never a state directory,
