@@ -6,20 +6,20 @@
 //! kaniko mode does, which no other test should run under.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rnk_rootfs::IgnoreList;
+use rnk_rootfs::{IgnoreList, RootPath};
 use rnk_snapshot::{Base, KanikoStage, KanikoStages, Snapshotter, StageRootfs, WalkOptions};
 use rnk_store::{BuildPaths, Store};
 use rustix::fs::{Mode, OFlags};
 use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
-/// Levels of a chain a `RUN` makes in seconds, as many as the copy can
-/// hold descriptors for under the hard `RLIMIT_NOFILE`, the soft limit
-/// raised to it: 100,000 at most, none below 30,000, too few levels for a
-/// cost growing with the square of the depth to show.
-fn deepest_copyable() -> Option<usize> {
+/// Raises this process's soft `RLIMIT_NOFILE` as far as the hard one, and
+/// gives the levels of a chain a `RUN` makes in seconds that the copy can
+/// hold descriptors for under it: 100,000 at most, none below 30,000, too
+/// few levels for a cost growing with the square of the depth to show.
+fn raise_to_deepest_copyable() -> Option<usize> {
     let was = getrlimit(Resource::Nofile);
     // Where raising fails, the chain is only shallower.
     let _ = setrlimit(
@@ -55,6 +55,20 @@ fn chain(p: &Path, depth: usize) {
     rustix::io::write(&leaf, b"deep").unwrap();
 }
 
+/// Empties its directory with [`rnk_rootfs::delete_contents`] when dropped,
+/// before the temp dir's own removal, which takes a stack frame a level: a
+/// test that fails midway leaves no deep chain behind.
+struct Emptied(PathBuf);
+
+impl Drop for Emptied {
+    fn drop(&mut self) {
+        // A drop cannot fail the test, and may run while it unwinds.
+        if let Ok(root) = RootPath::open(&self.0) {
+            let _ = rnk_rootfs::delete_contents(&root, &IgnoreList::new());
+        }
+    }
+}
+
 /// A stage of `stages` holding a chain of `depth` levels, never walked.
 fn parent(stages: &KanikoStages, depth: usize) -> KanikoStage {
     let mut s = stages.prepare(Base::Scratch).unwrap();
@@ -68,12 +82,16 @@ fn parent(stages: &KanikoStages, depth: usize) -> KanikoStage {
 
 #[test]
 fn a_deep_chain_is_copied_and_handed_over_in_time_linear_in_its_depth() {
-    let Some(depth) = deepest_copyable() else {
-        eprintln!("skipped: the hard RLIMIT_NOFILE holds no chain of 30,000 levels");
+    let Some(depth) = raise_to_deepest_copyable() else {
+        eprintln!(
+            "skipped: the soft RLIMIT_NOFILE, raised as far as the hard one allows, holds no \
+             chain of 30,000 levels"
+        );
         return;
     };
     let tmp = tempfile::tempdir().unwrap();
     let top = fs::canonicalize(tmp.path()).unwrap();
+    let _emptied = Emptied(top.clone());
     let store = Store::open(&BuildPaths::new(&top, top.join("state"))).unwrap();
     let mut ignore = IgnoreList::new();
     ignore.insert("/proc").unwrap();

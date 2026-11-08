@@ -147,10 +147,11 @@ impl IgnoreList {
     /// entries however deep they lie, where cleaning each whole path would
     /// take the square of the depth. A path that breaks the precondition
     /// with a `..` among those names, or right after them, is still
-    /// answered as `covers` answers it; one further on is not seen: a debug
-    /// build panics (each name checked in a path within `PATH_MAX`, the last
-    /// one past it), and a release build's answer may let a caller remove or
-    /// copy what the list holds. Give any other path to `covers`.
+    /// answered as `covers` answers it. One further on is not read for the
+    /// answer: a debug build checks for it and panics (every name in a path
+    /// within `PATH_MAX`, only the last in a longer one); otherwise the
+    /// answer may let a caller remove or copy what the list holds. Give a
+    /// path that may break the precondition to `covers`.
     #[must_use]
     pub fn covers_walked(&self, p: impl AsRef<Path>) -> bool {
         if self.is_empty() {
