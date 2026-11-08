@@ -58,8 +58,8 @@ pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs c
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
-    pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
-    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker and BUILDING checks, writing nothing: before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
+    pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, build lock, clean-up
+    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING and store-directory checks, writing nothing: before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -132,8 +132,12 @@ Design: [locks](../../design/cache-and-store.md#locks),
   deletes nothing in (ADR-0139); every emptying
   (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
   takes the same lock, leaves one held, and keeps a store with no data
-  beside it. A new state directory is `0700`; one owned by another user or
-  writable by others is used with a warning. The store's directories the
+  beside it. Each of the store's directories that is there must be a
+  directory, opened `O_PATH | O_NOFOLLOW`: a symlink, even one that stays
+  inside, or a file is `Error::NotAStateDir`, named, before anything is
+  written (`check_dirs`, in `open` and `check_state_dir`). A new state
+  directory is `0700`; one owned by another user or writable by others is
+  used with a warning. The store's directories the
   user owns take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in
   [atomic publication](../../design/cache-and-store.md#atomic-publication).
@@ -224,7 +228,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`); a directory
   holding only the probe's directories is marked and they are removed, and
   anything else with them still refused
-  (`open_marks_a_directory_holding_only_ranikusts_leftovers`); another
+  (`open_marks_a_directory_holding_only_ranikusts_leftovers`); each store
+  directory replaced by a symlink inside the state directory or by a file
+  refused by `open` and `check_state_dir`, named, the tree unchanged
+  (`a_store_directory_that_is_not_a_real_directory_is_refused_unchanged`); another
   anonymous name, a file or a symlink with the probe's prefix is refused and
   left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
@@ -271,11 +278,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `chmod`, or `EPERM` from a step before them, is an error everywhere
   (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
   symlink of another group at a store directory's name keeps its group and
-  the open fails on it
+  the open refuses it
   (`a_symlink_at_a_store_directory_s_name_keeps_its_group`); a symlink out
   of the state directory at each store directory's name, absolute or
-  climbing, leaves what it leads to, setgid and of another group, unchanged
-  through the open, a fill and a cache lease
+  climbing, is refused at open and leaves what it leads to, setgid and of
+  another group, unchanged
   (`red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead

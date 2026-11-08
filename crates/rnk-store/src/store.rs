@@ -359,7 +359,9 @@ impl Store {
     /// only directories of the user namespace probe
     /// ([`USERNS_PROBE_PREFIX`]: each a directory on the state directory's
     /// mount, not a symlink or a mount point). Once the store is open, each
-    /// such directory no probe holds is removed, through descriptors. A
+    /// such directory no probe holds is removed, through descriptors. One
+    /// of the store's own directories that is there but is not a directory
+    /// (a symlink, even one that stays inside, or a file) is refused. A
     /// state directory owned by another user or writable by others is used
     /// with a warning.
     /// The store's own directories take the process's gid and no setgid
@@ -380,7 +382,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`Error::NotAStateDir`] for a foreign directory, [`Error::Busy`]
+    /// [`Error::NotAStateDir`] for a foreign directory or a store
+    /// directory that is not one, [`Error::Busy`]
     /// while an anonymous store holds it, [`Error::UsedOnSlash`] for the
     /// marker of a kaniko-mode build on `/`, [`Error::PruneCutShort`] for
     /// [`PRUNING_MARKER`], [`Error::NoFlock`] when its
@@ -439,6 +442,7 @@ impl Store {
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
         check_marker(&state, &state_path)?;
+        check_dirs(&state, &state_path)?;
         let filled = (|| {
             for d in DIRS {
                 state.create_dir_all(d, DIR_MODE)?;
@@ -488,8 +492,9 @@ impl Store {
     /// Checks, writing nothing, that [`Store::open`] would take the
     /// existing directory `state` as a state directory now: it takes its
     /// shared `flock`, and it holds [`STATE_MARKER`] or only directories of
-    /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), and no
-    /// [`BUILDING_MARKER`]. For a step that writes there before the store
+    /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), no
+    /// [`BUILDING_MARKER`], and no store directory that is not a
+    /// directory. For a step that writes there before the store
     /// opens (Q-111, (a)): the lock stays held by the [`StateDirHold`]
     /// returned, which the caller drops once [`Store::open`] has returned,
     /// so that nothing that takes the directory alone (`prune --all`, an
@@ -521,6 +526,7 @@ impl Store {
         }
         refuse_used_on_slash(&root, &state_path)?;
         needs_marker(&root, &state_path)?;
+        check_dirs(&root, &state_path)?;
         Ok(StateDirHold { _lock: state_lock })
     }
 
@@ -2581,6 +2587,40 @@ fn not_a_state_dir(state_path: &Path) -> Error {
         path: state_path.to_owned(),
         why: UNMARKED.to_owned(),
     }
+}
+
+/// Refuses a state directory where one of [`DIRS`] is there but is not a
+/// directory, each opened `O_PATH | O_NOFOLLOW`: every path the store hands
+/// back would resolve through a symlink there, even one that stays inside.
+/// A missing one is made later.
+fn check_dirs(state: &RootPath, state_path: &Path) -> Result<()> {
+    for d in DIRS {
+        let fd = match state.open_at(d, &OpenHow::path().no_follow()) {
+            Ok(fd) => fd,
+            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let st = rustix::fs::fstat(&fd).map_err(|e| Error::Io {
+            op: "stat",
+            path: state_path.join(d),
+            source: e.into(),
+        })?;
+        let what = match rustix::fs::FileType::from_raw_mode(st.st_mode) {
+            rustix::fs::FileType::Directory => continue,
+            rustix::fs::FileType::Symlink => "a symlink",
+            rustix::fs::FileType::RegularFile => "a regular file",
+            _ => "a special file",
+        };
+        return Err(Error::NotAStateDir {
+            path: state_path.to_owned(),
+            why: format!(
+                "holds {d}, which is {what}, where the store keeps a directory of its own; \
+                 refusing to use it as the state directory (remove {d}, and ranikust makes it \
+                 again, or move the directory it stands for to its name)"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Gives `d`, one of [`DIRS`] and this user's, the effective gid and no

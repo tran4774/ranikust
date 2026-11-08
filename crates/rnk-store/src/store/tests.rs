@@ -474,8 +474,8 @@ fn a_refused_group_change_is_a_warning_only_outside_a_user_namespace() {
 }
 
 /// A symlink of another group planted at a store directory's name keeps
-/// its owner, group and ctime when the store opens: only a directory takes
-/// the process's group. The open then fails on the symlink.
+/// its owner, group and ctime when the store opens: the open refuses it
+/// before any directory takes the process's group.
 #[test]
 fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     use std::os::unix::fs::MetadataExt as _;
@@ -511,10 +511,7 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
     let opened = Store::open(&BuildPaths::new(dir.path(), &state));
     assert_eq!(seen(), before, "{:?}", opened.as_ref().err());
     let e = opened.expect_err("a symlink as tmp/ fails the open");
-    assert!(
-        matches!(&e, Error::Rootfs(r) if r.raw_os_error() == Some(Errno::NOTDIR.raw_os_error())),
-        "{e}"
-    );
+    assert!(matches!(&e, Error::NotAStateDir { .. }), "{e}");
 }
 
 /// An open that fails once it took the state directory as a store, its

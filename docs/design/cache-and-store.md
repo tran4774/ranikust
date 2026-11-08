@@ -186,7 +186,12 @@ needs the same ownership).
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
 `.ranikust-state` file is refused, so this clean-up never runs in a directory
-the user pointed at by mistake. Only the directories of ranikust's own
+the user pointed at by mistake. So is one where a store directory (`blobs/`,
+`layers/`, `caches/`, `locks/`, `tmp/`, `builds/`) is there but is not a
+directory, told through an `O_PATH | O_NOFOLLOW` descriptor: a symlink, even
+one that stays in the state directory, would carry every path the store hands
+back (a layer's lowerdir, a cache mount). The refusal names it, before
+anything is written. Only the directories of ranikust's own
 user-namespace probe (a rootless build cut short before its store opened)
 do not count, each a real directory on the state directory's mount, told
 without following a link: such a directory is a new store and gets the

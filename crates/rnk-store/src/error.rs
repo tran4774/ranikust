@@ -14,6 +14,8 @@ pub enum Error {
     /// [`crate::Store::prune_all`], holds a name the store does not make or
     /// a [`crate::PRUNING_MARKER`] that is not a regular file: it may be a
     /// directory the user cares about, which clean-up would delete from.
+    /// Also one where a directory of the store's own is something else, a
+    /// symlink included, through which the store would reach its files.
     #[error("{} {why}", path.display())]
     NotAStateDir {
         /// The state directory.

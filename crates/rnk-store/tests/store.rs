@@ -224,6 +224,44 @@ fn check_state_dir_holds_the_directory_until_dropped() {
     assert!(Store::prune_all(state).unwrap());
 }
 
+/// Each of the store's directories, replaced by a symlink that stays in
+/// the state directory or by a file, is refused at open, named, with
+/// nothing changed; `check_state_dir` refuses it too. The control: the
+/// layout as the store made it opens.
+#[test]
+fn a_store_directory_that_is_not_a_real_directory_is_refused_unchanged() {
+    for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
+        for plant in ["a symlink", "a regular file"] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = dir.path().join(".ranikust");
+            Store::open(&paths(dir.path())).unwrap().close().unwrap();
+            let moved = format!("{d}.moved");
+            fs::rename(state.join(d), state.join(&moved)).unwrap();
+            if plant == "a symlink" {
+                std::os::unix::fs::symlink(&moved, state.join(d)).unwrap();
+            } else {
+                fs::write(state.join(d), b"").unwrap();
+            }
+            let case = format!("{d} as {plant}");
+            let before = tree(&state);
+            let refused = |e: Error| {
+                let shown = e.to_string();
+                assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {shown}");
+                assert!(
+                    shown.contains(&format!("holds {d}, which is {plant}")),
+                    "{case}: {shown}"
+                );
+            };
+            refused(Store::open(&paths(dir.path())).expect_err(&case));
+            assert_eq!(tree(&state), before, "{case}");
+            refused(Store::check_state_dir(&state).expect_err(&case));
+            fs::remove_file(state.join(d)).unwrap();
+            fs::rename(state.join(&moved), state.join(d)).unwrap();
+            Store::open(&paths(dir.path())).unwrap().close().unwrap();
+        }
+    }
+}
+
 /// A probe directory of a build cut short before its store opened is
 /// ranikust's own: the directory is still a new store, and the store
 /// removes it once open.
@@ -1620,7 +1658,8 @@ fn tree(dir: &Path) -> Vec<(PathBuf, u32, u32, u32, i64, i64, u64)> {
     out
 }
 
-/// Red team: a store directory planted as a symlink out never has its target changed (T13).
+/// Red team: a store directory planted as a symlink out never has its target changed (T13):
+/// the open refuses it.
 #[test]
 fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1666,7 +1705,11 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
 
                 let case = format!("{d} -> {} (twin {twin})", target.display());
                 let mut seen = Vec::new();
-                if let Ok(store) = Store::open(&paths(&base)) {
+                let open = Store::open(&paths(&base));
+                if let Err(e) = &open {
+                    assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {e}");
+                }
+                if let Ok(store) = open {
                     opened += 1;
                     let layer = store.fill(
                         &EntryKey::Layer(digest(1)),
@@ -1699,5 +1742,5 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
             }
         }
     }
-    assert!(opened >= 8, "the store opened on {opened} plants only");
+    assert_eq!(opened, 0, "the store opened on {opened} plants");
 }
