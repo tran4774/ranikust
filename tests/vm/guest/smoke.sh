@@ -515,14 +515,18 @@ apparmor_profile() {
   [ "$rc" = 0 ] && grep -q '^label: ranikust (unconfined)$' <<<"$log" ||
     { echo "error: user: expected a RUN under the profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: a RUN keeps the profile: $(grep '^label: ' <<<"$log")"
-  # Measured, for the docs: whether an unconfined program of this user may
-  # enter the profile without being ranikust.
-  if command -v aa-exec >/dev/null; then
-    got="$(aa-exec -p ranikust -- unshare --user --map-root-user --mount true 2>&1)" && got="ok: $got" ||
-      got="refused: $got"
-    echo "user: measured: aa-exec -p ranikust -- unshare -Urm, with" \
-      "kernel.apparmor_restrict_unprivileged_unconfined=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined 2>/dev/null || echo absent):" \
-      "$got"
+  # The docs say: where kernel.apparmor_restrict_unprivileged_unconfined is
+  # 0, an unconfined program of this user may enter the profile without
+  # being ranikust.
+  local unconfined
+  unconfined="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined 2>/dev/null || echo absent)"
+  if [ "$unconfined" = 0 ]; then
+    command -v aa-exec >/dev/null || { echo "error: user: no aa-exec where AppArmor restricts user namespaces" >&2; exit 1; }
+    got="$(aa-exec -p ranikust -- unshare --user --map-root-user --mount true 2>&1)" ||
+      { echo "error: user: aa-exec -p ranikust -- unshare -Urm refused at unprivileged_unconfined=0: $got" >&2; exit 1; }
+    echo "user: at kernel.apparmor_restrict_unprivileged_unconfined=0, aa-exec -p ranikust gives this user's shell a user namespace, as the docs say"
+  else
+    echo "user: kernel.apparmor_restrict_unprivileged_unconfined=$unconfined: aa-exec not checked"
   fi
   apparmor_undo
   trap 'sudo rm -f "$MARKER"' EXIT

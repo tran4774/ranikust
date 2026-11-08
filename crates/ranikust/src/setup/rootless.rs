@@ -88,10 +88,9 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> No
 /// user namespace: for a user other than root, whether it gets one with
 /// capabilities, with nothing written ([`without_capabilities`]); the state
 /// directory's check ([`state_dir_for_probe`]), the subordinate ids of this
-/// user ([`crate::subids`]), then the steps and
-/// the overlay mount in a user namespace, in a directory made for them in
-/// the state directory, named as the leftovers an anonymous store removes,
-/// and removed after. Logs the probe's line, whose verdict counts an rbind
+/// user ([`crate::subids`]), then the steps and the overlay mount in a user
+/// namespace, in a directory made for them in the state directory, named
+/// as the leftovers an anonymous store removes, and removed after. Logs the probe's line, whose verdict counts an rbind
 /// of `/proc` only with `proc_rbind` (`--allow proc.rbind`, ADR-0126).
 /// `binary` is the path ranikust started from, which the advice where no
 /// user namespace is usable weighs ([`super::no_userns`]). Call while
@@ -422,8 +421,8 @@ mod tests {
     use super::*;
 
     /// A user other than root whose user namespace has no capabilities
-    /// (Ubuntu 24.04 stops it at the `chown`), or who has none (the test
-    /// hook), gets the advice for no user namespace, and a step past the
+    /// (Ubuntu 24.04 stops it at the mount namespace), or who has none (the
+    /// test hook), gets the advice for no user namespace, and a step past the
     /// namespace that to run as root; root, whose own refusal or kaniko
     /// mode says what to do, nothing more; a refused new `proc` with a
     /// working rbind, `--allow proc.rbind`.

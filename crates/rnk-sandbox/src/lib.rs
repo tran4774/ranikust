@@ -16,8 +16,9 @@
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
 //! user namespace would need: root only reports it, rootless overlay mode
 //! routes on it, after [`probe_user_namespace_capabilities`], which tells
-//! with nothing written whether a user namespace here has capabilities. [`enter_build_user_namespace`] moves the process into the
-//! build's user namespace, each id map tried in a forked child first.
+//! with nothing written whether a user namespace here has capabilities.
+//! [`enter_build_user_namespace`] moves the process into the build's user
+//! namespace, each id map tried in a forked child first.
 //! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
 //! `/sys` where the user-namespace probe found a new `sysfs` refused
 //! ([`UsernsReport::fallbacks`]), a `RUN` with a network namespace of its
@@ -49,7 +50,8 @@
 //! says root may not mount), then [`trim_to_run_capabilities`], still
 //! single-threaded; in `--mode=auto` then [`probe_user_namespace`]; then
 //! [`Sandbox::start_direct`] (ADR-0078). A build in its own user namespace
-//! calls [`probe_user_namespace`], then [`enter_build_user_namespace`] in
+//! calls [`probe_user_namespace_capabilities`] (a user other than root),
+//! [`probe_user_namespace`], then [`enter_build_user_namespace`] in
 //! place of [`enter_build_namespace`], before any thread, then
 //! [`probe_with_fallbacks`] in place of [`probe`]. Where a set-up failing
 //! there may still fall back to another mode (ADR-0136), [`fork_to_wait`]

@@ -472,12 +472,7 @@ pub fn probe_user_namespace_capabilities() -> Result<UsernsCapabilities> {
 fn capabilities() -> Result<UsernsCapabilities> {
     let span = tracing::debug_span!("rnk_sandbox.probe_userns_capabilities", ok = Empty);
     let _entered = span.enter();
-    // Never written: the child asks for no map.
-    let plan = Plan::OneId {
-        uid_map: Vec::new(),
-        gid_map: Vec::new(),
-    };
-    let run = supervise(&plan, false, None, -1, ATTEMPT_DEADLINE, |args| {
+    let run = supervise(None, false, None, -1, ATTEMPT_DEADLINE, |args| {
         // SAFETY: the child of the fork, right after it returned 0.
         unsafe { capabilities_child(args) }
     })?;
@@ -909,7 +904,7 @@ struct ChildArgs<'a> {
 fn attempt(plan: &Plan, t: &Targets, user: bool) -> Result<Attempt> {
     let chown = plan.other_ids().map(|(u, g)| (t.chown.as_raw_fd(), u, g));
     let run = supervise(
-        plan,
+        Some(plan),
         user,
         chown,
         t.dir.as_raw_fd(),
@@ -935,8 +930,9 @@ struct Supervised {
     cut_short: Option<String>,
 }
 
-/// Forks a child that runs `child`, writes its map when it asks
-/// ([`READY`]), reads its report until it closes it or `deadline` passes,
+/// Forks a child that runs `child`, writes `plan`'s map when it asks
+/// ([`READY`]; with no plan, the child gets none and stops), reads its
+/// report until it closes it or `deadline` passes,
 /// kills it then, and reaps it ([`reap`]); [`Error::ProbeChildLeft`] when
 /// it is still there after that.
 ///
@@ -945,7 +941,7 @@ struct Supervised {
 /// must use and drop no owner of a descriptor of this process: every one
 /// but stdio and those in [`ChildArgs`] is closed before it runs.
 fn supervise(
-    plan: &Plan,
+    plan: Option<&Plan>,
     user: bool,
     chown: Option<(RawFd, u32, u32)>,
     dir: RawFd,
@@ -961,7 +957,7 @@ fn supervise(
         report: report_w.as_raw_fd(),
         go: go_r.as_raw_fd(),
         user,
-        own_map: plan.own_map(),
+        own_map: plan.and_then(Plan::own_map),
         chown,
         dir,
     };
@@ -994,6 +990,7 @@ fn supervise(
     let mut parent_map = None;
     let read = read_records(&report_r, Instant::now() + deadline, |op| {
         if op == READY
+            && let Some(plan) = plan
             && let Some(go) = go.take()
         {
             let r = write_map(plan, pid);
@@ -1643,7 +1640,7 @@ fn run_closure(
     path: &Path,
 ) -> Result<std::result::Result<String, String>> {
     let user = !rustix::process::geteuid().is_root();
-    let run = supervise(plan, user, None, -1, CLOSURE_DEADLINE, |args| {
+    let run = supervise(Some(plan), user, None, -1, CLOSURE_DEADLINE, |args| {
         // SAFETY: the child of the fork, right after it returned 0, of a
         // single-threaded process (the caller's contract): it may run `f`.
         unsafe { closure_child(args, || f(path)) }

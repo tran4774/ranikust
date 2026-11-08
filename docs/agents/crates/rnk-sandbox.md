@@ -912,7 +912,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `max_rss_kb`, faults, blocks, context switches) when the child was reaped
   after `execve`, and `failed`; `rnk_sandbox.setup` (`stubs`);
   `rnk_sandbox.probe` (`ok`) per attempt; `rnk_sandbox.probe_userns`
-  (`ok`, `map`) per user-namespace probe; `rnk_sandbox.cgroups` (`layout`:
+  (`ok`, `map`) per user-namespace probe;
+  `rnk_sandbox.probe_userns_capabilities` (`ok`) per capability check;
+  `rnk_sandbox.cgroups` (`layout`:
   `nested`, `single` or `none`) once per `Sandbox::start` that may use them
   ([rows](../../design/metrics.md#rnk-sandbox)).
 - Spans are opened on the caller's thread, so they nest in its span with no

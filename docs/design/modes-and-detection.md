@@ -395,8 +395,8 @@ it, which needs `CAP_SYS_ADMIN` there
 (`rnk_sandbox::probe_user_namespace_capabilities`). Either refused (`unshare`
 under a seccomp filter, the mount namespace in a namespace without
 capabilities, as the AppArmor switch gives) stops the build at that step;
-otherwise the probe runs as before, and its later stops come after the state
-directory is made. The refusal's guidance line gives, in order
+otherwise the probe then runs, and its later stops (the map, `chown`, `proc`,
+`sysfs`, the overlay mount) come after the state directory is made. The refusal's guidance line gives, in order
 ([#81](https://github.com/tran4774/ranikust/issues/81)):
 
 1. Run ranikust as root, with `sudo`.

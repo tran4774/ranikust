@@ -665,7 +665,7 @@ fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
         return;
     }
     let run = supervise(
-        &ranges(),
+        Some(&ranges()),
         false,
         None,
         -1,
@@ -736,7 +736,7 @@ fn a_probes_child_holds_only_stdio_and_its_own_descriptors() {
     let file = rustix::fs::open(c"/dev/null", OFlags::RDONLY, Mode::empty()).unwrap();
     let extra = file.as_raw_fd();
     let run = supervise(
-        &ranges(),
+        Some(&ranges()),
         false,
         None,
         -1,
@@ -776,11 +776,18 @@ fn a_failure_making_the_probes_files_removes_what_it_made() {
 #[test]
 fn a_map_the_parent_cannot_write_ends_the_waiting_child() {
     let started = Instant::now();
-    let run = supervise(&ranges(), false, None, -1, Duration::from_secs(5), |args| {
-        // SAFETY: the report pipe's write end, open in this child.
-        let report = unsafe { BorrowedFd::borrow_raw(args.report) };
-        map_in_child(args, report);
-    })
+    let run = supervise(
+        Some(&ranges()),
+        false,
+        None,
+        -1,
+        Duration::from_secs(5),
+        |args| {
+            // SAFETY: the report pipe's write end, open in this child.
+            let report = unsafe { BorrowedFd::borrow_raw(args.report) };
+            map_in_child(args, report);
+        },
+    )
     .unwrap();
     assert!(!run.records.timed_out, "the child waited for the deadline");
     assert!(started.elapsed() < Duration::from_secs(5));

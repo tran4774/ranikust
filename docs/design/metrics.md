@@ -214,6 +214,7 @@ No span per HTTP request or body chunk.
 | `rnk_sandbox.setup` | `stubs` | Parent-side preparation before the fork: stub mount points, the files a `Direct` `RUN` on a workdir gets (counted in `stubs`), journal, the `RUN`'s cgroups where it gets them. |
 | `rnk_sandbox.probe` | `ok` | One probe step (userns, `proc`, `pivot_root`, `sysfs`); start-up cost. |
 | `rnk_sandbox.probe_userns` | `ok`, `map` | The user-namespace steps, every map tried, each in forked children; `ok` when every step a `RUN` there needs worked, `map` the one that did (`multi-range`, `newuidmap`, `one uid`). What runs in the namespace's own child (the overlay probe) records no span here. |
+| `rnk_sandbox.probe_userns_capabilities` | `ok` | A user other than root's check, before rootless overlay mode writes anything: one forked child's user namespace and, unmapped, mount namespace; `ok` when neither was refused (#81). |
 | `rnk_sandbox.cgroups` | `layout` (`nested`, `single`, `none`) | Finding and probing the `RUN` cgroups at `Sandbox::start` ([sandbox](sandbox.md#run-cgroups)); start-up cost. |
 
 ### `rnk-snapshot`
