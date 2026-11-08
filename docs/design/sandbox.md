@@ -363,9 +363,10 @@ The steps, in order:
       `/sys`) gives it the rbind, with the network devices of the namespace
       it was mounted in hidden: an empty read-only tmpfs over
       `devices/virtual/net`, over the directory of each device a link of
-      `class/net`, `class/ieee80211`, `class/macvtap` or `class/ipvtap`
-      names (a physical device's `net`), and over those class directories,
-      each found below the rbind by descriptor before the `RUN` starts
+      `class/net`, `class/ieee80211`, `class/macvtap`, `class/ipvtap` or
+      `class/infiniband` names (a physical device's `net`), and over those
+      class directories, each found below the rbind by descriptor before
+      the `RUN` starts
       (`Step::MaskPath`). Its `/sys/class/net` is then empty: its own `lo`
       shows only in a new `sysfs`. Otherwise a refused `sysfs` mount fails
       the `RUN` (`Step::MountSys`).

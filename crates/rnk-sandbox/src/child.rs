@@ -1428,11 +1428,12 @@ fn sysfs_of_own_network(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> Owne
 /// The class directories of a sysfs that list only the devices of the
 /// network namespace it was mounted in (the kernel tags them so): a new
 /// sysfs of a `RUN`'s own network namespace lists its devices alone there.
-const NETWORK_CLASSES: [&CStr; 4] = [
+const NETWORK_CLASSES: [&CStr; 5] = [
     c"class/net",
     c"class/ieee80211",
     c"class/macvtap",
     c"class/ipvtap",
+    c"class/infiniband",
 ];
 
 /// Room for the longest `<class>/<name>/..` [`link_parent`] writes: a
@@ -3855,8 +3856,10 @@ mod tests {
             format!("{pci}/0000:00:1f.6/net/eth0"),
             format!("{pci}/0000:00:14.3/net/wlan0"),
             format!("{pci}/0000:00:14.3/ieee80211/phy0"),
+            format!("{pci}/0000:00:1c.0/infiniband/mlx5_0"),
             "class/net".to_owned(),
             "class/ieee80211".to_owned(),
+            "class/infiniband".to_owned(),
             "class/block/sda".to_owned(),
         ] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
@@ -3868,6 +3871,10 @@ mod tests {
             (
                 "class/ieee80211/phy0",
                 format!("{pci}/0000:00:14.3/ieee80211/phy0"),
+            ),
+            (
+                "class/infiniband/mlx5_0",
+                format!("{pci}/0000:00:1c.0/infiniband/mlx5_0"),
             ),
         ] {
             std::os::unix::fs::symlink(format!("../../{to}"), root.join(link)).unwrap();
@@ -3894,9 +3901,11 @@ mod tests {
         let set: std::collections::BTreeSet<_> = hidden.iter().map(String::as_str).collect();
         let want = [
             "class/ieee80211".to_owned(),
+            "class/infiniband".to_owned(),
             "class/net".to_owned(),
             format!("{pci}/0000:00:14.3/ieee80211"),
             format!("{pci}/0000:00:14.3/net"),
+            format!("{pci}/0000:00:1c.0/infiniband"),
             format!("{pci}/0000:00:1f.6/net"),
             "devices/virtual/net".to_owned(),
         ];
@@ -3908,6 +3917,8 @@ mod tests {
         );
         let phy = format!("{pci}/0000:00:14.3/ieee80211");
         assert!(at(&phy) < at("class/ieee80211"), "{hidden:?}");
+        let ib = format!("{pci}/0000:00:1c.0/infiniband");
+        assert!(at(&ib) < at("class/infiniband"), "{hidden:?}");
     }
 
     /// Every read-only and masked path is found under `proc` or `sysfs`,

@@ -276,7 +276,8 @@ What a change here must keep, with where it lives:
   rbind mounts, the network devices of the namespace it was mounted in are
   hidden from it (`hide_network_devices`): an empty read-only tmpfs over
   `devices/virtual/net`, over the directory of each device that a link of
-  `class/net`, `class/ieee80211`, `class/macvtap` or `class/ipvtap` names,
+  `class/net`, `class/ieee80211`, `class/macvtap`, `class/ipvtap` or
+  `class/infiniband` names,
   and over those class directories, each found below the rbind by
   descriptor; its `/sys/class/net` is then empty, its own `lo` not shown.
   Then `pivot_root(".", ".")` + `umount2(MNT_DETACH)`; where seccomp refuses
