@@ -1406,6 +1406,62 @@ fn a_probe_directory_left_tells_no_build_cut_short() {
     store.close().unwrap();
 }
 
+/// A probe directory a probe still holds is never removed, whatever
+/// empties the state directory: an anonymous store opens beside it and
+/// leaves it at its end, a store with no data beside it is kept (and an
+/// anonymous store refused), and `prune --all` empties all but it. Once
+/// let go, each removes it.
+#[test]
+fn a_probe_directory_a_probe_holds_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let probe = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let hold = |state: &Path| {
+        fs::create_dir_all(state.join(&probe).join("x")).unwrap();
+        let held = fs::File::open(state.join(&probe)).unwrap();
+        rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+        held
+    };
+    let state = dir.path().join("alone");
+    fs::create_dir(&state).unwrap();
+    let held = hold(&state);
+    let store = Store::open_anonymous(&state).unwrap();
+    drop(store.named_window().unwrap());
+    store.close().unwrap();
+    assert_eq!(names(&state), [probe.as_str()]);
+    assert!(state.join(&probe).join("x").is_dir());
+    drop(held);
+    Store::open_anonymous(&state).unwrap().close().unwrap();
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+
+    let state = dir.path().join("store");
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    let held = hold(&state);
+    let before = names(&state);
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
+    assert_eq!(names(&state), before);
+    assert!(state.join(&probe).join("x").is_dir());
+    drop(held);
+    Store::open_anonymous(&state).unwrap().close().unwrap();
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+
+    let state = dir.path().join("pruned");
+    store_with_data(dir.path(), &state);
+    let held = hold(&state);
+    assert!(Store::prune_all(&state).unwrap());
+    assert_eq!(names(&state), [probe.as_str()]);
+    assert!(state.join(&probe).join("x").is_dir());
+    drop(held);
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    assert!(!state.join(&probe).exists());
+}
+
 #[test]
 fn an_anonymous_store_refuses_files_it_did_not_leave() {
     let dir = tempfile::tempdir().unwrap();

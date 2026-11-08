@@ -39,12 +39,45 @@ fn a_probe_directory_gone_before_it_is_opened_is_skipped() {
     fs::create_dir(dir.path().join(&name)).unwrap();
     let root = RootPath::open(dir.path()).unwrap();
     PROBE_DIR_GOES.with(|g| g.set(true));
-    assert!(!remove_probe_dir(&root, Path::new(&name)).unwrap());
+    assert_eq!(
+        remove_probe_dir(&root, Path::new(&name)).unwrap(),
+        ProbeDir::NotOne
+    );
     assert!(!dir.path().join(&name).exists());
     // Unhooked, one is removed.
     fs::create_dir(dir.path().join(&name)).unwrap();
-    assert!(remove_probe_dir(&root, Path::new(&name)).unwrap());
+    assert_eq!(
+        remove_probe_dir(&root, Path::new(&name)).unwrap(),
+        ProbeDir::Removed
+    );
     assert!(!dir.path().join(&name).exists());
+}
+
+/// An emptying of the state directory removes a probe directory only under
+/// its lock: one a probe holds stays, and is named; one no probe holds,
+/// and anything else of a probe's name, goes with the rest.
+#[test]
+fn an_emptying_leaves_a_probe_directory_a_probe_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = |n: &str| format!("{USERNS_PROBE_PREFIX}{n}");
+    let (used, left, file) = (name("1-1"), name("1-2"), name("1-3"));
+    for d in [&used, &left] {
+        fs::create_dir_all(dir.path().join(d).join("x")).unwrap();
+    }
+    fs::write(dir.path().join(&file), b"").unwrap();
+    fs::write(dir.path().join("other"), b"").unwrap();
+    let held = fs::File::open(dir.path().join(&used)).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    let (deleted, kept) = delete_contents_but_probes(&root, &IgnoreList::new());
+    deleted.unwrap();
+    assert_eq!(kept, [OsString::from(&used)]);
+    let names: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, [OsString::from(&used)]);
+    assert!(dir.path().join(&used).join("x").is_dir());
 }
 
 /// The hook in `create_building_marker`, given the state directory:

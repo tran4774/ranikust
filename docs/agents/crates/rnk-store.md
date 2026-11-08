@@ -127,7 +127,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
   told by `statx` without following) do not count: `check_marker` marks the
   directory, and `open` then removes each whose `flock` it takes (a probe
-  holds its own while it uses it), through descriptors. A new state
+  holds its own while it uses it), through descriptors; every emptying
+  (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
+  takes the same lock, leaves one held, and keeps a store with no data
+  beside it. A new state
   directory is `0700`; one owned by another user or writable by others is
   used with a warning. The store's directories the
   user owns take the process's gid and no setgid bit, each pinned once
@@ -222,7 +225,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   anonymous name, a file or a symlink with the probe's prefix is refused and
   left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
-  (`open_removes_only_the_probe_directories_no_probe_holds`), and one gone
+  (`open_removes_only_the_probe_directories_no_probe_holds`), by every
+  emptying too (`a_probe_directory_a_probe_holds_is_kept`,
+  `an_emptying_leaves_a_probe_directory_a_probe_holds`), and one gone
   before the open reaches it skipped
   (`a_probe_directory_gone_before_it_is_opened_is_skipped`); the hold of
   `check_state_dir` keeps a prune out until dropped

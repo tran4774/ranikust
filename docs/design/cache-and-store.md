@@ -182,7 +182,10 @@ user-namespace probe (a rootless build cut short before its store opened)
 do not count, each a real directory on the state directory's mount, told
 without following a link: such a directory is a new store and gets the
 marker, and the store removes each whose lock it takes, through
-descriptors (a probe holds its own while it uses it). `check_state_dir`,
+descriptors (a probe holds its own while it uses it). So does every
+emptying of the directory (an anonymous store's start and end, a store with
+no data emptied, `prune --all`): one a probe holds stays, and keeps a store
+with no data as it is. `check_state_dir`,
 which rootless overlay mode runs before its probe, keeps the state
 directory's shared lock until the store opens. In overlay mode an upper
 directory written under `volatile` is never trusted after a crash.

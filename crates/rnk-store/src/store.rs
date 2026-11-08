@@ -82,7 +82,8 @@ pub const SANDBOX_DIR: &str = "sandbox";
 /// holds an exclusive `flock` on the directory itself while it uses it.
 /// [`Store::open`] takes a directory holding only such directories (a
 /// build cut short before its store) as a new one, and removes each it
-/// can take that lock on.
+/// can take that lock on; so does every emptying of a state directory
+/// here, which leaves one a probe holds.
 pub const USERNS_PROBE_PREFIX: &str = ".ranikust-anon-userns-probe-";
 /// Why [`Store::open`] refuses a directory without the marker, and what to
 /// do.
@@ -537,8 +538,10 @@ impl Store {
     /// store left ([`crate::ANON_PREFIX`], removed here), makes no name for
     /// the build and keeps the marker (ADR-0066). The user namespace
     /// probe's directories ([`USERNS_PROBE_PREFIX`]) share that prefix and
-    /// are removed too, but made before any store opens they tell no build
-    /// cut short. A marker from another container or boot is taken over.
+    /// are removed too, each only under its own lock (one a probe holds
+    /// stays, here and at [`Store::close`], and keeps a store with no data
+    /// below), but made before any store opens they tell no build cut
+    /// short. A marker from another container or boot is taken over.
     ///
     /// The caller must have given the process no more authority than its
     /// `RUN`s (`rnk_sandbox::trim_to_run_capabilities`, ADR-0078) before
@@ -1319,7 +1322,8 @@ impl Store {
     /// [`Error::Rootfs`] or [`Error::BadEntry`] when a directory cannot be
     /// removed, for example because a mount is still inside it or on it;
     /// the next start retries. For an anonymous store, [`Error::NotEmptied`]
-    /// when the state directory keeps anything but its marker, and
+    /// when the state directory keeps anything but its marker and the user
+    /// namespace probe's directories a probe holds, and
     /// [`Error::Unmarked`] when no marker can be written even after the
     /// emptying: the caller must fail the build, since that directory must
     /// not serve another one.
@@ -1871,29 +1875,37 @@ fn describe_foreign(names: &[OsString]) -> String {
 /// Removes everything in an anonymous store's state directory but
 /// [`BUILDING`]: nothing there is the store's own at its end, so whatever
 /// is left a `RUN` wrote (ADR-0077). An entry on another mount stays, and
-/// fails the call, as any entry that could not be removed does.
+/// fails the call, as any entry that could not be removed does; a
+/// directory of the user namespace probe that a probe holds stays, and
+/// fails nothing.
 fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
     remove_state_marker(state);
-    let left = |names: Vec<OsString>| -> Vec<OsString> {
-        names.into_iter().filter(|n| n != BUILDING).collect()
-    };
-    let found = left(list(state, Path::new("."))?);
+    let found: Vec<OsString> = list(state, Path::new("."))?
+        .into_iter()
+        .filter(|n| n != BUILDING)
+        .collect();
     if found.is_empty() {
         return Ok(());
     }
     let mut keep = IgnoreList::new();
     keep.insert(BUILDING)?;
-    let deleted = delete_contents(state, &keep);
-    tracing::warn!(
-        target: "rnk_store",
-        "state directory {}: {} entries a RUN left there ({}){}; kaniko mode on / keeps nothing \
-         there between builds (ADR-0077)",
-        state_path.display(),
-        found.len(),
-        shown_names(&found),
-        if deleted.is_ok() { " removed" } else { "" },
-    );
-    let left = left(list(state, Path::new("."))?);
+    let (deleted, held) = delete_contents_but_probes(state, &keep);
+    let found: Vec<OsString> = found.into_iter().filter(|n| !held.contains(n)).collect();
+    if !found.is_empty() {
+        tracing::warn!(
+            target: "rnk_store",
+            "state directory {}: {} entries a RUN left there ({}){}; kaniko mode on / keeps \
+             nothing there between builds (ADR-0077)",
+            state_path.display(),
+            found.len(),
+            shown_names(&found),
+            if deleted.is_ok() { " removed" } else { "" },
+        );
+    }
+    let left: Vec<OsString> = list(state, Path::new("."))?
+        .into_iter()
+        .filter(|n| n != BUILDING && !held.contains(n))
+        .collect();
     match (left.is_empty(), deleted) {
         (true, Ok(())) => Ok(()),
         (_, Err(e)) => Err(Error::NotEmptied {
@@ -2027,7 +2039,9 @@ fn abandon_unused(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Resu
 /// holds, where it is a store with no data: [`MARKER`] and nothing in
 /// [`DATA_DIRS`], neither [`PRUNING`] nor [`BUILDING`], and only names
 /// the store makes. [`MARKER`] goes last, after the sync. `false` where it
-/// is anything else, which is kept as found.
+/// is anything else, which is kept as found, and where a probe still holds
+/// a directory of the user namespace probe there: kept, those that no
+/// probe holds removed.
 fn empty_if_unused(state: &RootPath, state_path: &Path, lock: &OwnedFd) -> Result<bool> {
     // Under the lock: no build adds data or names meanwhile.
     match prune_check(state, state_path) {
@@ -2044,6 +2058,13 @@ fn empty_if_unused(state: &RootPath, state_path: &Path, lock: &OwnedFd) -> Resul
     let span = tracing::info_span!("rnk_store.prune");
     let _entered = span.enter();
     rnk_rootfs::refuse_own_root(state, state_path)?;
+    let mut held = false;
+    for name in list(state, Path::new("."))? {
+        held |= remove_probe_dir(state, Path::new(&name))? == ProbeDir::Held;
+    }
+    if held {
+        return Ok(false);
+    }
     empty_all_but(state, state_path.to_owned(), lock, MARKER, |path, left| {
         Error::NotAbandoned { path, left }
     })?;
@@ -2134,7 +2155,9 @@ fn empty_locked(root: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<
 
 /// Deletes everything in the state directory `root` but `last`, whose
 /// exclusive `lock` is held, then, once the filesystem is synced, `last`.
-/// What stays besides `last` is the error `left_err` makes, `last` kept.
+/// What stays besides `last` is the error `left_err` makes, `last` kept,
+/// but for a directory of the user namespace probe that a probe holds,
+/// which stays and fails nothing.
 fn empty_all_but(
     root: &RootPath,
     state_path: PathBuf,
@@ -2144,10 +2167,10 @@ fn empty_all_but(
 ) -> Result<()> {
     let mut keep = IgnoreList::new();
     keep.insert(last)?;
-    let deleted = delete_contents(root, &keep);
+    let (deleted, held) = delete_contents_but_probes(root, &keep);
     let left: Vec<OsString> = list(root, Path::new("."))?
         .into_iter()
-        .filter(|n| n != last)
+        .filter(|n| n != last && !held.contains(n))
         .collect();
     let left = match (left.is_empty(), deleted) {
         (true, Ok(())) => None,
@@ -2389,12 +2412,12 @@ fn remove_probe_leftovers(state: &RootPath, state_path: &Path) {
     for name in names {
         let rel = Path::new(&name);
         match remove_probe_dir(state, rel) {
-            Ok(true) => tracing::info!(
+            Ok(ProbeDir::Removed) => tracing::info!(
                 target: "rnk_store",
                 "removed {} left by an earlier build",
                 state_path.join(rel).display()
             ),
-            Ok(false) => {}
+            Ok(ProbeDir::Held | ProbeDir::NotOne) => {}
             Err(e) => tracing::warn!(
                 target: "rnk_store",
                 "{} left by an earlier build not removed: {e}",
@@ -2404,15 +2427,30 @@ fn remove_probe_leftovers(state: &RootPath, state_path: &Path) {
     }
 }
 
-/// [`remove_probe_leftovers`] for `rel`: whether it was removed.
-fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
+/// What [`remove_probe_dir`] and [`remove_probe_named`] did with a name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProbeDir {
+    /// Removed, a directory of the probe under its own lock.
+    Removed,
+    /// A directory of the probe that a probe holds, or that one became
+    /// while it was looked at: kept.
+    Held,
+    /// No directory of the probe, or gone: left as found.
+    NotOne,
+}
+
+/// [`remove_probe_leftovers`] for `rel`: removed only once its exclusive
+/// `flock` is taken.
+pub(crate) fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<ProbeDir> {
     if !is_probe_name(rel.as_os_str()) {
-        return Ok(false);
+        return Ok(ProbeDir::NotOne);
     }
     let st = match state.statx(rel) {
         Ok(st) if is_probe_stat(state, &st) => st,
-        Ok(_) => return Ok(false),
-        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+        Ok(_) => return Ok(ProbeDir::NotOne),
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+            return Ok(ProbeDir::NotOne);
+        }
         Err(e) => return Err(e.into()),
     };
     #[cfg(test)]
@@ -2420,7 +2458,9 @@ fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
     let held = match state.open_at(rel, &OpenHow::read().directory().no_follow()) {
         Ok(held) => held,
         // Removed since it was listed: by its probe, or by another store.
-        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => return Ok(false),
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+            return Ok(ProbeDir::NotOne);
+        }
         Err(e) => return Err(e.into()),
     };
     let io = |source| Error::Io {
@@ -2430,7 +2470,7 @@ fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
     };
     if !lock::try_lock(&held).map_err(io)? {
         // A probe uses it.
-        return Ok(false);
+        return Ok(ProbeDir::Held);
     }
     let locked = rustix::fs::fstat(&held).map_err(|e| io(e.into()))?;
     let listed = rustix::fs::makedev(st.dev_major, st.dev_minor);
@@ -2441,7 +2481,66 @@ fn remove_probe_dir(state: &RootPath, rel: &Path) -> Result<bool> {
         });
     }
     remove_dir_tree(state, rel, &st)?;
-    Ok(true)
+    Ok(ProbeDir::Removed)
+}
+
+/// Removes `rel`, a name of the user namespace probe ([`is_probe_name`])
+/// at the top of `state`, as an emptying of the directory does: one of the
+/// probe's directories only through [`remove_probe_dir`], anything else of
+/// that name (a file a `RUN` made) as any entry, never followed.
+pub(crate) fn remove_probe_named(state: &RootPath, rel: &Path) -> Result<ProbeDir> {
+    if !is_probe_name(rel.as_os_str()) {
+        return Ok(ProbeDir::NotOne);
+    }
+    match remove_probe_dir(state, rel)? {
+        ProbeDir::NotOne => {}
+        done => return Ok(done),
+    }
+    let st = match state.statx(rel) {
+        Ok(st) => st,
+        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+            return Ok(ProbeDir::NotOne);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if is_probe_stat(state, &st) {
+        // One of the probe's again since it was looked at.
+        return Ok(ProbeDir::Held);
+    }
+    if st.file_type() == FileType::Directory {
+        // A mount, which this refuses.
+        remove_dir_tree(state, rel, &st)?;
+    } else {
+        state.remove_file(rel)?;
+    }
+    Ok(ProbeDir::Removed)
+}
+
+/// [`delete_contents`] of the state directory `state` but what `keep`
+/// covers and the user namespace probe's names, which go after it, each
+/// through [`remove_probe_named`]: a directory of the probe never goes
+/// while a probe holds it, even one made during the emptying. Returns the
+/// first error, and the names a probe holds, which stay: the probe removes
+/// them.
+fn delete_contents_but_probes(state: &RootPath, keep: &IgnoreList) -> (Result<()>, Vec<OsString>) {
+    let mut held = Vec::new();
+    let mut keep = keep.clone();
+    if let Err(e) = keep.insert_glob(format!("{USERNS_PROBE_PREFIX}*")) {
+        return (Err(e.into()), held);
+    }
+    let mut first = delete_contents(state, &keep).map_err(Error::from);
+    let names = match list(state, Path::new(".")) {
+        Ok(names) => names,
+        Err(e) => return (first.and(Err(e)), held),
+    };
+    for name in names.into_iter().filter(|n| is_probe_name(n)) {
+        match remove_probe_named(state, Path::new(&name)) {
+            Ok(ProbeDir::Held) => held.push(name),
+            Ok(ProbeDir::Removed | ProbeDir::NotOne) => {}
+            Err(e) => first = first.and(Err(e)),
+        }
+    }
+    (first, held)
 }
 
 /// The state directory's marker: `Some(true)` for a regular file,

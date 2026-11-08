@@ -426,9 +426,11 @@ pub(crate) fn left_by_a_store(name: &OsStr) -> bool {
 /// unpacked for a `COPY --from`, all named with [`PREFIX`]. A file or link
 /// is unlinked, never followed; a directory is emptied through
 /// descriptors, staying on its mount, and only if the directory opened is
-/// the one listed. Returns whether there was any name an earlier store
-/// made ([`left_by_a_store`]).
+/// the one listed. A directory of the user namespace probe goes only under
+/// its own lock, and stays while a probe holds it. Returns whether there
+/// was any name an earlier store made ([`left_by_a_store`]).
 pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<bool> {
+    use crate::store::{ProbeDir, is_probe_name, remove_probe_named};
     let mut found = false;
     for name in root.read_names("/")? {
         if !is_leftover(&name) {
@@ -436,11 +438,17 @@ pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<bool> {
         }
         found |= left_by_a_store(&name);
         let rel = Path::new(&name);
-        let st = root.statx(rel)?;
-        if st.file_type() == FileType::Directory {
-            crate::store::remove_dir_tree(root, rel, &st)?;
+        if is_probe_name(&name) {
+            if remove_probe_named(root, rel)? != ProbeDir::Removed {
+                continue;
+            }
         } else {
-            root.remove_file(rel)?;
+            let st = root.statx(rel)?;
+            if st.file_type() == FileType::Directory {
+                crate::store::remove_dir_tree(root, rel, &st)?;
+            } else {
+                root.remove_file(rel)?;
+            }
         }
         tracing::info!(
             target: "rnk_store",
