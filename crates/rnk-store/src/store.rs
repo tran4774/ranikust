@@ -409,9 +409,9 @@ impl Store {
     }
 
     /// [`Store::open`], with `undoing` as [`Store::open_or_abandon`] takes
-    /// it, `marker_checked` run between the marker's check and the store
-    /// directories' (a test's plant), and `registered` once the build is
-    /// registered (a test's failure).
+    /// it, `marker_checked` run after the marker's check and before the
+    /// store directories' check (where a test plants one), and `registered`
+    /// once the build is registered (where a test fails the open).
     fn open_with(
         paths: &BuildPaths,
         undoing: Option<impl FnOnce()>,

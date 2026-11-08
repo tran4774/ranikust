@@ -130,16 +130,15 @@ Design: [locks](../../design/cache-and-store.md#locks),
   `flock` it takes (a probe holds its own while it uses it), through
   descriptors; under `--userns` this is how the probe's directory goes,
   which root gave the range and deletes nothing in (ADR-0139); every
-  emptying
-  (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
-  takes the same lock, leaves one held, and keeps a store with no data
-  beside it. Each of the store's directories that is there must be a
-  directory, opened `O_PATH | O_NOFOLLOW`: a symlink, even one that stays
-  inside, or a file is `Error::NotAStateDir`, named, before anything is
-  written (`check_dirs`, in `open` and `check_state_dir`). A new state
-  directory is `0700`; one owned by another user or writable by others is
-  used with a warning. The store's directories the
-  user owns take the process's gid and no setgid bit, each pinned once
+  emptying (`empty_if_unused`, `prune_all`, `open_anonymous`, an
+  anonymous `close`) takes the same lock, leaves one held, and keeps a
+  store with no data beside it. Each of the store's directories that is
+  there must be a directory, opened `O_PATH | O_NOFOLLOW`: a symlink, even
+  one that stays inside, or a file is `Error::NotAStateDir`, named, before
+  anything is written (`check_dirs`, in `open` and `check_state_dir`). A
+  new state directory is `0700`; one owned by another user or writable by
+  others is used with a warning. The store's directories the user owns
+  take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in
   [atomic publication](../../design/cache-and-store.md#atomic-publication).
 - The per-digest lock holds twice: an in-process lock among the store's
@@ -236,8 +235,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and one planted once `open` found the directory unmarked refused before
   the marker is written
   (`a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked`,
-  in `src/store/tests.rs`); another anonymous name, a file or a symlink with the probe's prefix is refused and
-  left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
+  in `src/store/tests.rs`); another anonymous name, a file or a symlink
+  with the probe's prefix is refused and left as it was
+  (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
   (`open_removes_only_the_probe_directories_no_probe_holds`), by every
   emptying too (`a_probe_directory_a_probe_holds_is_kept`,

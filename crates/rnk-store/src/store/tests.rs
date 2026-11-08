@@ -614,6 +614,10 @@ fn a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked() {
     let e = Store::open_with(&paths, None::<fn()>, plant, |_| Ok(()))
         .expect_err("a symlink as blobs/ fails the open");
     assert!(matches!(&e, Error::NotAStateDir { .. }), "{e}");
+    assert!(
+        e.to_string().contains("holds blobs, which is a symlink"),
+        "{e}"
+    );
     let left: Vec<_> = fs::read_dir(&state)
         .unwrap()
         .map(|e| e.unwrap().file_name())
