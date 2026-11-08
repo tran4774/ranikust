@@ -1440,6 +1440,13 @@ fn container_var() -> Option<(&'static str, std::ffi::OsString)> {
     std::env::var_os("container").map(|v| ("container", v))
 }
 
+/// Whether `advice` binds the profile to a path of its own: the install
+/// where `/usr/local/bin` is not root's alone says "changed to the
+/// binary's", never a path.
+fn binds_a_path(advice: &str) -> bool {
+    advice.contains("changed to /")
+}
+
 /// A link to (or else a copy of) the binary at `to`.
 fn place_binary(to: &Path) {
     if fs::hard_link(env!("CARGO_BIN_EXE_ranikust"), to).is_err() {
@@ -1492,7 +1499,7 @@ fn red_team_the_advice_escapes_a_hostile_binary_path() {
         "a forged line: {err:?}"
     );
     let advice = userns_advice(&err);
-    assert!(!advice.contains("changed to"), "{advice}");
+    assert!(!binds_a_path(advice), "{advice}");
     if offers_a_profile_here() {
         assert!(advice.contains("\\u{1b}[2J"), "{advice}");
         assert!(advice.contains(" first"), "{advice}");
@@ -1539,7 +1546,7 @@ fn red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile() {
         Path::new(&format!("/proc/self/fd/{}", held.as_raw_fd())),
         None,
     );
-    assert!(!advice.contains("changed to"), "{advice}");
+    assert!(!binds_a_path(&advice), "{advice}");
     if restricted {
         let named = " (deleted) is not a path only root can change";
         assert!(advice.contains(named), "{advice}");
@@ -1552,7 +1559,7 @@ fn red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile() {
         format!("tmpfile root {}", hex("/proc/self/exe")),
     ] {
         let advice = run(&binary, Some(&marker));
-        assert!(!advice.contains("changed to"), "{marker}: {advice}");
+        assert!(!binds_a_path(&advice), "{marker}: {advice}");
         assert!(!advice.contains("/usr/bin/env"), "{marker}: {advice}");
         if restricted {
             let named = format!("{} is not a path only root can change", binary.display());

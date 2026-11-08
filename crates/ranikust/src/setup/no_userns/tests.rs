@@ -662,10 +662,12 @@ fn the_check_agrees_on_system_binaries() {
 }
 
 /// Whether the advice for a stop AppArmor may cause binds the profile to
-/// `path` as it is: every form that does not names no install first.
+/// a path as it is: as shipped (no path changed, no install first) or
+/// changed to a path, not to "the binary's" after an install.
 fn binds(path: Option<&Path>) -> bool {
     let advice = guidance(path, Stop::InNamespace);
-    advice.contains(PROFILE) && !advice.contains(" first")
+    let shipped = !advice.contains("changed to") && !advice.contains(" first");
+    advice.contains(PROFILE) && (shipped || advice.contains("changed to /"))
 }
 
 /// Red team (#81, invariant: the profile only for a path only root may

@@ -450,11 +450,12 @@ apparmor_undo() {
   sudo rm -f "$AA_BINARY"
 }
 
-# Whether root alone may change what is in /usr/local/bin, as ranikust
-# checks it: owner, mode, no symlink, no nosuid, a filesystem on its list.
-usr_local_bin_root_only() {
-  local d
-  for d in / /usr /usr/local /usr/local/bin; do
+# Whether root alone may change what is in the directory $1, as ranikust
+# checks it, there and in every directory above: owner, mode, no symlink,
+# no nosuid, a filesystem on its list.
+root_only_chain() {
+  local d="$1"
+  while :; do
     [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] ||
       return 1
     [[ ",$(findmnt -no OPTIONS -T "$d")," != *,nosuid,* ]] || return 1
@@ -462,7 +463,13 @@ usr_local_bin_root_only() {
       ef53 | 58465342 | 9123683e | 73717368 | e0f5e1e2 | 1021994 | 794c7630 | 2fc12fc1) ;;
       *) return 1 ;;
     esac
+    [ "$d" = / ] && return 0
+    d="$(dirname "$d")"
   done
+}
+
+usr_local_bin_root_only() {
+  root_only_chain /usr/local/bin
 }
 
 # #81: root's copy of the binary at /usr/local/bin/ranikust is refused as
@@ -748,11 +755,18 @@ os.setxattr(path, "system.posix_acl_access",
 # directory, takes it away; an ACL whose mask keeps writing out does not;
 # this user's symlink to it names root's path; a hardlink in this user's
 # directory is refused by the kernel or gets no profile. Uses rl_args, ud
-# and dir.
-RT_DIR=/opt/rnk-red-team
+# and dir. The directory goes under the first of RT_PARENTS that root alone
+# may change: any user may write /opt and /usr/local/bin on CI's runners.
+RT_PARENTS="/usr/lib /var/lib"
+RT_DIR=
 red_team_acl() {
-  local d="$RT_DIR" b="$RT_DIR/ranikust" c n=0 setup program expect log rc advice what at mask
+  local parent d b c n=0 setup program expect log rc advice what at mask
   local writable="is writable by its group or others"
+  for parent in $RT_PARENTS ""; do
+    [ -z "$parent" ] || ! root_only_chain "$parent" || break
+  done
+  [ -n "$parent" ] || { echo "error: red team: none of $RT_PARENTS is root's alone here" >&2; exit 1; }
+  RT_DIR="$parent/rnk-red-team" d="$parent/rnk-red-team" b="$parent/rnk-red-team/ranikust"
   [ ! -e "$d" ] || { echo "error: red team: $d is there already" >&2; exit 1; }
   trap 'sudo rm -f "$MARKER"; sudo rm -rf "$RT_DIR"' EXIT
   ln -s "$b" "$ud/red-link"
