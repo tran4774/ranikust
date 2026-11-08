@@ -919,7 +919,11 @@ with another map:
 Measured in the T2 VM (`userns` quick case, Ubuntu 24.04): a `RUN`'s
 `uid_map` read from the host is `0 <start> 65536`, its ids there are the
 range's first, a file it makes is owned there by them, and the image's
-`--reproducible` digest equals the build's without `--userns`.
+`--reproducible` digest equals the build's without `--userns`. No host account
+reaches a non-root `RUN`'s `/proc/<pid>/environ` or root, neither one with its
+ids nor one with the ids they map to, which [ADR-0074](../adr/0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)'s
+residual lets in without `--userns`
+([threat model](../security/threat-model.md#6-accepted-risks)).
 
 *Planned, Phase 3:* a `RUN`'s command runs where the init's uid is unmapped,
 in rootless mode too

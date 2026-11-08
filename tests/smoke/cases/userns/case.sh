@@ -7,8 +7,9 @@
 # host, by its uid_map, gid_map and status read from the host and by the
 # owner there of a file it makes; the --reproducible digest equals the
 # same build's without --userns; and ADR-0074's reach of a distinct host
-# account is measured again (an account with the RUN's own ids is refused;
-# what one with the ids they map to reaches is printed). In the kaniko leg,
+# account is measured again: neither an account with the RUN's own ids nor
+# one with the ids they map to on the host reaches it, the latter reaching a
+# process of its own (the control). In the kaniko leg,
 # --userns with --mode=kaniko is a usage error.
 
 # Below /var/lib, which only root writes and every uid may search.
@@ -85,7 +86,7 @@ case_run() {
 # seen_from_the_host: the `seen` stage's RUNs, from the host while each
 # waits: as root, its maps, ids and a file it made; as USER 1234:1234, the
 # reach of a host account with its ids and of one with the ids they map
-# to (ADR-0074).
+# to (ADR-0074), none.
 seen_from_the_host() {
   local o="$CASES_OUT/$CASE/seen" pid bg rc=0
   rm -rf "$o" && mkdir -p "$o"
@@ -103,11 +104,18 @@ seen_from_the_host() {
   pid="$(waiting user)" || fail "no RUN waited as USER 1234: $(cat "$o/build.log")"
   expect "$(awk '/^Uid:/ { print $2 }' "/proc/$pid/status")" "$((S + 1234))" \
     "the USER 1234 RUN's uid on the host"
-  local own far
+  local own far ctl owner ids
   own="$(reach "$pid" 1234 1234)"
   far="$(reach "$pid" $((S + 1234)) $((G + 1234)))"
-  echo "  $CASE: measured (ADR-0074): a host account 1234:1234 reaches:$own; one $((S + 1234)):$((G + 1234)) reaches:$far" >&2
+  # The kernel shows a process's /proc files as its own only while it is
+  # dumpable, else as root of its memory's user namespace.
+  owner="$(stat -c '%u:%g' "/proc/$pid/environ")"
+  ids="$(awk '/^(Uid|Gid):/ { print $2, $3, $4, $5 }' "/proc/$pid/status" | paste -sd ' ')"
+  ctl="$(control_reach $((S + 1234)) $((G + 1234)))"
+  echo "  $CASE: measured (ADR-0074): a host account 1234:1234 reaches:$own; one $((S + 1234)):$((G + 1234)) reaches:$far (its own process:$ctl); the RUN's ids $ids, its /proc files owned by $owner" >&2
+  expect "$ctl" " environ root" "what a host account reaches of a process of its own (the control)"
   expect "$own" " nothing" "what a host account with the RUN's own ids reaches"
+  expect "$far" " nothing" "what a host account with the ids the RUN's map to reaches"
   sudo rm "/proc/$pid/root/tmp/wait-user"
   wait "$bg" || rc=$?
   expect "$rc" 0 "the seen build: $(cat "$o/build.log")"
@@ -136,6 +144,28 @@ reach() {
   "${as[@]}" cat "/proc/$1/environ" >/dev/null 2>&1 && r+=" environ"
   "${as[@]}" ls "/proc/$1/root/" >/dev/null 2>&1 && r+=" root"
   echo "${r:- nothing}"
+}
+
+# control_reach UID GID: what a host process of UID and GID reaches of a
+# process of its own ids, so that " nothing" from reach means the kernel
+# refused, not that setpriv failed.
+control_reach() {
+  local pid r i=0
+  sudo setpriv --reuid="$1" --regid="$2" --clear-groups -- sleep 1234.5 &
+  while [ "$i" -lt 50 ]; do
+    pid="$(pgrep -o -x -f 'sleep 1234.5' || true)"
+    [ -n "$pid" ] && [ "$(awk '/^Uid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)" = "$1" ] &&
+      break
+    pid=""
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ -n "$pid" ]; then
+    r="$(reach "$pid" "$1" "$2")"
+    sudo kill "$pid" || true
+  fi
+  wait "$!" 2>/dev/null || true
+  echo "${r:- no process}"
 }
 
 # urun NAME ARG...: ranikust as root with --userns, its working directory,
