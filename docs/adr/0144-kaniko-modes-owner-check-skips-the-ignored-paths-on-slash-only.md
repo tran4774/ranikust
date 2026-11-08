@@ -15,7 +15,7 @@ Kaniko mode extracts a base layer with the
 [ignore list](../design/kaniko-mode.md#ignore-list)
 (`rnk_rootfs::extract_live`), which leaves out the paths it covers. A check
 that read every entry refused an image whose only unmapped owners sit on
-paths that no extraction writes.
+paths that no base-layer extraction writes.
 [ADR-0137](0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)
 left those owners open ("Not decided here", #209), and #209 asked for the
 ignore list in the scan on `/`. The question put to the maintainer in the
@@ -54,7 +54,7 @@ option (a).
   **[code]**.
 - **`COPY --from=<image>` on `/`.** It is unpacked into a directory of the
   state directory with no ignore list, so its owners are checked on every
-  path. A spool or kept blob that an earlier check passed for a base is
+  path. A spool or pulled blob that an earlier check passed for a base is
   read again for it, with no second download
   ([ADR-0081](0081-a-streamed-layer-on-slash-is-verified-once-per-build.md))
   **[code]**.
@@ -85,7 +85,7 @@ option (a).
 - **[code]** T0 tests in `crates/rnk-snapshot`:
   `on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass`
   (a base passes, a `COPY --from` image is refused, from its own spool, a
-  base's or a kept blob),
+  base's or a pulled blob),
   `off_slash_the_owner_check_covers_the_ignored_paths`,
   `off_slash_kaniko_s_owner_check_covers_the_ignored_paths`, and
   `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`

@@ -1642,11 +1642,12 @@ impl KanikoRoot {
     /// [`Error::State`], with nothing changed, while a layer is open, when
     /// the stage no longer holds the root, or when an earlier layer broke
     /// it. A failure before any entry can reach the root (the source
-    /// refused; in a user namespace, an owner it does not map, maps that
-    /// cannot be read, or a cached blob's tar headers or diff ID; on `/`, a
-    /// streamed layer's digest, diff ID or tar headers) leaves the root as
-    /// it was. Any later failure breaks the root: until
-    /// it is emptied, no layer, view, keep or child stage goes on from it.
+    /// refused; a user namespace or id map that cannot be read; in a user
+    /// namespace, an owner it does not map, or a cached blob that does not
+    /// open or decompress, or whose tar headers or diff ID are wrong; on
+    /// `/`, a streamed layer's digest, diff ID or tar headers) leaves the
+    /// root as it was. Any later failure breaks the root: until it is
+    /// emptied, no layer, view, keep or child stage goes on from it.
     pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
         if self.open {
             return Err(Error::State("a layer is open"));
@@ -1660,7 +1661,7 @@ impl KanikoRoot {
         let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
         let none = IgnoreList::new();
-        // The ignored paths are skipped on `/` only (ADR-0144).
+        // The owner check skips the ignored paths on `/` only (ADR-0144).
         let keep = if shared.is_slash() {
             &shared.ignore
         } else {

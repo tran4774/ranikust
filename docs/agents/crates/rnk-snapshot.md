@@ -293,8 +293,9 @@ that found a bug stay as its regression test.
   the owners on the ignored paths too
   (`off_slash_kaniko_s_owner_check_covers_the_ignored_paths`, ADR-0144); a
   cached blob with an owner the namespace lacks is refused before the root
-  changes, on `/` one only on an ignored path passing
-  (`a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`).
+  changes, on `/` one only on an ignored path passing and off `/` refused
+  (ADR-0144;
+  `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`).
 - **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
   ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
   `FROM <stage>` copied with no inode shared, a parent with a layer open
