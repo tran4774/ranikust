@@ -1862,7 +1862,7 @@ fn red_team_a_hand_over_refuses_a_mount_below_the_parent_and_crosses_nothing() {
 }
 
 /// Off `/` the owner check covers the ignored paths too: a layer whose only
-/// owner the namespace lacks is under `/proc` is refused, naming it
+/// unmapped owner is on a file under `/proc` is refused, naming it
 /// (ADR-0098).
 #[test]
 fn off_slash_the_owner_check_covers_the_ignored_paths() {

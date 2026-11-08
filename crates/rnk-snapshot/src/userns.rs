@@ -70,6 +70,11 @@ impl UserNamespace {
 
     /// [`UserNamespace::current`] read into `cell` at its first use and
     /// kept: a snapshotter holds its layers to one namespace's ids.
+    ///
+    /// # Errors
+    ///
+    /// As [`UserNamespace::current`]; an error is not kept, so the next
+    /// call reads again.
     pub(crate) fn once(cell: &OnceLock<Option<Self>>) -> Result<Option<&Self>> {
         if let Some(ns) = cell.get() {
             return Ok(ns.as_ref());

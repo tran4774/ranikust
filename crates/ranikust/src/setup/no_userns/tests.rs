@@ -271,8 +271,10 @@ fn only_the_host_s_user_namespace_outside_a_container_is_the_host() {
     assert!(!on_host(false, Some(Runtime::Docker)));
 }
 
-/// Whatever namespace the tests run in, `Here` tells the host's by its
-/// inode, the initial one's, as `/proc/self/ns/user` names it.
+/// `Here::read` asks `UserNamespace` whether this is the host's user
+/// namespace: in whatever namespace the tests run in, it agrees with
+/// `/proc/self/ns/user`'s inode. A namespace that maps every id to itself
+/// and is not the initial one needs root to make, so it is not tried here.
 #[test]
 fn here_tells_the_host_s_user_namespace_by_its_inode() {
     let link = std::fs::read_link("/proc/self/ns/user").unwrap();

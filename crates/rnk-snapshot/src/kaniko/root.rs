@@ -596,8 +596,8 @@ impl Snapshotter for Kaniko {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
-        // Off `/` every owner is checked, the ignored paths too, as by
-        // `KanikoStages`.
+        // Off `/` every owner is checked, the ignored paths too
+        // (design/modes-and-detection.md#owners-the-user-namespace-does-not-map).
         let none = IgnoreList::new();
         let keep = if self.shared.is_slash() {
             &self.shared.ignore

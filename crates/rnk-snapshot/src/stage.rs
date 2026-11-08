@@ -187,7 +187,10 @@ pub trait Snapshotter {
     /// image order), before any is made a base layer, when an entry of one
     /// would get an owner the user namespace this process runs in does not
     /// map (ADR-0098): the refusal names every such id of them all, and
-    /// nothing is written. Outside a user namespace, every id is mapped.
+    /// nothing is written. Kaniko mode skips the ignored paths only on `/`;
+    /// elsewhere every entry is checked
+    /// (design/modes-and-detection.md#owners-the-user-namespace-does-not-map).
+    /// Outside a user namespace, every id is mapped.
     ///
     /// # Errors
     ///

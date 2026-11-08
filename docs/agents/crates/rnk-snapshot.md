@@ -287,7 +287,9 @@ that found a bug stay as its regression test.
   directory or the marker). ADR-0058 (`src/kaniko/root/tests.rs`): steps that
   only delete, replace a directory by an empty one, or change a mode or an
   mtime never encode to the empty tar's diff ID; a step that changes nothing,
-  or undoes what it did, does.
+  or undoes what it did, does. A `Kaniko` on a root other than `/` checks
+  the owners on the ignored paths too
+  (`off_slash_kaniko_s_owner_check_covers_the_ignored_paths`, ADR-0098).
 - **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
   ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
   `FROM <stage>` copied with no inode shared, a parent with a layer open
@@ -297,8 +299,8 @@ that found a bug stay as its regression test.
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
   bases cannot reach outside `rootfs/`; in a user namespace no base layer is
   streamed into a stage directory, and the owner check covers the ignored
-  paths (ADR-0098; `off_slash_the_owner_check_covers_the_ignored_paths`, and
-  `Kaniko` off `/` in `src/kaniko/root/tests.rs`). In a binary of its own
+  paths (ADR-0098; `off_slash_the_owner_check_covers_the_ignored_paths`).
+  In a binary of its own
   (`tests/deep_chain.rs`, the soft `RLIMIT_NOFILE` raised to the hard one):
   a chain of up to 100,000 levels (as many as the copy holds descriptors
   for; skipped below 30,000) copied and handed over in time linear in its
