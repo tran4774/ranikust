@@ -85,7 +85,7 @@ fn check_in_namespace(state: &Path, blobs: &Path) -> String {
                 e.to_string(),
                 crate::owners::find(&e).map_or_else(
                     || "none".to_owned(),
-                    |found| crate::owners::guidance(found, true),
+                    |found| crate::owners::guidance(found, crate::owners::MadeBy::Rootless),
                 ),
             ),
         };

@@ -571,7 +571,9 @@ nothing is checked.
   host or in a rootful container. Each range asked for comes with the rule that
   it must not overlap another user's range or a real account's ids. Past 65536
   ids, `useradd`'s default count, no wider range is asked for: the ways
-  out name the ids and say to run as root or in a container.
+  out name the ids and say to run as root or in a container. Under root's
+  `--userns`, the `ranikust` range's own ways out apply instead
+  ([sandbox](sandbox.md#--userns)).
 
 ## Failure handling
 

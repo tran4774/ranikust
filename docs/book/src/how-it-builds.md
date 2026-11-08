@@ -221,6 +221,15 @@ other.
   may leave a `.ranikust-anon-userns-probe-*` directory of root's, not
   empty, in the state directory, which the next builds warn of. ranikust
   removes neither: remove them by hand, as root.
+- **Owners.** The build can give a file only an owner of the range, ids 0
+  to its count − 1. An image with an owner past them is refused before any
+  of its layers is extracted, naming the owners, and so is a `COPY
+  --chown` or a `USER` past them when it comes. The ways out: widen the
+  `ranikust` line of `/etc/subuid`, `/etc/subgid` or both to the count
+  named (id N needs N + 1), still sharing no id with an account, another
+  range or another tool's, or build without `--userns`. For an owner past
+  65535, which would need a count past 65536, ranikust asks for no wider
+  range: build without `--userns` ([ADR-0098]).
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the

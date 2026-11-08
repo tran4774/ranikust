@@ -997,6 +997,20 @@ with another map:
   root. A build's start may take another build's new probe directory for
   such a leftover before that build holds it; that build then makes one
   under another name, once.
+- **Owners outside the range.** The namespace maps ids 0 to `<count>` − 1
+  and no other, so an image with an owner past them is refused before any
+  of its layers is extracted, as in every user namespace, naming the owners
+  ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
+  [#208](https://github.com/tran4774/ranikust/issues/208)). A `COPY
+  --chown`, a cache mount's or a secret's owner, or a `RUN`'s user the range
+  lacks is refused when it comes. The ways out name the `ranikust` lines,
+  never the calling user's ranges: widen the range of `/etc/subuid`,
+  `/etc/subgid` or both to the count that reaches the highest id named (id N
+  needs N + 1), sharing no id with another range, an account or another
+  allocator, or build without `--userns`. Where that count would pass 65536,
+  `useradd`'s default and the count the refusal of a missing range asks
+  for, it is named but not asked for: building without `--userns` is the
+  way out.
 - **Root only.** From a user other than root, `--userns` is a usage error
   before anything is written: only root may map the range, and that user's
   build already runs in a user namespace of its own.
@@ -1032,13 +1046,7 @@ builds, which share the range
 in rootless mode too
 ([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
 (b), [#34](https://github.com/tran4774/ranikust/issues/34)): under `--userns`
-the init still runs as the namespace's root. Ways out that name the
-`ranikust` range, for an image with an owner outside it, are
-[#208](https://github.com/tran4774/ranikust/issues/208): such an image is
-already refused before any of its layers is extracted, as in every user
-namespace
-([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)),
-but with rootless mode's ways out.
+the init still runs as the namespace's root.
 
 ## Failure handling
 
