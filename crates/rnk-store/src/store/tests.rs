@@ -547,3 +547,15 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(state.join(STATE_MARKER).is_file());
     assert!(state.join("caches/go").is_dir());
 }
+
+/// A directory the store makes either holds what later builds reuse,
+/// which keeps a failed set-up's store, or only what a build uses while it
+/// runs: a new one is sorted into one of the two.
+#[test]
+fn each_store_directory_holds_data_or_a_builds_own_files() {
+    let own = ["locks", "tmp", "builds"];
+    for dir in DIRS {
+        assert!(DATA_DIRS.contains(&dir) != own.contains(&dir), "{dir}");
+    }
+    assert_eq!(DIRS.len(), DATA_DIRS.len() + own.len());
+}

@@ -1048,6 +1048,7 @@ impl<D: ExportLayer> LayerSource for DiffLayer<D> {
 fn exporter_error(e: rnk_snapshot::Error) -> rnk_layer::Error {
     match e {
         rnk_snapshot::Error::Layer(e) => e,
+        // Each other variant's message names what failed: no arm adds to it.
         e => rnk_layer::Error::Exporter(Box::new(e)),
     }
 }

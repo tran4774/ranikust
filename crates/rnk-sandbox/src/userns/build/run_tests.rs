@@ -507,9 +507,14 @@ fn check_network(out: &str) {
 fn outer_network() -> Vec<(String, String)> {
     let mut found = Vec::new();
     for entry in fs::read_dir("/sys/class/net").unwrap() {
-        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        let entry = entry.unwrap();
+        // Not a device (`bonding_masters`): a device is a link.
+        if !entry.file_type().unwrap().is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
         let mac = fs::read_to_string(format!("/sys/class/net/{name}/address"))
-            .unwrap_or_default()
+            .unwrap()
             .trim()
             .to_owned();
         if name != "lo" {

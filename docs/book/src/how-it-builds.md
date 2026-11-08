@@ -61,7 +61,9 @@ Where none of that works a regular user is refused (see
   credentials; ranikust does not block it. Where builds run untrusted
   Dockerfiles, deny those addresses with a network policy, require IMDSv2 with
   a hop limit of 1, or pass `--network=none` when the build needs no network.
-  A `RUN --network=none` sees only a loopback interface, which is up. In a
+  A `RUN --network=none` sees only a loopback interface, which is up; in a
+  rootless build where the container's runtime masks `/sys`, its
+  `/sys/class/net` lists no interface at all. In a
   container without `CAP_NET_ADMIN` it stops the build, unless `--allow
   network.none-userns` lets ranikust use a user namespace for it, under a
   seccomp filter ([ADR-0033]).
