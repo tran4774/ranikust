@@ -303,8 +303,20 @@ pub(crate) fn set_up(
         held,
         ..
     } = plan;
-    let userns = rnk_sandbox::enter_build_user_namespace(ids)
-        .map_err(|e| super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into()))?;
+    let shifted = matches!(ids, BuildIds::Shifted(_));
+    let what = if shifted {
+        "--userns"
+    } else {
+        "rootless overlay mode"
+    };
+    let userns = rnk_sandbox::enter_build_user_namespace(ids).map_err(|e| {
+        let no_map = matches!(e, rnk_sandbox::Error::NoUserNamespace { .. });
+        let mut refusal = super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into());
+        if shifted && no_map {
+            refusal.guidance = USERNS_UNUSABLE.into();
+        }
+        refusal
+    })?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let mut held = Some(held);
     let opened = match then.child {
@@ -320,7 +332,7 @@ pub(crate) fn set_up(
     let store = opened.map_err(super::inside_userns)?;
     // The store holds the directory now.
     drop(held);
-    match in_store(state_dir, &store, fallbacks, scanned, seccomp, then) {
+    match in_store(state_dir, &store, fallbacks, scanned, seccomp, then, what) {
         Ok((outcome, sandbox)) => Ok(Setup {
             outcome,
             state_dir: state_dir.to_path_buf(),
@@ -338,7 +350,7 @@ pub(crate) fn set_up(
 }
 
 /// [`set_up`]'s steps once the store is open: the outcome and the
-/// sandbox.
+/// sandbox. `what` names the mode in messages.
 fn in_store(
     state_dir: &Path,
     store: &rnk_store::Store,
@@ -346,7 +358,9 @@ fn in_store(
     scanned: bool,
     seccomp: &Seccomp,
     then: &Then<'_>,
+    what: &str,
 ) -> Result<(Outcome, Sandbox), Refusal> {
+    let broken = |reason: String| broken(what, &reason);
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
@@ -404,12 +418,12 @@ fn abandon(store: rnk_store::Store) {
     }
 }
 
-/// A failure in the build's user namespace: no other mode may follow in
-/// this process.
-fn broken(reason: String) -> Refusal {
+/// A failure in the build's user namespace, `what` naming the mode: no
+/// other mode may follow in this process.
+fn broken(what: &str, reason: &str) -> Refusal {
     Refusal {
         kind: Kind::Broken,
-        reason: format!("rootless overlay mode: {reason}"),
+        reason: format!("{what}: {reason}"),
         guidance: "".into(),
     }
 }

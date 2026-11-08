@@ -869,6 +869,12 @@ fn rootless(
     fault: Option<&str>,
 ) -> Rootless {
     let how = via.flag();
+    // `--userns` has no other mode to try: a usage error comes before any write.
+    if let Via::Userns(args) = via
+        && let Err(failure) = overlay_flags(args)
+    {
+        return Rootless::Built(Err(failure));
+    }
     let plan = match span.in_scope(|| {
         if fault == Some("no-userns") {
             let euid = rustix::process::geteuid().as_raw();
@@ -892,7 +898,7 @@ fn rootless(
         }
         exposure::warn_build_args(&config.build_args, exposure::Reach::ProcRbind);
     }
-    if let Via::AutoUser(args) | Via::AutoRoot(args) | Via::Userns(args) = via
+    if let Via::AutoUser(args) | Via::AutoRoot(args) = via
         && let Err(failure) = overlay_flags(args)
     {
         return Rootless::Built(Err(failure));

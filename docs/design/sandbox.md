@@ -898,8 +898,9 @@ with another map:
   there), each searchable by that uid and gid by its mode bits (an ACL is not
   read). A missing one is made for it, `0700`, the missing directories above
   it root's with mode `0711`; an existing one of root's is refused, never given
-  away: root's own builds keep layers extracted with real ids, setuid-root
-  files among them. Every refusal comes before anything is written, with
+  away, and so is root's default, `/var/lib/ranikust`, missing or not: root's
+  own builds keep layers extracted with real ids, setuid-root files among
+  them. Every refusal comes before anything is written, with
   guidance. Extracted layers are keyed by the namespace's id map, as in every
   user namespace ([cache-and-store](cache-and-store.md)).
 - **Never another mode.** `--userns` is refused with `--mode=kaniko`; where a

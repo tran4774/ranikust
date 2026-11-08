@@ -2,15 +2,17 @@
 # suite): ranikust runs as real root with a `ranikust` range of its own in
 # /etc/subuid and /etc/subgid, both restored after. Refused before
 # anything is written without the range, with a state directory below a
-# directory the range's first uid cannot search, and with an existing
-# state directory of root's; a RUN's uid 0 is the range's first uid on the
-# host, by its uid_map, gid_map and status read from the host and by the
-# owner there of a file it makes; the --reproducible digest equals the
-# same build's without --userns; and ADR-0074's reach of a distinct host
-# account is measured again: neither an account with the RUN's own ids nor
-# one with the ids they map to on the host reaches it, the latter reaching a
-# process of its own (the control). In the kaniko leg,
-# --userns with --mode=kaniko is a usage error.
+# directory the range's first uid cannot search, with an existing state
+# directory of root's or root's default, and with a flag of kaniko mode
+# alone; missing parents are made root's 0711; a RUN's uid 0 is the
+# range's first uid on the host, by its uid_map, gid_map and status read
+# from the host and by the owner there of a file it makes; the
+# --reproducible digest equals the same build's without --userns; and
+# ADR-0074's reach of a distinct host account is measured again: neither
+# an account with the RUN's own ids nor one with the ids they map to on
+# the host reaches it, the latter reaching a process of its own (the
+# control). In the kaniko leg, --userns with --mode=kaniko is a usage
+# error.
 
 # Below /var/lib, which only root writes and every uid may search.
 UW=/var/lib/rnk-quick-userns
@@ -69,6 +71,30 @@ case_run() {
     fail "--userns with a state directory of root's: $log"
   expect "$(sudo stat -c '%u:%g %a' "$UW/roots") $(sudo ls -A "$UW/roots" | wc -l)" "0:0 700 0" \
     "root's state directory after --userns was refused"
+
+  rc=0
+  log="$(urun flagged --target content --state-dir "$UW/flagged" --ignore-path /srv 2>&1)" || rc=$?
+  expect "$rc" 2 "--userns with a flag of kaniko mode alone"
+  grep -qF -- '--ignore-path takes effect in kaniko mode only' <<<"$log" ||
+    fail "--userns with a flag of kaniko mode alone: $log"
+  ! sudo test -e "$UW/flagged" || fail "--userns made a state directory before its usage error"
+
+  local before
+  before="$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)"
+  rc=0
+  log="$(urun default --target content 2>&1)" || rc=$?
+  expect "$rc" 1 "--userns with root's default state directory"
+  grep -qF "/var/lib/ranikust is root's default" <<<"$log" ||
+    fail "--userns with root's default state directory: $log"
+  expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
+    "root's default state directory after --userns was refused"
+
+  # Missing parents are root's, searchable only.
+  rc=0
+  log="$(urun nested --target content --state-dir "$UW/new/a/state" 2>&1)" || rc=$?
+  expect "$rc" 0 "--userns below missing parents: $log"
+  expect "$(sudo stat -c '%u:%g %a' "$UW/new" "$UW/new/a" "$UW/new/a/state" | paste -sd ' ')" \
+    "0:0 711 0:0 711 $S:$G 700" "the --userns state directory and the parents it made"
 
   local mapped plain
   mapped="$(udigest userns --reproducible --target content \

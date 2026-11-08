@@ -106,12 +106,23 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
 /// [`check_chain`]'s for it, and what this process (root) makes is given
 /// to it: the state directory, made `0700` and owned by its uid and gid,
 /// and each missing directory above it, root's with mode `0711`, so that
-/// it may search them. An existing state directory is never given.
+/// it may search them. An existing state directory is never given, nor
+/// root's default ([`crate::config::DEFAULT_STATE_DIR`]), missing or not.
 ///
 /// # Errors
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused> {
+    // Made for the mapped ids, root's default would refuse root's own builds.
+    if matches!(owner, Owner::Mapped { .. })
+        && state_dir == Path::new(crate::config::DEFAULT_STATE_DIR)
+    {
+        return Err(Refused(format!(
+            "the state directory {} is root's default: {}",
+            state_dir.display(),
+            owner.advice()
+        )));
+    }
     let existing = state_dir
         .ancestors()
         .find(|p| std::fs::symlink_metadata(p).is_ok())
