@@ -979,5 +979,6 @@ fn root_deletes_nothing_in_a_probe_directory_it_gave_away() {
     assert!(probe_dir.join("victim/deep/keep").exists());
 }
 
+mod canary;
 mod hostile;
 mod owners;
