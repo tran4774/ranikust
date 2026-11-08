@@ -17,7 +17,7 @@ from that.
 |---|---|---|---|---|---|
 | T0 | Unit and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
 | T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, rootless Podman | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine; on Ubuntu 24.04 an AppArmor restriction leaves an unconfined binary's user namespace without capabilities **[measured]** ([ADR-0099](adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)), and later releases probably the same **[inferred]**; which legs run in which tier is in [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned) | `just test-rootless` ([below](#the-rootless-lane-tier-t1)); `just smoke`, `just smoke-case` ([below](#smoke-tests-tier-t1)) | The rootless lane (profiles `default`, `privileged`); smoke tests |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, rootful Docker, kaniko mode on `/`, host-safety attacks | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | Suites `unit`, `smoke`, `quick`, `secrets`, `e2e`, `push`, `ultra` |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, rootful Docker, kaniko mode on `/`, host-safety attacks | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | Suites `unit`, `smoke`, `quick`, `secrets`, `k8s`, `e2e`, `push`, `ultra` |
 | T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), and in CI a GitHub-hosted runner; never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)); CI's `t2.yml` | Suite `unit-c` |
 | T3 | CI, in lanes chosen by what a pull request changes ([below](#ci-lanes)): rustfmt, clippy, T0 on x86_64, cargo-deny, rustdoc, mdBook and docs-lint; a full run adds the static musl build and the native aarch64 T0 (the T2 and T2c jobs are in their rows). The `Release` workflow dry-runs on a pull request that changes how a release is made ([CONTRIBUTING](../CONTRIBUTING.md#releasing)) | None | GitHub Actions (`.github/workflows/ci.yml`, `t2.yml`, `release.yml`) | `just ci` (everything `ci.yml` runs on a full run); `just test-release` (the release scripts) | In use |
 
@@ -66,6 +66,7 @@ from that.
 |---|---|---|---|
 | A branch's correctness | `just check`; T1 smoke cases in both modes (`rnk-vps-lane run <branch> 'RANIKUST_SMOKE_REGISTRY=mirror.gcr.io just smoke-case'`, and with `RANIKUST_CASE_MODE=kaniko`); VM `unit` and `quick` (`sg kvm -c 'just test-vm unit quick'`, `RANIKUST_QUICK_MODE=kaniko` for kaniko mode) | host or the VPS lane; the local VM | minutes |
 | The root tests of a branch that touches no VM-only path, or while the VM is busy | `just test-container unit-c` (T2c, three Docker profiles); the VM's `unit` still runs them too and is the reference before a merge that touches `rnk-sandbox`, `rnk-snapshot` mounts or `rnk-rootfs` deletion | the VPS lane (rootful Docker) | minutes |
+| The Kubernetes rows of the privilege matrix (a change to the probe's routing or its messages) | `sg kvm -c 'just test-vm k8s'` ([k3s](#privilege-matrix-in-kubernetes)) | the local VM | a few minutes |
 | A change to the e2e harness or to how builders are compared | the light e2e: `sg kvm -c 'just test-vm e2e'` (W0, every builder) | the local VM | a few minutes |
 | Performance numbers | the ultra benchmark: `sg kvm -c 'just test-vm ultra'` (nextjs-kaniko's W1–W3), only when the maintainer asks | the local VM, nothing else running on the host | tens of minutes per round |
 | Acceptance of a phase | the ultra benchmark with rounds: `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`, only when the maintainer asks | the same | an hour or more |
@@ -87,7 +88,7 @@ The plan comes from the verification plan of
 | Property and fuzz tests | Parser, ignore matcher, tar write/read round trips, cache-key determinism | proptest in several crates (each [crate card](agents/README.md)'s `## Tests`); `cargo fuzz` on `extract` is planned (Phase 6) |
 | Image content vs kaniko | Each image flattened to `(path, type, mode, uid, gid, size, sha256, link target, xattrs)` plus its config, compared with kaniko's | T2, done: `e2e` and `ultra` |
 | Mode equivalence | Overlay and kaniko mode give the same flattened content, apart from the accepted differences of [ADR-0012](adr/0012-accept-divergence-between-modes.md); `--jobs 1` and the default give identical digests | T1/T2, done: `e2e`, `ultra`, the `reproducible` and `par-stages` cases |
-| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags` and `userns-probe` cases) and the VM's regular user T2 (the `smoke` suite's user leg). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`); [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) puts the Docker-variant and k3s legs in T2 (planned). Gaps: [below](#not-covered-yet) |
+| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags` and `userns-probe` cases) and the VM's regular user T2 (the `smoke` suite's user leg). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`). Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned. Gaps: [below](#not-covered-yet) |
 | Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; a `--state-dir` at `/`, below `/home/<user>` and in a directory others may write. After each case: the host is unchanged, and no mount or process is left | T2, partly: the red-team cases of `quick`, the `secrets` suite and the `rnk-sandbox` and `rnk-rootfs` attack tests |
 
 ## Not covered yet
@@ -95,11 +96,14 @@ The plan comes from the verification plan of
 - Environments of the privilege matrix that need another host or setup:
   cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a reboot), Docker with
   `--cap-add SYS_ADMIN` alone (no suite runs it: the `smoke` suite and the
-  container lane's `sysadmin` profile always add `apparmor=unconfined`), a
-  regular user on Ubuntu 24.04 or later (needs that distribution), a
-  Kubernetes pod under the restricted Pod Security Standard.
+  container lane's `sysadmin` profile always add `apparmor=unconfined`) and
+  a regular user on Ubuntu 24.04 or later (needs that distribution).
   [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)
   decides which of these Phase 3 covers (planned) and which wait for Phase 6.
+- Kubernetes beyond the k3s rows ([below](#privilege-matrix-in-kubernetes)):
+  managed clusters (GKE Autopilot, EKS on Bottlerocket, OpenShift), whose
+  outcomes are inferred from rows 7a to 7d; a kubelet with a default seccomp
+  profile (`seccompDefault`); an SELinux node.
 - Kernels before 5.11 (an older `..` walk; Debian 11 has 5.10) and an aarch64
   guest.
 - SELinux beyond the `el9` suite: its two legs build in overlay mode, as root
@@ -251,6 +255,7 @@ run goes through these steps:
 | `ultra` | The ultra benchmark: the same on `nextjs-kaniko`'s W1–W3, with its npm proxy; tens of minutes per round. Only when the maintainer asks for performance numbers or an acceptance run. Not part of the default `just test-vm` |
 | `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path`: a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP [test registry](#test-registries) as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
 | `secrets` | ADR-0051: kaniko mode on the `/` of default Docker containers (`ubuntu:24.04`, no `--privileged`) with `RUN` steps that attack ranikust (`tests/vm/guest/secrets/attack.sh`; vectors V1–V13 in the header of `secrets.sh`): the state directory, `/proc/*/fd`, ranikust's `environ`, `mem` and `cmdline`, the `RUN`'s own environment, processes left alive, the same from `unshare -Ur`, another process's `environ`, the sealed copy of the binary through every thread's `exe`, `ptrace` and `process_vm_writev` (V13, with the VM's Yama `ptrace_scope` at 0 for the suite). Three scenarios (ranikust as PID 1, the same with `--cap-add SYS_PTRACE`, and started from `sh -c`); every vector must be blocked but the two ranikust only warns about (a `--build-arg` value in `cmdline`; the shell's `environ`), whose warnings must appear. The state directory may hold only the store's marker of a build in progress, `.ranikust-building` (the PID namespace and boot id). It also records whether the container's overlayfs takes `O_TMPFILE` and how ranikust made its state files, then runs `stopsig` (ADR-0077) and `memlimit` (ADR-0056: a 512 MiB layer built under `--memory 256m --memory-swap 256m` must succeed, its state on disk, never in `memfd`). Not part of the default `just test-vm` |
+| `k8s` | The Kubernetes rows of the privilege matrix (ADR-0100 rows 7a to 7d) as pods of a one-node k3s cluster, each asserting the mode `ranikust` picks or its refusal, with step and errno ([below](#privilege-matrix-in-kubernetes)). It runs after the other suites, never with `push`. Not part of the default `just test-vm` |
 | `el9` | Row 9e of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)'s privilege matrix, the only suite of `RANIKUST_VM_RELEASE=alma9` and its default (AlmaLinux 9, kernel 5.14, SELinux enforcing, which it checks first, with `auditd` running and the user's subordinate ranges). Two legs build with `--mode=auto` in their default state directories: root must get overlay mode as root, and the VM's regular user, through `newuidmap`, rootless overlay mode with a new `proc`; each build's mode line and user-namespace probe line must be the ones measured there, step by step with each errno ([modes-and-detection](design/modes-and-detection.md#where-environments-land) has what was measured). Each leg builds a `RUN` per in-sandbox check of `just smoke` (`tests/smoke/lib.bash`) and one whose SELinux context must be the caller's, the `rootless` case's `content` stage, whose `--reproducible` digest must be the same for both legs (no SELinux label reaches a layer), and `tests/smoke/e2e`, no stub or secret in a blob or a log; Podman runs the images. The default state directories must have the types measured. The audit log, rotated files included, must hold no SELinux denial from while the legs built, and must hold the one a container gets reading a home directory bound without relabelling (the control). Runs only in the local VM |
 
 ### Test registries
@@ -434,6 +439,59 @@ A `ranikust` build that stops because a part is not built yet (`not
 implemented`, a flag refused until a later phase) is recorded as `pending`
 and does not fail the suite; any other failure does.
 
+### Privilege matrix in Kubernetes
+
+`just test-vm k8s` and CI's `T2 k8s` job ([below](#t2-on-github-hosted-runners))
+run `tests/vm/guest/k8s.sh`: rows 7a to 7d of
+[ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)'s
+privilege matrix as pods of a one-node k3s cluster. Each pod runs the
+`ranikust` binary with `--mode=auto` on a small context (`FROM scratch`,
+`COPY`, `RUN`) and the suite asserts the mode it picks or its refusal, with
+the step and errno it prints. Under a minute in the VM after its boot.
+
+- **k3s.** `tests/vm/guest/k8s/pin.env` pins the release, `v1.37.2+k3s1`
+  (Kubernetes 1.37.2, containerd 2.3.7, runc 1.4.2; row 7b needs Kubernetes
+  1.33, containerd 2.0, runc 1.2 and Linux 6.3 or later, and the VM has
+  6.8), and the SHA-256 of its `k3s` binary, from the release's
+  `sha256sum-amd64.txt`; a new pin changes both. `tests/vm/stage.sh`
+  downloads it from the GitHub release and refuses another hash; `vm.sh`
+  keeps it in the VM cache (`_vm-image/k3s/`) for the next run, a runner
+  downloads it each time. `k8s.sh` checks the hash again, installs it as
+  `/usr/local/bin/k3s` and runs it as the transient systemd unit `rnk-k3s`,
+  without Traefik, ServiceLB, the metrics server, local-path storage, CoreDNS
+  or the Helm controller. The one image the cluster pulls is the pause
+  image, from `registry.k8s.io` by digest at each run (k3s's default is on
+  Docker Hub; `RANIKUST_VM_IMAGE_REGISTRY` mirrors Docker Hub only, and the
+  VM cache does not keep it), with containerd's retries; a failed pull
+  shows in the pods' `describe` files. The pods' image (the VM's static
+  `busybox`, `ranikust`, `guest/k8s/pod.sh`, the context) is made with
+  `docker import` and imported into k3s's containerd. k3s is stopped at the end, but its network set-up (interfaces,
+  iptables rules) stays until the VM goes, so `vm.sh` runs `k8s` after the
+  other suites, whatever the order given, and refuses it with `push`.
+- **Controls.** Each pod first prints what it got (`pod.sh`): its uid, its
+  AppArmor label, its `uid_map`, its seccomp mode, `no_new_privs` and
+  effective capabilities, and the mount `/proc/sys` is on; the suite checks
+  them against the row before it reads ranikust's lines. A root pod in the
+  `restricted` namespace must be refused at admission.
+
+| Row | Pod | ADR-0100 expects | Measured and asserted (Ubuntu 24.04, kernel 6.8, k3s `v1.37.2+k3s1`) |
+|---|---|---|---|
+| 7a | Default: the host's users, containerd's AppArmor profile (`cri-containerd.apparmor.d`), a masked `/proc` with `/proc/sys` read-only, no seccomp filter (k3s's kubelet sets no default profile) | kaniko on `/` | Kaniko mode on `/`, which builds: root may not mount ("a private mount namespace needs privileges this process does not have"); the user namespace probe, reported only, stops at `proc` (`make / a recursive slave mount: EACCES`, the profile denying `mount`) |
+| 7b | `hostUsers: false`, `procMount: Unmasked`, AppArmor `Unconfined`, an `emptyDir` at the state directory | overlay, rootless, a fresh `proc` | Refused: rootless overlay mode is not tried where `/proc/sys` is writable ([ADR-0107](adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)), and kaniko mode on `/` refuses it ([ADR-0054](adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md)); not ADR-0100's expectation, below |
+| 7c | The same with the default AppArmor profile | refused | Refused the same way |
+| 7d | A namespace enforcing the `restricted` Pod Security Standard: uid 1000, no capability, `RuntimeDefault` seccomp, `no_new_privs`; the state directory on the pod's `/dev/shm`, a sticky tmpfs, since an `emptyDir` is writable by others (ADR-0050) | refused | Refused: the user namespace probe stops at `unshare` (`unshare(CLONE_NEWUSER): EPERM`) |
+
+- **Row 7b** differs from ADR-0100, which expected rootless overlay mode with
+  a fresh `proc`: the suite asserts today's routing, which refuses it
+  [open: #201]; why, and what the `measured:` lines of `k8s.log` show (a
+  `core_pattern` write in the 7b and 7c pods, the user namespace probe in a
+  `hostUsers: false` pod with a masked `/proc`, at Ubuntu's AppArmor switch
+  and at 0), is in [experiment 18](research/experiments/18-kubernetes-pods-in-k3s.md).
+- **Results** in `out/k8s/` (in the VM's results, and in a failed runner
+  job's artifact): `env.txt` (kernel, k3s, Kubernetes, containerd, runc, the
+  AppArmor switch, the pause image), each pod's log and `kubectl describe`,
+  and on a failure the cluster's events and k3s's journal.
+
 ## The container lane (tier T2c)
 
 `just test-container [unit-c]` ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md))
@@ -572,7 +630,7 @@ What runs, by event:
 | `docs (rustdoc, mdBook)` | rustdoc when `rust`, mdBook when `book` | the same |
 | `docs-lint` | always | always |
 | `static release build (x86_64 musl)`, `test (aarch64 musl, native)` | no | when `rust` |
-| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets` | no | when `t2` |
+| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets`, `T2 k8s` | no | when `t2` |
 
 - **A full run** is a pull request that is ready for review (marking a draft
   ready starts one), a draft labelled `ci:full`, a manual run ("Run
@@ -628,18 +686,19 @@ What runs, by event:
 
 On a full CI run ([above](#ci-lanes)) that touches the Rust code or the T2
 harness, `.github/workflows/t2.yml` runs the T2 suites `unit`, `smoke`,
-`quick` and `secrets` and the T2c lane `unit-c` as root directly on
+`quick`, `secrets` and `k8s` and the T2c lane `unit-c` as root directly on
 GitHub-hosted `ubuntu-24.04` runners
 ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)): a
 runner is a fresh VM GitHub makes for one job and deletes after it, with
-passwordless `sudo`, so it takes the VM's place there. Three jobs, each its
-own runner, about five minutes of wall time together:
+passwordless `sudo`, so it takes the VM's place there. Four jobs, each its
+own runner, in parallel:
 
 | Check | Suites |
 |---|---|
 | `T2 unit (root on the runner)` | `unit` |
 | `T2 smoke, quick, secrets (root on the runner)` | `smoke`, `quick`, `secrets` |
 | `T2c unit-c (rootful Docker on the runner)` | `unit-c` |
+| `T2 k8s (k3s on the runner)` | `k8s` ([below](#privilege-matrix-in-kubernetes)) |
 
 - `tests/vm/runner.sh <suite>...` is the entry point (its header has the
   details). Before anything else it refuses (exit 2) unless GitHub Actions
@@ -661,9 +720,9 @@ own runner, about five minutes of wall time together:
   `lane.sh` then runs on the runner's rootful Docker: ADR-0063's profiles and
   control checks as on the VPS.
 - The runner gets what the VM's base image adds (`busybox-static`, `zstd`,
-  `pigz`, `uidmap`) and, for the smoke job, Docker with containerd's image
-  store, as in the VM, whose `docker load` reads the OCI layout
-  `smoke-build` writes.
+  `pigz`, `uidmap`; the k8s job only `busybox-static`) and, for the smoke
+  job, Docker with containerd's image store, as in the VM, whose
+  `docker load` reads the OCI layout `smoke-build` writes.
   Images the guest scripts name come from `mirror.gcr.io`
   (`RANIKUST_VM_IMAGE_REGISTRY`), as in the VM; Docker's own pulls of
   `docker.io` names (the T2c image's `ubuntu@sha256:...` base) go to Docker
@@ -675,7 +734,7 @@ own runner, about five minutes of wall time together:
 - The Rust caches of these jobs follow the rules of
   [CI lanes](#ci-lanes) and share the repository's 10 GB cache limit with
   `ci.yml`; `unit` and `unit-c` build the same test binaries and share one
-  entry (`t2-tests`).
+  entry (`t2-tests`), as `smoke` and `k8s` do (`t2-smoke`).
 - The runner is not the VM (another kernel and Docker, AppArmor's
   `apparmor_restrict_unprivileged_userns=1`, an image GitHub updates
   weekly). The local VM stays the reference: `e2e`, `ultra`, `push`, kernel

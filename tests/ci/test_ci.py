@@ -85,7 +85,8 @@ class Classify(unittest.TestCase):
 
     def test_the_t2_harness_runs_t2_alone(self):
         for p in ["tests/vm/runner.sh", "tests/vm/guest/unit.sh", "tests/container/lane.sh",
-                  "tests/smoke/cases/run/Dockerfile"]:
+                  "tests/smoke/cases/run/Dockerfile", "tests/vm/guest/k8s.sh",
+                  "tests/vm/guest/k8s/pin.env"]:
             self.check([p], {"t2"})
 
     def test_the_workflows_and_this_script_run_everything(self):
@@ -464,6 +465,7 @@ CONDITIONS = {
         "unit": f"{T2} && {FULL}",
         "unit-c": f"{T2} && {FULL}",
         "smoke": f"{T2} && {FULL}",
+        "k8s": f"{T2} && {FULL}",
         "caches": PUSH_TO_MAIN,
         "result": "always()",
     },
@@ -560,11 +562,12 @@ class Workflows(unittest.TestCase):
             self.assertIn("    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'",
                           js["caches"], wf)
 
-    def test_unit_and_unit_c_share_their_cache(self):
+    def test_the_t2_jobs_that_build_the_same_share_their_cache(self):
         js = jobs("t2.yml")
         self.assertEqual(cache_name("unit", js["unit"]), "t2-tests")
         self.assertEqual(cache_name("unit-c", js["unit-c"]), "t2-tests")
-        self.assertEqual(cache_name("smoke", js["smoke"]), "t2-smoke-smoke")
+        self.assertEqual(cache_name("smoke", js["smoke"]), "t2-smoke")
+        self.assertEqual(cache_name("k8s", js["k8s"]), "t2-smoke")
 
     def test_both_workflows_have_the_same_triggers_and_label_rule(self):
         def picked(wf):

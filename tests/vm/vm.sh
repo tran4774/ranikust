@@ -3,8 +3,8 @@
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
 #   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push,
-#                                 secrets, ultra; default unit smoke; with
-#                                 RANIKUST_VM_RELEASE=alma9, el9 only
+#                                 secrets, ultra, k8s; default unit smoke;
+#                                 with RANIKUST_VM_RELEASE=alma9, el9 only
 #
 # `quick` (the small Dockerfiles of tests/smoke/cases, a minute or two) is
 # for smoke tests and proofs of concept that need real root; `e2e` (the
@@ -14,8 +14,13 @@
 # performance numbers or an acceptance run (docs/testing.md#which-test-for-what).
 # `secrets` runs kaniko mode on `/` in default Docker containers with
 # attacker `RUN`s that try to read ranikust's state and credentials
-# (ADR-0051). `el9` is row 9e of ADR-0100's privilege matrix: root and a
-# regular user on AlmaLinux 9 with SELinux enforcing.
+# (ADR-0051). `k8s` installs k3s (the release of guest/k8s/pin.env, its
+# download kept in the cache) and runs the Kubernetes rows of the privilege
+# matrix in pods (ADR-0100 rows 7a-7d); it runs after the other suites,
+# whatever the order given, and never with push: k3s's network set-up (its
+# interfaces and iptables rules) stays until the VM goes. `el9` is row 9e of
+# ADR-0100's privilege matrix: root and a regular user on AlmaLinux 9 with
+# SELinux enforcing.
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -32,7 +37,7 @@
 #                        9.8, kernel 5.14, SELinux enforcing, Podman instead
 #                        of Docker), which runs the el9 suite only
 #   RANIKUST_VM_CACHE    verified image cache (cloud images, provisioned base
-#                        images, e2e reference images), default
+#                        images, e2e reference images, the k3s binary), default
 #                        tests/e2e/_vm-image of the main checkout, shared by
 #                        every git worktree (gitignored)
 #   RANIKUST_VM_LOCK_WAIT  seconds to wait for another run's VM to finish,
@@ -107,7 +112,7 @@ if [ ${#SUITES[@]} = 0 ]; then
   if [ "$RELEASE" = alma9 ]; then SUITES=(el9); else SUITES=(unit smoke); fi
 fi
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra | el9) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra, el9)" ;; esac
+  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra | k8s | el9) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra, k8s, el9)" ;; esac
   # The other suites need Ubuntu's Docker and packages.
   case "$RELEASE:$s" in
     alma9:el9) ;;
@@ -137,6 +142,8 @@ if [ "$RELEASE" = alma9 ]; then
 fi
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
+# push runs last, and would run on k3s's leftover network set-up.
+! { wants k8s && wants push; } || die "run k8s and push in separate runs: k3s's network set-up stays until the VM goes"
 
 # --- Network: nothing on the host's loopback but what a suite needs (ADR-0086) -
 #
@@ -357,7 +364,7 @@ fi
 # left running must not hold the one-VM lock after this script.
 STAGE="$TARGET/vm/stage"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-RANIKUST_LOG_T0=$SECONDS bash "$HERE/stage.sh" "$STAGE" net "${SUITES[@]}" 9>&-
+RANIKUST_LOG_T0=$SECONDS RANIKUST_K3S_CACHE="$CACHE/k3s" bash "$HERE/stage.sh" "$STAGE" net "${SUITES[@]}" 9>&-
 
 if wants e2e || wants ultra; then
   # The reference images, saved once from the host's podman (where
@@ -1041,15 +1048,16 @@ guest_step() {
   done
 }
 
-# Every suite but push, in the order given, after the network check; then
-# push, in a step of its own, the only time the registry gate is open
-# (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
+# Every suite but push, in the order given (k8s last), after the network
+# check; then push, in a step of its own, the only time the registry gate is
+# open (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
 # once the guest reports the other suites finished, which root in the VM
 # (or a process running as rnk) could bring forward, and shuts when the
 # push step reports its end, or at about PUSH_DEADLINE whatever the guest
 # says.
 OTHERS=()
-for s in "${SUITES[@]}"; do [ "$s" = push ] || OTHERS+=("$s"); done
+for s in "${SUITES[@]}"; do case "$s" in push | k8s) ;; *) OTHERS+=("$s") ;; esac; done
+! wants k8s || OTHERS+=(k8s)
 guest_step suite 0 ${OTHERS[@]+"${OTHERS[@]}"}
 status=$STEP_RC
 if wants push; then

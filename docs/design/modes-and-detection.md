@@ -56,6 +56,7 @@ table per CI system in §6) and
 | Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless, with a volume at the state directory and `--allow proc.rbind`, the container's `/proc` being masked ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); without the flag `--mode=overlay` is refused, naming it, and `--mode=auto` takes kaniko mode on `/` with the ADR-0054 checks (refused on a host); without a volume the state directory is on overlayfs, so kaniko mode on `/` with a hint to mount one ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
 | Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (full uid range only with `newuidmap` and `/etc/subuid`) |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
+| Kubernetes pod with `hostUsers: false` and `procMount: Unmasked`, AppArmor confined or not | refuse: `/proc/sys` writable ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) case (ii), which ranikust (`rootless_kept_off`) also applies to an unconfined pod, where ADR-0100 row 7b expected overlay, rootless: [experiment 18](../research/experiments/18-kubernetes-pods-in-k3s.md)) [open: #201] |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
 
@@ -67,10 +68,12 @@ ranikust refuses to start on a kernel before 5.8
 Which of these environments the probe is tested in, and in which tier, is
 decided in
 [ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md).
-Built: the T1 `rootless` smoke case (rootless Podman with a volume, row 5)
-and the T1 kaniko leg's cases (row 5b, in part); the runner, VM and k3s legs
-are planned ([testing](../testing.md#quick-smoke-cases)), but for row 9e: the
-T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
+Built: the T1 `rootless` smoke case (rootless Podman with a volume, row 5),
+the T1 kaniko leg's cases (row 5b, in part) and the k3s leg, the T2 `k8s`
+suite (rows 7a to 7d, measured;
+[testing](../testing.md#privilege-matrix-in-kubernetes)); the runner and VM
+legs are planned ([testing](../testing.md#quick-smoke-cases)), but for row
+9e: the T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
 AlmaLinux 9.8 (kernel 5.14, SELinux enforcing, policy `targeted`). Measured
 there, as expected: root gets overlay mode as root and a regular user with
 ranges rootless overlay mode, with a new `proc` and a read-only rbind of
