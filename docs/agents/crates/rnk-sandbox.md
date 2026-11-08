@@ -183,7 +183,7 @@ pub struct StopSignal { pub signo: i32, pub pid: u32, pub obeyed: bool }  // obe
 pub fn forbid_core_dumps() -> rustix::io::Result<()>;  // first in main (ADR-0051): soft RLIMIT_CORE 0; every later RUN gets the recorded soft limit back (Step::CoreLimit)
 pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, secrets, stdin/out/err, isolation, script, root_id */ }  // #[non_exhaustive]; RunSpec::new
 pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
-pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // written by the child on its own tmpfs, bound read-only; Debug hides the bytes
+pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // written by the child on its own tmpfs, bound read-only; Debug hides the bytes; an id of u32::MAX is chown's -1, the child's own kept (#212)
 pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
@@ -720,7 +720,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of its own `oom_score_adj`, or of that of a process outside the build of
   its kernel uid, fails with `EROFS`, one through `/dev/stderr` works
   (without the read-only flag, both writes succeed); `USER _apt` gets
-  42:65534 through `setgroups`; `--network=none` has `lo` up in a network
+  42:65534 through `setgroups`; a secret's id of 4294967295 is left the
+  `RUN`'s own (#212); `--network=none` has `lo` up in a network
   namespace of its own, and its `/sys` shows no network device or
   address, and no mount below it lists anything (Podman's cgroup2 at
   `/sys/fs/cgroup`, which the shared network's `RUN` sees, is an empty

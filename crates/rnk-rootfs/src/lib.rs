@@ -62,6 +62,8 @@ pub use extract::{
 };
 pub use host::{Fence, HostFile, OutputDir, Reached, reach};
 pub use ignore::IgnoreList;
+/// The one rule for an owner id of 4294967295, `chown`'s "unchanged" (#212).
+pub use meta::chown_id;
 pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
 pub use mode::{Chmod, ModeSet};
 pub use mountinfo::{MountInfo, MountInfoError, parse_mountinfo};

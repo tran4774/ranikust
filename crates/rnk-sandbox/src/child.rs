@@ -92,8 +92,10 @@ pub(crate) struct ChildSecret {
     /// The file's name on the tmpfs.
     pub(crate) name: CString,
     pub(crate) data: std::sync::Arc<[u8]>,
-    pub(crate) uid: Uid,
-    pub(crate) gid: Gid,
+    /// `None`: left unchanged, as `chown` reads an id of `u32::MAX`.
+    pub(crate) uid: Option<Uid>,
+    /// As `uid`.
+    pub(crate) gid: Option<Gid>,
     pub(crate) mode: Mode,
     pub(crate) targets: Vec<CString>,
 }
@@ -1869,7 +1871,7 @@ fn mount_secrets(err: RawFd, root: BorrowedFd<'_>, secrets: &ChildSecrets, args:
                 Err(e) => fail(err, step, e),
             }
         }
-        check(err, step, rustix::fs::fchown(&f, Some(s.uid), Some(s.gid)));
+        check(err, step, rustix::fs::fchown(&f, s.uid, s.gid));
         check(err, step, rustix::fs::fchmod(&f, s.mode));
         for target in &s.targets {
             let t = resolve_target(err, root, target, mount_api);

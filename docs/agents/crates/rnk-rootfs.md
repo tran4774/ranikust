@@ -69,7 +69,7 @@ impl RootPath {
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // a directory's names, mount points included
     pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, no `..`, root's mount only (the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
-    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
+    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order); an id of u32::MAX passed as chown's -1, "unchanged" (#212)
     pub fn set_meta_if(&self, p, decide: impl FnOnce(&Stat) -> Option<Meta>) -> Result<bool>; // p pinned O_PATH|O_NOFOLLOW once, read and changed through that fd, only when decide returns a Meta (rnk-store's directories)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device
     // create_dir, create_dir_all, symlink, read_link, hard_link, rename, remove_file, remove_dir; mnt_id()
@@ -82,6 +82,7 @@ pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], dev
 pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors, a directory path held to 4094 bytes as extract_live on / holds it; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
 pub fn check_headers_and_owners(tar: impl Read, found: &mut Unmapped) -> Result<()>; // check_headers, noting in `found` each owner extract_live would set that its map lacks (rnk-snapshot's spool pass, ADR-0098)
 pub fn scan_owners(tar: impl Read, found: &mut Unmapped) -> Result<()>; // the same for extract_overlay (devices skipped as in a user namespace, ADR-0106; FIFOs made): Snapshotter::check_owners before any layer is extracted
+pub fn chown_id(id: u32) -> Option<u32>; // None for u32::MAX, chown's -1, "unchanged" (#212): the one rule by which set_meta, the owner scans, rnk-store's cache owner and rnk-sandbox's secret owner read an id; a rustix Uid or Gid never holds it
 pub struct MappedIds; // parse(uid_map, gid_map): the ids a user namespace maps, from /proc/<pid>/{uid,gid}_map; maps_uid, maps_gid, is_one_id (either map)
 pub struct Unmapped;  // Error::Unmapped's refusal (ADR-0098): owners(map) filled by the scans (8 ids of each kind named, each with its first path, the rest counted), chown(path, uid, gid) (a chown that failed with EINVAL: set_meta, rnk-store's cache owner), user(step, uid, gid, groups) (rnk-sandbox's RUN user switch; 8 groups named, the rest counted); highest_uid(map), highest_gid(map): the highest ids met that map lacks (all where None; u32::MAX, chown's "unchanged", never), for the ways out (ranikust). No flag lets one pass
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
@@ -171,7 +172,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the owner scans and `MappedIds` (ADR-0098, `src/owners.rs`,
   `src/extract/tests.rs`: what each extraction form would `chown`, read to
   the end, the header check's errors; a `chown`'s `EINVAL` in `src/meta.rs`
-  as `Error::Unmapped`); their red team (`tests/red_team_owners.rs`:
+  as `Error::Unmapped`; an owner of `u32::MAX`, from PAX or base-256, left
+  unchanged (`chown`'s -1) by every extraction, the process's on a new
+  entry, and no owner to the scans, #212); their
+  red team (`tests/red_team_owners.rs`:
   hostile headers, PAX, global PAX, GNU long names, base-256, duplicates,
   whiteouts, hardlinks, special files, framing and entries past the end,
   each scanned as both extraction forms `chown`, or refused alike; a

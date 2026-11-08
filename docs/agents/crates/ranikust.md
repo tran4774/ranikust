@@ -748,9 +748,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
   directories as overlay as root makes them, `0555` roots published, devices
-  skipped and counted, keys other than the chain IDs, an owner outside the map
-  and `security.selinux` and `security.rnktest` xattrs each failing the
-  extraction, the `security.selinux` case skipped where SELinux runs, with a
+  skipped and counted, an id of 4294967295 left the process's (#212), keys
+  other than the chain IDs, an owner outside the map and `security.selinux`
+  and `security.rnktest` xattrs each failing the extraction, the
+  `security.selinux` case skipped where SELinux runs, with a
   `measured:` line in the lane's log, while `security.rnktest`, a name no
   security module claims, is refused with `EPERM` everywhere) and
   `a_killed_extraction_in_the_user_namespace_publishes_nothing`;

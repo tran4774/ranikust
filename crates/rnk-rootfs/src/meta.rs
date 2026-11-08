@@ -205,9 +205,10 @@ pub(crate) fn statx_at(dirfd: BorrowedFd<'_>, name: &std::ffi::OsStr, path: &Pat
 /// nothing moves them).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Meta {
-    /// New owner; set with `fchownat(AT_SYMLINK_NOFOLLOW)`.
+    /// New owner; set with `fchownat(AT_SYMLINK_NOFOLLOW)`. `u32::MAX` is
+    /// passed as `-1`, which `chown` reads as "unchanged".
     pub uid: Option<u32>,
-    /// New group; set with `fchownat(AT_SYMLINK_NOFOLLOW)`.
+    /// New group; set as `uid` is.
     pub gid: Option<u32>,
     /// Raw permission bits (`& 0o7777`): setuid, setgid and sticky are kept,
     /// type bits ignored, umask not applied. Ignored for symlinks, whose mode
@@ -655,6 +656,16 @@ fn chown_err(e: Errno, path: &Path, m: &Meta) -> Error {
     }
 }
 
+/// `id` as `chown` takes it: `None` for `u32::MAX`, `chown`'s `-1`, which
+/// leaves that id unchanged and which a rustix `Uid` or `Gid` must not hold
+/// (a debug build aborts). The extraction, the owner scans, `rnk-store`'s
+/// cache owner and `rnk-sandbox`'s secret owner read an id through this
+/// alone, so that they agree.
+#[must_use]
+pub fn chown_id(id: u32) -> Option<u32> {
+    (id != u32::MAX).then_some(id)
+}
+
 fn apply_with(
     h: &Handle<'_>,
     m: &Meta,
@@ -662,8 +673,9 @@ fn apply_with(
     skipped: Option<&SkippedXattrs>,
 ) -> Result<()> {
     let owner_changes = m.uid.is_some() || m.gid.is_some();
-    let uid = m.uid.map(Uid::from_raw);
-    let gid = m.gid.map(Gid::from_raw);
+    // `None` is the same `-1` to `chown`, which a rustix id must not hold.
+    let uid = m.uid.and_then(chown_id).map(Uid::from_raw);
+    let gid = m.gid.and_then(chown_id).map(Gid::from_raw);
     let mode = m
         .mode
         .map(|bits| Mode::from_raw_mode(bits & PERMISSION_BITS));

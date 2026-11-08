@@ -6,7 +6,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Barrier;
+use std::sync::{Arc, Barrier};
 
 use rustix::mount::MountFlags;
 use rustix::process::DumpableBehavior;
@@ -14,8 +14,8 @@ use rustix::process::DumpableBehavior;
 use super::super::tests::{as_user, in_subreaper, measured, subordinate_range};
 use super::tests::one_id_parent;
 use crate::{
-    BindMount, Caps, Error, KernelFs, MountKind, Network, RunSpec, Sandbox, Stdio, Step,
-    SubordinateIds, UsernsReport,
+    BindMount, Caps, Error, KernelFs, MountKind, Network, RunSpec, Sandbox, SecretFile, Stdio,
+    Step, SubordinateIds, UsernsReport,
 };
 
 mod red_team;
@@ -76,8 +76,24 @@ grep -E '^([^ ]+ ){4}/sys/[^ ]+ ' /proc/self/mountinfo | cut -d' ' -f5 | sort -u
   while read -r p; do if [ -d "$p" ]; then echo "sub: $p $(ls -A "$p" 2>&1 | wc -l)"; fi; done
 "#;
 
-/// One `RUN`: its `USER`, network and script.
-type Run = (&'static str, Network, &'static str);
+/// What a `RUN` prints of [`UNCHANGED`]'s secrets: each one's owner.
+const SECRET_OWNERS: &str = r#"
+echo "secret-uid=$(stat -c %u:%g /secret-uid)"
+echo "secret-gid=$(stat -c %u:%g /secret-gid)"
+"#;
+
+/// Secrets of an id of 4294967295, `chown`'s "unchanged" (#212): the
+/// `RUN`'s own uid, then its own gid, the other id mapped.
+const UNCHANGED: [Secret; 2] = [
+    ("/secret-uid", (u32::MAX, 65534)),
+    ("/secret-gid", (42, u32::MAX)),
+];
+
+/// One `RUN`: its `USER`, network, script and secrets.
+type Run = (&'static str, Network, &'static str, &'static [Secret]);
+
+/// A `RUN`'s secret: its target and owner.
+type Secret = (&'static str, (u32, u32));
 
 /// The root's users and groups, Debian's: the host's may differ (a
 /// cloud image's `_apt` is not 42).
@@ -88,9 +104,9 @@ const GROUP: &str = "root:x:0:\ntty:x:5:\nnogroup:x:65534:\n";
 /// The `RUN`s every leg tries: root and the kernel filesystems, `USER
 /// _apt` (42:65534, as in Debian and Ubuntu), and `--network=none`.
 const RUNS: [Run; 3] = [
-    ("", Network::Host, KERNEL),
-    ("_apt", Network::Host, IDS),
-    ("", Network::None, NETWORK),
+    ("", Network::Host, KERNEL, &[]),
+    ("_apt", Network::Host, IDS, &[]),
+    ("", Network::None, NETWORK, &[]),
 ];
 
 /// What a root `RUN` prints about a [`Sleeper`] outside it, of its kernel
@@ -228,10 +244,19 @@ fn steps(
 ) -> Result<(), String> {
     let sandbox = start_sandbox(top, sub, proc_rbind, out)?;
     let root = make_root(top, "root")?;
-    for (n, (user, network, script)) in runs.iter().enumerate() {
+    for (n, (user, network, script, secrets)) in runs.iter().enumerate() {
         let mut spec = RunSpec::new(&root, vec!["/bin/sh".into(), "-c".into(), (*script).into()]);
         spec.user = (*user).to_owned();
         spec.network = *network;
+        for &(target, (uid, gid)) in *secrets {
+            spec.secrets.push(SecretFile {
+                data: Arc::from(&b"secret"[..]),
+                target: target.into(),
+                uid,
+                gid,
+                mode: 0o400,
+            });
+        }
         out.extend(run_logged(&sandbox, spec, top, n)?);
     }
     drop(sandbox);
@@ -566,7 +591,8 @@ fn leg_dir() -> tempfile::TempDir {
 /// kernel uid. `USER _apt` gets its ids through `setgroups`;
 /// `--network=none` brings `lo` up in a network namespace the build owns,
 /// with no helper (ADR-0033), and, its new `sysfs` refused below Podman's
-/// masks, gets the rbind with no network device shown.
+/// masks, gets the rbind with no network device shown. A secret's id of
+/// 4294967295 is left the `RUN`'s own (#212).
 #[test]
 #[ignore = "T1: default: RUNs in the build's user namespace of root in a rootless Podman container"]
 fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
@@ -577,7 +603,8 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
         RUNS[0],
         RUNS[1],
         RUNS[2],
-        ("", Network::Host, outer(&sleeper)),
+        ("", Network::Host, outer(&sleeper), &[]),
+        ("", Network::Host, SECRET_OWNERS, &UNCHANGED),
     ];
     let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, true, &runs));
     drop(sleeper);
@@ -624,6 +651,9 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
         value(&out, "3:outer-oom").ends_with("Read-only file system"),
         "{out}"
     );
+    assert_eq!(value(&out, "run4"), "exit 0", "{out}");
+    assert_eq!(value(&out, "4:secret-uid"), "0:65534", "{out}");
+    assert_eq!(value(&out, "4:secret-gid"), "42:0", "{out}");
 }
 
 /// A `RUN` in the build's user namespace, given `proc_rbind`, against
@@ -631,7 +661,7 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
 /// sandbox's `caps=` line and [`OUTER`]'s, as `RUN` 0.
 fn against_a_process_outside(sleeper: Sleeper, proc_rbind: bool) -> String {
     let dir = leg_dir();
-    let runs = [("", Network::Host, outer(&sleeper))];
+    let runs = [("", Network::Host, outer(&sleeper), &[][..])];
     let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, proc_rbind, &runs));
     drop(sleeper);
     out
