@@ -2085,11 +2085,12 @@ fn execute(
 /// failure the child recorded before `execve`, or, where the full sandbox's
 /// init ended without the command's status (`unreported`: `status` is then
 /// the init's own), [`Error::SetupKilled`] for a signal, which names a
-/// profile behind a `SIGSYS`, [`Error::InitExited`] for a code, or, for
-/// code 0, which the init exits with only after its status write, that
-/// write's loss as a status that could not be read. A record wins over the
-/// init's code, 0 included, which is logged; between a record and the
-/// init's signal, the more precise one is returned and the other logged.
+/// profile behind a `SIGSYS`, or [`Error::InitExited`] for a code other
+/// than 0. Code 0, which the init exits with only after its status write,
+/// means that write was lost: a status that could not be read
+/// ([`STATUS_OP`]). A record wins over the init's code, 0 included, which
+/// is logged; between a record and the init's signal, the more precise one
+/// is returned and the other logged.
 fn ending(
     status: ExitStatus,
     unreported: bool,
@@ -2106,7 +2107,7 @@ fn ending(
         // Not killed, so exited: `reap` waits for nothing else.
         (None, None) if unreported => match libc::WEXITSTATUS(status.into_raw()) {
             0 => Err(sys_err(
-                "read the RUN's exit status",
+                STATUS_OP,
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "the RUN's init exited without the command's status",
@@ -2175,10 +2176,14 @@ fn read_failure(fd: &OwnedFd) -> Result<Option<(Step, i32)>> {
     }
 }
 
+/// The operation of the errors for a full-sandbox `RUN`'s status that could
+/// not be read: a status record that failed to read, was cut short or holds
+/// no end, or none from an init that exited 0.
+const STATUS_OP: &str = "read the RUN's exit status";
+
 /// The command's wait status the `RUN`'s init wrote, or `None` when it
 /// wrote nothing (end-of-file).
 fn read_status(fd: &OwnedFd) -> Result<Option<i32>> {
-    const OP: &str = "read the RUN's exit status";
     let mut record = [0u8; child::STATUS_LEN];
     let mut len = 0;
     while let Some(rest) = record.get_mut(len..).filter(|r| !r.is_empty()) {
@@ -2186,7 +2191,7 @@ fn read_status(fd: &OwnedFd) -> Result<Option<i32>> {
             Ok(0) => break,
             Ok(n) => len += n,
             Err(Errno::INTR) => {}
-            Err(e) => return Err(sys_err(OP, e)),
+            Err(e) => return Err(sys_err(STATUS_OP, e)),
         }
     }
     match len {
@@ -2197,10 +2202,16 @@ fn read_status(fd: &OwnedFd) -> Result<Option<i32>> {
             if libc::WIFEXITED(raw) || libc::WIFSIGNALED(raw) {
                 Ok(Some(raw))
             } else {
-                Err(sys_err(OP, io::Error::from(io::ErrorKind::InvalidData)))
+                Err(sys_err(
+                    STATUS_OP,
+                    io::Error::from(io::ErrorKind::InvalidData),
+                ))
             }
         }
-        _ => Err(sys_err(OP, io::Error::from(io::ErrorKind::UnexpectedEof))),
+        _ => Err(sys_err(
+            STATUS_OP,
+            io::Error::from(io::ErrorKind::UnexpectedEof),
+        )),
     }
 }
 
@@ -2539,7 +2550,7 @@ mod tests {
         }
         let r = end(exited(0), true, None, true);
         assert!(
-            matches!(&r, Err(Error::Sys { op: "read the RUN's exit status", source })
+            matches!(&r, Err(Error::Sys { op: STATUS_OP, source })
                 if source.kind() == io::ErrorKind::InvalidData),
             "{r:?}"
         );
@@ -2701,7 +2712,7 @@ mod tests {
         assert_eq!(r.unwrap().code(), Some(3));
         let r = full_runs_end(exited(0), None, &[], false);
         assert!(
-            matches!(&r, Err(Error::Sys { op: "read the RUN's exit status", source })
+            matches!(&r, Err(Error::Sys { op: STATUS_OP, source })
                 if source.kind() == io::ErrorKind::InvalidData),
             "{r:?}"
         );
@@ -2768,7 +2779,7 @@ mod tests {
             full_runs_end(libc::SIGKILL, Some(record), &[1, 2], true)
         });
         assert!(
-            matches!(&r, Err(Error::Sys { op: "read the RUN's exit status", source })
+            matches!(&r, Err(Error::Sys { op: STATUS_OP, source })
                 if source.kind() == io::ErrorKind::UnexpectedEof),
             "{r:?}"
         );
@@ -4521,16 +4532,18 @@ mod tests {
                     ),
                     "status write refused" => matches!(
                         r,
-                        Err(Error::Sys { op: "read the RUN's exit status", source })
+                        Err(e @ Error::Sys { op: STATUS_OP, source })
                             if source.kind() == io::ErrorKind::InvalidData
+                                && !e.ran_no_command()
                     ),
-                    _ => matches!(
+                    "status write refused, no command" => matches!(
                         r,
                         Err(e @ Error::Exec { program, source })
                             if program == "/missing"
                                 && source.raw_os_error() == Some(libc::ENOENT)
                                 && e.ran_no_command()
                     ),
+                    other => unreachable!("no expectation for case {other:?}"),
                 };
                 if !ok {
                     wrong.push(format!("{name}: {r:?}"));

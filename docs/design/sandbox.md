@@ -595,13 +595,13 @@ failure record of `Step::Init`, which the init's end may cause (the go pipe
 ended under a command still waiting), and loses to any other record, the more
 precise, the one not returned logged; `InitExited` and a lost status write
 lose to every record, the init's code logged. A cancel wins over all of them.
-A status record that cannot be read (cut short, or no end) fails the `RUN` with
-that read's error whatever else is known; the failure record, the init's end
-and the cancel are logged. A kill or trap of a call only the command makes
-after its filters and before `execve` (its go read, `setsid`, the `USER`
-switch) leaves the init alive, and the `RUN` fails with the command's status
-(`SIGSYS`, code 159), as one killed after `execve` does: nothing tells the two
-apart. A cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit
+A status record that cannot be read (cut short, or neither an exit nor a
+signal) fails the `RUN` with that read's error, even over a cancel; the
+failure record, the init's end and the cancel are logged. A kill or trap of a
+call only the command makes after its filters and before `execve` (its go
+read, `setsid`, the `USER` switch) leaves the init alive, and the `RUN` fails
+with the command's status (`SIGSYS`, code 159), as one killed after `execve`
+does: nothing tells the two apart. A cancel (`Sandbox::cancel`) sends the init `SIGKILL`, as BuildKit
 kills the process on a cancel; the child is forgotten only once it has exited
 and before it is reaped, so the kill never reaches a reused pid. The command
 is PID 2, as under `docker run --init` and as kaniko's `RUN`; it is not PID 1
