@@ -10,6 +10,7 @@
 use std::fs::File;
 use std::io::{self, Read as _};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use rnk_oci::Digest;
 use rnk_rootfs::MappedIds;
@@ -65,6 +66,17 @@ impl UserNamespace {
             Ok(text)
         };
         Self::from_maps(&map("uid_map")?, &map("gid_map")?).map(Some)
+    }
+
+    /// [`UserNamespace::current`] read into `cell` at its first use and
+    /// kept: a snapshotter holds its layers to one namespace's ids.
+    pub(crate) fn once(cell: &OnceLock<Option<Self>>) -> Result<Option<&Self>> {
+        if let Some(ns) = cell.get() {
+            return Ok(ns.as_ref());
+        }
+        // Another thread may have read it first: the same namespace.
+        let _ = cell.set(Self::current()?);
+        Ok(cell.get().and_then(Option::as_ref))
     }
 
     /// The namespace whose `uid_map` and `gid_map` read `uid_map` and

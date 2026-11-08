@@ -457,13 +457,7 @@ impl Shared {
     /// The user namespace this process runs in, if not the initial one,
     /// read once: whose ids the owner checks hold the layers to (ADR-0098).
     fn user_namespace(&self) -> Result<Option<&UserNamespace>> {
-        if let Some(ns) = self.userns.get() {
-            return Ok(ns.as_ref());
-        }
-        let ns = UserNamespace::current()?;
-        // Another thread may have read it first: the same namespace.
-        let _ = self.userns.set(ns);
-        Ok(self.userns.get().and_then(Option::as_ref))
+        UserNamespace::once(&self.userns)
     }
 
     /// `layer` verified in `store` ([`Spooled::of`]). A streamed layer that
@@ -602,7 +596,15 @@ impl Snapshotter for Kaniko {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
-        check_live_owners(layers, self.shared.user_namespace()?, &self.shared.ignore)
+        // Off `/` every owner is checked, the ignored paths too, as by
+        // `KanikoStages`.
+        let none = IgnoreList::new();
+        let keep = if self.shared.is_slash() {
+            &self.shared.ignore
+        } else {
+            &none
+        };
+        check_live_owners(layers, self.shared.user_namespace()?, keep)
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {

@@ -590,9 +590,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   none where the capability check showed capabilities (both its steps
   worked); `setup/no_userns/tests.rs`: rnk-sandbox's name for `unshare`'s
   operation, no profile unless the switch reads 1, the label is
-  `unconfined` and the uid map and container verdict, injected, are the
-  host's, the advice's wording and order in each case (the switch at 1
-  or not; the shipped path, another root-only one, the install as
+  `unconfined` and the user namespace (the initial one or not) and
+  container verdict, injected, are the host's, `Here::read` telling the
+  namespace by its inode, the advice's wording and order in each case (the
+  switch at 1 or not; the shipped path, another root-only one, the install as
   `/usr/local/bin/ranikust` or, where that directory fails, elsewhere),
   which stops offer the profile (a step in the namespace, `unshare`'s
   `EACCES`) and which get `sudo` then a container (another errno, none,

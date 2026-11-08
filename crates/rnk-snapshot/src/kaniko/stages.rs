@@ -35,8 +35,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use rnk_layer::LayerDigests;
 use rnk_oci::Digest;
@@ -82,6 +82,9 @@ struct StagesShared {
     /// ([`in_initial_user_namespace`]): base layers are streamed into the
     /// stage directories only then.
     initial_ns: bool,
+    /// The user namespace this process runs in, read at its first use
+    /// ([`UserNamespace::once`]).
+    userns: OnceLock<Option<UserNamespace>>,
 }
 
 impl KanikoStages {
@@ -114,6 +117,7 @@ impl KanikoStages {
                 walk,
                 next: AtomicU64::new(0),
                 initial_ns: in_initial_user_namespace(),
+                userns: OnceLock::new(),
             }),
         })
     }
@@ -228,10 +232,11 @@ impl Snapshotter for KanikoStages {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
-        // Only the check on `/` was decided to skip the ignore list (#209).
+        // Off `/` every owner is checked, the ignored paths too
+        // (design/modes-and-detection.md#owners-the-user-namespace-does-not-map).
         check_live_owners(
             layers,
-            UserNamespace::current()?.as_ref(),
+            UserNamespace::once(&self.shared.userns)?,
             &IgnoreList::new(),
         )
     }

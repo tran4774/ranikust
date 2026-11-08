@@ -2040,3 +2040,29 @@ fn without_a_thread_a_layer_is_decompressed_by_its_reader() {
     let digest = decoding.finish().unwrap();
     assert_eq!(digest.as_bytes(), Sha256::digest(&plain).as_slice());
 }
+
+/// Off `/` `Kaniko`'s owner check covers the ignored paths too, as
+/// `KanikoStages`' does (ADR-0098).
+#[test]
+fn off_slash_kaniko_s_owner_check_covers_the_ignored_paths() {
+    let f = Fixture::new();
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entries.
+    let one = format!("{} 0 1\n", uid.max(gid).wrapping_add(1));
+    let ns = UserNamespace::from_maps(&one, &one).unwrap();
+    f.kaniko.shared.userns.set(Some(ns)).unwrap();
+    let layer = f.layer("l1", &[("ranikust/b", b"ignored")]);
+    let owned = [(layer.diff_id().clone(), layer.blob().unwrap().to_owned())];
+    let e = f.kaniko.check_owners(&owned).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string().contains(&format!("uid {uid} (/ranikust/b)")),
+        "{e}"
+    );
+}

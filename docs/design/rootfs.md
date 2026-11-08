@@ -151,20 +151,18 @@ never called.
   applies whiteouts does, through the same code (`for_each_entry`,
   `read_header`), and writes nothing: the framing, the `tar-header` limit and
   every refusal a header shows on its own (names and hardlink targets out of
-  the root, sparse and unknown types, whiteouts naming nothing, a link with
-  an empty target, a file or symlink as the layer's root, ids and times that
-  do not parse, and the kernel's limits below), with the extraction's
-  errors. It refuses nothing such an extraction takes but a directory path
-  of 4095 bytes, which a live root at `/` refuses (below); what the root or
-  the ignore list decides is the extraction's. Kaniko mode's spool pass on `/`
-  calls it on the bytes it already decompresses, so a header it refuses
-  fails the layer before `/` changes
-  ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123). In a user namespace
-  it calls `check_headers_and_owners`, which also notes each owner the
-  extraction would set that a `MappedIds` lacks, skipping the paths the
-  ignore list it is given keeps, as the extraction does; `scan_owners`
-  does the same as the overlay form reads a tar (devices left out). Both
-  fill one
+  the root, sparse and unknown types, whiteouts naming nothing, a link with an
+  empty target, a file or symlink as the layer's root, ids and times that do
+  not parse, and the kernel's limits below), with the extraction's errors. It
+  refuses nothing such an extraction takes but a directory path of 4095 bytes,
+  which a live root at `/` refuses (below); what the root or the ignore list
+  decides is the extraction's. Kaniko mode's spool pass on `/` calls it on the
+  bytes it already decompresses, so a header it refuses fails the layer before
+  `/` changes ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123). In a user
+  namespace it calls `check_headers_and_owners`, which also notes each owner
+  the extraction would set that a `MappedIds` lacks, skipping the paths the
+  ignore list it is given keeps, as the extraction does; `scan_owners` does
+  the same as the overlay form reads a tar (devices left out). Both fill one
   `Unmapped`, the refusal `Error::Unmapped` carries, as a `chown` that fails
   with `EINVAL` does
   ([owners](modes-and-detection.md#owners-the-user-namespace-does-not-map),

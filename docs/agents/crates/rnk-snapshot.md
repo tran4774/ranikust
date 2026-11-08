@@ -162,9 +162,10 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   named in one refusal; overlay skips a layer whose key is already in the
   store. Off `/`, in a user namespace (`in_initial_user_namespace`, read
   once per snapshotter), kaniko mode streams no base layer, so its layers
-  come as blobs and are all checked first. On `/` a streamed layer is not
-  a blob: the spool pass (`Spooled::of`) notes its owners in the same read
-  as its headers, against the namespace `Kaniko` read once, and refuses
+  come as blobs and are all checked first, every path. On `/` a streamed
+  layer is not a blob: the spool pass (`Spooled::of`) notes its owners in
+  the same read as its headers, against the namespace each kaniko
+  snapshotter reads once (`UserNamespace::once`), and refuses
   once the layer is verified, before it is extracted (ADR-0137). A `COPY
   --from` image on `/` is unpacked with no ignore list: its spool, or its
   kept blob, is checked again for the ignored paths before any directory is
@@ -251,16 +252,16 @@ that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
-  `tests/layers.rs`); the id map's canonical form, root's outside uid, a
-  map that does not parse named `uid_map` or `gid_map`, and the mapped key,
-  unchanged and apart from every chain ID (`src/userns.rs`); the owner
-  check of every layer not kept, before any extraction, a kept one unread (`src/owners.rs`,
-  ADR-0098; red team: an owner in a later gzip member, or a zstd frame
-  past a skippable one, named; a blob behind a skippable frame refused by
-  the check and the extraction alike; a layer whose extraction failed on
-  an owner read again); `spawn_as_caller`, which starts the mount thread,
-  carries its caller's dispatcher over (`src/mount.rs`; the mount itself
-  needs root).
+  `tests/layers.rs`); the id map's canonical form, root's outside uid, a map
+  that does not parse named `uid_map` or `gid_map`, and the mapped key,
+  unchanged and apart from every chain ID (`src/userns.rs`); the owner check
+  of every layer not kept, before any extraction, a kept one unread
+  (`src/owners.rs`, ADR-0098; red team: an owner in a later gzip member, or a
+  zstd frame past a skippable one, named; a blob behind a skippable frame
+  refused by the check and the extraction alike; a layer whose extraction
+  failed on an owner read again); `spawn_as_caller`, which starts the mount
+  thread, carries its caller's dispatcher over (`src/mount.rs`; the mount
+  itself needs root).
 - **T0, walk and exporter** (`src/kaniko/walk/tests.rs`,
   `src/kaniko/export/tests.rs`): first diff adds all in path order,
   `baseline` and `forget`, what each `--snapshot-mode` compares, a type
@@ -295,37 +296,38 @@ that found a bug stay as its regression test.
   the same layer digest, falls back to a copy when it moved nothing or a
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
   bases cannot reach outside `rootfs/`; in a user namespace no base layer is
-  streamed into a stage directory (ADR-0098). In a binary of its own
+  streamed into a stage directory, and the owner check covers the ignored
+  paths (ADR-0098; `off_slash_the_owner_check_covers_the_ignored_paths`, and
+  `Kaniko` off `/` in `src/kaniko/root/tests.rs`). In a binary of its own
   (`tests/deep_chain.rs`, the soft `RLIMIT_NOFILE` raised to the hard one):
   a chain of up to 100,000 levels (as many as the copy holds descriptors
   for; skipped below 30,000) copied and handed over in time linear in its
   depth.
 - **T0, a cache hit** (`tests/apply.rs`, both roots, the shared one also as
   `/`): the next diff is empty, or only the next step's; whiteouts and opaque
-  directories remove lower entries once; a root built by running a step and
-  by applying its layer is the same, and so is the next step's layer; device
+  directories remove lower entries once; a root built by running a step and by
+  applying its layer is the same, and so is the next step's layer; device
   nodes and FIFOs left out; refusals; a failure before the first entry leaves
   the root usable, a later one breaks it; hostile layers (`..`, links to a
   sibling stage, `/`, `/proc`, the state directory, an ignored path or a
-  volume, whiteouts of them) reach nothing outside the root. Red team of
-  what a `RUN` left before the layer: FIFOs at names it writes as a file, a
-  directory, a parent, a hardlink's or a whiteout's target are never opened
-  or blocked on; symlinks out (absolute or by `..`), a hardlink to a file
-  outside and a loop are followed only inside the root, replaced rather than
-  written through, never followed by a deletion; a directory swapped for a
-  symlink out while the layer lands keeps it in the root (T3); an oversized
-  tar header is refused, breaking a per-stage root; a bad blob on `/` touches no
-  ignored path. On `/` a streamed layer whose tar has a header every extraction
+  volume, whiteouts of them) reach nothing outside the root. Red team of what
+  a `RUN` left before the layer: FIFOs at names it writes as a file, a
+  directory, a parent, a hardlink's or a whiteout's target are never opened or
+  blocked on; symlinks out (absolute or by `..`), a hardlink to a file outside
+  and a loop are followed only inside the root, replaced rather than written
+  through, never followed by a deletion; a directory swapped for a symlink out
+  while the layer lands keeps it in the root (T3); an oversized tar header is
+  refused, breaking a per-stage root; a bad blob on `/` touches no ignored
+  path. On `/` a streamed layer whose tar has a header every extraction
   refuses (a value over the kernel's limits included, #179), or one over
-  `--limit`, after a good first entry, changes nothing and
-  leaves `/` usable, and a body its source refuses reports the source's error
-  first; the same layer from the store breaks `/` (the control). Red team of
-  #179 on `/`: each value over the kernel's limits, in the encoding that
-  hides it best, is refused before `/` changes, and `/` stays usable; a
-  layer that fails for where its entries land (below a symlink to a
-  directory at the limit, a loop, below a file, a hardlink to a directory)
-  breaks `/` with nothing written past the limit or outside, until the next
-  `prepare` empties it. Red team of
+  `--limit`, after a good first entry, changes nothing and leaves `/` usable,
+  and a body its source refuses reports the source's error first; the same
+  layer from the store breaks `/` (the control). Red team of #179 on `/`: each
+  value over the kernel's limits, in the encoding that hides it best, is
+  refused before `/` changes, and `/` stays usable; a layer that fails for
+  where its entries land (below a symlink to a directory at the limit, a loop,
+  below a file, a hardlink to a directory) breaks `/` with nothing written
+  past the limit or outside, until the next `prepare` empties it. Red team of
   that check on `/` (ADR-0123): a name out of the root is refused before `/`
   changes whether the blob is plain, gzip or zstd, in a second gzip member or
   zstd frame included; entries past the end-of-archive block reach nothing; a
@@ -338,12 +340,12 @@ that found a bug stay as its regression test.
   header is refused before any of it is written or any directory made, and
   keeps no spool; in a user namespace only `/` takes a streamed base layer
   (ADR-0098, ADR-0137), its owners checked in the spool pass against the
-  namespace the build read, the ignore list's paths skipped for a base and
-  not for a `COPY --from` image, from its own spool, a base's or a kept blob
+  namespace the build read, the ignore list's paths skipped for a base and not
+  for a `COPY --from` image, from its own spool, a base's or a kept blob
   (`on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass`;
-  red team in `rnk-rootfs`'s `tests/red_team_owners.rs`). `tests/spans.rs`:
-  on `/` a streamed layer is decoded once before its extraction, a refused one once and never extracted
-  (ADR-0123).
+  red team in `rnk-rootfs`'s `tests/red_team_owners.rs`). `tests/spans.rs`: on
+  `/` a streamed layer is decoded once before its extraction, a refused one
+  once and never extracted (ADR-0123).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings. The
   `kaniko-flags` case's kaniko leg: `probe` passes in the user namespace

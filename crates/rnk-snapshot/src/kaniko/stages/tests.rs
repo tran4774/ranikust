@@ -1860,3 +1860,30 @@ fn red_team_a_hand_over_refuses_a_mount_below_the_parent_and_crosses_nothing() {
     .join()
     .unwrap();
 }
+
+/// Off `/` the owner check covers the ignored paths too: a layer whose only
+/// owner the namespace lacks is under `/proc` is refused, naming it
+/// (ADR-0098).
+#[test]
+fn off_slash_the_owner_check_covers_the_ignored_paths() {
+    let f = Fixture::new();
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entries.
+    let one = format!("{} 0 1\n", uid.max(gid).wrapping_add(1));
+    let ns = UserNamespace::from_maps(&one, &one).unwrap();
+    f.stages.shared.userns.set(Some(ns)).unwrap();
+    let layer = f.layer("l1", &[("proc/b", b"ignored")], false);
+    let owned = [(layer.diff_id().clone(), layer.blob().unwrap().to_owned())];
+    let e = f.stages.check_owners(&owned).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string().contains(&format!("uid {uid} (/proc/b)")),
+        "{e}"
+    );
+}

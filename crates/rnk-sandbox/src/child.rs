@@ -8,8 +8,8 @@
 //! passes through without copying), and `libc` for the few calls rustix
 //! lacks. Every string and table was built before the clone ([`ChildArgs`]).
 //!
-//! A failing step writes `(step, errno)` to the error pipe and exits with
-//! 127; the pipe is close-on-exec, so the parent reads end-of-file once
+//! A failing step writes `(step, item, errno)` to the error pipe and exits
+//! with 127; the pipe is close-on-exec, so the parent reads end-of-file once
 //! `execve` succeeds.
 
 use std::ffi::{CStr, CString, c_char};
