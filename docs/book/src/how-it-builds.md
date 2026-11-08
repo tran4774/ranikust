@@ -64,7 +64,7 @@ Where none of that works a regular user is refused (see
   A `RUN --network=none` sees only a loopback interface, which is up; in a
   rootless build where the container's runtime masks `/sys`, its
   `/sys/class/net` lists no interface at all, and `/sys/fs/cgroup` and any
-  other mount the runtime made below `/sys` are empty. In a
+  other directory the runtime mounted below `/sys` are empty. In a
   container without `CAP_NET_ADMIN` it stops the build, unless `--allow
   network.none-userns` lets ranikust use a user namespace for it, under a
   seccomp filter ([ADR-0033]).

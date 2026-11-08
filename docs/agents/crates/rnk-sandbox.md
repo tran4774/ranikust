@@ -277,14 +277,14 @@ What a change here must keep, with where it lives:
   rbind copied onto its root mount (its parent in the child's own
   mountinfo, read with no allocation by `child/submounts.rs`) gets an
   empty read-only tmpfs, its mount point found again below the rbind by
-  descriptor (`hide_submounts`), and the network devices of the namespace
-  it was mounted in are hidden (`hide_network_devices`): an empty
-  read-only tmpfs over
+  descriptor (`hide_submounts`; a file mount there stays), and the network
+  devices of the namespace it was mounted in are hidden
+  (`hide_network_devices`): an empty read-only tmpfs over
   `devices/virtual/net`, over the directory of each device that a link of
   `class/net`, `class/ieee80211`, `class/macvtap`, `class/ipvtap` or
-  `class/infiniband` names,
-  and over those class directories, each found below the rbind by
-  descriptor; its `/sys/class/net` is then empty, its own `lo` not shown.
+  `class/infiniband` names, and over those class directories, each found
+  below the rbind by descriptor; its `/sys/class/net` is then empty, its
+  own `lo` not shown.
   Then `pivot_root(".", ".")` + `umount2(MNT_DETACH)`; where seccomp refuses
   it and `/` is a mount root, `MS_MOVE` + `chroot(".")`.
 - **Seccomp**

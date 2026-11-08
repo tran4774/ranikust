@@ -130,9 +130,8 @@ Design: [locks](../../design/cache-and-store.md#locks),
   holds its own while it uses it), through descriptors; every emptying
   (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
   takes the same lock, leaves one held, and keeps a store with no data
-  beside it. A new state
-  directory is `0700`; one owned by another user or writable by others is
-  used with a warning. The store's directories the
+  beside it. A new state directory is `0700`; one owned by another user or
+  writable by others is used with a warning. The store's directories the
   user owns take the process's gid and no setgid bit, each pinned once
   (`RootPath::set_meta_if`): the rule, its reason and its exception are in
   [atomic publication](../../design/cache-and-store.md#atomic-publication).

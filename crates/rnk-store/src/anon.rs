@@ -439,8 +439,9 @@ pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<bool> {
         found |= left_by_a_store(&name);
         let rel = Path::new(&name);
         if is_probe_name(&name) {
-            if remove_probe_named(root, rel)? != ProbeDir::Removed {
-                continue;
+            match remove_probe_named(root, rel)? {
+                ProbeDir::Removed => {}
+                ProbeDir::Held | ProbeDir::NotOne => continue,
             }
         } else {
             let st = root.statx(rel)?;

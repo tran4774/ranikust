@@ -1424,7 +1424,8 @@ impl Store {
     /// leaves a store with no data, which the next open takes. `false` when
     /// nothing was emptied: an anonymous store, one another build holds,
     /// one that holds data, a name the store does not make,
-    /// [`PRUNING_MARKER`] or [`BUILDING_MARKER`].
+    /// [`PRUNING_MARKER`], [`BUILDING_MARKER`], or a directory of the user
+    /// namespace probe that a probe holds.
     ///
     /// # Errors
     ///
@@ -1457,7 +1458,8 @@ impl Store {
 
     /// Empties the state directory `state`, for `ranikust prune --all`
     /// (ADR-0105): every entry, lock and build directory, and the marker
-    /// last. `false` when it was empty already.
+    /// last, but a directory of the user namespace probe that a probe
+    /// holds, which stays. `false` when it was empty already.
     ///
     /// Takes the state directory's `flock` exclusive without waiting, as
     /// an anonymous store does, and holds it to the end: every build's
@@ -1495,8 +1497,9 @@ impl Store {
     /// [`Store::open`], as are [`Error::UsedOnSlash`] and
     /// [`Error::NoFlock`]; [`Error::Rootfs`] for this process's own `/`;
     /// [`Error::NotPruned`] naming what is left when anything but
-    /// [`PRUNING_MARKER`] stays (an entry on another mount, one this process
-    /// may not remove); [`Error::Io`] or [`Error::Rootfs`] when the
+    /// [`PRUNING_MARKER`] and a held probe directory stays (an entry on
+    /// another mount, one this process may not remove); [`Error::Io`] or
+    /// [`Error::Rootfs`] when the
     /// directory cannot be resolved, opened or synced, or the marker
     /// renamed.
     pub fn prune_all(state: &Path) -> Result<bool> {
@@ -2058,11 +2061,20 @@ fn empty_if_unused(state: &RootPath, state_path: &Path, lock: &OwnedFd) -> Resul
     let span = tracing::info_span!("rnk_store.prune");
     let _entered = span.enter();
     rnk_rootfs::refuse_own_root(state, state_path)?;
-    let mut held = false;
+    let mut held = None;
     for name in list(state, Path::new("."))? {
-        held |= remove_probe_dir(state, Path::new(&name))? == ProbeDir::Held;
+        match remove_probe_dir(state, Path::new(&name))? {
+            ProbeDir::Held => held = Some(name),
+            ProbeDir::Removed | ProbeDir::NotOne => {}
+        }
     }
-    if held {
+    if let Some(name) = held {
+        tracing::info!(
+            target: "rnk_store",
+            "state directory {}: the store holds no data but is kept: a user namespace probe \
+             still uses {name:?} there",
+            state_path.display()
+        );
         return Ok(false);
     }
     empty_all_but(state, state_path.to_owned(), lock, MARKER, |path, left| {
@@ -2494,7 +2506,7 @@ pub(crate) fn remove_probe_named(state: &RootPath, rel: &Path) -> Result<ProbeDi
     }
     match remove_probe_dir(state, rel)? {
         ProbeDir::NotOne => {}
-        done => return Ok(done),
+        done @ (ProbeDir::Removed | ProbeDir::Held) => return Ok(done),
     }
     let st = match state.statx(rel) {
         Ok(st) => st,
@@ -2508,7 +2520,7 @@ pub(crate) fn remove_probe_named(state: &RootPath, rel: &Path) -> Result<ProbeDi
         return Ok(ProbeDir::Held);
     }
     if st.file_type() == FileType::Directory {
-        // A mount, which this refuses.
+        // A mount point: `remove_dir_tree` refuses it, naming it.
         remove_dir_tree(state, rel, &st)?;
     } else {
         state.remove_file(rel)?;

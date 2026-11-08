@@ -369,7 +369,8 @@ The steps, in order:
       point is found again below the rbind by descriptor, through no
       symlink, and must not show the rbind's own mount; a file mount there
       (a runtime's `/dev/null`) is left, and a mount point that can no
-      longer be placed fails the `RUN`. `/sys/fs/cgroup` is then empty, as
+      longer be placed, or more than 64 such mounts, fails the `RUN`
+      (`Step::MaskPath`). `/sys/fs/cgroup` is then empty, as
       in a new `sysfs`. The network devices of the namespace it was mounted
       in are hidden next: an empty read-only tmpfs over
       `devices/virtual/net`, over the directory of each device a link of
