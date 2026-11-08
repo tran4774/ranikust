@@ -382,7 +382,11 @@ Each step before the next; design in
   namespace ranikust was started in maps no more, or its ranges could not
   be mapped), root's copy of a container's ranges, or a namespace ranikust
   was started in (`made` false: kaniko mode, root's overlay mode;
-  `Container`), widen its ranges. No flag lets it pass.
+  `Container`), widen its ranges. A range asked for comes with
+  `NO_OVERLAP` (it must not overlap another user's range or a real
+  account); past `RANGE_MAX` (65536, `useradd`'s default count) no range
+  is asked for: the ids are named, and root or a container is the way out.
+  No flag lets it pass.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read
   inside the context through its `RootPath`, never by a host path.
@@ -677,8 +681,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `an_owner_past_the_container_s_ranges_is_refused_before_extraction`
   (ADR-0098: images of root's and of several owners in the container's
   ranges checked and extracted; one with an owner past them refused by the
-  check, naming it and its path, with the container's ways out, as its
-  extraction is);
+  check, naming it and its path, with the container's ways out, which ask
+  for no range past 65536 ids, as its extraction is; kaniko mode per stage
+  in the same namespace streams no base layer and its check refuses the
+  far owner);
   `setup/tests/userns/layers/hostile.rs`
   `red_team_layers_extracted_under_one_map_are_never_used_under_another`
   (one layer extracted with the container's map and in the build's
@@ -761,10 +767,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   with no subordinate ids): one id mapped, an image of root's checked and
   extracted, one of several owners (a group's file, a user's home) and one
   of a far owner refused by the check, naming each id and its first path,
-  with the ways out (install `uidmap`, ranges, root, a container), as their
+  with the ways out (install `uidmap` and ranges for the several owners;
+  for the far one, past 65536 ids, root or a container), as their
   extraction is; `an_owner_past_a_user_s_ranges_is_refused_before_extraction`
-  (`newuidmap`: several owners pass, the far one refused with "widen
-  them").
+  (`newuidmap`: several owners pass, the far one refused, its ways out
+  asking for no wider range). In each, kaniko mode per stage in the
+  namespace streams no base layer and its check refuses the far owner.
 - **T2c:** `setup/tests.rs` `a_second_build_on_slash_is_refused_by_the_lock`
   (the `flock` on `/`'s own inode; a second lock is refused with "another
   ranikust build is using / in this container"); `exposure.rs`, profile

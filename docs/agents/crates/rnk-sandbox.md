@@ -92,7 +92,11 @@ them for rootless overlay mode.
   `devpts` without `gid=5` where gid 5 is unmapped, both read once per
   `Sandbox` (`OwnNamespace`); a `USER` whose ids the map lacks is refused
   at the first `setgroups`, `setgid` or `setuid` that fails with `EINVAL`,
-  as `Error::Unmapped` naming them (ADR-0098).
+  as `Error::Unmapped` naming them (ADR-0098), only in a user namespace
+  other than the initial one (`OwnNamespace::user_ns`, by the inode of
+  `/proc/self/ns/user`) and with at most `NGROUPS_MAX` (65536) groups;
+  otherwise the step's error stays. The dump flag's `prctl` after the
+  switch is `Step::Dumpable`.
 - The cgroups of full-sandbox `RUN`s in a delegated cgroup v2 tree
   (`cgroup.rs`, ADR-0110): the start-up probe, the nesting, and each `RUN`'s
   cgroups, killed and removed when it ends.
@@ -713,7 +717,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
   _apt` refused at `setgid` as `Error::Unmapped`, naming its ids (ADR-0098;
-  T0: `a_user_switch_refused_with_einval_names_the_ids` in `spawner.rs`);
+  T0: `a_user_switch_refused_with_einval_names_the_ids` and
+  `a_user_switch_refused_with_einval_for_another_cause_names_no_id` in
+  `spawner.rs`, `the_own_namespace_is_told_by_its_inode` in
+  `userns/tests.rs`);
   `an_rbind_of_proc_needs_a_request`: unasked,
   the sandbox's probe there refuses at `Step::MountProc` and no `RUN`
   starts; `runs_take_turns_under_an_rbind_of_proc`: two `RUN`s started

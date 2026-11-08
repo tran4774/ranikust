@@ -420,20 +420,27 @@ every id maps and nothing is checked.
   `rnk-builder`'s pull calls it for all of an image's layers before any is
   extracted. Overlay mode skips a layer already extracted for this map
   ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)).
-  kaniko mode checks blobs the same way; a layer streamed onto `/` is
-  checked in the pass that spools and verifies it, before that layer is
-  extracted, so a base image's earlier layers may be on `/` already (a
-  `COPY --from=<image>` spools and checks all its layers before any is
-  unpacked); a layer streamed into a directory per stage (a namespace
-  other than a container's) is refused at its first `chown` that fails.
+  kaniko mode off `/` (a directory per stage) streams no base layer in a
+  user namespace: it pulls the blobs, which are checked the same way
+  before any is extracted. On `/`, where no blob is kept, a streamed layer
+  is checked in the pass that spools and verifies it, before that layer is
+  extracted, so a base image's earlier layers may be on `/` already
+  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md));
+  a `COPY --from=<image>` spools and checks all its layers before any is
+  unpacked.
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
-  entry, `COPY --chown`, a cache mount's owner) and a `RUN`'s switch to its
-  user (`setgroups`, `setgid`, `setuid`, for `USER`) refuse at once, naming
-  the file or the ids.
+  entry, `COPY --chown`, a cache mount's owner) refuses at once, naming the
+  file. So does a `RUN`'s switch to its user (`setgroups`, `setgid`,
+  `setuid`, for `USER`), naming the ids, where nothing else explains the
+  `EINVAL`: in a user namespace other than the initial one, with no more
+  supplementary groups than the kernel's `NGROUPS_MAX` (65536); otherwise
+  the step's error stays.
 - **The message** names up to eight uids and eight gids, each with the first
-  path that has it, counts the other entries, and gives the map. `ranikust`
-  adds the ways out, by who made the namespace and from the ids its maps
-  lack (a refused call does not tell which of its ids failed): with one id
+  path that has it, counts the other entries, and gives the map; a `RUN`'s
+  switch names its uid, gid and up to eight supplementary groups, counting
+  the rest. `ranikust` adds the ways out, by who made the namespace and
+  from the ids its maps lack (a refused call does not tell which of its ids
+  failed; `-1`, which `chown` reads as "unchanged", is none): with one id
   (a user without `newuidmap` and `newgidmap`, or without ranges), install
   `uidmap` (Ubuntu does not by default) and give the user a first range in
   `/etc/subuid` and `/etc/subgid` of at least as many ids as the highest
@@ -441,9 +448,12 @@ every id maps and nothing is checked.
   widen the first range to that count (ranikust maps only that one, and id
   N is its N-th); in a namespace ranikust was started in, or root's copy
   of its map (a single uid or gid where it maps no more, or where its
-  ranges could not be mapped), widen its ranges (rootless Podman: its user's, then
-  `podman system migrate`), or run as root on a host or in a rootful
-  container.
+  ranges could not be mapped), widen its ranges (rootless Podman: its
+  user's, then `podman system migrate`), or run as root on a host or in a
+  rootful container. Each range asked for comes with the rule that it must
+  not overlap another user's range or a real account's ids. Past 65536
+  ids, `useradd`'s default count, no wider range is asked for: the ways
+  out name the ids and say to run as root or in a container.
 
 ## Failure handling
 

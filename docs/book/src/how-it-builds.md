@@ -143,12 +143,16 @@ overlay mount options.
   (Ubuntu does not by default) and give the user a first range in
   `/etc/subuid` and `/etc/subgid` that reaches them, widen the one it has,
   run as root, or run in a container (whose ranges must reach them too). A
-  `COPY --chown` or a `USER` the map lacks is refused the same way, when it
-  comes. No flag lets a failed `chown` through: the file would get the
-  wrong owner ([ADR-0098]). This holds in any user namespace, also kaniko
-  mode's in a rootless container, where a base image's layers streamed
-  onto `/` are checked one at a time, each before it is extracted, so the
-  layers before the refused one may already be there.
+  range must not overlap another user's range or a real account's ids, so
+  for an owner past 65536 (`useradd`'s default count) ranikust asks for no
+  wider range and names root or a container instead. A `COPY --chown` or a
+  `USER` the map lacks is refused the same way, when it comes. No flag lets
+  a failed `chown` through: the file would get the wrong owner
+  ([ADR-0098]). This holds in any user namespace, also kaniko mode's in a
+  rootless container. There, with a directory per stage, the layers are
+  downloaded whole and all checked first; on `/`, where they are streamed,
+  each is checked just before it is extracted, so the layers before the
+  refused one may already be there ([ADR-0137]).
 
 ## kaniko mode
 
@@ -412,3 +416,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0131]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md
 [ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md
 [ADR-0134]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md
+[ADR-0137]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md

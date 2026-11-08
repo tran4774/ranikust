@@ -137,8 +137,8 @@ pub async fn pull_image<S>(client: &Arc<Client>, store: &Arc<Store>, snapshotter
     // blobs into the store, base layers by the snapshotter; unless keep_blobs (a file output), a snapshotter that
     // streams (kaniko) gets each layer as a stream from the registry and no blob is pulled (ADR-0055); pulled blobs
     // go through Snapshotter::check_owners before the first is extracted, a refusal as Error::Image { reference, source }
-    // (ADR-0098; a streamed layer is checked in kaniko mode's spool pass on /; one streamed into a directory per stage
-    // is refused at its first chown that fails)
+    // (ADR-0098; a streamed layer is checked in kaniko mode's spool pass on /, ADR-0137; off / in a user namespace
+    // kaniko mode streams nothing, so its blobs are pulled and checked)
 pub struct PulledImage<L = LayerDir> { pub reference, pub config: ImageConfig, pub format: ImageFormat, pub blobs: Vec<BlobLayer>, pub layers: Vec<L> }
 ```
 

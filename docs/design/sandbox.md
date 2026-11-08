@@ -255,8 +255,14 @@ The steps, in order:
    where gid 5 is unmapped (3.4). A `USER` whose ids the map lacks is
    refused at the first step 7 call that fails with `EINVAL`
    (`Step::Groups`, `Step::Gid` or `Step::Uid`), as `Error::Unmapped`
-   naming the ids, which `ranikust` gives with the ways out
+   naming the ids (up to eight supplementary groups, the rest counted),
+   which `ranikust` gives with the ways out
    ([modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
+   Only where nothing else explains the `EINVAL`: in a user namespace other
+   than the initial one (told by the inode of `/proc/self/ns/user`) and
+   with no more groups than the kernel's `NGROUPS_MAX` (65536); otherwise
+   the step's error stays. The `prctl(PR_SET_DUMPABLE)` after the switch
+   reports `Step::Dumpable`.
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
    out ([below](#hardening-planned-for-phase-3)).
 3. **Mounts**, in this order:

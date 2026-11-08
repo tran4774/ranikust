@@ -329,7 +329,8 @@ the ones it refuses (`rnk-cache` → `rnk-dockerfile`, `rnk-ignore`,
    `rnk-cache`). In kaniko mode only manifests and configs are fetched here:
    base layers are streamed from the registry into extraction when a stage needs
    them, and no blob is kept unless an output needs its bytes
-   ([streaming](docs/design/streaming.md), ADR-0055).
+   ([streaming](docs/design/streaming.md), ADR-0055); off `/` in a user
+   namespace they are pulled, so their owners are checked first (ADR-0098).
 5. **Schedule** (`rnk-sched`): start each stage once its dependencies are done,
    at most `--jobs` `RUN`s at a time; one stage at a time on a shared `/`.
 6. **Build a stage** (`rnk-builder`): prepare the root (`rnk-snapshot`: overlay

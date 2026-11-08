@@ -62,7 +62,7 @@ pub trait Snapshotter {
     type Layer: Clone + Debug + Send + Sync;       // LayerDir (overlay) or KanikoLayer (a blob, or streamed)
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()>; // ADR-0098: in a user namespace, every owner of every blob not yet extracted for its map, or Error::Rootfs(Unmapped) naming them all; nothing written
     fn base_layer(&self, diff_id: &Digest, blob: &Path, below: &[Self::Layer]) -> Result<Self::Layer>;
-    fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<Self::Layer>; // ADR-0055: kaniko Some, overlay None
+    fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<Self::Layer>; // ADR-0055: kaniko Some, overlay None; kaniko off / in a user namespace None, so the blobs are pulled and check_owners reads them all first (ADR-0098)
     fn prepare(&self, base: Base<'_, Self::Root, Self::Layer>) -> Result<Self::Root>;  // Scratch | Image(&[Layer]) | Stage(&Root)
     fn prepare_source(&self, layers: &[Self::Layer]) -> Result<Self::Root>;  // COPY --from=<image>; default prepare(Image)
     fn prepare_last(&self, parent: &Self::Root) -> Result<Self::Root>;     // FROM <stage> by its only reader: may take the root over (ADR-0061, ADR-0062); default prepare(Stage)
@@ -152,9 +152,12 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   `check_headers_and_owners` for kaniko mode), its diff ID verified, and
   every owner the namespace's maps (`UserNamespace`'s `MappedIds`) lack is
   named in one refusal; overlay skips a layer whose key is already in the
-  store. On `/` a streamed layer is not a blob: the spool pass
-  (`Spooled::of`) notes its owners in the same read as its headers and
-  refuses once the layer is verified, before it is extracted. A `chown`
+  store. Off `/`, in a user namespace (`in_initial_user_namespace`, read
+  once per snapshotter), kaniko mode streams no base layer, so its layers
+  come as blobs and are all checked first. On `/` a streamed layer is not
+  a blob: the spool pass (`Spooled::of`) notes its owners in the same read
+  as its headers and refuses once the layer is verified, before it is
+  extracted (ADR-0137). A `chown`
   that fails with `EINVAL` during extraction is refused the same way
   (`rnk_rootfs::Error::Unmapped`).
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
