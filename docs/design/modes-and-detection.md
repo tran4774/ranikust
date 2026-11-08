@@ -83,7 +83,9 @@ with `EPERM`, and overlay mounts with `fsconfig(lowerdir+)`: the kernel, a
 5.14 with backports, has it ([step 4](#probe-order---modeauto)). The audit
 log records no SELinux denial in either leg. A `RUN` runs in the SELinux
 context of the process that started ranikust (`unconfined_t` from a login
-shell), since ranikust sets none. The default state directories are labelled
+shell), since ranikust sets none, by design
+([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md)).
+The default state directories are labelled
 `var_lib_t` (root's) and `data_home_t` (the user's), and no label reaches a
 layer: the two legs' `--reproducible` digests are one.
 
