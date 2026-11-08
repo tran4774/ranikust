@@ -134,9 +134,10 @@ pub struct SecretFile {
     /// Absolute path inside the root. Created as a journaled stub when
     /// missing.
     pub target: PathBuf,
-    /// Owner of the file.
+    /// Owner of the file; `u32::MAX` is `chown`'s "unchanged", the
+    /// child's own.
     pub uid: u32,
-    /// Group of the file.
+    /// Group of the file; `u32::MAX` as for `uid`.
     pub gid: u32,
     /// Permission bits of the file; other bits are dropped.
     pub mode: u32,

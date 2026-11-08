@@ -89,7 +89,7 @@ impl Store {
 }
 pub struct PruneCheck { pub entries: bool, pub dev: u64, pub ino: u64, pub uid: u32 } // entries: prune_all empties it; dev, ino, uid: as stat -c %d:%i:%u prints them
 pub enum CacheSharing { Shared, Locked, Private }   // shared: SH flock; locked: wait for EX; private: new dir
-pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped
+pub struct CacheOwner { pub uid: u32, pub gid: u32, pub mode: u32 }  // a new cache's; set-id bits dropped; an id of u32::MAX is chown's -1, the process's own kept (#212)
 impl CacheLease { pub fn path(&self) -> &Path; pub fn created(&self) -> bool }  // flock held until dropped
 pub struct TmpEntry;  // file() -> Option<&File> (blob); root() -> Option<&RootPath> (layer); path() -> &Path for messages only: write through file()/root()
 pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID, in a user namespace by chain ID and id map (rnk-snapshot, ADR-0032, ADR-0104) [open: #1]; digest() -> &Digest
@@ -217,7 +217,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T0** (temp dirs): `tests/store.rs`: layout and marker, a foreign
   directory refused, `fill` publishes once, a failing `f` publishes nothing,
   concurrent `fill` from threads runs `f` once, leftovers of a dead build
-  removed and a running build's kept, `close`, `cache_dir`; a directory
+  removed and a running build's kept, `close`, `cache_dir`; a new cache's
+  owner, and an id of `u32::MAX` left the process's
+  (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`); a directory
   holding only the probe's directories is marked and they are removed, and
   anything else with them still refused
   (`open_marks_a_directory_holding_only_ranikusts_leftovers`); another

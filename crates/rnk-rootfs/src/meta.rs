@@ -205,9 +205,10 @@ pub(crate) fn statx_at(dirfd: BorrowedFd<'_>, name: &std::ffi::OsStr, path: &Pat
 /// nothing moves them).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Meta {
-    /// New owner; set with `fchownat(AT_SYMLINK_NOFOLLOW)`.
+    /// New owner; set with `fchownat(AT_SYMLINK_NOFOLLOW)`. `u32::MAX` is
+    /// passed as `-1`, which `chown` reads as "unchanged".
     pub uid: Option<u32>,
-    /// New group; set with `fchownat(AT_SYMLINK_NOFOLLOW)`.
+    /// New group; set as `uid` is.
     pub gid: Option<u32>,
     /// Raw permission bits (`& 0o7777`): setuid, setgid and sticky are kept,
     /// type bits ignored, umask not applied. Ignored for symlinks, whose mode
@@ -662,8 +663,10 @@ fn apply_with(
     skipped: Option<&SkippedXattrs>,
 ) -> Result<()> {
     let owner_changes = m.uid.is_some() || m.gid.is_some();
-    let uid = m.uid.map(Uid::from_raw);
-    let gid = m.gid.map(Gid::from_raw);
+    // `None` is the same `-1` to `chown` ("unchanged"), which a rustix id
+    // must not hold.
+    let uid = m.uid.filter(|&id| id != u32::MAX).map(Uid::from_raw);
+    let gid = m.gid.filter(|&id| id != u32::MAX).map(Gid::from_raw);
     let mode = m
         .mode
         .map(|bits| Mode::from_raw_mode(bits & PERMISSION_BITS));

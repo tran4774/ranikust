@@ -69,7 +69,7 @@ impl RootPath {
     pub fn read_names(&self, p) -> Result<Vec<OsString>>; // a directory's names, mount points included
     pub fn pin(&self, p) -> Result<Pinned>;              // O_PATH|O_NOFOLLOW, no symlink in a parent, no `..`, root's mount only (the kaniko exporter)
     pub fn stay_on_mount(self) -> Self;                  // every later resolution with RESOLVE_NO_XDEV (rnk-sandbox's journal, ADR-0043)
-    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order)
+    pub fn set_meta(&self, p, m: &Meta) -> Result<()>;   // ids, xattrs, raw mode, times (that order); an id of u32::MAX passed as chown's -1, "unchanged" (#212)
     pub fn set_meta_if(&self, p, decide: impl FnOnce(&Stat) -> Option<Meta>) -> Result<bool>; // p pinned O_PATH|O_NOFOLLOW once, read and changed through that fd, only when decide returns a Meta (rnk-store's directories)
     pub fn xattrs(&self, p) -> Result<Vec<(OsString, Vec<u8>)>>; // every xattr, overlay's too, sorted; no follow, no open of a FIFO or device
     // create_dir, create_dir_all, symlink, read_link, hard_link, rename, remove_file, remove_dir; mnt_id()
@@ -171,7 +171,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the owner scans and `MappedIds` (ADR-0098, `src/owners.rs`,
   `src/extract/tests.rs`: what each extraction form would `chown`, read to
   the end, the header check's errors; a `chown`'s `EINVAL` in `src/meta.rs`
-  as `Error::Unmapped`); their red team (`tests/red_team_owners.rs`:
+  as `Error::Unmapped`; an owner of `u32::MAX`, from PAX or base-256, left
+  the process's by every extraction and no owner to the scans, #212); their
+  red team (`tests/red_team_owners.rs`:
   hostile headers, PAX, global PAX, GNU long names, base-256, duplicates,
   whiteouts, hardlinks, special files, framing and entries past the end,
   each scanned as both extraction forms `chown`, or refused alike; a

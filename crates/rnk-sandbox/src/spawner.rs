@@ -1792,8 +1792,11 @@ fn cstring(s: impl AsRef<OsStr>) -> Result<CString> {
 /// tmpfs is sized for them plus a page each, mode 0700.
 fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
     let mut files: Vec<ChildSecret> = Vec::new();
+    // `None` is the same `-1` to `chown` ("unchanged"), which a rustix id
+    // must not hold.
+    let id = |id: u32| (id != u32::MAX).then_some(id);
     for s in secrets {
-        let (uid, gid) = (Uid::from_raw(s.uid), Gid::from_raw(s.gid));
+        let (uid, gid) = (id(s.uid).map(Uid::from_raw), id(s.gid).map(Gid::from_raw));
         let mode = Mode::from_raw_mode(s.mode & 0o777);
         let target = cstring(&s.target)?;
         match files.iter_mut().find(|f| {
@@ -3394,6 +3397,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.files.len(), 2, "another mode, another file");
+    }
+
+    /// A secret's owner id of `u32::MAX` is `chown`'s "unchanged": none is
+    /// given, so the file keeps the child's own.
+    #[test]
+    fn a_secret_owner_of_u32_max_is_left_unchanged() {
+        let data: std::sync::Arc<[u8]> = vec![7u8; 10].into();
+        let file = |uid, gid| SecretFile {
+            data: std::sync::Arc::clone(&data),
+            target: "/s".into(),
+            uid,
+            gid,
+            mode: 0o400,
+        };
+        let s = child_secrets(
+            Path::new("/scratch"),
+            &[file(u32::MAX, 42), file(1000, u32::MAX)],
+        )
+        .unwrap();
+        let owners: Vec<_> = s.files.iter().map(|f| (f.uid, f.gid)).collect();
+        assert_eq!(
+            owners,
+            [
+                (None, Some(Gid::from_raw(42))),
+                (Some(Uid::from_raw(1000)), None)
+            ]
+        );
     }
 
     #[test]

@@ -73,6 +73,12 @@ anything, then applies, in this order:
 
 1. **Owner**, `fchownat(fd, "", AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)`.
    First, because `chown` clears setuid, setgid and `security.capability`.
+   An id of `4294967295` in a layer entry is passed on as `-1`, which
+   `chown` reads as "unchanged", as kaniko
+   (`kaniko@44aa7ddc0 pkg/util/fs_util.go:434-437`) and BuildKit
+   (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:409-417`)
+   pass it; the owner scans count it as no owner
+   ([#212](https://github.com/tran4774/ranikust/issues/212)).
 2. **Xattrs**, before the mode, because setting `user.*` needs write
    permission that the final mode may remove. An empty ACL value removes the
    ACL (`system.posix_acl_access` or `_default`, with `removexattr`, no

@@ -144,9 +144,9 @@ pub enum CacheSharing {
 /// base when the mount sets `uid`, `gid` or `mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheOwner {
-    /// Owner.
+    /// Owner; `u32::MAX` is `chown`'s "unchanged", the process's own.
     pub uid: u32,
-    /// Group.
+    /// Group; `u32::MAX` as for `uid`.
     pub gid: u32,
     /// Permission bits and the sticky bit; set-id bits are dropped.
     pub mode: u32,
@@ -1259,11 +1259,14 @@ impl Store {
             gid: st.st_gid,
             mode: 0o755,
         });
+        // `None` is the same `-1` to `chown` ("unchanged"), which a rustix
+        // id must not hold.
+        let id = |id: u32| (id != u32::MAX).then_some(id);
         if (st.st_uid, st.st_gid) != (owner.uid, owner.gid) {
             rustix::fs::fchown(
                 &fd,
-                Some(rustix::fs::Uid::from_raw(owner.uid)),
-                Some(rustix::fs::Gid::from_raw(owner.gid)),
+                id(owner.uid).map(rustix::fs::Uid::from_raw),
+                id(owner.gid).map(rustix::fs::Gid::from_raw),
             )
             .map_err(|e| match e {
                 // An owner the user namespace does not map (ADR-0098).
