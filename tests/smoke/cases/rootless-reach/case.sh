@@ -210,7 +210,7 @@ done
 i=0
 while foreign >/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 rc=0
-"$0" "$@" >/ranikust/out/last.log 2>&1 || rc=$?
+"$0" "$@" >"${0%/bin/ranikust}/out/last.log" 2>&1 || rc=$?
 echo "status=$rc"
 s=/var/lib/ranikust
 echo "left: $(find "$s/builds" "$s/tmp" -mindepth 1 -maxdepth 1 2>/dev/null; find "$s" -maxdepth 1 -name ".ranikust-anon-userns-probe-*")"' \
@@ -269,11 +269,11 @@ done
 i=0
 while foreign >/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 rc=0
-"$0" "$@" >/ranikust/out/last.log 2>&1 || rc=$?
+"$0" "$@" >"${0%/bin/ranikust}/out/last.log" 2>&1 || rc=$?
 echo "status=$rc"
-grep -q "ranikust: kaniko mode on /, RUN directly" /ranikust/out/last.log && echo "fell back"
+grep -q "ranikust: kaniko mode on /, RUN directly" "${0%/bin/ranikust}/out/last.log" && echo "fell back"
 echo "left: $(ls -A /var/lib/ranikust | tr "\n" " ")"
-[ "$rc" = 0 ] || cat /ranikust/out/last.log' \
+[ "$rc" = 0 ] || cat "${0%/bin/ranikust}/out/last.log"' \
     "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target userns \
     --allow proc.rbind 2>&1)"
   PODMAN_ARGS=()
