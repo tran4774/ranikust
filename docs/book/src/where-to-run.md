@@ -14,7 +14,7 @@ it follows from the platform's documented defaults and has not been tried.
 
 | Environment | Mode | Notes | Basis |
 |---|---|---|---|
-| Host or VM, as root or with `sudo` | overlay | Every step of the sandbox works without fallbacks. With SELinux enforcing (AlmaLinux 9), builds pass and no denial is logged. | measured on Ubuntu 22.04 and 24.04 and on AlmaLinux 9 with SELinux enforcing |
+| Host or VM, as root or with `sudo` | overlay | Every step of the sandbox works without fallbacks. With SELinux enforcing (AlmaLinux 9), builds pass and no denial is logged; a `RUN` keeps the caller's SELinux context and gets no label of its own ([ADR-0140](https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md)). | measured on Ubuntu 22.04 and 24.04 and on AlmaLinux 9 with SELinux enforcing |
 | Docker or Podman container with `--privileged` | overlay | Put the state directory (`/var/lib/ranikust`) on a volume or tmpfs: overlay cannot use the container's own overlay root filesystem. | measured |
 | Podman container with `--cap-add SYS_ADMIN` | overlay | | measured |
 | Docker container with `--cap-add SYS_ADMIN` only | kaniko | Docker's default AppArmor profile still blocks mounts. | measured |

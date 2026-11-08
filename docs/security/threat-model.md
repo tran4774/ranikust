@@ -463,6 +463,17 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   everything sent to that registry, its token service included, so a
   credential exchanged there goes to whoever answers. The `oci-client` requests resolve `localhost` with the
   system resolver; only ranikust's own requests pin it to loopback.
+- A `RUN` gets no LSM label of its own
+  ([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md)).
+  It keeps the SELinux context of the process that started ranikust
+  (`unconfined_t` for an interactive user, the container's label inside a
+  container **[inferred]**), and no AppArmor profile is applied. On a host
+  with SELinux enforcing, a container runtime confines its containers with
+  `container_t` and an MCS pair of their own **[external]**; a `RUN` is held
+  by the sandbox alone, so a kernel bug or a retained capability that crosses
+  it is not stopped by policy. AlmaLinux 9.8 builds pass with no denial
+  logged **[measured]**. Labelling is revisited in Phase 6 hardening
+  ([#89](https://github.com/tran4774/ranikust/issues/89)).
 - Some environments get no mode at all and are refused
   ([ADR-0004](../adr/0004-support-every-privilege-level.md)).
 
