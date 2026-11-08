@@ -313,18 +313,7 @@ fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
     let sudo = at("run ranikust as root, with sudo").expect(advice);
     let container = at("; or run ranikust in a container").expect(advice);
     assert!(sudo < container, "{advice}");
-    let restricted = fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-        .is_ok_and(|v| v.trim_ascii() == b"1");
-    let unconfined = fs::read("/proc/self/attr/apparmor/current")
-        .or_else(|_| fs::read("/proc/self/attr/current"))
-        .is_ok_and(|v| v.trim_ascii() == b"unconfined");
-    let host_userns = fs::read_to_string("/proc/self/uid_map")
-        .is_ok_and(|m| m.split_ascii_whitespace().eq(["0", "0", "4294967295"]));
-    // T0 runs on a host; in a container ranikust names no profile either.
-    let in_container = ["/.dockerenv", "/run/.containerenv"]
-        .iter()
-        .any(|p| Path::new(p).exists());
-    if restricted && unconfined && host_userns && !in_container {
+    if offers_a_profile_here() {
         // As /usr/local/bin/ranikust, or elsewhere where /usr/local/bin is
         // not root's alone.
         let profile = at("or, as root, install ranikust ").expect(advice);
@@ -1314,10 +1303,78 @@ fn userns_advice(err: &str) -> &str {
         .unwrap_or_else(|| panic!("no advice: {err}"))
 }
 
-/// Whether AppArmor restricts user namespaces here, as the advice reads it.
-fn apparmor_restricts_userns() -> bool {
-    fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-        .is_ok_and(|v| v.trim_ascii() == b"1")
+/// Whether the advice may offer a profile here: the switch at 1, this
+/// process unconfined, in the host's user namespace and in no container
+/// (T0 runs on a host; the markers stand for ranikust's container check).
+fn offers_a_profile_here() -> bool {
+    let restricted = fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim_ascii() == b"1");
+    let unconfined = fs::read("/proc/self/attr/apparmor/current")
+        .or_else(|_| fs::read("/proc/self/attr/current"))
+        .is_ok_and(|v| v.trim_ascii() == b"unconfined");
+    let host_userns = fs::read_to_string("/proc/self/uid_map")
+        .is_ok_and(|m| m.split_ascii_whitespace().eq(["0", "0", "4294967295"]));
+    let in_container = ["/.dockerenv", "/run/.containerenv"]
+        .iter()
+        .any(|p| Path::new(p).exists());
+    restricted && unconfined && host_userns && !in_container
+}
+
+/// Red team (#81): the profile is offered only for a path that holds
+/// ranikust itself, not for a root-owned program a forged marker names, nor
+/// for the loader that ran a dynamic ranikust.
+#[test]
+fn red_team_no_profile_for_a_root_program_that_is_not_ranikust() {
+    use std::os::fd::AsRawFd as _;
+    if skip_as_root() || !offers_a_profile_here() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let args = ["--no-push", "--context", "ctx", "--state-dir=state"];
+    let interpreter = ["/usr/bin/env", "/usr/bin/perl", "/usr/bin/python3"]
+        .iter()
+        .find_map(|p| fs::canonicalize(p).ok())
+        .expect("an interpreter");
+    let copy = tmp.path().join("copy");
+    fs::copy(env!("CARGO_BIN_EXE_ranikust"), &copy).expect("copy");
+    let held = fs::File::open(&copy).expect("open the copy");
+    fs::remove_file(&copy).expect("remove the copy");
+    let hex: String = interpreter
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let out = Command::new(format!("/proc/self/fd/{}", held.as_raw_fd()))
+        .args(args)
+        .current_dir(tmp.path())
+        .env_clear()
+        .env("RANIKUST_DEBUG_FAULT", "no-userns")
+        .env("RANIKUST_SEALED_COPY", format!("tmpfile root {hex}"))
+        .output()
+        .expect("run the copy");
+    let mut offered = Vec::new();
+    if userns_advice(&stderr(&out)).contains(&format!("changed to {}", interpreter.display())) {
+        offered.push(interpreter.clone());
+    }
+    // The loader of this binary's own architecture only.
+    let loader = cfg!(target_arch = "x86_64")
+        .then(|| fs::canonicalize(Path::new("/lib64/ld-linux-x86-64.so.2")));
+    if let Some(Ok(loader)) = loader {
+        let out = Command::new(&loader)
+            .arg(env!("CARGO_BIN_EXE_ranikust"))
+            .args(args)
+            .current_dir(tmp.path())
+            .env_clear()
+            .env("RANIKUST_DEBUG_FAULT", "seal-none")
+            .output()
+            .expect("run through the loader");
+        if userns_advice(&stderr(&out)).contains(&format!("changed to {}", loader.display())) {
+            offered.push(loader.clone());
+        }
+    }
+    assert!(offered.is_empty(), "the profile is offered for {offered:?}");
 }
 
 /// A link to (or else a copy of) the binary at `to`.
@@ -1372,7 +1429,7 @@ fn red_team_the_advice_escapes_a_hostile_binary_path() {
     );
     let advice = userns_advice(&err);
     assert!(!advice.contains("changed to"), "{advice}");
-    if apparmor_restricts_userns() {
+    if offers_a_profile_here() {
         assert!(advice.contains("\\u{1b}[2J"), "{advice}");
         assert!(advice.contains(" first"), "{advice}");
     }
@@ -1407,7 +1464,7 @@ fn red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile() {
         assert!(err.contains(STOPS_AS_A_USER), "{err}");
         userns_advice(&err).to_owned()
     };
-    let restricted = apparmor_restricts_userns();
+    let restricted = offers_a_profile_here();
 
     let gone = tmp.path().join("gone");
     place_binary(&gone);

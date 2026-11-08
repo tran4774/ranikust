@@ -177,11 +177,79 @@ fn advise(binary: Option<&Path>, stop: Stop, here: &Here) -> String {
                 "{} has characters a profile reads as a pattern or a separator",
                 path.display()
             )),
-            Ok(()) => Ok(path),
+            Ok(()) => holds_ranikust(path)
+                .map(|()| path)
+                .map_err(|why| format!("{} does not hold ranikust itself ({why})", path.display())),
         },
     };
     let dir = only_root_changes(Path::new(PROFILE_DIR), FileType::Directory);
     advice(Some(Checked { bound, dir }))
+}
+
+/// Whether `path` holds ranikust itself: the bytes of the file this code
+/// runs from, which `/proc/self/exe` must name. The path ranikust is given
+/// is not proof: a loader that ran ranikust is `/proc/self/exe` then, and a
+/// sealed copy's marker may name any file.
+///
+/// # Errors
+///
+/// Why not, or what stopped the check: any error says no.
+fn holds_ranikust(path: &Path) -> Result<(), String> {
+    use std::io::Read as _;
+    let exe = std::fs::File::open("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
+    let ran = rustix::fs::fstat(&exe).map_err(|e| format!("/proc/self/exe: {e}"))?;
+    let maps =
+        std::fs::read_to_string("/proc/self/maps").map_err(|e| format!("/proc/self/maps: {e}"))?;
+    let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
+    let runs_from = (
+        rustix::fs::major(ran.st_dev),
+        rustix::fs::minor(ran.st_dev),
+        ran.st_ino,
+    );
+    if backing(&maps, code) != Some(runs_from) {
+        return Err("ranikust does not run from the file /proc/self/exe names".to_owned());
+    }
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY;
+    let file = rustix::fs::open(path, flags | OFlags::CLOEXEC, Mode::empty())
+        .map_err(|e| e.to_string())?;
+    let st = rustix::fs::fstat(&file).map_err(|e| e.to_string())?;
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile || st.st_size != ran.st_size {
+        return Err("its size differs".to_owned());
+    }
+    let mut left = u64::try_from(ran.st_size).map_err(|e| e.to_string())?;
+    let (mut theirs, mut ours) = (std::fs::File::from(file), exe);
+    let (mut a, mut b) = (vec![0; 1 << 16], vec![0; 1 << 16]);
+    while left > 0 {
+        let n = usize::try_from(left).map_or(a.len(), |left| left.min(a.len()));
+        theirs.read_exact(&mut a[..n]).map_err(|e| e.to_string())?;
+        ours.read_exact(&mut b[..n]).map_err(|e| e.to_string())?;
+        if a[..n] != b[..n] {
+            return Err("its bytes differ".to_owned());
+        }
+        left -= u64::try_from(n).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The device (major, minor) and inode of the file mapped at `addr`, read
+/// from `maps`, `/proc/self/maps`' text; `None` where no file backs it.
+fn backing(maps: &str, addr: usize) -> Option<(u32, u32, u64)> {
+    maps.lines().find_map(|line| {
+        let mut fields = line.split_ascii_whitespace();
+        let (start, end) = fields.next()?.split_once('-')?;
+        let start = usize::from_str_radix(start, 16).ok()?;
+        let end = usize::from_str_radix(end, 16).ok()?;
+        if !(start..end).contains(&addr) {
+            return None;
+        }
+        let (major, minor) = fields.nth(2)?.split_once(':')?;
+        let inode = fields.next()?.parse().ok().filter(|&i: &u64| i != 0)?;
+        Some((
+            u32::from_str_radix(major, 16).ok()?,
+            u32::from_str_radix(minor, 16).ok()?,
+            inode,
+        ))
+    })
 }
 
 /// Whether `kernel.apparmor_restrict_unprivileged_userns` reads 1: any

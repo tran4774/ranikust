@@ -282,6 +282,47 @@ fn only_the_host_s_user_namespace_outside_a_container_is_the_host() {
     assert!(!on_host(None, None));
 }
 
+/// The file mapped at an address is read from `/proc/self/maps`' fields;
+/// an anonymous mapping, or an address no line holds, has none.
+#[test]
+fn the_file_behind_an_address_is_read_from_the_maps() {
+    let maps = "\
+5583a6c00000-5583a6c2e000 r--p 00000000 103:02 1311020                   /usr/bin/x
+5583a6c2e000-5583a6d1c000 r-xp 0002e000 103:02 1311020                   /usr/bin/x
+7f0e1c000000-7f0e1c021000 rw-p 00000000 00:00 0
+7f0e1d400000-7f0e1d600000 r-xp 00000000 00:01 4242                       /memfd:ranikust (deleted)
+";
+    assert_eq!(backing(maps, 0x5583_a6c2_e000), Some((0x103, 2, 1_311_020)));
+    assert_eq!(backing(maps, 0x5583_a6d1_bfff), Some((0x103, 2, 1_311_020)));
+    assert_eq!(backing(maps, 0x7f0e_1d40_0010), Some((0, 1, 4242)));
+    assert_eq!(backing(maps, 0x7f0e_1c00_0010), None);
+    assert_eq!(backing(maps, 0x5583_a6d1_c000 + 0x10), None);
+    assert_eq!(backing(maps, 0x10), None);
+    assert_eq!(backing("", 0x10), None);
+}
+
+/// Only a file with the bytes of the one this code runs from holds
+/// ranikust: the running test binary does; a file of its size with other
+/// bytes, another program, a symlink to it and a missing file do not.
+#[test]
+fn only_the_running_program_s_bytes_hold_ranikust() {
+    let me = std::fs::canonicalize("/proc/self/exe").unwrap();
+    assert_eq!(holds_ranikust(&me), Ok(()));
+    let tmp = tempfile::tempdir().unwrap();
+    let sized = tmp.path().join("sized");
+    let file = std::fs::File::create(&sized).unwrap();
+    file.set_len(std::fs::metadata(&me).unwrap().len()).unwrap();
+    drop(file);
+    assert_eq!(holds_ranikust(&sized), Err("its bytes differ".to_owned()));
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&me, &link).unwrap();
+    assert!(holds_ranikust(&link).is_err());
+    assert!(holds_ranikust(&tmp.path().join("missing")).is_err());
+    if let Ok(env) = std::fs::canonicalize("/usr/bin/env") {
+        assert_eq!(holds_ranikust(&env), Err("its size differs".to_owned()));
+    }
+}
+
 /// A profile names only a path of plain characters as it is: no glob,
 /// alternation, variable, comment or space.
 #[test]
