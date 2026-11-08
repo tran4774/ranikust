@@ -2,8 +2,8 @@
 
 Thank you for your interest. ranikust is pre-alpha: it builds images in
 overlay mode (as root, or rootless in a user namespace) or in kaniko mode, and
-its releases are pre-releases; `--userns`, the layer cache and more
-instructions come in later phases
+its releases are pre-releases; the layer cache and more instructions come
+in later phases
 (the [roadmap](README.md#roadmap)). Before starting anything larger than a
 small fix, open an issue so the work fits the plan in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) and the decisions in

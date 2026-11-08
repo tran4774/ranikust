@@ -154,9 +154,9 @@ each phase is a milestone.
       [ADR-0065](docs/adr/0065-single-snapshot-refused-for-good.md))
 - [ ] **Phase 3, rootless and probing**
       ([#41](https://github.com/tran4774/ranikust/issues/41)): user-namespace
-      overlay, a test matrix across privilege levels and `--userns`;
-      rootless overlay mode, automatic mode selection, refusing with
-      guidance and `--seccomp` are already built
+      overlay and a test matrix across privilege levels; rootless overlay
+      mode, `--userns`, automatic mode selection, refusing with guidance and
+      `--seccomp` are already built
 - [ ] **Phase 4, cache:** versioned cache keys, registry-backed layer cache
 - [ ] **Phase 5, feature parity:** `ADD` from URLs and git, bind mounts,
       `ONBUILD`, `COPY --link`, registry mirrors, credential helpers

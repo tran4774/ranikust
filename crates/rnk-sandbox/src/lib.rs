@@ -16,7 +16,9 @@
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
 //! user namespace would need: root only reports it, rootless overlay mode
 //! routes on it. [`enter_build_user_namespace`] moves the process into the
-//! build's user namespace, each id map tried in a forked child first.
+//! build's user namespace, each id map tried in a forked child first; with
+//! root's `--userns` range ([`BuildIds::Shifted`], ADR-0104) root's own ids
+//! stay unmapped and the process becomes the range's first ids.
 //! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
 //! `/sys` where the user-namespace probe found a new `sysfs` refused
 //! ([`UsernsReport::fallbacks`]), a `RUN` with a network namespace of its

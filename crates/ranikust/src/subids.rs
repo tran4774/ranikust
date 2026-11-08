@@ -1,10 +1,11 @@
 //! The subordinate ids of the user ranikust runs as, for the build's user
 //! namespace (`rnk_sandbox::enter_build_user_namespace`): the first range
 //! `/etc/subuid` and `/etc/subgid` give the user, by name or by uid, as
-//! `newuidmap` and `newgidmap` read them. Read on the host before the
-//! namespace is entered. The name comes from `/etc/passwd` only: a static
-//! binary has no NSS, so a user known only to a directory service is
-//! matched by uid.
+//! `newuidmap` and `newgidmap` read them; for root's `--userns`, the
+//! `ranikust` entry alone ([`root_range`], ADR-0104). Read on the host
+//! before the namespace is entered. The name comes from `/etc/passwd` only:
+//! a static binary has no NSS, so a user known only to a directory service
+//! is matched by uid.
 
 use rnk_sandbox::{IdRange, SubordinateIds};
 

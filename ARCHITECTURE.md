@@ -30,6 +30,9 @@ other than root builds in rootless overlay mode, and so does root where it may
 not mount and the state directory is not on a container's own root; where a
 container masks `/proc`, that needs `--allow proc.rbind`
 ([modes and detection](docs/design/modes-and-detection.md#probe-order---modeauto)).
+With `--userns`, root builds in rootless overlay mode too, as the first ids
+of a `ranikust` range of `/etc/subuid` and `/etc/subgid`, never in another
+mode ([sandbox](docs/design/sandbox.md#--userns)).
 
 ranikust keeps its own files, including the persistent store and every build
 root it makes, in one state directory (`--state-dir`, default
@@ -165,7 +168,8 @@ In sequential kaniko mode on `/` it runs `RUN` directly, like kaniko
 (`Isolation::Direct`). It also moves the process into the build's user
 namespace, each id map tried in a forked child first (rootless overlay mode,
 [#75](https://github.com/tran4774/ranikust/issues/75),
-[#79](https://github.com/tran4774/ranikust/issues/79)); the subordinate ids
+[#79](https://github.com/tran4774/ranikust/issues/79), and root's `--userns`,
+[#83](https://github.com/tran4774/ranikust/issues/83)); the subordinate ids
 come from `ranikust`. Where its `RUN`s get an rbind of `/proc`, they take
 turns, whatever `--jobs` allows
 ([ADR-0127](docs/adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)).

@@ -1,7 +1,7 @@
 # Choosing where to run it
 
-> Overlay mode as root, rootless overlay mode and kaniko mode are built. The
-> AppArmor advice for Ubuntu 24.04 and `--userns` (Phase 3) are not.
+> Overlay mode as root, rootless overlay mode, root's `--userns` and kaniko
+> mode are built. The AppArmor advice for Ubuntu 24.04 (Phase 3) is not.
 
 ranikust needs **Linux 5.8 or later**. It checks at start-up and stops with a
 clear message on older kernels, such as RHEL/CentOS 8, Debian 10, Ubuntu 20.04

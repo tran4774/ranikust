@@ -35,12 +35,15 @@ root, and root that may not mount where ADR-0107 lets it, build in the build's
 user namespace, which the process enters after the probe has routed
 ([step 2](#probe-order---modeauto); how:
 [rnk-sandbox](../agents/crates/rnk-sandbox.md#owns),
-[ranikust](../agents/crates/ranikust.md#owns)). Root's builds that may mount
-keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko mode is
-set up by `set_up_kaniko`. **Planned, Phase 3** (tracking issue
-[#41](https://github.com/tran4774/ranikust/issues/41)): `--userns`, the
-refusal of an image with an owner the namespace does not map, and the
-AppArmor advice, all under [Refusal and guidance](#refusal-and-guidance).
+[ranikust](../agents/crates/ranikust.md#owns)). Root's `--userns` takes the
+same path whether or not it may mount, with its `ranikust` range, and never
+another mode ([sandbox](sandbox.md#--userns),
+[#83](https://github.com/tran4774/ranikust/issues/83)). Root's builds that may
+mount keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko
+mode is set up by `set_up_kaniko`. **Planned, Phase 3** (tracking issue
+[#41](https://github.com/tran4774/ranikust/issues/41)): the refusal of an
+image with an owner the namespace does not map, and the AppArmor advice, both
+under [Refusal and guidance](#refusal-and-guidance).
 
 ## Where environments land
 
@@ -346,6 +349,12 @@ Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
   `--mode=overlay` there builds rootless or is refused with both reasons: the
   mount's, with the advice to use kaniko mode (`NEEDS_KANIKO_MODE`), and
   rootless overlay mode's.
+- Root's `--userns` builds in the build's user namespace of its `ranikust`
+  range or is refused, before anything is written, where the range is
+  missing (naming the line to add to `/etc/subuid` and `/etc/subgid`) or the
+  state directory is not one for the range's first uid (saying what it must
+  be), and otherwise where a step of the namespace fails, never in another
+  mode (`USERNS_UNUSABLE`); with `--mode=kaniko` it is a usage error.
 - A process that is not root builds in rootless overlay mode or is refused
   with the step it stopped at and the way out: the AppArmor switch, or root,
   where `unshare` or the map failed (`NO_USER_NAMESPACE`); `--allow

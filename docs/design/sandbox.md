@@ -101,7 +101,8 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    Rootless overlay mode enters the build's user namespace here instead, with
    the mount namespace it owns (`enter_build_user_namespace`), once the
    probe of the steps has passed
-   ([modes-and-detection](modes-and-detection.md#probe-order---modeauto)).
+   ([modes-and-detection](modes-and-detection.md#probe-order---modeauto)),
+   and so does root's `--userns`, with its own map ([`--userns`](#--userns)).
 2. Start one **spawner thread** that lives for the whole build. Every `RUN`
    child is cloned from it, never from tokio's `spawn_blocking`:
    `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool
@@ -133,12 +134,11 @@ namespaces ranikust creates are the helper's for `--allow network.none-userns`
 root, reported only), and the build's own, which
 `rnk_sandbox::enter_build_user_namespace` makes for the whole process
 ([#75](https://github.com/tran4774/ranikust/issues/75)) in rootless overlay
-mode ([#79](https://github.com/tran4774/ranikust/issues/79)). A `RUN` in it
-runs this sequence with the fallbacks of steps 2 and 3
-([#78](https://github.com/tran4774/ranikust/issues/78)). `--userns` is planned
-for Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)), see
-[Hardening planned for Phase 3](#hardening-planned-for-phase-3); the parts that
-belong to it are marked *planned*.
+mode ([#79](https://github.com/tran4774/ranikust/issues/79)) and under root's
+`--userns` ([`--userns`](#--userns)). A `RUN` in it runs this sequence with the
+fallbacks of steps 2 and 3
+([#78](https://github.com/tran4774/ranikust/issues/78)). What is still planned
+is marked *planned*.
 
 **`--network=none`** needs `lo` up, which needs `CAP_NET_ADMIN` over the new
 network namespace. The first such `RUN` probes once
@@ -256,7 +256,7 @@ The steps, in order:
    at the first step 7 call that names one (`Step::Groups`, `Step::Gid` or
    `Step::Uid`).
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
-   out ([below](#hardening-planned-for-phase-3)).
+   out ([below](#--userns)).
 3. **Mounts**, in this order:
    1. Bind the root onto itself, recursively (`pivot_root` requires it), and
       remount the bind `nodev`: Docker blocks device nodes with its device
@@ -794,6 +794,7 @@ ranikust never removes them, and they go with the unit or container
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root, keeping Docker's 14 capabilities: the old root stays mounted underneath, and `..` stops at the moved root only then [measured] (the `sysadmin` variant of `tests/vm/guest/smoke.sh`, kernels 5.15 and 6.8). Inside a plain `chroot` ranikust refuses before changing anything ([modes-and-detection](modes-and-detection.md#refusal-and-guidance)) |
 | Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged, its `RUN`s one at a time ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` except where the gid map gives one id and `setgroups` is denied; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the smoke check of PID 2 under `ranikust-init` is left out there ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. Rootless overlay mode builds in this namespace (#79, T1 `rootless` smoke case); started inside one that something else made (rootless `podman run --privileged`), ranikust as root of it builds in overlay mode as root and runs the sequence above as written (T1, `just smoke`) |
+| `--userns` (root, the build's user namespace with root's `ranikust` range) | As rootless, with the map `0 <start> <count>` of the range alone ([`--userns`](#--userns)), never another; a new `proc` and a read-only `sysfs` on a host or in a VM, where root may mount (T2 `userns` quick case) |
 | kaniko mode, cannot mount | `Isolation::Direct`: no sandbox, `RUN` runs on `/` like kaniko (below) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
@@ -866,25 +867,68 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   cgroups it may make below them, and how deep
   ([`RUN` cgroups](#run-cgroups)).
 
-## Hardening planned for Phase 3
+## `--userns`
 
-Not built yet (ADR-0003).
+With `--userns`, real root runs the whole build in a user namespace whose uid
+and gid 0 are unprivileged ids of the host, so that a process escaping a `RUN`
+is not the host's root ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
+[ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
+[#83](https://github.com/tran4774/ranikust/issues/83)). It is rootless overlay
+mode's path ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)),
+with another map:
 
-- `--userns`: the build runs in a user namespace, so uid 0 inside maps to an
-  unprivileged uid on the host. Every parent directory of the state directory
-  must be traversable by the mapped uid. Decided
-  ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)):
-  the whole build runs in the namespace, as rootless mode does
-  ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)),
-  with a range for root read from a dedicated `ranikust` entry of `/etc/subuid`
-  and `/etc/subgid` (the build is refused before anything is written where it is
-  missing) and extracted layers keyed by their id map; an image with an owner
-  outside that range is refused
-  ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
-  a `RUN`'s command runs where the init's uid is unmapped, in rootless mode too
-  ([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
-  (b)). How (a namespace nested per `RUN`, or a map without the init's uid) is
-  settled with [#83](https://github.com/tran4774/ranikust/issues/83).
+- **The range.** `ranikust` reads root's range from the first well-formed
+  `ranikust` line of `/etc/subuid` and of `/etc/subgid`, by that name only, on
+  the host and before anything is written. Where either is missing, or starts
+  at 0, the build is refused, naming the line to add to both files,
+  `ranikust:<start>:65536`, `<start>` left to the admin.
+- **The map** (`BuildIds::Shifted`, logged as `shifted range`) is
+  `0 <start> <count>` for uids and for gids: the range alone, root's own ids
+  unmapped. Root writes it from outside, as for its multi-range map; no other
+  map is tried in its place, so no fallback maps the host's root. The process
+  then takes the namespace's root as its ids: no supplementary group (gid 0
+  would still count on the host), `setresgid` and `setresuid` to 0, not
+  dumpable again ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md))
+  and the parent-death signal set again, since changing ids resets both. Its
+  capabilities there cover only files of mapped ids, so the probe's targets
+  and directories are given to the range's first ids before it runs.
+- **The state directory** is the namespace root's own: owned by the range's
+  first uid and gid, below directories that only root owns, none writable by
+  group or others even where sticky (that uid could rename what it owns
+  there), each searchable by that uid and gid by its mode bits (an ACL is not
+  read). A missing one is made for it, `0700`, the missing directories above
+  it root's with mode `0711`; an existing one of root's is refused, never given
+  away: root's own builds keep layers extracted with real ids, setuid-root
+  files among them. Every refusal comes before anything is written, with
+  guidance. Extracted layers are keyed by the namespace's id map, as in every
+  user namespace ([cache-and-store](cache-and-store.md)).
+- **Never another mode.** `--userns` is refused with `--mode=kaniko`; where a
+  set-up step fails it refuses, never falling back to a mode without the user
+  namespace, unlike root's `--mode=auto`
+  ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)),
+  and it does not wait for a read-only `/proc/sys`
+  ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)),
+  whose files the namespace's root does not own.
+- **What the mapped uid reaches.** The build runs as that uid on the host, so
+  the context, the Dockerfile, `--secret` files, the registry credentials and
+  the outputs are reached with its permissions, not root's, and so is the
+  working directory, where a relative `--dockerfile` is looked for first: one
+  it cannot search, such as `/root`, is an error, not a fallback to the
+  context.
+
+Measured in the T2 VM (`userns` quick case, Ubuntu 24.04): a `RUN`'s
+`uid_map` read from the host is `0 <start> 65536`, its ids there are the
+range's first, a file it makes is owned there by them, and the image's
+`--reproducible` digest equals the build's without `--userns`.
+
+*Planned, Phase 3:* a `RUN`'s command runs where the init's uid is unmapped,
+in rootless mode too
+([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
+(b), [#34](https://github.com/tran4774/ranikust/issues/34)): under `--userns`
+the init still runs as the namespace's root. An image with an owner outside
+the range is to be refused with guidance, as in rootless mode
+([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
+until then its extraction fails at that owner's `chown`.
 
 ## Failure handling
 

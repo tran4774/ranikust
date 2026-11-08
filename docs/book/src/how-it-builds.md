@@ -136,6 +136,33 @@ overlay mount options.
   `SIGTERM` reach the build through the waiting process, and the exit code
   is the build's.
 
+### `--userns`
+
+As root, `--userns` builds in rootless overlay mode in a user namespace whose
+root is an unprivileged uid of the host, so that a process escaping a `RUN`
+is not the host's root ([ADR-0104]). That uid and its gid are the first of a
+`ranikust` range you add to `/etc/subuid` and `/etc/subgid`:
+
+```text
+ranikust:<start>:65536
+```
+
+in both files, with a `<start>` above 0 that no account and no other range
+uses, such as one past the last range there. Without it the build is refused
+before anything is written.
+
+- **State directory.** The range's first uid owns it: pass a `--state-dir` of
+  its own, below directories only root owns and may write, each searchable by
+  that uid, such as `/var/lib/ranikust-userns` (ranikust makes a missing one).
+  Root's own state directory is refused, never given away.
+- **What the build reaches** it reaches as that uid: the context, the
+  Dockerfile, the working directory (where a relative `--dockerfile` is
+  looked for first), `--secret` files, the registry credentials and the
+  outputs.
+- **No other mode.** Where a step of the user namespace fails, the build is
+  refused; it never falls back to a mode without it. `--mode=kaniko` with
+  `--userns` is a usage error.
+
 ## kaniko mode
 
 Used when ranikust runs as root but may not mount: a Docker container with the
@@ -340,6 +367,7 @@ on overlayfs.
 | You run ranikust as | Mode | What separates `RUN` from the machine |
 |---|---|---|
 | root on a host or VM | overlay | namespaces, a private root, reduced capabilities |
+| root on a host or VM, with `--userns` | overlay, rootless | the same, inside a user namespace whose root is an unprivileged uid of the host |
 | root in a privileged container | overlay | the same, inside the container |
 | a regular user allowed user namespaces | overlay, rootless | the same, inside a user namespace |
 | root in a container that forbids mounts, with a volume at the state directory | overlay, rootless (with `--allow proc.rbind` where `/proc` is masked) | the same, inside a user namespace |
@@ -387,6 +415,7 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
 [ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
+[ADR-0104]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md
 [ADR-0107]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md
 [ADR-0109]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md
 [ADR-0126]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md

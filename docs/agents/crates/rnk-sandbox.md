@@ -9,9 +9,10 @@
 with `pivot_root` (or `MS_MOVE`), with the capability bounding set cut to
 Docker's defaults and Docker's default seccomp profile, and probes its own
 capabilities. Never a bare `chroot` where mounting is possible; no `RUN`
-process outlives the build. Rootless overlay mode is built
-([#79](https://github.com/tran4774/ranikust/issues/79)) and `--userns` is
-Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)); for them:
+process outlives the build. Rootless overlay mode
+([#79](https://github.com/tran4774/ranikust/issues/79)) and root's
+`--userns` ([#83](https://github.com/tran4774/ranikust/issues/83)) are
+built; for them:
 the probe of that path
 ([#74](https://github.com/tran4774/ranikust/issues/74)), the entry into
 the build's user namespace
@@ -21,7 +22,7 @@ it with the `sysfs` rbind the probe chooses (`/proc`'s only on request,
 `setgroups` except where the gid map gives one id and `setgroups` is
 denied, and `--network=none`
 ([#78](https://github.com/tran4774/ranikust/issues/78)); the binary calls
-them for rootless overlay mode.
+them for both.
 
 ## Owns
 
@@ -50,7 +51,10 @@ them for rootless overlay mode.
   children that leave no namespace or mount behind: `unshare(CLONE_NEWUSER)`;
   the id map (root: its own ranges mirrored, else one id; another user:
   `newuidmap`/`newgidmap` with the subordinate ids the caller read, else one
-  id); `chown` to a mapped id other than 0; `unshare(CLONE_NEWNS)`, a second
+  id; root with `--userns`, `BuildIds::Shifted`: that range alone, `0 S C`,
+  root's own ids unmapped, its children taking the range's first ids before
+  each step, which the probe's files are given to); `chown` to a mapped id
+  other than 0; `unshare(CLONE_NEWNS)`, a second
   call after the map, so that the mount namespace is owned by the new user
   namespace and a refusal names its step (with a ranged map Ubuntu 24.04
   refuses it too, after `chown`); a new `proc` in a new PID namespace, else
@@ -60,7 +64,8 @@ them for rootless overlay mode.
   probe. `ranikust` probes as root in root's own modes (reported only,
   no subordinate ids) and as the user for rootless overlay mode, with the
   subordinate ids it reads (`subids.rs`), which the build's user namespace
-  below takes too.
+  below takes too, and as root with `--userns`, with root's `ranikust`
+  range.
 - The build's user namespace (`userns/build.rs`, #75): moves the process
   into a user namespace of its own and a mount namespace that namespace
   owns, `/` a recursive slave. Each map of the probe's order is first tried
@@ -69,7 +74,13 @@ them for rootless overlay mode.
   through a helper forked before the `unshare`; another user maps its
   subordinate ids through `newuidmap` and `newgidmap` (from `/usr/bin` or
   `/bin`), from the same helper; else the process writes one id itself,
-  `setgroups` denied (ADR-0098). The map and `setgroups` reported are
+  `setgroups` denied (ADR-0098). Root with `--userns` (`BuildIds::Shifted`,
+  ADR-0104) tries its `ranikust` range alone, never one id, written by the
+  helper with its own ids unmapped; once mapped, `assume_root` drops every
+  supplementary group and takes uid and gid 0 of the namespace, the
+  range's first ids on the host, then makes the process not dumpable and
+  arms its parent-death signal again, which the change of credentials
+  resets. Another user is refused such a range before any change. The map and `setgroups` reported are
   read back once inside: any map that gives one id, root's mirrored one
   too, is one uid. Dumpable only while its map is written
   (ADR-0051). Nothing passing leaves the process as it was
@@ -130,7 +141,7 @@ pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
 pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
 pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, NotWeighed, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx_physical at its mount point through RootPath, its mount's root), Unplaced: not placed (a writable directory whose source was removed, a writable mount covered or not reached at its mount point, a table changed during the walk, among them); NotWeighed: the walk not asked for; Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it on a table that read the same twice; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
-pub fn enter_build_user_namespace(subordinate: Option<SubordinateIds>) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
+pub fn enter_build_user_namespace(ids: BuildIds) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
 pub struct BuildUserNamespace { pub map: IdMap, pub passed_over: Vec<(IdMap, StepResult)>, .. } // #[non_exhaustive]; read back from /proc/self once inside: map OneId whenever the uid or gid map gives one id (root's own one-id map mirrored too); setgroups_allowed(): as /proc/self/setgroups says (deny for OneId written by the process, or inherited); unreadable: UserNamespaceBroken; Display: "newuidmap map", "one uid map, setgroups denied (newuidmap: ...)"
 pub fn trim_to_run_capabilities() -> Result<()>; // kaniko mode on /, before start_direct (ADR-0078): cuts ranikust's own sets to what a Direct RUN keeps, dumpable 0 again, read back; no-op when not root; refuses with other threads (Error::NotSingleThreaded), or (Error::RunReachesState) where the bounding set cannot be cut
 pub fn probe(dir: &Path) -> Result<Caps>;       // the real sequence in an empty root: pivot_root, else MS_MOVE; as probe_with_fallbacks(dir, Fallbacks::default()), without its warning on a refused new proc
@@ -140,9 +151,10 @@ pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]; Display: "
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
 impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; `ranikust` calls it for --allow proc.rbind): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's files of /proc/<pid> not under ptrace's check (cmdline, status, stat, mountinfo, cgroup, net/*…), not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6), and writes nothing there: the bind is read-only (ADR-0132); this crate does not scan for a shared PID namespace: `ranikust` runs the peer scan (ADR-0129) and the check of ADR-0134 before it enters the build's user namespace
 pub enum RootEntry { PivotRoot, MoveMount }
-pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
+pub fn probe_user_namespace(dir: &RootPath, ids: BuildIds) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(allowed: Fallbacks): the first step a RUN needs that failed, an rbind of /proc passing `proc` only where allowed has allow_proc_rbind (ADR-0126), one of /sys always; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
-pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
+pub enum IdMap { Ranges, Newuidmap, OneId, Shifted } // #[non_exhaustive]; "multi-range", "newuidmap", "one uid", "shifted range"
+pub enum BuildIds { Own(Option<SubordinateIds>), Shifted(SubordinateIds) } // #[non_exhaustive]; Own: the caller's ids, with its subordinate ranges if any; Shifted: root's --userns range (ADR-0104), only as root, else Error::Setup before any change; shifted_root(): the range's first uid and gid
 pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
 pub struct IdRange { pub start: u32, pub count: u32 }
 pub enum StepResult { Ok, Failed(StepFailure), NotRun(&'static str) }   // #[non_exhaustive]
@@ -488,8 +500,8 @@ What a change here must keep, with where it lives:
 ## Refs
 
 - **Design:** [`design/sandbox.md`](../../design/sandbox.md) ([per-`RUN` sequence](../../design/sandbox.md#per-run-sequence), [process set-up](../../design/sandbox.md#process-set-up-once-per-build), [stub mount points](../../design/sandbox.md#stub-mount-points), [variants by environment](../../design/sandbox.md#variants-by-environment)); [`design/modes-and-detection.md#probe-order---modeauto`](../../design/modes-and-detection.md#probe-order---modeauto); [`design/kaniko-mode.md#fake-proc`](../../design/kaniko-mode.md#fake-proc) (not built); [threat model T5-T12, T17-T19, T24](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`), [ADR-0101](../../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md) (the sealed copy of the binary), [ADR-0110](../../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md) (`RUN` cgroups where delegated), [ADR-0135](../../adr/0135-run-cgroups-trust-user-delegate-where-ranikusts-uid-in-the-initial-user-namespace-is-not-0.md) (`user.delegate` where ranikust's uid in the initial user namespace is not 0), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: images with an owner the user namespace does not map are refused), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) (the default seccomp profile), [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (profiles compiled here, moby's default), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (planned, Phase 3: `--userns` runs the whole build in a user namespace; the init's uid unmapped in rootless mode too), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested)
-- **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory); tasks [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#83](https://github.com/tran4774/ranikust/issues/83) (`--userns`), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes). Decided, not built yet: [ADR-0121](../../adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md) (a placed secret file whose target exists is refused)
+- **Decisions:** [ADR-0003](../../adr/0003-dockerfile-trust-and-default-isolation.md) (default isolation), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (probe or refuse), [ADR-0010](../../adr/0010-run-network-host-or-none.md) (network), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md) (bare `chroot` only on request), [ADR-0018](../../adr/0018-no-proot-in-1-0.md) (no proot), [ADR-0019](../../adr/0019-java-tool-options-on-parallel-path.md) (`JAVA_TOOL_OPTIONS`), [ADR-0101](../../adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md) (the sealed copy of the binary), [ADR-0110](../../adr/0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md) (`RUN` cgroups where delegated), [ADR-0135](../../adr/0135-run-cgroups-trust-user-delegate-where-ranikusts-uid-in-the-initial-user-namespace-is-not-0.md) (`user.delegate` where ranikust's uid in the initial user namespace is not 0), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (planned, Phase 3: images with an owner the user namespace does not map are refused), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) (the default seccomp profile), [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (profiles compiled here, moby's default), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (`--userns` runs the whole build in a user namespace; the init's uid unmapped in rootless mode too), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested)
+- **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries `Caps`), [#26](https://github.com/tran4774/ranikust/issues/26) (wiping secrets from memory); tasks [#34](https://github.com/tran4774/ranikust/issues/34), [#35](https://github.com/tran4774/ranikust/issues/35), [#39](https://github.com/tran4774/ranikust/issues/39), [#40](https://github.com/tran4774/ranikust/issues/40), [#88](https://github.com/tran4774/ranikust/issues/88) (bind targets against changes during set-up), [#89](https://github.com/tran4774/ranikust/issues/89) (host-safety attack suite across modes). Decided, not built yet: [ADR-0121](../../adr/0121-a-runs-bind-mounts-read-one-filtered-copy-of-the-context-copied-in-on-slash.md) (a placed secret file whose target exists is refused)
 - **Evidence:** [exp-02](../../research/experiments/02-run-sandbox.md) (sequence, escape, PDEATHSIG, bounding set, stubs, 1-2.5 ms), [exp-06a](../../research/experiments/06a-root-rerun.md) (real root), [exp-13](../../research/experiments/13-docker-rootful-vm.md) (Docker probe matrix), [exp-12a](../../research/experiments/12a-fake-proc.md), [exp-14](../../research/experiments/14-real-builds-without-proc.md), [exp-15](../../research/experiments/15-java-next-concurrency.md), [exp-16](../../research/experiments/16-cgroup-v1-cpuset.md) (fake `/proc`, Java)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/commands/run.go:288` `runCommandInExec` (no namespaces; `:335` searches the process's `PATH`); `:356` and `:407` process-group kill (replaced by the PID namespace, kept for `Direct`); `:375` users from the process's `/etc/passwd`; `:83-135` cache mounts via `swapDir` (a bind here)
 - **External:** BuildKit `executor/stubs.go` <https://github.com/moby/buildkit>, runc `--no-pivot`, `libcontainer` capabilities and `CloneBinary` (the sealed copy; `libcontainer/dmz` in v1.2.0, `libcontainer/exeseal` since v1.3.0) <https://github.com/opencontainers/runc>
@@ -626,7 +638,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   refuses `Direct` off `/` (symlink to `/`, `//`, `/.`, `..` roots) and places
   nothing.
 - **T0**, the user-namespace probe (`src/userns/tests.rs`): the maps
-  planned for root and for another user, the mirror of a map, the steps
+  planned for root and for another user, a shifted range tried alone and
+  never one id (`a_shifted_build_tries_its_range_only_and_never_one_id`),
+  the mirror of a map, the steps
   assembled from a child's records (a refused `unshare`, each map refused,
   a fresh kernel filesystem or its rbind, Ubuntu 24.04's ranged stop at
   `chown`), records across split reads and the deadline, the report's line
@@ -654,7 +668,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   was cut short; the line names the map and what was passed over; the map
   helper reports a refused map and ends, and ends without writing when
   cancelled; refused beside other threads; the namespace is told as read
-  back (a map giving one id is one uid, a parent's `deny` stands). Its red team
+  back (a map giving one id is one uid, a parent's `deny` stands); a
+  shifted range refused to a user other than root before any change. Its red team
   (`red_team_the_build_user_namespace_is_whole_or_not_entered`, as any user,
   with and without this user's ranges): the process either has the whole
   namespace (uid and gid maps, `setgroups`, euid 0, new user and mount
@@ -771,6 +786,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `--network=none` `RUN`);
   `red_team_a_mount_in_a_root_build_s_namespace_never_shows_outside` (the
   T1 mount red team as real root, whose map is every id);
+  `the_user_namespace_steps_of_a_shifted_range_pass_as_its_first_ids`
+  (`src/userns/tests.rs`) and
+  `the_build_user_namespace_of_a_shifted_range_makes_root_the_range_s_first_ids`
+  (`src/userns/build/tests.rs`): real root with a range of uids 300000 and
+  gids 400000 probes every step and enters the namespace, whose maps read
+  `0 300000 65536` and `0 400000 65536` and whose root has no
+  supplementary group and is those ids on the host;
   `a_device_node_planted_as_a_journal_is_never_opened` (`src/journal.rs`); in `src/spawner.rs` the `Full` tests (`nodev` below the
   root; descriptors, symlinked `/proc`, a cache over `/dev`, symlinked mount
   targets, every mount holding only stdio, `/dev` nodes unchangeable;
