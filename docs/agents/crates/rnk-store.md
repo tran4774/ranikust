@@ -125,8 +125,8 @@ Design: [locks](../../design/cache-and-store.md#locks),
   refused, so clean-up never runs in a directory the user pointed at by
   mistake; only the user-namespace probe's own directories
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
-  told by `statx` without following) do not count: `check_marker` marks the
-  directory, and `open` then removes each whose `flock` it takes (a probe
+  told by `statx` without following) do not count: `open` marks the
+  directory once every refusal has passed, then removes each whose `flock` it takes (a probe
   holds its own while it uses it), through descriptors; under `--userns`
   this is how the probe's directory goes, which root gave the range and
   deletes nothing in (ADR-0139); every emptying

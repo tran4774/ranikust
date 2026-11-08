@@ -439,10 +439,14 @@ impl Store {
                 });
             }
         }
+        // In `check_state_dir`'s order, every refusal before the marker is written.
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
-        check_marker(&state, &state_path)?;
+        let unmarked = needs_marker(&state, &state_path)?;
         check_dirs(&state, &state_path)?;
+        if unmarked {
+            mark(&state, &state_path)?;
+        }
         let filled = (|| {
             for d in DIRS {
                 state.create_dir_all(d, DIR_MODE)?;
@@ -1940,7 +1944,7 @@ fn empty_state_dir(state: &RootPath, state_path: &Path) -> Result<()> {
 }
 
 /// Removes a regular [`MARKER`] a `RUN` forged in an anonymous store's state
-/// directory, before anything else there: without it, `check_marker` and
+/// directory, before anything else there: without it, `needs_marker` and
 /// `ranikust`'s state-directory check refuse a non-empty directory, so a
 /// persistent store never opens what is left if the build is killed while
 /// the rest is emptied. Anything else under the name, or a failure, is left
@@ -2354,14 +2358,10 @@ fn shown_names(names: &[OsString]) -> String {
     s
 }
 
-/// Refuses a non-empty state directory without a regular-file marker, and
-/// marks an empty one. A directory of the user namespace probe
-/// ([`is_probe_dir`]: of a build cut short before its store) does not
-/// count.
-fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
-    if !needs_marker(state, state_path)? {
-        return Ok(());
-    }
+/// Marks a state directory [`needs_marker`] found unmarked; one a build
+/// starting beside this one marked first is taken if its marker is a
+/// regular file.
+fn mark(state: &RootPath, state_path: &Path) -> Result<()> {
     match state.open_at(MARKER, &OpenHow::write().create_new(0o644)) {
         Ok(_) => Ok(()),
         Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => match marker(state)? {
@@ -2372,9 +2372,10 @@ fn check_marker(state: &RootPath, state_path: &Path) -> Result<()> {
     }
 }
 
-/// Whether `state` still needs its marker, as [`check_marker`] decides,
-/// writing nothing: `false` where it has one, `true` where it holds only
-/// directories of the user namespace probe; any other name refuses it.
+/// Whether `state` still needs its marker, writing nothing: `false` where
+/// it has a regular-file one, `true` where it holds only directories of
+/// the user namespace probe ([`is_probe_dir`]: of a build cut short before
+/// its store); any other name refuses it.
 fn needs_marker(state: &RootPath, state_path: &Path) -> Result<bool> {
     match marker(state)? {
         Some(true) => return Ok(false),
