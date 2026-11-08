@@ -797,8 +797,9 @@ fn probe_user_namespace(store: &Store) -> Result<Probed, String> {
     probe_in_dir(parent, &name, rnk_sandbox::BuildIds::Own(None))
 }
 
-/// The probes, for the ids `ids` maps, in `parent/name`, made for them
-/// and removed after, unless a child of the probe was left there. With a
+/// The probes, for the ids `ids` maps, in `parent/name` (or the name
+/// [`make_probe_dir_again`] takes instead), made for them and removed
+/// after, unless a child of the probe was left there. With a
 /// shifted range (`--userns`), the namespace's root owns what its children
 /// write in: the directory and the overlay probe's; this process, which
 /// gave it away, deletes nothing in it, and leaves it, its lock released,
@@ -887,21 +888,16 @@ fn make_probe_dir(
     }
     #[cfg(test)]
     tests::before_hold(&parent.join(name));
-    let held = match hold_dir(&scratch) {
-        Ok(Some(held)) => held,
-        // Taken for a leftover, so gone or about to be.
-        Ok(None) => return Ok(None),
+    match hold_dir(&scratch) {
+        Ok(Some(held)) => Ok(Some((scratch, Some(held)))),
+        Ok(None) => Ok(None),
         Err(e) => {
             // The lock's error is the one to report; an empty directory
             // left is one the store removes.
             let _ = root.remove_dir(name);
-            return Err(format!("cannot lock {}: {e}", parent.join(name).display()));
+            Err(format!("cannot hold {}: {e}", parent.join(name).display()))
         }
-    };
-    // Until it is held, an empty directory of this user's is a leftover to
-    // another build's start.
-    let st = rustix::fs::fstat(&held).map_err(|e| e.to_string())?;
-    Ok((st.st_nlink > 0).then_some((scratch, Some(held))))
+    }
 }
 
 /// Removes each directory of the user namespace probe in `parent`
@@ -1011,17 +1007,20 @@ fn remove_if_own_and_empty(root: &RootPath, name: &std::ffi::OsStr) -> Result<bo
 }
 
 /// A descriptor of the directory `dir` holding its exclusive `flock`, taken
-/// without waiting: it was just made, so only a store or a build's start
-/// about to remove it as a leftover holds it (`None`).
+/// without waiting. It was just made, empty and this user's, so a store or
+/// a build's start may have taken it for a leftover meanwhile: `None` where
+/// one holds it or removed it. Errors name their step.
 fn hold_dir(dir: &RootPath) -> Result<Option<OwnedFd>, String> {
     let fd = dir
         .open_at(".", &rnk_rootfs::OpenHow::read().directory().no_follow())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("open: {e}"))?;
     match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => Ok(Some(fd)),
-        Err(Errno::WOULDBLOCK) => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Ok(()) => {}
+        Err(Errno::WOULDBLOCK) => return Ok(None),
+        Err(e) => return Err(format!("flock: {e}")),
     }
+    let st = rustix::fs::fstat(&fd).map_err(|e| format!("fstat: {e}"))?;
+    Ok((st.st_nlink > 0).then_some(fd))
 }
 
 /// Gives the directory `name` in `root`, which this process just made, to

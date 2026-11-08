@@ -914,7 +914,8 @@ with another map:
   `0711`, each under a temporary name, given its owner and mode, then renamed
   into place without replacing anything, so that a build killed meanwhile
   leaves no directory of root's at that path, only an empty
-  `.ranikust-new-*` beside it, which ranikust does not remove. An existing
+  `.ranikust-new-*` in the parent of the directory being made, which
+  ranikust does not remove (root removes it by hand). An existing
   one of root's is refused, never given away: root's own builds keep layers
   extracted with real ids, setuid-root files among them. A state directory
   at, below or above root's default, `/var/lib/ranikust`, is refused too,
@@ -932,9 +933,10 @@ with another map:
   any probe directory left in the state directory; root removes only an
   empty one of its own, mode `0700`, that a build killed before giving it
   away left. One killed while the probe's files were being made in it stays,
-  and the store warns of it at each start. A build's start may take another
-  build's new probe directory for such a leftover before that build holds
-  it; that build then makes one under another name, once.
+  and the store warns of it at each start until root removes it by hand. A
+  build's start may take another build's new probe directory for such a
+  leftover before that build holds it; that build then makes one under
+  another name, once.
 - **Root only.** From a user other than root, `--userns` is a usage error
   before anything is written: only root may map the range, and that user's
   build already runs in a user namespace of its own.

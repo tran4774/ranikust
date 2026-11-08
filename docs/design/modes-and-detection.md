@@ -143,7 +143,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      directory, once the store's check, which writes nothing, takes it as one
      (Q-111, (a)), and holds the state directory's lock until the store
      opens; named `.ranikust-anon-userns-probe-<pid>-<nanos>`
-     (`rnk_store::USERNS_PROBE_PREFIX`) and held by its exclusive `flock`
+     (`rnk_store::USERNS_PROBE_PREFIX`; `-again` added once where another
+     build's start took the first for a leftover before it was held) and
+     held by its exclusive `flock`
      while the probe uses it, so that a build cut short there leaves nothing
      the next start counts as foreign: the store, once it opens, removes each
      such directory whose lock it takes

@@ -501,8 +501,8 @@ fn make_given(
         }
     });
     if !matches!(moved, Ok(Some(_))) {
-        // `moved`'s error is the one to report: one failing here leaves an
-        // empty directory, and `rmdir` takes nothing the build's uid put in.
+        // Unused or failed, it goes; `moved` says why, and a failure here
+        // leaves one empty directory: `rmdir` takes nothing put in it.
         let _ = rustix::fs::unlinkat(at, new.as_str(), AtFlags::REMOVEDIR);
     }
     moved

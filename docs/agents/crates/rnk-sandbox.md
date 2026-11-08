@@ -490,7 +490,8 @@ What a change here must keep, with where it lives:
   killed as soon as they are done, reaped, and reported as killed after
   10 s. Its mount namespace makes `/` a recursive slave before any mount.
   The files the steps need are made by the caller in the probe's
-  directory through `RootPath` and removed before it returns. `newuidmap`
+  directory through `RootPath` and removed before it returns, except under
+  a shifted range, where they are left to the caller. `newuidmap`
   is looked for in `/usr/bin` and `/bin` only, run with an empty
   environment. A child of a user other than root is dumpable only around
   its map write, which the kernel's owner check of `/proc/<pid>/uid_map`

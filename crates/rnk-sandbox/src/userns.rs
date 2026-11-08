@@ -12,7 +12,8 @@
 //! slaves, the child makes `/` a recursive slave again before it mounts,
 //! nothing it mounts propagates out, and all of it goes when it exits. The
 //! files the steps need are made by this process in a directory the caller
-//! made for the probe, and removed here.
+//! made for the probe, and removed here, except under a shifted range,
+//! where they are given to it and left to the caller.
 
 use std::ffi::CStr;
 use std::fmt;
@@ -415,8 +416,8 @@ impl fmt::Display for UsernsReport {
 /// made; what this makes there is removed before it returns, except for a
 /// shifted range ([`BuildIds::shifted_root`]): `dir` is then given to the
 /// range's first ids, and nothing in it is deleted here, so the caller
-/// removes it with the range's rights alone. Root gets a
-/// map of every id it has ([`IdMap::Ranges`]), else one id; another user
+/// removes it with the range's rights alone. Root gets a map of every id
+/// it has ([`IdMap::Ranges`]), else one id; another user
 /// gets `newuidmap` with `subordinate`, else one id. Each map is one
 /// attempt, in its own child, until one works or `unshare` itself is
 /// refused.

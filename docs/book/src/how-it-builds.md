@@ -161,8 +161,12 @@ other.
   `/var/lib/ranikust-userns` (ranikust makes a missing one). Root's own state
   directory is refused, never given away, and so is any at, below or above
   root's default, `/var/lib/ranikust`, whether it exists or not ([ADR-0139]).
-  A build killed while it makes a missing one may leave an empty
-  `.ranikust-new-*` directory beside it, which you may remove.
+  A build killed while it makes a missing one, or a missing directory
+  above it, may leave an empty `.ranikust-new-*` directory in the parent of
+  the one it was making, and one killed during its probe a
+  `.ranikust-anon-userns-probe-*` directory of root's in the state
+  directory, which the next builds warn of: ranikust removes neither, so
+  remove them as root.
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the

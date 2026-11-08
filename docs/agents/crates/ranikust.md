@@ -475,7 +475,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (the
   probe's directory: `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
-  `a_probe_directory_removed_before_it_is_held_is_made_again`), `subids`
+  `a_probe_directory_taken_before_it_is_held_is_made_again`), `subids`
   (`root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else`,
   `root_s_range_shares_no_id_with_an_account_or_another_range`),
   `main` (`--userns` never falls back,

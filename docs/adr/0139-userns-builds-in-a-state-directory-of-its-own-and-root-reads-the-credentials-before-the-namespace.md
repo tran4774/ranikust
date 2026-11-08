@@ -97,8 +97,8 @@ Decided while building #83, as implementation choices under ADR-0104:
   line of `/etc/subuid` is refused before anything is written, naming the id or
   the line, and the same for the gid range against `/etc/group`, the primary
   gids of `/etc/passwd` and `/etc/subgid`. Only those local files are read: a
-  static binary has no NSS,
-  so ids that only a directory service (LDAP, SSSD) knows are not checked.
+  static binary has no NSS, so ids that only a directory service (LDAP, SSSD)
+  knows are not checked.
 - **[ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)'s
   refusal of an owner outside the range** is a task of its own,
   [#208](https://github.com/tran4774/ranikust/issues/208); until then such an

@@ -25,29 +25,43 @@ pub(super) fn probes_ran() {
     }
 }
 
+/// What another build does to a new probe directory before it is held.
+enum Taken {
+    /// Removes it as a leftover.
+    Removed,
+    /// Holds its lock, as a store about to remove it does.
+    Locked,
+}
+
 std::thread_local! {
-    /// How many directories [`before_hold`] removes, set by a test.
-    static REMOVE_BEFORE_HOLD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// What [`before_hold`] does, in turn, set by a test.
+    static TAKEN_BEFORE_HOLD: std::cell::RefCell<std::collections::VecDeque<Taken>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// The locks [`Taken::Locked`] took, until the test clears them.
+    static LOCKED_BEFORE_HOLD: std::cell::RefCell<Vec<LockedElsewhere>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// [`make_probe_dir`]'s hook, between the directory `dir` made and held:
-/// removes it as another build's start would, as many times as a test
-/// asked on this thread.
+/// takes it as another build would, as a test asked on this thread.
 pub(super) fn before_hold(dir: &Path) {
-    let left = REMOVE_BEFORE_HOLD.with(std::cell::Cell::get);
-    if left > 0 {
-        REMOVE_BEFORE_HOLD.with(|n| n.set(left - 1));
-        remove_own_probe_leftovers(dir.parent().unwrap());
+    match TAKEN_BEFORE_HOLD.with(|t| t.borrow_mut().pop_front()) {
+        Some(Taken::Removed) => remove_own_probe_leftovers(dir.parent().unwrap()),
+        Some(Taken::Locked) => {
+            LOCKED_BEFORE_HOLD.with(|l| l.borrow_mut().push(LockedElsewhere::new(dir)));
+        }
+        None => {}
     }
 }
 
-/// A probe directory another build's start removes before it is held is
-/// made again under a name of its own, once.
+/// A probe directory another build's start removes, or a store locks,
+/// before it is held is made again under a name of its own, once.
 #[test]
-fn a_probe_directory_removed_before_it_is_held_is_made_again() {
+fn a_probe_directory_taken_before_it_is_held_is_made_again() {
     let tmp = private_tempdir();
     let root = RootPath::open(tmp.path()).unwrap();
     let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let again = format!("{name}-again");
     let names = || {
         let mut n: Vec<String> = fs::read_dir(tmp.path())
             .unwrap()
@@ -56,14 +70,23 @@ fn a_probe_directory_removed_before_it_is_held_is_made_again() {
         n.sort();
         n
     };
-    REMOVE_BEFORE_HOLD.with(|n| n.set(1));
-    let (made, _, held) = make_probe_dir_again(&root, tmp.path(), &name).unwrap();
-    assert_eq!(made, format!("{name}-again"));
-    assert_eq!(names(), std::slice::from_ref(&made));
-    assert!(held.is_some());
-    drop(held);
-    fs::remove_dir(tmp.path().join(&made)).unwrap();
-    REMOVE_BEFORE_HOLD.with(|n| n.set(2));
+    let take = |t: Vec<Taken>| TAKEN_BEFORE_HOLD.with(|q| *q.borrow_mut() = t.into());
+    for (taken, left) in [
+        (Taken::Removed, vec![again.clone()]),
+        (Taken::Locked, vec![name.clone(), again.clone()]),
+    ] {
+        take(vec![taken]);
+        let (made, _, held) = make_probe_dir_again(&root, tmp.path(), &name).unwrap();
+        assert_eq!(made, again);
+        assert_eq!(names(), left);
+        assert!(held.is_some());
+        drop(held);
+        LOCKED_BEFORE_HOLD.with(|l| l.borrow_mut().clear());
+        for n in names() {
+            fs::remove_dir(tmp.path().join(n)).unwrap();
+        }
+    }
+    take(vec![Taken::Removed, Taken::Removed]);
     let Err(e) = make_probe_dir_again(&root, tmp.path(), &name) else {
         panic!("a probe directory removed twice before it was held");
     };
@@ -549,23 +572,29 @@ impl LockedElsewhere {
         let path_c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
         let keep = u32::try_from(std::os::fd::AsRawFd::as_raw_fd(&w)).unwrap();
+        // The standard streams and `w` stay open in the child.
+        assert!(keep >= 3, "the pipe took a standard stream's number");
+        let (below, above) = (keep - 1, keep + 1);
         // SAFETY: the child makes only async-signal-safe system calls, on
         // memory made before the fork, and never returns.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
-            // SAFETY: plain system calls on a path and descriptors made
-            // before the fork; the child waits to be killed, and closes
-            // first every descriptor but `w`, so that it holds no other
-            // test's lock.
+            // SAFETY: plain system calls on a path, bounds and descriptors
+            // made before the fork; the child waits to be killed. It
+            // closes first every descriptor above the standard streams
+            // but `w`, so that it holds no other test's lock, and says it
+            // failed where it cannot.
             unsafe {
-                libc::syscall(libc::SYS_close_range, 3_u32, keep - 1, 0_u32);
-                libc::syscall(libc::SYS_close_range, keep + 1, u32::MAX, 0_u32);
+                let closed = (keep == 3
+                    || libc::syscall(libc::SYS_close_range, 3_u32, below, 0_u32) == 0)
+                    && libc::syscall(libc::SYS_close_range, above, u32::MAX, 0_u32) == 0;
                 let fd = libc::open(
                     path_c.as_ptr(),
                     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
                 );
-                let locked =
-                    u8::from(fd >= 0 && libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) == 0);
+                let locked = u8::from(
+                    closed && fd >= 0 && libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) == 0,
+                );
                 libc::write(
                     std::os::fd::AsRawFd::as_raw_fd(&w),
                     (&raw const locked).cast(),
