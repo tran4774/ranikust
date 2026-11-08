@@ -316,10 +316,10 @@ Each step before the next; design in
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
    `unshare(CLONE_NEWNS)`, `/` rslave) → `setup::hold_state_dir`, every
    refusal before anything in the state directory is changed, as in
-   rootless overlay mode:
-   overlayfs from `statedir::nearest_existing` (a container's root: mount a
-   volume), `statedir::stage`, `Store::check_state_dir`, and only then
-   `Staged::finish` sets the modes → `rnk_store::Store::open`
+   rootless overlay mode: overlayfs from `statedir::nearest_existing` (a
+   container's root: mount a volume), `statedir::stage`,
+   `Store::check_state_dir`, and only then `Staged::finish` sets the
+   modes → `rnk_store::Store::open`
    (marker, start-up clean-up) → with `--mode=auto`,
    `report_user_namespace` (before the overlay probe, whose joined `mount(2)`
    thread may still be counted) → `rnk_sandbox::probe` in
@@ -535,7 +535,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_userns_refusals_make_nothing_whatever_the_layout`, a missing
   chain below a parent root does not own, a symlink on the way, a
   non-empty directory or a `..` refused with nothing made or changed),
-  `setup/rootless.rs` (refusals before anything is made or changed:
+  `setup/rootless.rs` (refusals before anything in the state directory is
+  changed:
   `a_missing_state_directory_on_overlayfs_is_refused_unmade`, run only
   where the temporary directory is on overlayfs, and
   `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (root's

@@ -1736,16 +1736,27 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
                     let _ = store.close();
                     assert_eq!(tree(&outside), before, "{case}");
                     for (through, done) in [("layers", layer), ("blobs", blob), ("caches", cache)] {
+                        // A fill needs `locks/`, `tmp/` and its own directory, a lease
+                        // `locks/` and `caches/`.
+                        assert!(
+                            done.is_ok() || through == d || matches!(d, "locks" | "tmp"),
+                            "{case}: {through}"
+                        );
                         let Ok(p) = done else { continue };
                         if through != d {
-                            let real = fs::canonicalize(&p).unwrap();
+                            let real = fs::canonicalize(&p)
+                                .unwrap_or_else(|e| panic!("{case}: {}: {e}", p.display()));
                             assert!(real.starts_with(&state), "{case}: {}", real.display());
                             continue;
                         }
-                        // The store wrote where the symlink leads in the state
-                        // directory; the host path it hands back dangles.
+                        // The store wrote where the symlink leads in the state directory;
+                        // resolved on the host, the path it hands back follows the symlink
+                        // out, to nothing here.
+                        assert!(twin, "{case}");
                         filled += 1;
-                        let rest = p.strip_prefix(state.join(d)).unwrap();
+                        let rest = p
+                            .strip_prefix(state.join(d))
+                            .unwrap_or_else(|e| panic!("{case}: {}: {e}", p.display()));
                         assert!(inside.join(rest).symlink_metadata().is_ok(), "{case}");
                         let e = fs::canonicalize(&p).unwrap_err();
                         assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{case}");
@@ -1754,6 +1765,6 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
             }
         }
     }
-    // At least each twin of `blobs`, `layers` and `caches`, absolute or climbing.
-    assert!(filled >= 6, "the store filled through {filled} plants only");
+    // Each twin of `blobs`, `layers` and `caches`, absolute or climbing.
+    assert_eq!(filled, 6, "the store filled through {filled} plants");
 }
