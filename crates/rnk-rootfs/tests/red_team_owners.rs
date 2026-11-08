@@ -205,7 +205,7 @@ fn scanned(form: Form, tar: &[u8]) -> Seen {
     let mut found = Unmapped::owners(own_map());
     let r = match form {
         Form::Overlay => scan_owners(tar, &mut found),
-        Form::Live => check_headers_and_owners(tar, &mut found),
+        Form::Live => check_headers_and_owners(tar, &IgnoreList::new(), &mut found),
     };
     match r {
         Err(e) => Seen::Refused(e.to_string()),
@@ -619,21 +619,47 @@ fn red_team_hostile_headers_never_pass_the_owner_scan_where_the_extraction_chown
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// An ignored path of a far owner: the scan of a live root does not know
-/// the ignore list and names it, while `extract_live` skips the entry.
-/// Stricter than the extraction, never laxer.
+/// An ignored path of a far owner: the scan of a live root, given the
+/// ignore list, skips it as `extract_live` skips the entry. One reached
+/// through a symlink of the layer is still named, though the extraction
+/// skips it too: a header does not show where it lands. Stricter than the
+/// extraction, never laxer.
 #[test]
-fn red_team_an_ignored_path_s_owner_is_still_named() {
+fn red_team_an_ignored_path_s_owner_is_skipped_as_the_extraction_skips_it() {
     let o = own();
-    let tar = Tar::new().dir("proc/", o).file("proc/x", F).bytes();
+    let mut keep = IgnoreList::new();
+    keep.insert("/proc").unwrap();
+    let live = |tar: &[u8], keep: &IgnoreList| {
+        let mut found = Unmapped::owners(own_map());
+        check_headers_and_owners(tar, keep, &mut found).unwrap();
+        found
+    };
+    let tar = Tar::new()
+        .dir("proc/", F)
+        .file("proc/x", F)
+        .file("./proc/../proc/y", F)
+        .bytes();
+    let found = live(&tar, &keep);
+    assert!(found.is_empty(), "{found}");
+    // The control: without the ignore list, the same layer is refused.
     assert!(
-        matches!(scanned(Form::Live, &tar), Seen::Unmapped(t) if t.contains("uid 3000000000 (/proc/x)"))
+        matches!(scanned(Form::Live, &tar), Seen::Unmapped(t) if t.contains("uid 3000000000 (/proc)"))
+    );
+    let through = Tar::new()
+        .link(EntryType::Symlink, "p", o, "proc")
+        .file("p/z", F)
+        .bytes();
+    let found = live(&through, &keep);
+    assert!(
+        found.to_string().contains("uid 3000000000 (/p/z)"),
+        "{found}"
     );
     if !rustix::process::geteuid().is_root() {
-        let r = root();
-        let mut keep = IgnoreList::new();
-        keep.insert("/proc").unwrap();
-        extract_live(&r.root, tar.as_slice(), &keep).unwrap();
+        for tar in [&tar, &through] {
+            let r = root();
+            r.root.create_dir("proc", 0o755).unwrap();
+            extract_live(&r.root, tar.as_slice(), &keep).unwrap();
+        }
     }
 }
 

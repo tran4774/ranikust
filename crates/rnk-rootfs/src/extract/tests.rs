@@ -1992,11 +1992,21 @@ fn a_scan_of_owners_notes_what_the_extraction_would_chown() {
          (/etc/shadow), gid 1000 (/s), gid 4000 (/p); it maps uid 0 and gid 0"
     );
     let mut live = Unmapped::owners(map());
-    check_headers_and_owners(bytes.as_slice(), &mut live).unwrap();
+    check_headers_and_owners(bytes.as_slice(), &IgnoreList::new(), &mut live).unwrap();
     assert_eq!(
         live.to_string(),
         "owners this user namespace does not map: uid 1000 (/s), gid 42 (/etc/shadow), gid \
          1000 (/s); it maps uid 0 and gid 0"
+    );
+    // What the ignore list covers, the live extraction skips: no owner.
+    let mut keep = IgnoreList::new();
+    keep.insert("/etc").unwrap();
+    let mut kept = Unmapped::owners(map());
+    check_headers_and_owners(bytes.as_slice(), &keep, &mut kept).unwrap();
+    assert_eq!(
+        kept.to_string(),
+        "owners this user namespace does not map: uid 1000 (/s), gid 1000 (/s); it maps uid 0 \
+         and gid 0"
     );
     let mut none = Unmapped::owners(crate::MappedIds::parse("0 0 4001\n", "0 0 4001\n").unwrap());
     scan_owners(bytes.as_slice(), &mut none).unwrap();
@@ -2007,7 +2017,7 @@ fn a_scan_of_owners_notes_what_the_extraction_would_chown() {
         let mut found = Unmapped::owners(map());
         let scanned = scan_owners(tar.as_slice(), &mut found).unwrap_err();
         assert_eq!(scanned.to_string(), checked, "{what}");
-        let live = check_headers_and_owners(tar.as_slice(), &mut found).unwrap_err();
+        let live = check_headers_and_owners(tar.as_slice(), &live_keep(), &mut found).unwrap_err();
         assert_eq!(live.to_string(), checked, "{what}");
     }
 }
@@ -2077,7 +2087,7 @@ fn an_owner_of_u32_max_leaves_the_processs_own_and_the_scans_agree() {
         scan_owners(tar.as_slice(), &mut found).unwrap();
         assert!(found.is_empty(), "{what}: {found}");
         let mut live = Unmapped::owners(own());
-        check_headers_and_owners(tar.as_slice(), &mut live).unwrap();
+        check_headers_and_owners(tar.as_slice(), &live_keep(), &mut live).unwrap();
         assert!(live.is_empty(), "{what}: {live}");
     }
 }

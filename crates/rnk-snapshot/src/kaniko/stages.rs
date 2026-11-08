@@ -54,6 +54,7 @@ use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
 use crate::stage::{Base, ExportLayer, LayerOpen, Snapshotter, StageRootfs};
+use crate::userns::UserNamespace;
 
 /// Mode of a stage directory: its root holds an image's setuid files.
 const PRIVATE: u32 = 0o700;
@@ -227,7 +228,11 @@ impl Snapshotter for KanikoStages {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
-        check_live_owners(layers)
+        check_live_owners(
+            layers,
+            UserNamespace::current()?.as_ref(),
+            &self.shared.ignore,
+        )
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {

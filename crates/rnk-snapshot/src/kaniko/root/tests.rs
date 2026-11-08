@@ -1039,7 +1039,7 @@ fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_by_the
     let other = uid.max(gid).wrapping_add(1);
     let one = format!("{other} 0 1\n");
     let ids = MappedIds::parse(&one, &one).unwrap();
-    let e = Spooled::of(&store, &layer, Some(&ids)).unwrap_err();
+    let e = Spooled::of(&store, &layer, Some(&ids), &IgnoreList::new()).unwrap_err();
     assert!(
         matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
         "{e:?}"
@@ -1053,9 +1053,48 @@ fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_by_the
     );
     // The control: outside a user namespace, or in one that maps the
     // owners, the same layer passes.
-    Spooled::of(&store, &layer, None).unwrap();
+    Spooled::of(&store, &layer, None, &IgnoreList::new()).unwrap();
     let all = MappedIds::parse("0 0 4294967295\n", "0 0 4294967295\n").unwrap();
-    Spooled::of(&store, &layer, Some(&all)).unwrap();
+    Spooled::of(&store, &layer, Some(&all), &IgnoreList::new()).unwrap();
+}
+
+/// On `/`, the ids of the user namespace the build runs in reach the spool
+/// pass, with the ignore list: a streamed layer with an owner they lack is
+/// refused before anything of it reaches the root; one whose only such
+/// owner is on an ignored path, which its extraction skips, passes
+/// (ADR-0098, ADR-0137).
+#[test]
+fn on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass() {
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entries.
+    let other = uid.max(gid).wrapping_add(1);
+    let one = format!("{other} 0 1\n");
+    let in_namespace = || {
+        let (f, store) = Fixture::tars();
+        let ns = UserNamespace::from_maps(&one, &one).unwrap();
+        f.kaniko.shared.userns.set(Some(ns)).unwrap();
+        (f, store)
+    };
+
+    let (f, _store) = in_namespace();
+    let (layers, _) = streamed_for(&f, "l1", &[("a", b"owned")], 1);
+    let e = f.kaniko.prepare(Base::Image(&layers)).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert!(e.to_string().contains(&format!("uid {uid} (/a)")), "{e}");
+    assert!(!f.host.join("a").exists());
+
+    let (f, _store) = in_namespace();
+    let (layers, _) = streamed_for(&f, "l1", &[("ranikust/b", b"skipped")], 1);
+    let root = f.kaniko.prepare(Base::Image(&layers)).unwrap();
+    // `/ranikust` holds the build's marker (ADR-0052), nothing of the layer.
+    assert!(!f.host.join("ranikust/b").exists());
+    root.release().unwrap();
 }
 
 /// A streamed layer of `files` and its counting source, the layer made

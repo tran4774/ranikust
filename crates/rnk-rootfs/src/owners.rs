@@ -12,25 +12,45 @@ use crate::meta::chown_id;
 const NAMED: usize = 8;
 
 /// The uids and gids a user namespace maps: the ids inside it that the lines
-/// of its `uid_map` and `gid_map` give.
+/// of its `uid_map` and `gid_map` give, and the lines themselves. The one
+/// parser of those maps (ADR-0098).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MappedIds {
     /// Inclusive ranges, sorted, neither overlapping nor adjacent.
     uids: Vec<(u32, u32)>,
     gids: Vec<(u32, u32)>,
+    /// Each map's lines, `[inside, outside, count]`, sorted.
+    uid_lines: Vec<[u32; 3]>,
+    gid_lines: Vec<[u32; 3]>,
 }
 
 impl MappedIds {
     /// The ids the maps `uid_map` and `gid_map` give, each line `inside
-    /// outside count` as the kernel shows it. `None` unless each map has a
-    /// line, and every line is three numbers, a count above zero and a range
-    /// that ends at `u32::MAX` at most.
+    /// outside count` as the kernel shows it, in any order and padding.
+    /// `None` unless each map has a line, and every line that is not blank
+    /// is three numbers, a count above zero and a range that ends at
+    /// `u32::MAX` at most.
     #[must_use]
     pub fn parse(uid_map: &str, gid_map: &str) -> Option<Self> {
+        let (uid_lines, gid_lines) = (lines(uid_map)?, lines(gid_map)?);
         Some(Self {
-            uids: ranges(uid_map)?,
-            gids: ranges(gid_map)?,
+            uids: merged(&uid_lines),
+            gids: merged(&gid_lines),
+            uid_lines,
+            gid_lines,
         })
+    }
+
+    /// The lines of the uid map, each `[inside, outside, count]`, sorted.
+    #[must_use]
+    pub fn uid_lines(&self) -> &[[u32; 3]] {
+        &self.uid_lines
+    }
+
+    /// The lines of the gid map, as [`MappedIds::uid_lines`].
+    #[must_use]
+    pub fn gid_lines(&self) -> &[[u32; 3]] {
+        &self.gid_lines
     }
 
     /// Whether the namespace maps the uid `id`.
@@ -66,16 +86,19 @@ impl fmt::Display for MappedIds {
     }
 }
 
-/// A map's lines as ranges of ids inside, merged.
-fn ranges(map: &str) -> Option<Vec<(u32, u32)>> {
+/// A map's lines, `[inside, outside, count]`, sorted; `None` as
+/// [`MappedIds::parse`] says.
+fn lines(map: &str) -> Option<Vec<[u32; 3]>> {
     let mut out = map
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let mut n = line.split_ascii_whitespace().map(|w| w.parse::<u32>().ok());
             match (n.next(), n.next(), n.next(), n.next()) {
-                (Some(Some(inside)), Some(Some(_)), Some(Some(count)), None) if count > 0 => {
-                    Some((inside, inside.checked_add(count - 1)?))
+                (Some(Some(inside)), Some(Some(outside)), Some(Some(count)), None)
+                    if count > 0 && inside.checked_add(count - 1).is_some() =>
+                {
+                    Some([inside, outside, count])
                 }
                 _ => None,
             }
@@ -85,14 +108,25 @@ fn ranges(map: &str) -> Option<Vec<(u32, u32)>> {
         return None;
     }
     out.sort_unstable();
-    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(out.len());
-    for (a, b) in out {
+    Some(out)
+}
+
+/// The ids inside that `lines` give, as ranges merged.
+fn merged(lines: &[[u32; 3]]) -> Vec<(u32, u32)> {
+    let mut ranges: Vec<(u32, u32)> = lines
+        .iter()
+        // `lines` checked that the range ends at `u32::MAX` at most.
+        .map(|&[inside, _, count]| (inside, inside.saturating_add(count - 1)))
+        .collect();
+    ranges.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (a, b) in ranges {
         match merged.last_mut() {
             Some(last) if u64::from(a) <= u64::from(last.1) + 1 => last.1 = last.1.max(b),
             _ => merged.push((a, b)),
         }
     }
-    Some(merged)
+    merged
 }
 
 fn holds(ranges: &[(u32, u32)], id: u32) -> bool {
@@ -363,6 +397,9 @@ mod tests {
             "0 1000 1\n1 100000 65536\n",
         );
         assert_eq!(ranged.to_string(), "uids 0-65536 and gids 0-65536");
+        // The lines, sorted, outside ids kept.
+        assert_eq!(ranged.uid_lines(), [[0, 1000, 1], [1, 100000, 65536]]);
+        assert_eq!(ranged.uid_lines(), ranged.gid_lines());
         assert!(ranged.maps_uid(0) && ranged.maps_uid(65536));
         assert!(!ranged.maps_uid(65537) && !ranged.maps_gid(u32::MAX));
         assert!(!ranged.is_one_id());
@@ -383,6 +420,7 @@ mod tests {
             "0 -1 1\n",
             "x 1 1\n",
             "4294967295 0 2\n",
+            "0 4294967296 1\n",
         ] {
             assert_eq!(MappedIds::parse(bad, "0 0 1\n"), None, "{bad:?}");
             assert_eq!(MappedIds::parse("0 0 1\n", bad), None, "{bad:?}");
