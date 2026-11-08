@@ -36,7 +36,11 @@ extract the same digest at once.
   published (#77).
 - Telling whether the process runs in a user namespace other than the
   initial one (`user_namespace_proc`), for its own directories' group and
-  `rnk-snapshot`'s layer keys and device nodes.
+  `rnk-snapshot`'s layer keys and device nodes; that namespace's id maps
+  (`IdMaps`), read once by `open`.
+- The canary of each id map (ADR-0128, #183): made with the map's first
+  layer, checked by `open`, `check_state_dir` and the reuse of a layer of
+  the map ([design](../../design/cache-and-store.md#the-canary-of-an-id-map)).
 - `BuildPaths`, the paths handed down to every crate.
 
 ## Must not
@@ -54,12 +58,13 @@ Boundaries: `crates/rnk-store/src/lib.rs`. In short:
 
 ```rust
 pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
-pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace other than the initial one, told by the inode of ns/user (nsfs checked), not by the map; None in the initial one; rnk-snapshot reads the maps there
+pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace other than the initial one, told by the inode of ns/user (nsfs checked), not by the map; None in the initial one
+pub struct IdMaps;  // a user namespace's uid_map and gid_map, canonical (lines sorted, single spaces): current() reads them there (None in the initial one), parse(uid, gid) -> Option; uid_map(), gid_map() -> &str; a line reaching past u32::MAX is refused
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
-    pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, build lock, clean-up
-    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING and store-directory checks, writing nothing: before overlay mode sets the state directory's mode and before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
+    pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, the id maps read and their canary checked (IdMapChanged), build lock, clean-up
+    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING, store-directory and canary checks, writing nothing: before overlay mode sets the state directory's mode and before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -72,6 +77,7 @@ impl Store {
     pub fn scratch_name(&self) -> Result<String>;       // ANON_PREFIX + 128 random bits; removed by the next open_anonymous if left
     pub fn state_dir(&self) -> &Path;                   // canonical
     pub fn build_id(&self) -> &str;
+    pub fn id_maps(&self) -> Option<&IdMaps>;          // the maps open read: None outside a user namespace and for the anonymous store; rnk-snapshot keys its layers by them
     pub fn build_dir(&self) -> &Path;                   // builds/<id>, created by open
     pub fn get(&self, key: &EntryKey) -> Result<Option<PathBuf>>;  // a published entry; no lock
     pub fn fill<F, E>(&self, key: &EntryKey, f: F) -> Result<PathBuf>  // lock -> published? return it ->
@@ -96,7 +102,7 @@ pub enum EntryKey { Blob(Digest), Layer(Digest) }  // Layer by chain ID, in a us
 pub const SANDBOX_DIR: &str = "sandbox";  // the RUN sandbox's directory at the top, made by ranikust; a name prune_all takes
 pub const USERNS_PROBE_PREFIX: &str = ".ranikust-anon-userns-probe-"; // the user-namespace probe's directories, which alone stand in for the marker; the probe flocks its own while it uses it
 pub struct StateDirHold;  // check_state_dir's shared lock on the state directory, held until dropped
-pub enum Error { NotAStateDir { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, NotAbandoned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
+pub enum Error { NotAStateDir { path, why }, IdMapChanged { path, why }, NoFlock, Busy, InUse { path }, NotPruned { path, left }, NotAbandoned { path, left }, PruneCutShort { path }, StateNotEmpty { path, found }, UsedOnSlash, NotEmptied { path, left }, Unmarked { path, emptied, held, why }, Io, BadEntry, Cancelled, Anonymous { what, why }, Random, AnonymousFile, NameOutlivesUnlink, Rootfs, Fill }
 impl Error { pub fn is_symlink_on(&self, state: &Path) -> bool }  // check_prune could not open state as given for a symlink on its path (ELOOP), not a refusal of its contents
 ```
 
@@ -145,11 +151,19 @@ Design: [locks](../../design/cache-and-store.md#locks),
   threads, then `flock` among processes, because NFS, CIFS and some FUSE
   filesystems emulate `flock` per process. No `flock` support is a start-up
   error (`Error::NoFlock`). Lock files
-  (`locks/{blobs,layers/v3}/<algorithm>/<hex>`, `builds/<id>.lock`) are
+  (`locks/{blobs,layers/v3}/<algorithm>/<hex>`,
+  `locks/layers/v3/canary/<hex>`, `builds/<id>.lock`) are
   never removed (but by `prune_all`, while no build holds the state
   directory), so no lock is taken on an unlinked file,
   and must be regular files, checked before they are opened for I/O (a FIFO
   would block, a device would be opened as root).
+- In a user namespace, no layer is published or reused under maps whose
+  canary does not match: the canary is made, under its own lock, before
+  the map's first layer is renamed into place, and a layer of the map found
+  without it is refused. `open` and `check_state_dir` check it before
+  anything is written; a mismatch, a missing entry, an entry that is not a
+  regular file of the state directory's mount or a canary that cannot be
+  read is `Error::IdMapChanged`, naming `prune --all` (ADR-0128).
 - Only the store's own kind of entry counts as published: a regular file for
   a blob, a directory for a layer, on the state directory's mount. A symlink,
   another type or a mount under an entry's name is `Error::BadEntry`, never
@@ -210,7 +224,7 @@ Design: [locks](../../design/cache-and-store.md#locks),
 ## Refs
 
 - **Design:** [`design/cache-and-store.md#store-layout`](../../design/cache-and-store.md#store-layout), [`#locks`](../../design/cache-and-store.md#locks), [`#atomic-publication`](../../design/cache-and-store.md#atomic-publication), [`#prune`](../../design/cache-and-store.md#prune), [`#ownership`](../../design/cache-and-store.md#ownership), [`#failure-handling`](../../design/cache-and-store.md#failure-handling); [`design/overlay-snapshot.md#state-directory-layout`](../../design/overlay-snapshot.md#state-directory-layout); [threat model T7, T13, T14](../../security/threat-model.md#5-threats-and-mitigations)
-- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (in rootless mode every operation on extracted layers runs inside the build's user namespace, and the store's directories carry mapped ids, #77), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune_all`, for `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (in rootless mode and under `--userns` extracted layers are keyed by their id map: `rnk-snapshot` makes the key, #77; `--userns` uses a state directory of its range's first uid, never root's, [sandbox](../../design/sandbox.md#--userns))
+- **Decisions:** [ADR-0021](../../adr/0021-rnk-store-crate.md) (this crate), [ADR-0022](../../adr/0022-common-state-dir.md) (one state directory, defaults), [ADR-0006](../../adr/0006-persistent-store.md) (persistent, locks, rename, prune), [ADR-0007](../../adr/0007-run-anywhere-shared-store.md) (shared by concurrent builds), [ADR-0017](../../adr/0017-stage-rootfs-by-copy-not-hardlinks.md) (never hardlink out of the store), [ADR-0056](../../adr/0056-kaniko-mode-state-on-disk-behind-a-run-fence.md) and [ADR-0077](../../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md) (the anonymous store), [ADR-0099](../../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md) (in rootless mode every operation on extracted layers runs inside the build's user namespace, and the store's directories carry mapped ids, #77), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune_all`, for `prune --all`, refused when root runs it), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (in rootless mode and under `--userns` extracted layers are keyed by their id map: `rnk-snapshot` makes the key, #77; `--userns` uses a state directory of its range's first uid, never root's, [sandbox](../../design/sandbox.md#--userns)), [ADR-0128](../../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md) (the canary per state directory and id map, #183)
 - **Open:** [#1](https://github.com/tran4774/ranikust/issues/1) (which digest names an extracted layer, where locks live; it must include the id map of a rootless or `--userns` build, ADR-0104; interim: layers named by the digest the caller gives, `rnk-snapshot` uses the chain ID, and in a user namespace a digest of the chain ID and the id map), [#2](https://github.com/tran4774/ranikust/issues/2) (proving the lock protocol under crashes and races), [#30](https://github.com/tran4774/ranikust/issues/30) (a cache on `/` across builds)
 - **Evidence:** [exp-07](../../research/experiments/07-kaniko-vs-overlay.md) §5 (parallel extraction 0.37 s against 0.88 s), [exp-09](../../research/experiments/09-kaniko-mode-prototype.md) finding 4 (a state directory in the walked root leaks), [exp-12](../../research/experiments/12-kaniko-mode-parallel.md) finding 9 (a hardlink farm corrupts the store)
 - **kaniko:** `kaniko@44aa7ddc0 pkg/config/init.go:41` (`KanikoDir`), `:49-81` (its per-purpose directories); `pkg/util/fs_util.go:72-89` (the ignore list starts with `KanikoDir`). kaniko keeps no store between builds and takes no locks.
@@ -325,6 +339,20 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `setup/tests/userns/layers/hostile.rs`: in the
   namespace, a store directory of another owner keeps its owner and setgid
   bit, and one that is a symlink leaves its target, root's, unchanged.
+  `setup/tests/userns/layers/canary.rs` (T1, #183): a build nested in a
+  namespace whose range moved past or into the first one, or after a
+  `chown` on disk, is refused with `prune --all` and the state directory
+  unchanged; under the same range the layer is reused.
+- **T0** the canary (`src/canary/tests.rs`, `src/store/tests/canaries.rs`,
+  the maps faked per thread): the first and the last id of each extent; its
+  name from both maps; a missing entry, one of other owners and one that is
+  not a regular file (a symlink, a directory, a canary that is a file or a
+  symlink) refused with the way out; the first layer under a map makes it
+  and the next store checks it; a canary of other owners refuses `open` and
+  `check_state_dir` before anything is written; a layer of the map without
+  a canary is never reused; none outside a user namespace. `src/userns.rs`:
+  `IdMaps` canonical however padded or ordered, a line past `u32::MAX`
+  refused.
 - **T0** `tests/prune.rs` (`prune_all`, the test user's own files): every
   kind of entry a build leaves emptied, marker last; refused while a build
   holds the store, nothing removed; a directory without a regular marker

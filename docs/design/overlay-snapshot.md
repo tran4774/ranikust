@@ -57,7 +57,8 @@ ranikust started in a rootless container) the key also holds the namespace's
 id map (ADR-0104,
 [cache-and-store](cache-and-store.md#store-layout)): a layer extracted with one
 map, as `/proc/self` shows it relative to the parent namespace, is never a
-lower under another.
+lower under another, and a canary refuses it once a map above changed
+(ADR-0128).
 
 ## One layer per instruction
 

@@ -880,7 +880,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_a_planted_store_directory_is_never_chowned_in_the_user_namespace`
   (a store directory of another owner, or a symlink at its name to a setgid
   directory of root's, left unchanged; the store's own directory of another
-  group changed, the control); profile `privileged`:
+  group changed, the control);
+  `setup/tests/userns/layers/canary.rs`
+  `layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same`
+  (#183, ADR-0128: a build nested in a namespace whose range moved past or
+  into the first one, or after a `chown` on disk, refused with
+  `prune --all`, the state directory unchanged; under the same range the
+  layer is reused); profile `privileged`:
   `red_team_overlay_xattrs_from_a_layer_never_act_in_a_mount_of_the_user_namespace`
   (overlay's own xattr names under `user.overlay.` and `trusted.overlay.` in
   a layer make no opaque directory, redirect, metacopy or whiteout in a

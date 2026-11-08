@@ -113,7 +113,8 @@ pub(crate) fn chain_above(below: Option<&Digest>, diff_id: &Digest) -> Digest {
 /// stack. In a user namespace (`userns`), the key also holds the
 /// namespace's id map (ADR-0104), and device nodes are left out (ADR-0106):
 /// such a layer is never a lower outside that map, relative to the parent
-/// namespace as `/proc/self` shows it. The store's per-digest lock keeps
+/// namespace as `/proc/self` shows it; the store's canary refuses it once a
+/// map above changed (ADR-0128). The store's per-digest lock keeps
 /// two builds from extracting one layer twice. The uncompressed tar must
 /// hash to `diff_id`, or nothing is published.
 ///

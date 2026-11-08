@@ -74,6 +74,13 @@ no user namespace (where AppArmor restricts them, as Ubuntu 23.10 and later
 do), its error says how to get out, naming the directory; root's way is to
 run `ranikust prune --all --state-dir DIR`, which prints root's commands.
 
+A build in a user namespace (rootless, `--userns`, or in a rootless
+container) also refuses a state directory whose layers were extracted under
+other ids than the namespace gives now: after the subordinate ranges of an
+enclosing container changed, or a `chown` of the directory on disk. It
+changes nothing there and names the ways out: `prune --all`, or another
+`--state-dir`.
+
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
 the marker first, so that no build takes what an interrupted removal leaves

@@ -51,8 +51,10 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── .ranikust-pruning           the marker renamed while prune --all empties it
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v3/sha256/<hex>/     extracted layers by chain ID (and id map), immutable [open: #1]
+├── layers/v3/canary/<hex>/     a canary per id map: uid-<id> and gid-<id> files (ADR-0128)
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
+├── locks/layers/v3/canary/<hex>           a canary's lock
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── .ranikust-anon-userns-probe-*/  rootless overlay mode's probe, held (flock) while in use
@@ -98,10 +100,7 @@ layer the other extracted through its own maps: the overflow id for ids it
 does not map, other owners where the ranges overlap. This happens, for
 example, to a namespace ranikust makes in a rootless Podman container whose
 state directory is on a volume, after the user's ranges in `/etc/subuid`
-change: the moved range of the enclosing container is not seen. A canary per
-state directory and map will refuse such layers
-([#183](https://github.com/tran4774/ranikust/issues/183),
-[ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
+change: a canary refuses such layers ([below](#the-canary-of-an-id-map)).
 `rnk-snapshot` makes the key and the store takes it as it takes a chain ID,
 an opaque digest; how
 [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep
@@ -124,6 +123,37 @@ mode cannot: it extracts the blobs into the stage root, or copies a flattened
 base kept in the store
 ([ADR-0017](../adr/0017-stage-rootfs-by-copy-not-hardlinks.md)) [inferred:
 the form of a flattened base in the store is not designed yet].
+
+### The canary of an id map
+
+A canary per state directory and map refuses layers extracted under other ids
+than the build's user namespace gives now
+([ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md),
+[#183](https://github.com/tran4774/ranikust/issues/183)). The store reads the
+maps once, when it opens, and `rnk-snapshot` keys its layers by them.
+
+- **What it is:** `layers/v3/canary/<hex>/`, named by the `sha256` of a tag of
+  its own and both maps, holds an empty `0444` file for the first and the last
+  id of each extent: `uid-<id>` owned by that uid and the lowest gid of the
+  map, `gid-<id>` by the lowest uid and that gid. It sits beside the layers it
+  guards and shares their layout version.
+- **When it is made:** with the first layer published under the map, after
+  the layer's extraction and before its rename, under the canary's lock: made
+  in `tmp/<build-id>/` and renamed into place, as a layer is.
+- **When it is checked:** when the store opens and in `check_state_dir`,
+  before anything is written, and before a layer of the map is reused. Each
+  entry must be a regular file of the state directory's mount with its owner
+  as the namespace sees it now. An id a map above no longer gives shows as the
+  overflow id, and one an overlapping range gives as another id, so a change
+  at any depth, or a `chown` on disk, shows.
+- **A mismatch** (a wrong owner, a missing entry, an entry of another type, a
+  canary that cannot be read, or a layer of the map found without its canary)
+  refuses the build with the way out: `ranikust prune --all`, or another
+  `--state-dir`. No canary yet is not a mismatch: no layer of the map was
+  published.
+- **Older layers:** version 2 of the key's tag came with the canary, so a
+  layer extracted before it is extracted again, never reused unguarded; the
+  old one stays until `prune --all`.
 
 ## Locks
 
