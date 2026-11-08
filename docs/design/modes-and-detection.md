@@ -420,7 +420,13 @@ refusal's guidance line gives, in order
 
 1. Run ranikust as root, with `sudo`.
 2. Only where `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads
-   `1`: have root load ranikust's AppArmor profile,
+   `1` and AppArmor may be what refused (`no_userns::Stop`): the user
+   namespace was made and a later step failed (the map, `chown`, the mount
+   namespace), or `unshare` failed with `EACCES`, as under a profile without
+   `userns`. Another errno of `unshare` (`EPERM` from a seccomp filter or
+   `kernel.unprivileged_userns_clone`, `ENOSPC` from
+   `user.max_user_namespaces`), none, or a refusal once the probe passed
+   gets items 1 and 3 alone. Have root load ranikust's AppArmor profile,
    [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three lines
    granting `userns,` with `flags=(unconfined)`, bound to
    `/usr/local/bin/ranikust` (as podman's profile is to podman), into
@@ -440,9 +446,13 @@ The path is the one `/proc/self/exe` named before the sealed copy ran
 marker carries it (`rnk_sandbox::Sealing::binary_path`). Root alone may
 change it when `/`, each directory below it and the file are owned by root
 and written by neither group nor others (an ACL that grants writing shows in
-the group bits), none is a symlink or on FUSE (whose server, any user's,
-reports the owners), and the file is a regular one: each component is opened
-`O_PATH` from the one above without following a symlink. A sticky directory
+the group bits), none is a symlink, each is on a mount without `nosuid`
+(udisks2, fstab `user` mounts and fusermount always add it) of a local
+filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs, tmpfs,
+overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS, shows
+owners and modes a user or a server sets), and the file is a regular one:
+each component is opened `O_PATH` from the one above without following a
+symlink. A sticky directory
 such as `/tmp` fails, since any user may take the name once it is gone; so
 does any error, a removed binary (`(deleted)`) included. Any value of the
 switch but `1`, or none (Ubuntu 22.04, other distributions), offers no
@@ -452,7 +462,8 @@ copy's `execveat`, which no other profile attaches to, and so does a `RUN`
 24.04's default, any user's unconfined program may also enter the profile
 with `aa-exec -p ranikust` (measured, T2 smoke), as it may any profile that
 allows `userns`; the book and the profile say so. The test hook
-`RANIKUST_DEBUG_FAULT=no-userns` gives the same advice.
+`RANIKUST_DEBUG_FAULT=no-userns` gives the advice of a stop in the user
+namespace.
 
 ## Failure handling
 

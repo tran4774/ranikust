@@ -328,10 +328,12 @@ As a regular user where user namespaces are restricted (the default on Ubuntu
 24.04 and later), or in a pod that is neither root nor allowed user
 namespaces, ranikust cannot build. It stops before it writes anything, names
 the step of the probe that failed and says what would work, in order: running
-as root with `sudo`; where Ubuntu's AppArmor switch restricts user namespaces,
+as root with `sudo`; where Ubuntu's AppArmor switch restricts user namespaces
+and may be what refused,
 [ranikust's AppArmor profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
-for a binary in a path only root can change (else after installing it in one,
-naming what failed); or running inside a container. A regular user is
+for a binary in a path only root can change, on a local filesystem root
+mounted (else after installing it in one, naming what failed); or running
+inside a container. A regular user is
 also refused where only an rbind of `/proc`
 would work and `--allow proc.rbind` is absent, and where the state directory is
 on overlayfs.

@@ -55,8 +55,12 @@ writer) before `unshare`, the probes and the state directory's checks.
   stopped at `unshare`, the map, `chown` or the mount namespace (and the
   test hook's `no-userns`), `setup::no_userns`'s advice
   ([No usable user namespace](../../design/modes-and-detection.md#no-usable-user-namespace)):
-  `sudo`, the AppArmor profile where the switch reads 1, a container. The
-  path it weighs is the one the binary started from
+  `sudo`; the AppArmor profile where the switch reads 1 and AppArmor may
+  be what refused (`no_userns::Stop`: a step in the namespace `unshare`
+  made, or `unshare`'s `EACCES`; the test hook counts as the first; a
+  refusal once the probe passed, never), for a path only root may change
+  on a mount without `nosuid` of a local filesystem (`no_userns::LOCAL`);
+  a container. The path it weighs is the one the binary started from
   (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
   `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
   rbind works. With the rbind, `main.rs` then runs the peer scan, the check
@@ -285,7 +289,7 @@ Each step before the next; design in
    `rnk_sandbox::probe_with_fallbacks` → `rnk_snapshot::probe` in
    `builds/<id>/overlay-probe` → `Sandbox::start` → the mode line.
    `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
-   process unchanged and the advice where no user namespace is usable: the
+   process unchanged and the advice of a stop in the user namespace: the
    T0 tests of the binary set it, so none makes a user namespace (nor runs
    `plan`'s check of one with capabilities). Root's
    `--mode=auto` forks before `set_up` (ADR-0136);
@@ -469,13 +473,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   advice's wording and order in each case (the switch at 1 or not; the
   shipped path, another root-only one, the install as
   `/usr/local/bin/ranikust` or, where that directory fails, elsewhere),
-  the plain characters a profile may name, the root-only rule on synthetic
-  nodes with the first one that fails named (a user's, group- or
-  others-writable, `/tmp`'s sticky bit, a symlink, a non-regular file,
-  FUSE), the walk on a temporary directory (no symlink followed; a
+  which stops offer the profile (a step in the namespace, `unshare`'s
+  `EACCES`) and which get `sudo` then a container (another errno, none, a
+  step not shown to follow a working `unshare`), the plain characters a
+  profile may name, the root-only rule on synthetic nodes with the first
+  one that fails named (a user's, group- or others-writable, `/tmp`'s
+  sticky bit, a symlink, a non-regular file, a `nosuid` mount, a
+  filesystem off the local list such as FUSE or NFS, each listed one
+  passing), the walk on a temporary directory (no symlink followed; a
   relative path, `..`, a missing or removed file refused, where it
-  stopped named) and on system binaries, against the standard library's
-  view), `prune` (`--all` and `--state-dir` parsed, `--kaniko-dir`
+  stopped named), on `/proc` (its type read, refused) and on system
+  binaries, against the standard library's view), `prune` (`--all` and
+  `--state-dir` parsed, `--kaniko-dir`
   refused; without `--all` a usage error naming Phase 5; root refused
   before anything, a missing directory left missing, an empty one left as
   it is, one without the marker or holding a name the store does not make

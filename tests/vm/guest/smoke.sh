@@ -534,6 +534,61 @@ apparmor_profile() {
   trap 'sudo rm -f "$MARKER"' EXIT
 }
 
+# #81: the profile is offered only for a path on a local filesystem root
+# mounted: root's copy of the binary on a nosuid tmpfs, then on ramfs (off
+# the list), owned by root and written by no one else, is refused at the
+# mount namespace with the install under /usr/local/bin first, naming the
+# mount, and writes no state directory. Uses rl_args, ud and dir from the
+# user section.
+AA_MOUNT=/mnt/rnk-aa-mount
+apparmor_mounts() {
+  local m="$AA_MOUNT" log rc advice c fs opts why
+  [ ! -L /mnt ] && [ "$(stat -c %u /mnt)" = 0 ] && [ $((8#$(stat -c %a /mnt) & 8#022)) = 0 ] ||
+    { echo "error: user: /mnt is not root's alone here" >&2; exit 1; }
+  sudo mkdir -m 755 -p "$m"
+  trap 'sudo rm -f "$MARKER"; sudo umount "$AA_MOUNT" 2>/dev/null; sudo rmdir "$AA_MOUNT"' EXIT
+  for c in "tmpfs|nosuid,mode=755|is on a nosuid mount" \
+    "ramfs|mode=755|is not on a local filesystem ranikust knows"; do
+    IFS='|' read -r fs opts why <<<"$c"
+    sudo mount -t "$fs" -o "$opts" "rnk-$fs" "$m"
+    sudo install -m 0755 -o root -g root "$RNK" "$m/ranikust"
+    rc=0
+    log="$("$m/ranikust" "${rl_args[@]}" --state-dir "$ud/on-$fs" 2>&1)" || rc=$?
+    sudo umount "$m"
+    printf '%s\n' "$log" >"$dir/apparmor-$fs.log"
+    advice="$(advice_of "$log")"
+    [ "$rc" = 1 ] && [ ! -e "$ud/on-$fs" ] &&
+      grep -q 'the user namespace probe stops at mount namespace' <<<"$log" &&
+      in_order "$advice" 'run ranikust as root, with sudo; ' 'or, as root, install ranikust ' \
+        "$m/ranikust is not a path only root can change ($m $why" 'or run ranikust in a container' ||
+      { echo "error: user: expected no profile for a binary on $fs ($opts), got $rc:" >&2; echo "$log" >&2; exit 1; }
+    echo "user: root's binary on $fs ($opts): the profile only after an install elsewhere ($m $why)"
+  done
+  sudo rmdir "$m"
+  trap 'sudo rm -f "$MARKER"' EXIT
+}
+
+# #81: a user other than root in a default `docker run`, whose seccomp
+# filter refuses unshare(CLONE_NEWUSER) with EPERM, is refused there and
+# advised sudo then a container, with no profile whatever the switch reads:
+# no profile lifts a seccomp refusal.
+seccomp_user_advice() {
+  local d="$W/default-user" rc=0 log advice
+  sudo mkdir -m 755 -p "$d/ctx"
+  printf 'FROM %s\nRUN true\n' "$E2E_BASE" | sudo tee "$d/ctx/Dockerfile" >/dev/null
+  log="$(sudo docker run --rm --user 1000:1000 -v "$RNK:/ranikust/bin/ranikust:ro" \
+    -v "$d/ctx:/ranikust/ctx:ro" "$IMAGE" /ranikust/bin/ranikust --context /ranikust/ctx \
+    --no-push --state-dir /tmp/rnk-state 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/build.log" >/dev/null
+  advice="$(advice_of "$log")"
+  [ "$rc" = 1 ] && grep -q 'the user namespace probe stops at unshare' <<<"$log" &&
+    grep -q 'unshare(CLONE_NEWUSER): EPERM' <<<"$log" &&
+    in_order "$advice" 'run ranikust as root, with sudo; ' 'or run ranikust in a container' &&
+    ! grep -qi 'apparmor' <<<"$advice" ||
+    { echo "error: default-user: expected a refusal at unshare (EPERM), advising sudo then a container and no profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "default-user: a user in a default docker run: refused at unshare (EPERM); advice: sudo, a container, no profile ($AA_SWITCH: $(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null || echo absent))"
+}
+
 # #81: where the switch is 0 (Ubuntu 22.04), or absent, the advice for no
 # user namespace (the test hook's) names no profile: sudo, then a container.
 # Where it is 1 it is set to 0 for the run, then back.
@@ -617,6 +672,7 @@ if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)"
     { echo "error: user: expected rootless overlay mode refused, with sudo, the profile after an install under /usr/local/bin, then a container, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it; advice: sudo, the profile after an install under /usr/local/bin, a container"
   apparmor_profile
+  apparmor_mounts
 else
   [ "$rc" = 0 ] &&
     grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
@@ -691,6 +747,7 @@ else
   echo "user: prune --all empties a deep cache tree a RUN left; the next build runs"
 fi
 advice_without_the_switch
+seccomp_user_advice
 echo "user: ok"
 
 echo "=== escape control: a plain chroot into the host variant's root"

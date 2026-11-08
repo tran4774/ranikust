@@ -65,11 +65,19 @@ apparmor_parser -r /etc/apparmor.d/ranikust
 - The profile is bound to `/usr/local/bin/ranikust`: AppArmor attaches it by
   path, and gives a user namespace to whatever binary is there. Bind it only
   to a path no user other than root can change: root owns the file and every
-  directory above it, and none is writable by group or others. ranikust's
-  refusal offers the profile only for such a path, and otherwise names the
-  part of the path that fails and says to install the binary under
-  `/usr/local/bin` first (or, where that directory fails too, in one that
-  passes). For another such path, change the path in the profile.
+  directory above it, none is writable by group or others, and each is on a
+  local filesystem root mounted, without `nosuid` (not FUSE, NFS, SMB, nor a
+  user's removable or fstab `user` mount, whose owners a user or a server
+  sets). ranikust's refusal offers the profile only for such a path, and
+  otherwise names the part of the path that fails and says to install the
+  binary under `/usr/local/bin` first (or, where that directory fails too,
+  in one that passes). For another such path, change the path in the
+  profile.
+- The refusal offers it only where AppArmor may be what refused: where the
+  user namespace was made and a later step failed, or where making it was
+  refused with `EACCES`. Where something else refuses it, such as a
+  container's seccomp filter or `user.max_user_namespaces` at `0`, the
+  advice is `sudo`, then a container.
 - It confines nothing (`flags=(unconfined)`): every user who may run that
   binary, and every program a build runs, gets the user namespaces that the
   switch at `0` gives every program. Where

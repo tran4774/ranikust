@@ -64,8 +64,8 @@ and age; `push` (an OCI layout, ADR-0052) has no phase yet, and there is no
 picks the mode and the root (rootless overlay mode's probe runs before the
 build's user namespace is entered, its set-up inside it; a user with no
 usable one is refused with `sudo`, the AppArmor profile
-[`contrib/apparmor/ranikust`](contrib/apparmor/ranikust) and a container, in
-that order), runs `rnk-sched`
+[`contrib/apparmor/ranikust`](contrib/apparmor/ranikust) where AppArmor may
+be what refused, and a container, in that order), runs `rnk-sched`
 with its own `StageRunner` (which drives `rnk-builder`, one thread per stage)
 and writes the outputs. **Must not** hold the rule of a single concern
 (Dockerfile semantics,
