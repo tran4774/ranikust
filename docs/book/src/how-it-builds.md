@@ -168,22 +168,27 @@ is not the host's root ([ADR-0104]). That uid and its gid are the first of a
 ranikust:<start>:65536
 ```
 
-in both files, with a `<start>` above 0 that no account and no other range
-uses, such as one past the last range there. Without it the build is refused
-before anything is written, and so it is where:
+in both files, in decimal with no leading 0, with a `<start>` above 0 that no
+account, no other range and no other tool's range (below) uses. Without it the build is
+refused before anything is written, and so it is where:
 
 - the range shares an id with another line of those files, as any version of
   `newuidmap` may read that line, or with an account of `/etc/passwd` or
   `/etc/group`;
-- a line of those files has a start or count that is not a plain number;
+- a line of those files has a start or count that versions of `newuidmap`
+  read differently or not at all (a `-` sign, other characters around the
+  number, a value past 64 bits), or a NUL byte;
 - an account is named `ranikust`: `newuidmap` would give it the range.
 
-Only these files are checked: not accounts from LDAP or SSSD, and not the
-ranges other tools hand out, so keep `<start>` outside those in use on the
-host: an NSS `subid:` module such as SSSD's or FreeIPA's (`newuidmap` then
-reads it instead of the files, and ranikust warns of it), the kubelet's pod
-user namespaces, systemd's `DynamicUser` (61184–65519) and
-`systemd-nspawn --private-users=pick` (524288–1879048191). Every `--userns`
+Only these files are checked: not accounts from LDAP, SSSD or systemd's
+`DynamicUser`, and not the ranges other tools hand out, so keep `<start>`
+outside those in use on the host: an NSS `subid:` module such as SSSD's or
+FreeIPA's (`newuidmap` then reads it instead of the files, and ranikust warns
+of it), the kubelet's pod user namespaces (every id above 65535 unless an
+account named `kubelet` exists and `getsubids` is installed: then that
+account's lines in those files, which the check counts), systemd's
+`DynamicUser` (61184–65519) and `systemd-nspawn --private-users=pick`
+(524288–1879048191). Every `--userns`
 build runs as that range: they are kept apart from the host, not from each
 other.
 

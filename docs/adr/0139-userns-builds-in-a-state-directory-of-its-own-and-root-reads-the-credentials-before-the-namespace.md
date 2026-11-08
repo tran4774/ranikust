@@ -101,13 +101,13 @@ Decided while building #83, as implementation choices under ADR-0104:
   Another line counts as every range a version of shadow's tools may read it
   as, and one whose numbers cannot be read so is refused
   ([sandbox](../design/sandbox.md#--userns)). Only those local files are read:
-  a static binary has no NSS, so accounts and ids that only a directory
-  service (LDAP, SSSD) knows are not checked, nor are the ranges other
-  allocators hand out: an NSS `subid:` module (libsubid, through SSSD or
-  FreeIPA), which `newuidmap` then reads instead of the files, the kubelet's
-  pod user namespaces, systemd's `DynamicUser` (61184–65519) and
-  `systemd-nspawn --private-users=pick` (524288–1879048191). The docs advise
-  a `<start>` outside them, and a warning names an NSS `subid:` module.
+  a static binary has no NSS, so accounts and ids that only NSS knows
+  (LDAP, SSSD, systemd's `DynamicUser` and userdb) are not checked, nor are
+  the ranges
+  other allocators hand out: an NSS `subid:` module, which `newuidmap` then
+  reads instead of the files, the kubelet and systemd
+  ([sandbox](../design/sandbox.md#--userns) lists them). The docs advise a
+  `<start>` outside them, and a warning names an NSS `subid:` module.
 - **[ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)'s
   refusal of an owner outside the range** applies as in every user
   namespace, before extraction; ways out that name the `ranikust` range, not

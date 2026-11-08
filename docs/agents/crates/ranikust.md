@@ -76,8 +76,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   root may mount; it never falls back (`Via::falls_back`) and skips
   `rootless_kept_off`. `plan(.., userns: true)` first reads root's range
   (`subids::root_range`: the first well-formed `ranikust` line of each
-  file, by that name only, none starting at 0, no account named
-  `ranikust` in `/etc/passwd`, sharing no id with any range another line
+  file (decimal, no leading 0: `range_number`, as for a user's own range),
+  by that name only, none starting at 0, no account named `ranikust` in
+  `/etc/passwd`, sharing no id with any range another line
   of the file may give (`ranges_shadow_may_read`: the first three fields,
   each `strtoul` base-0 reading, in 128 bits; a line whose numbers it
   cannot read, or with a NUL, refused), nor the uids with `/etc/passwd`'s,
@@ -100,7 +101,7 @@ writer) before `unshare`, the probes and the state directory's checks.
   given away, and `probe_in_dir` refuses a name without
   `USERNS_PROBE_PREFIX`: it releases its lock and the store removes it
   inside the namespace. A probe directory another build's start removed
-  (even between its `mkdirat` and its open, `removed_once_made`), or a
+  (even between its `mkdirat` and its listing, `removed_once_made`), or a
   store locked, before it was held is made again once under another name
   (`make_probe_dir_again`). `set_up` enters the namespace with the same ids;
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names

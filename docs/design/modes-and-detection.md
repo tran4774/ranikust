@@ -465,7 +465,7 @@ every id maps and nothing is checked.
   failed; `-1`, which `chown` reads as "unchanged", is none): with one id
   (a user without `newuidmap` and `newgidmap`, or without ranges), install
   `uidmap` (Ubuntu does not by default) and give the user a first range in
-  `/etc/subuid` and `/etc/subgid` of at least as many ids as the highest
+  `/etc/subuid` and `/etc/subgid`, in decimal with no leading 0, of at least as many ids as the highest
   one named, run as root, or run in a container; with a user's ranges,
   widen the first range to that count (ranikust maps only that one, and id
   N is its N-th); in a namespace ranikust was started in, or root's copy

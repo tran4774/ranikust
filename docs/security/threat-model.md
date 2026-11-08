@@ -433,9 +433,10 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   not between one `--userns` build and another
   ([ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md)).
   That the range is the build's alone is checked in the local files only:
-  accounts, ids and ranges that NSS (LDAP, SSSD, a `subid:` module) or
-  another allocator (the kubelet, systemd) hands out are not seen, so the
-  admin keeps the range outside them ([sandbox](../design/sandbox.md#--userns)).
+  accounts, ids and ranges that NSS (LDAP, SSSD, systemd, a `subid:`
+  module) or another allocator (the kubelet, systemd) hands out are not
+  seen, so the admin keeps the range outside them
+  ([sandbox](../design/sandbox.md#--userns)).
 - `RUN` shares the host network by default
   ([ADR-0010](../adr/0010-run-network-host-or-none.md)), as kaniko's does; it
   can reach services that listen on the host and the cloud metadata

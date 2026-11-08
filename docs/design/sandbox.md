@@ -898,9 +898,11 @@ mode's path ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-renam
 with another map:
 
 - **The range.** `ranikust` reads root's range from the first well-formed
-  `ranikust` line of `/etc/subuid` and of `/etc/subgid`, by that name only, on
-  the host and before anything is written. Where either is missing, or starts
-  at 0, the build is refused, naming the line to add to both files,
+  `ranikust` line of `/etc/subuid` and of `/etc/subgid` (start and count in
+  decimal, with no leading 0, which shadow's tools read as octal), by that
+  name only, on the host and before anything is written. Where either is
+  missing, or starts at 0, the build is refused, naming the line to add to
+  both files,
   `ranikust:<start>:65536`, `<start>` left to the admin. It is refused too
   where `/etc/passwd` has an account named `ranikust`, which `newuidmap` and
   `newgidmap` would let map the range, and where the range shares an id with
@@ -915,12 +917,21 @@ with another map:
   NUL byte, is refused, naming it; one ending in `\r` is counted without it.
   `/etc/passwd` and `/etc/group` ids are read in base 10, as glibc reads
   them. Only these local files are read: not accounts or ids that NSS takes
-  from elsewhere (LDAP, SSSD), and not the ranges other allocators hand out,
-  so choose a `<start>` outside each of them in use on the host:
+  from elsewhere (LDAP, SSSD, systemd's `DynamicUser` and userdb), and not
+  the ranges other allocators hand out, so choose a `<start>` outside each
+  of them in use on the host:
   - an NSS `subid:` module (libsubid, as SSSD or FreeIPA provide), which
     `newuidmap` then reads instead of `/etc/subuid` and `/etc/subgid`;
-    ranikust warns where `/etc/nsswitch.conf` names one other than `files`;
-  - the kubelet's pod user namespaces;
+    ranikust warns where the first `subid:` line of `/etc/nsswitch.conf`
+    that names a module names first one other than `files`;
+  - the kubelet's pod user namespaces: every id from its `idsPerPod`
+    (65536 by default) to as many below 2^32, unless an account named
+    `kubelet` exists and `getsubids` is installed, when it takes the range
+    `getsubids` gives that account (its lines of `/etc/subuid` and
+    `/etc/subgid`, which the check counts, where no NSS `subid:` module
+    answers) [inferred: from the kubelet's source, `getKubeletMappings`,
+    not run]. With pod user namespaces on, create that account and its
+    lines;
   - systemd's `DynamicUser` (61184–65519);
   - `systemd-nspawn --private-users=pick` (524288–1879048191).
 - **The map** (`BuildIds::Shifted`, logged as `shifted range`) is
