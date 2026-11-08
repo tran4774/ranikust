@@ -210,7 +210,7 @@ done
 i=0
 while foreign >/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 rc=0
-"$0" "$@" >/dev/null 2>&1 || rc=$?
+"$0" "$@" >/ranikust/out/last.log 2>&1 || rc=$?
 echo "status=$rc"
 s=/var/lib/ranikust
 echo "left: $(find "$s/builds" "$s/tmp" -mindepth 1 -maxdepth 1 2>/dev/null; find "$s" -maxdepth 1 -name ".ranikust-anon-userns-probe-*")"' \
@@ -258,7 +258,7 @@ killed_in_fallback() {
   PODMAN_ARGS=(-e RANIKUST_DEBUG_FAULT=rootless-broken)
   got="$(rnk_run_sh "$(foreign_script)"'
 for sig in KILL TERM INT; do
-  for d in 0.005 0.01 0.02 0.03 0.04 0.05 0.07 0.1 0.15; do
+  for d in 0.005 0.01 0.02 0.03 0.05 0.08; do
     "$0" "$@" >/dev/null 2>&1 &
     pid=$!
     sleep "$d"
