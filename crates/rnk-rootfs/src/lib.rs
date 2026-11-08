@@ -5,7 +5,9 @@
 //! Built on it: layer extraction from an already decompressed tar stream,
 //! writing whiteouts in the form the caller asks for; copy, ownership and
 //! xattrs; `USER` and `--chown` name lookup in the root's `/etc/passwd` and
-//! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ignore list; the
+//! `/etc/group`, for `rnk-sandbox` and `rnk-builder`; the ids a user
+//! namespace maps, and the owners a layer, a `chown` or a `RUN` would give
+//! that it does not ([`Unmapped`], ADR-0098); the ignore list; the
 //! parser of `/proc/self/mountinfo` ([`parse_mountinfo`]); safe
 //! deletion of a root's contents; and the operator's host paths that the
 //! build context's owner must not steer (ADR-0076): output directories
@@ -42,6 +44,7 @@ mod ignore;
 mod meta;
 mod mode;
 mod mountinfo;
+mod owners;
 mod path;
 mod root;
 mod support;
@@ -53,14 +56,16 @@ pub use copy::{CopyOpts, copy, copy_filtered};
 pub use delete::{Pruned, delete_contents, prune};
 pub use error::{Error, Result};
 pub use extract::{
-    DEFAULT_EXTENSION_HEADER_LIMIT, DeviceNodes, Extracted, Whiteouts, check_headers, extract,
-    extract_live, extract_live_literal, extract_overlay, set_extension_header_limit,
+    DEFAULT_EXTENSION_HEADER_LIMIT, DeviceNodes, Extracted, Whiteouts, check_headers,
+    check_headers_and_owners, extract, extract_live, extract_live_literal, extract_overlay,
+    scan_owners, set_extension_header_limit,
 };
 pub use host::{Fence, HostFile, OutputDir, Reached, reach};
 pub use ignore::IgnoreList;
 pub use meta::{FileTime, FileType, Meta, Stat, is_overlay_own};
 pub use mode::{Chmod, ModeSet};
 pub use mountinfo::{MountInfo, MountInfoError, parse_mountinfo};
+pub use owners::{MappedIds, Unmapped};
 pub use root::{OpenHow, Pinned, RootPath, refuse_own_root};
 pub use support::{Cause, Unsupported, probe_support};
 pub use user::{Owner, User, lookup_owner, lookup_user};

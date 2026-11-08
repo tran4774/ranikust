@@ -3,7 +3,9 @@
 //! (extracted lower layers in overlay mode, the blobs in kaniko mode). In
 //! kaniko mode, when no output needs a base layer's bytes, no blob is
 //! pulled at all: each layer is streamed from the registry into the root
-//! when a stage is prepared on it (ADR-0055).
+//! when a stage is prepared on it (ADR-0055), unless the snapshotter
+//! declines, as kaniko mode off `/` in a user namespace does so that the
+//! owners are checked first (ADR-0098).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,12 +38,16 @@ pub struct PulledImage<L = LayerDir> {
 /// Pulls `reference` for `platform`: the manifest, the config, every layer
 /// blob into the store (`blobs/`, verified while it streams) and every
 /// layer made a base layer by the snapshotter (in overlay mode extracted in
-/// `layers/`, checked against the config's diff IDs).
+/// `layers/`, checked against the config's diff IDs), once
+/// [`Snapshotter::check_owners`] has found every owner of every layer
+/// mapped (ADR-0098).
 ///
 /// Unless `keep_blobs` (an output written to a file needs the bytes), a
 /// snapshotter that streams base layers ([`Snapshotter::streamed_layer`],
-/// kaniko mode) gets each layer as a stream from the registry instead, and
-/// no blob is pulled or kept: the image's layers are then
+/// kaniko mode on `/`, or off it outside a user namespace) gets each layer
+/// as a stream from the registry instead, and no blob is pulled or kept
+/// (on `/` in a user namespace, each layer's owners are checked as it is
+/// spooled, ADR-0137). The image's layers are then
 /// [`LayerBytes::Registry`](crate::LayerBytes::Registry), which a push mounts or streams
 /// from their source.
 ///
@@ -51,7 +57,8 @@ pub struct PulledImage<L = LayerDir> {
 /// # Errors
 ///
 /// A registry, store or extraction error; [`Error::Invalid`] when the
-/// manifest and the config disagree on the number of layers.
+/// manifest and the config disagree on the number of layers;
+/// [`Error::Image`] when the owner check refuses the layers.
 pub async fn pull_image<S>(
     client: &Arc<Client>,
     store: &Arc<Store>,
@@ -109,6 +116,26 @@ where
             reference.clone(),
         ));
     }
+
+    // Every owner of every layer is checked before the first is extracted
+    // (ADR-0098).
+    let owned = blobs
+        .iter()
+        .map(|b| {
+            let path = b
+                .path()
+                .ok_or_else(|| Error::Invalid("a pulled blob has no file".to_owned()))?;
+            Ok((b.diff_id.clone(), path.to_owned()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let checker = Arc::clone(snapshotter);
+    tokio::task::spawn_blocking(move || checker.check_owners(&owned))
+        .await
+        .map_err(|e| Error::Invalid(format!("checking the layers' owners: {e}")))?
+        .map_err(|e| Error::Image {
+            reference: reference.to_string(),
+            source: Box::new(e.into()),
+        })?;
 
     let mut layers: Vec<S::Layer> = Vec::with_capacity(blobs.len());
     for blob in &blobs {

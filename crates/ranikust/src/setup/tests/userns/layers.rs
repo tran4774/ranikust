@@ -455,7 +455,7 @@ fn expected(userns: bool, skip_selinux: bool) -> String {
         if userns { 2 } else { 0 },
         !userns,
         if userns {
-            "refused: chown ./far: Invalid argument (os error 22)"
+            "refused: chown ./far to 3000000000:3000000000: an id this user namespace does not map"
         } else {
             "published"
         },
@@ -803,3 +803,4 @@ fn a_regular_user_s_killed_extraction_publishes_nothing() {
 }
 
 mod hostile;
+mod owners;

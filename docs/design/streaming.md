@@ -2,7 +2,8 @@
 
 **TL;DR:** ranikust's own memory and disk stay small and independent of the
 image's size. A base layer that nothing but its extraction needs is extracted
-while it downloads and never kept. A built layer goes to its registry
+while it downloads and never kept (in kaniko mode off `/` in a user namespace
+it is downloaded first, so its owners are checked). A built layer goes to its registry
 destinations as soon as it is exported, while the build goes on, and its bytes
 are released once every destination has it. Every pipeline works through
 fixed-size buffers. Decided in
@@ -12,7 +13,7 @@ fixed-size buffers. Decided in
 
 | What | Kept until | Where |
 |---|---|---|
-| Base layer blobs, kaniko mode | not kept: streamed from the registry into the root, unless an output needs the bytes | none (on `/` a verified spool, below); with such an output, the store (`blobs/`; on `/`, anonymous files) |
+| Base layer blobs, kaniko mode | not kept: streamed from the registry into the root, unless an output needs the bytes or, off `/`, the build runs in a user namespace | none (on `/` a verified spool, below); with such an output or off `/` in a user namespace, the store (`blobs/`; on `/`, anonymous files) |
 | Base layer blobs, overlay mode | the store's prune | the store (`blobs/`) |
 | Extracted base layers, overlay mode | the store's prune | `layers/` |
 | Built layer blobs | every destination has the layer and no output needs it | the build directory; on `/`, anonymous files (RAM under `memfd`) |
@@ -42,6 +43,10 @@ So in kaniko mode:
   image's blobs are pulled into the store (`blobs/`; on `/`, anonymous files)
   as in overlay mode (`crates/rnk-builder/src/pull.rs`): those outputs are
   files of the image's size anyway.
+- Off `/` in a user namespace no base layer streams: the blobs are pulled
+  into the store first, so every layer's owners are checked before any is
+  extracted (ADR-0098); on `/` the spool pass checks each layer's
+  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)).
 
 Overlay mode keeps extracted layers in the store for later builds, and the blob
 beside them: on disk, through fixed buffers, never in memory. It downloads and
@@ -91,7 +96,7 @@ layers uploading or waiting to is bounded by twice `--jobs`.
 
 | Part | Overlay mode | Kaniko mode |
 |---|---|---|
-| Base layer extracted while downloading | no: downloaded to the store, then extracted | yes, into the root, no blob kept |
+| Base layer extracted while downloading | no: downloaded to the store, then extracted | yes, into the root, no blob kept; off `/` in a user namespace no (ADR-0098) |
 | Base layer pushed from its source registry | no: the store has the blob | yes (mount, else streamed) |
 | Built layer pushed while the build runs | yes | yes |
 | Built layer released after its upload | yes | yes |

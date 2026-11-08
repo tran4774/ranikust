@@ -10,6 +10,7 @@ use std::io::{self, Read as _};
 use std::path::Path;
 
 use rnk_oci::Digest;
+use rnk_rootfs::MappedIds;
 use rustix::fs::{Mode, OFlags};
 use sha2::{Digest as _, Sha256};
 
@@ -32,6 +33,9 @@ pub(crate) struct UserNamespace {
     uid_map: String,
     /// `/proc/self/gid_map` in [`canonical`] form.
     gid_map: String,
+    /// The ids inside that the maps give: the owners an extraction here can
+    /// set (ADR-0098).
+    ids: MappedIds,
 }
 
 impl UserNamespace {
@@ -52,6 +56,12 @@ impl UserNamespace {
             path: proc.join(path),
             source,
         };
+        let not_a_map = |name| {
+            io(
+                name,
+                io::Error::new(io::ErrorKind::InvalidData, "not an id map"),
+            )
+        };
         let map = |name: &'static str| -> Result<String> {
             let fd =
                 rustix::fs::openat(&dir, name, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
@@ -61,17 +71,27 @@ impl UserNamespace {
                 .take(MAP_MAX)
                 .read_to_string(&mut text)
                 .map_err(|e| io(name, e))?;
-            canonical(&text).ok_or_else(|| {
-                io(
-                    name,
-                    io::Error::new(io::ErrorKind::InvalidData, "not an id map"),
-                )
-            })
+            canonical(&text).ok_or_else(|| not_a_map(name))
         };
+        let (uid_map, gid_map) = (map("uid_map")?, map("gid_map")?);
+        // Each map read alone tells which one does not parse.
+        let ids = MappedIds::parse(&uid_map, &gid_map).ok_or_else(|| {
+            not_a_map(if MappedIds::parse(&uid_map, &uid_map).is_none() {
+                "uid_map"
+            } else {
+                "gid_map"
+            })
+        })?;
         Ok(Some(Self {
-            uid_map: map("uid_map")?,
-            gid_map: map("gid_map")?,
+            uid_map,
+            gid_map,
+            ids,
         }))
+    }
+
+    /// The ids inside the namespace that its maps give.
+    pub(crate) fn ids(&self) -> &MappedIds {
+        &self.ids
     }
 
     /// The store key of the layer whose chain ID is `chain`, extracted in
@@ -125,6 +145,7 @@ mod tests {
         UserNamespace {
             uid_map: canonical(uid_map).unwrap(),
             gid_map: canonical(gid_map).unwrap(),
+            ids: MappedIds::parse(uid_map, gid_map).unwrap(),
         }
     }
 
@@ -178,6 +199,10 @@ mod tests {
             let own = |name: &str| canonical(&std::fs::read_to_string(name).unwrap()).unwrap();
             assert_eq!(ns.uid_map, own("/proc/self/uid_map"));
             assert_eq!(ns.gid_map, own("/proc/self/gid_map"));
+            assert_eq!(
+                Some(ns.ids()),
+                MappedIds::parse(&ns.uid_map, &ns.gid_map).as_ref()
+            );
         }
     }
 }

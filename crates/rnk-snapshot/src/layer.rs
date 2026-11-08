@@ -88,10 +88,19 @@ pub(crate) fn root_meta(stack: &[RootPath]) -> Result<Meta> {
 pub(crate) fn chain_id(diff_id: &Digest, below: &[LayerDir]) -> Digest {
     let mut ids = below.iter().map(|l| &l.diff_id).chain([diff_id]);
     let first = ids.next().unwrap_or(diff_id).clone();
-    ids.fold(first, |chain, id| {
-        let hash: [u8; 32] = Sha256::digest(format!("{chain} {id}")).into();
-        Digest::from_sha256_bytes(&hash)
-    })
+    ids.fold(first, |chain, id| chain_above(Some(&chain), id))
+}
+
+/// The chain ID of `diff_id` on the layer whose chain ID is `below`, or at
+/// the bottom.
+pub(crate) fn chain_above(below: Option<&Digest>, diff_id: &Digest) -> Digest {
+    match below {
+        None => diff_id.clone(),
+        Some(chain) => {
+            let hash: [u8; 32] = Sha256::digest(format!("{chain} {diff_id}")).into();
+            Digest::from_sha256_bytes(&hash)
+        }
+    }
 }
 
 /// Extracts the layer blob `blob` (gzip, zstd or plain tar) into the store

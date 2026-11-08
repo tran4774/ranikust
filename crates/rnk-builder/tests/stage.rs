@@ -93,6 +93,10 @@ impl Snapshotter for FakeSnapshotter {
         unreachable!("no image in these tests")
     }
 
+    fn check_owners(&self, _: &[(Digest, PathBuf)]) -> rnk_snapshot::Result<()> {
+        unreachable!("no image in these tests")
+    }
+
     fn prepare(&self, base: Base<'_, FakeRoot, LayerDir>) -> rnk_snapshot::Result<FakeRoot> {
         let n = self.next.fetch_add(1, Ordering::Relaxed);
         let path = self.dir.join(format!("stage-{n}"));

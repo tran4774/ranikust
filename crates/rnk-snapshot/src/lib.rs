@@ -32,6 +32,7 @@ pub mod kaniko;
 mod layer;
 mod lowers;
 mod mount;
+mod owners;
 mod probe;
 mod stage;
 mod userns;

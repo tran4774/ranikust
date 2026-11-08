@@ -12,6 +12,7 @@ use rustix::fs::{
 use rustix::io::Errno;
 
 use crate::error::{Error, Result, io_err};
+use crate::owners::Unmapped;
 
 /// Permission bits of `st_mode`, including setuid, setgid and sticky.
 pub(crate) const PERMISSION_BITS: u32 = 0o7777;
@@ -643,6 +644,17 @@ fn xattr_result(
     }
 }
 
+/// The error of a `chown` of `path` to `m`'s owner that failed with `e`:
+/// `EINVAL`, which `chown` returns for nothing else with these flags, is
+/// an owner the user namespace does not map (ADR-0098).
+fn chown_err(e: Errno, path: &Path, m: &Meta) -> Error {
+    if e == Errno::INVAL {
+        Error::Unmapped(Unmapped::chown(path, m.uid, m.gid))
+    } else {
+        io_err("chown", path, e)
+    }
+}
+
 fn apply_with(
     h: &Handle<'_>,
     m: &Meta,
@@ -669,7 +681,7 @@ fn apply_with(
     match *h {
         Handle::Open(fd) => {
             if owner_changes {
-                rustix::fs::fchown(fd, uid, gid).map_err(|e| io_err("chown", path, e))?;
+                rustix::fs::fchown(fd, uid, gid).map_err(|e| chown_err(e, path, m))?;
             }
             for (name, value) in &m.xattrs {
                 let (op, r) = set_or_remove(
@@ -694,8 +706,7 @@ fn apply_with(
         } => {
             let empty = AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW;
             if owner_changes {
-                rustix::fs::chownat(fd, "", uid, gid, empty)
-                    .map_err(|e| io_err("chown", path, e))?;
+                rustix::fs::chownat(fd, "", uid, gid, empty).map_err(|e| chown_err(e, path, m))?;
             }
             if !m.xattrs.is_empty() {
                 // Validated before the path through /proc is used.
@@ -938,5 +949,32 @@ mod tests {
             let set = set_or_remove(name, value, || Err(Errno::PERM), || panic!("remove"));
             assert_eq!(set, ("setxattr", Err(Errno::PERM)), "{name:?}");
         }
+    }
+
+    /// A `chown` refused with `EINVAL` is an owner the user namespace does
+    /// not map, which a caller finds among the error's sources; any other
+    /// failure stays an I/O error.
+    #[test]
+    fn a_chown_refused_with_einval_names_the_owner_not_mapped() {
+        let m = Meta {
+            uid: Some(1000),
+            gid: Some(42),
+            ..Meta::default()
+        };
+        let e = chown_err(Errno::INVAL, Path::new("./app"), &m);
+        assert_eq!(
+            e.to_string(),
+            "chown ./app to 1000:42: an id this user namespace does not map"
+        );
+        let source = std::error::Error::source(&e).and_then(|s| s.downcast_ref::<Unmapped>());
+        assert_eq!(
+            source,
+            Some(&Unmapped::chown(Path::new("./app"), Some(1000), Some(42)))
+        );
+        let e = chown_err(Errno::PERM, Path::new("./app"), &m);
+        assert!(
+            matches!(&e, Error::Io { op: "chown", .. }) && e.raw_os_error() == Some(1),
+            "{e:?}"
+        );
     }
 }

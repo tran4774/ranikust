@@ -47,8 +47,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use rnk_layer::{Compression, EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
 use rnk_rootfs::{
-    CopyOpts, FileType, IgnoreList, RootPath, Whiteouts, copy_filtered, delete_contents, extract,
-    extract_live, extract_live_literal,
+    CopyOpts, FileType, IgnoreList, MappedIds, RootPath, Unmapped, Whiteouts, copy_filtered,
+    delete_contents, extract, extract_live, extract_live_literal,
 };
 use rnk_store::{NamedGuard, Store};
 use rustix::io::Errno;
@@ -56,7 +56,9 @@ use rustix::io::Errno;
 use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
+use crate::owners;
 use crate::stage::{Base, ExportLayer, Keep, LayerOpen, Snapshotter, StageRootfs};
+use crate::userns::UserNamespace;
 
 /// A base layer in kaniko mode, extracted into the root only when a stage
 /// is prepared on it: its blob in the store, or streamed from its source
@@ -194,6 +196,10 @@ struct Shared {
     /// On `/`: the verified spool of each streamed layer, by diff ID, kept
     /// while stages made on the layer are still to extract it (ADR-0081).
     spools: Mutex<HashMap<Digest, SpoolUse>>,
+    /// This process runs in the initial user namespace
+    /// ([`in_initial_user_namespace`]): a root other than `/` takes
+    /// streamed base layers only then.
+    initial_ns: bool,
 }
 
 /// The uses of one streamed layer on `/` ([`Shared::spool`]).
@@ -274,6 +280,7 @@ impl Kaniko {
                 views: Mutex::new(Vec::new()),
                 view_epoch: AtomicU64::new(0),
                 spools: Mutex::new(HashMap::new()),
+                initial_ns: in_initial_user_namespace(),
             }),
         }
     }
@@ -451,7 +458,7 @@ impl Shared {
     /// the store is read as it is.
     fn spool(&self, store: &Store, layer: &KanikoLayer) -> Result<Arc<Spooled>> {
         if !matches!(layer.source, LayerSource::Stream(_)) {
-            return Spooled::of(store, layer).map(Arc::new);
+            return Spooled::of(store, layer, None).map(Arc::new);
         }
         let cached = {
             let mut spools = self.spools();
@@ -461,7 +468,14 @@ impl Shared {
         };
         let spooled = match cached {
             Some(spooled) => spooled,
-            None => Arc::new(Spooled::of(store, layer)?),
+            None => {
+                let ns = UserNamespace::current()?;
+                Arc::new(Spooled::of(
+                    store,
+                    layer,
+                    ns.as_ref().map(UserNamespace::ids),
+                )?)
+            }
         };
         let mut spools = self.spools();
         if let Some(entry) = spools.get_mut(&layer.diff_id) {
@@ -558,7 +572,17 @@ impl Snapshotter for Kaniko {
         })
     }
 
+    fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
+        check_live_owners(layers)
+    }
+
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
+        // Off `/` a layer streams into the root as it arrives, so in a user
+        // namespace it comes as a blob, its owners checked first (ADR-0098);
+        // on `/` the spool pass checks each one (ADR-0137).
+        if !self.shared.is_slash() && !self.shared.initial_ns {
+            return None;
+        }
         if self.shared.is_slash() {
             // One more stage or image of the build to extract it: its spool
             // waits for that use ([`Shared::spool`]).
@@ -976,6 +1000,27 @@ fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// Whether this process runs in the initial user namespace, where every
+/// owner maps. Only there may a base layer be streamed into a root other
+/// than `/`, where it is extracted as it arrives (ADR-0055): in another,
+/// the builder pulls the blobs so that [`check_live_owners`] reads every
+/// owner of every layer before any is extracted (ADR-0098). Where the
+/// namespace cannot be told, the blobs are pulled too, and the check says
+/// why.
+pub(crate) fn in_initial_user_namespace() -> bool {
+    matches!(rnk_store::user_namespace_proc(), Ok(None))
+}
+
+/// [`Snapshotter::check_owners`] of the kaniko-mode snapshotters, in the
+/// user namespace this process was started in, if any (a rootless
+/// container's): every blob is read, as nothing of a live root is kept.
+pub(crate) fn check_live_owners(layers: &[(Digest, PathBuf)]) -> Result<()> {
+    match UserNamespace::current()? {
+        None => Ok(()),
+        Some(ns) => owners::check(layers, ns.ids(), owners::Form::Live, |_| Ok(false)),
+    }
+}
+
 /// Extracts one base layer into the shared root ([`open_for_root`]).
 fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
     let tar = open_for_root(shared, layer)?;
@@ -1025,15 +1070,19 @@ impl Spooled {
     /// them once, which nothing else sees: to check the tar headers as the
     /// extraction frames them and refuses them from a header alone, the
     /// `tar-header` limit and the kernel's limits included
-    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The
+    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID; with
+    /// `ids`, the ids of the user namespace the build runs in, also to find
+    /// the owners the extraction would give that it does not map, refused
+    /// once the layer is verified (ADR-0098). The
     /// body is read to its end, even after a bad header, where its source
     /// checks the size and the compressed digest. The first failure of the
     /// body or of its decompression is reported as such, before a bad
     /// header or a wrong diff ID. A blob already on disk is kept as it is.
-    fn of(store: &Store, layer: &KanikoLayer) -> Result<Self> {
+    fn of(store: &Store, layer: &KanikoLayer, ids: Option<&MappedIds>) -> Result<Self> {
         let LayerSource::Stream(_) = &layer.source else {
             return Ok(Self(SpooledBlob::Blob(layer.clone())));
         };
+        let mut owners = ids.map(|ids| Unmapped::owners(ids.clone()));
         let what = || PathBuf::from(layer.diff_id.as_str());
         let file = store.scratch_file()?;
         let copy = file.try_clone().map_err(|source| Error::Io {
@@ -1054,7 +1103,10 @@ impl Spooled {
             inner: &mut decoder,
             first: None,
         };
-        let headers = rnk_rootfs::check_headers(&mut read);
+        let headers = match owners.as_mut() {
+            None => rnk_rootfs::check_headers(&mut read),
+            Some(found) => rnk_rootfs::check_headers_and_owners(&mut read, found),
+        };
         // The kept error, not the tar's: a decoder may fail once, then fail
         // otherwise or read as an end.
         if let Some(e) = read.first {
@@ -1073,6 +1125,9 @@ impl Spooled {
                 expected: layer.diff_id.to_string(),
                 actual: actual.to_string(),
             });
+        }
+        if let Some(found) = owners.filter(|f| !f.is_empty()) {
+            return Err(rnk_rootfs::Error::Unmapped(found).into());
         }
         Ok(Self(SpooledBlob::File {
             file,
