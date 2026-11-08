@@ -374,8 +374,9 @@ or gid is neither root's nor inside the range, whose bounds they carry, they
 change nothing; else they delete everything but the marker, which they
 keep, unlike ADR-0133's
 ([ADR-0146](../adr/0146-root-empties-the-userns-state-directory-with-prune-all-userns-as-the-ranges-first-uid.md)),
-and check that only the marker is left; then it runs again. `--metrics-file` is refused with it before anything runs: the
-process writes the report at exit, by then as the range's uid. Root's own
+and check that only the marker is left; then it runs again.
+`--metrics-file` is refused with it before anything runs: the process
+writes the report at exit, by then as the range's uid. Root's own
 `prune --all`, and a `--userns` build refused by a prune cut short, name
 `prune --all --userns` instead of root's commands
 only for a marked directory it takes (owned by the range's first uid and

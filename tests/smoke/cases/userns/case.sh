@@ -223,9 +223,9 @@ pruned_as_the_range() {
   way="( eval '${way#*"( eval '"}"
   way="${way%"; then run ranikust prune --all --userns --state-dir $UW/state again"}"
   # An entry of an id neither root's nor the range's, by uid, then by gid
-  # alone: nothing changes.
+  # alone, just below the range and just past it: nothing changes.
   local foreign listed
-  for foreign in "$((S - 1)):$G" "$S:$((G - 1))"; do
+  for foreign in "$((S - 1)):$G" "$((S + 65536)):$G" "$S:$((G - 1))" "$S:$((G + 65536))"; do
     sudo install -m 644 -o "${foreign%:*}" -g "${foreign#*:}" /dev/null \
       "$UW/state/builds/rnk-roots/foreign"
     listed="$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)"

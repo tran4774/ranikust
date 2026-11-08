@@ -2064,8 +2064,8 @@ fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
         "the entries named above. Stop every --userns build first, and unmount anything below \
          '/srv/rnk state'; then, as root, remove every entry but the .ranikust-pruning marker, \
          which keeps builds out",
-        "changing nothing where an entry belongs neither to root nor to the ranikust range \
-         (uids 100000-165535, gids 300000-300999)",
+        "changing nothing where an entry's uid or gid is neither root's nor in the ranikust \
+         range (uids 100000-165535, gids 300000-300999)",
         "the removal needs GNU findutils",
         &format!(
             r#"{ENV_FIRST}CDPATH= cd -P -- '/srv/rnk state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:100000:700 && exec flock -xn . sh -c '{script}' ); then run ranikust prune --all --userns --state-dir '/srv/rnk state' again"#
@@ -2209,30 +2209,35 @@ fn a_userns_prunes_leftovers_go_but_the_marker() {
         );
         assert_eq!(listing(tmp.path()), before, "{kind}");
     }
-    // An entry neither root's nor the range's, by uid, then by gid alone:
-    // nothing changes. Root's own uid and gid pass whatever the range.
+    // An entry neither root's nor the range's, by uid, then by gid alone,
+    // just below the range, then just past its last id: nothing changes.
+    // Root's own uid and gid pass whatever the range.
     let (uid, gid) = (
         rustix::process::geteuid().as_raw(),
         rustix::process::getegid().as_raw(),
     );
     let mut foreign = Vec::new();
     if uid != 0 {
-        foreign.push(SubordinateIds {
-            uids: IdRange {
-                start: uid + 1,
-                count: 10,
-            },
-            ..own_range()
-        });
+        for start in [uid + 1, uid.saturating_sub(10)]
+            .into_iter()
+            .filter(|&s| s > 0)
+        {
+            foreign.push(SubordinateIds {
+                uids: IdRange { start, count: 10 },
+                ..own_range()
+            });
+        }
     }
     if gid != 0 {
-        foreign.push(SubordinateIds {
-            gids: IdRange {
-                start: gid + 1,
-                count: 10,
-            },
-            ..own_range()
-        });
+        for start in [gid + 1, gid.saturating_sub(10)]
+            .into_iter()
+            .filter(|&s| s > 0)
+        {
+            foreign.push(SubordinateIds {
+                gids: IdRange { start, count: 10 },
+                ..own_range()
+            });
+        }
     }
     if foreign.is_empty() {
         measured("a userns prune's owner check: root's ids, none foreign to test");

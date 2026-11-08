@@ -252,15 +252,16 @@ const USER_SCRIPT: &str = gnu_find_first!(
 /// those ids (`-xdev`: nothing on another filesystem), and a check that
 /// only the marker is left.
 fn userns_left_script(range: SubordinateIds) -> String {
-    let (uids, gids) = (Bounds::of(range.uids), Bounds::of(range.gids));
+    // `find`'s strict bounds, in u64; an id 0 is root's, matched apart.
+    let bounds = |r: IdRange| {
+        let first = u64::from(r.start);
+        (first.saturating_sub(1), first + u64::from(r.count))
+    };
+    let ((uid_below, uid_past), (gid_below, gid_past)) = (bounds(range.uids), bounds(range.gids));
     let ours = format!(
-        r"\( \( -uid 0 -o \( -uid +{} -uid -{} \) \) \( -gid 0 -o \( -gid +{} -gid -{} \) \) \)",
-        uids.below(),
-        uids.past,
-        gids.below(),
-        gids.past
+        r"\( \( -uid 0 -o \( -uid +{uid_below} -uid -{uid_past} \) \) \( -gid 0 -o \( -gid +{gid_below} -gid -{gid_past} \) \) \)"
     );
-    let ids = format!("uids {uids}, gids {gids}");
+    let ids = userns_ids(range);
     let mut script = String::from(gnu_find_first!(""));
     script.push_str(
         r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
@@ -274,34 +275,15 @@ fn userns_left_script(range: SubordinateIds) -> String {
     script
 }
 
-/// A range of ids, in `u64` so that nothing overflows: its first id, and
-/// the one past its last, `find`'s strict upper bound.
-struct Bounds {
-    first: u64,
-    past: u64,
-}
-
-impl Bounds {
-    fn of(range: IdRange) -> Self {
-        let first = u64::from(range.start);
-        Self {
-            first,
-            past: first + u64::from(range.count),
-        }
-    }
-
-    /// The bound below the first id, for `-uid +n`: an id 0 is root's,
-    /// which the caller checks on its own.
-    fn below(&self) -> u64 {
-        self.first.saturating_sub(1)
-    }
-}
-
-/// The range's first and last ids, as `first-last`.
-impl std::fmt::Display for Bounds {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}-{}", self.first, self.past.saturating_sub(1))
-    }
+/// The `ranikust` range's uids and gids, as `uids first-last, gids
+/// first-last` ([`Owner::range_text`]; `subids` reads only ranges of at
+/// least one id that end below `u32::MAX`).
+fn userns_ids(range: SubordinateIds) -> String {
+    format!(
+        "uids {}, gids {}",
+        Owner::range_text(range.uids),
+        Owner::range_text(range.gids)
+    )
 }
 
 /// How root empties the state directory `dir`, pinned as `pin`, which
@@ -451,21 +433,22 @@ fn userns_way(dir: &Path) -> String {
 /// directory of an id the range does not map that holds entries, or such
 /// an entry in a sticky directory another id owns, where the namespace's
 /// root has no `CAP_FOWNER` over it), since no build opens the directory
-/// meanwhile. The range's `RUN`s can change that tree: root's commands
-/// ([`userns_left_script`] in [`in_dir`]) come after every `--userns`
-/// build is stopped, and run only while none holds the directory.
+/// meanwhile, but only where every entry's uid and gid are root's or the
+/// range's: else root's commands change nothing (ADR-0146). The range's
+/// `RUN`s can change that tree: root's commands ([`userns_left_script`] in
+/// [`in_dir`]) come after every `--userns` build is stopped, and run only
+/// while none holds the directory.
 fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>, range: SubordinateIds) -> String {
     let d = shell_word(dir.as_os_str());
     let by_root = match pin {
         Ok(pin) => format!(
             "then, as root, remove every entry but the .ranikust-pruning marker, which keeps \
-             builds out, changing nothing where an entry belongs neither to root nor to the \
-             ranikust range (uids {}, gids {}), with commands that refuse a PATH with a relative \
-             or empty entry, unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH and act \
-             only on the directory ranikust checked, while no build holds it; the removal \
+             builds out, changing nothing where an entry's uid or gid is neither root's nor in \
+             the ranikust range ({}), with commands that refuse a PATH with a relative or empty \
+             entry, unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH and act only on \
+             the directory ranikust checked, while no build holds it; the removal \
              {NEEDS_GNU_FIND}: {}",
-            Bounds::of(range.uids),
-            Bounds::of(range.gids),
+            userns_ids(range),
             in_dir(dir, pin, &userns_left_script(range))
         ),
         Err(why) => no_commands(dir, &why, false),
