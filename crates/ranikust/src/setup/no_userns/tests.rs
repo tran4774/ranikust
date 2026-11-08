@@ -123,7 +123,7 @@ fn only_a_stop_apparmor_may_cause_offers_the_profile() {
             detail: None,
         })
     };
-    let unshare = |errno| failed("unshare(CLONE_NEWUSER)", errno);
+    let unshare = |errno| failed(UNSHARE_USER, errno);
     let at_unshare = |r: &StepResult| Stop::at("unshare", r, r);
     let eacces = Errno::ACCESS.raw_os_error();
     let ok = StepResult::Ok;
@@ -261,18 +261,19 @@ fn only_root_s_nodes_written_by_no_one_else_pass() {
         Ok(())
     );
     assert_eq!(verdict(&at(&good[..2]), FileType::Directory), Ok(()));
-    // The list fails closed: widening it is a change to this test too.
+    // The list fails closed: widening it, or changing a value, is a change
+    // to this test too.
     assert_eq!(
         LOCAL,
         [
-            0xEF53,      // ext2, ext3, ext4
-            0x5846_5342, // xfs
-            0x9123_683E, // btrfs
-            0x7371_7368, // squashfs
-            0xE0F5_E1E2, // erofs
-            0x0102_1994, // tmpfs
-            0x794C_7630, // overlayfs
-            0x2FC1_2FC1, // zfs
+            0xEF53,
+            0x5846_5342,
+            0x9123_683E,
+            0x7371_7368,
+            0xE0F5_E1E2,
+            0x0102_1994,
+            0x794C_7630,
+            0x2FC1_2FC1,
         ]
     );
     for local in LOCAL {

@@ -26,16 +26,15 @@ const PROFILE: &str = "ranikust's AppArmor profile (contrib/apparmor/ranikust in
 /// The `f_type`s of the local filesystems whose owners and modes only what
 /// root mounted sets. Any other (FUSE, NFS, SMB, 9p, Ceph, AFS…) may show
 /// what its server, or the user who mounted it, says.
-const LOCAL: [u32; 8] = [
-    0xEF53,      // ext2, ext3, ext4
-    0x5846_5342, // xfs
-    0x9123_683E, // btrfs
-    0x7371_7368, // squashfs
-    0xE0F5_E1E2, // erofs
-    0x0102_1994, // tmpfs
-    0x794C_7630, // overlayfs
-    0x2FC1_2FC1, // zfs
-];
+const LOCAL: [u32; 8] = [EXT2_3_4, XFS, BTRFS, SQUASHFS, EROFS, TMPFS, OVERLAYFS, ZFS];
+const EXT2_3_4: u32 = 0xEF53;
+const XFS: u32 = 0x5846_5342;
+const BTRFS: u32 = 0x9123_683E;
+const SQUASHFS: u32 = 0x7371_7368;
+const EROFS: u32 = 0xE0F5_E1E2;
+const TMPFS: u32 = 0x0102_1994;
+const OVERLAYFS: u32 = 0x794C_7630;
+const ZFS: u32 = 0x2FC1_2FC1;
 
 /// rnk-sandbox's name for the `unshare` step's own operation, which a step
 /// before it (the probe's `fchdir`) may stand in for: another name, or a

@@ -60,9 +60,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   made, or `unshare`'s `EACCES`; the test hook counts as the first; a
   step that did not run, a namespace `rootless::capabilities` found
   capable, or a refusal once the probe passed, never), for a path only
-  root may change
-  on a mount without `nosuid` of a local filesystem (`no_userns::LOCAL`);
-  a container. The path it weighs is the one the binary started from
+  root may change on a mount without `nosuid` of a local filesystem
+  (`no_userns::LOCAL`); a container. The path it weighs is the one the binary started from
   (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
   `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
   rbind works. With the rbind, `main.rs` then runs the peer scan, the check
@@ -157,7 +156,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `volume_hint`; `setup/rootless.rs`: `plan` (with `capabilities` and `stop_at`), `NotHere`, `set_up`, `refused_by_hook`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed), `Stop` (the step that stopped the probe, which says whether AppArmor may be what refused), `LOCAL` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `volume_hint`; `setup/rootless.rs`: `plan` (with `capabilities`, `shown_capable`, `Steps` and `stop_for`), `NotHere`, `set_up`, `refused_by_hook`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed), `Stop` (the step that stopped the probe, which says whether AppArmor may be what refused), `LOCAL` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
@@ -471,18 +470,21 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `each_stop_of_the_probe_gets_its_guidance`, `setup::no_userns`'s advice
   for a user stopped at `unshare`, the map, `chown` or the mount namespace
   or by the test hook, `--allow proc.rbind` for a refused new `proc` whose
-  rbind works, else running as root; `setup/no_userns/tests.rs`: the
+  rbind works, else running as root; the stop weighed on its own step's
+  result, none where the capability check showed capabilities (both its
+  steps worked); `setup/no_userns/tests.rs`: the
   advice's wording and order in each case (the switch at 1 or not; the
   shipped path, another root-only one, the install as
   `/usr/local/bin/ranikust` or, where that directory fails, elsewhere),
   which stops offer the profile (a step in the namespace, `unshare`'s
-  `EACCES`) and which get `sudo` then a container (another errno, none, a
-  step not shown to follow a working `unshare`), the plain characters a
-  profile may name, the root-only rule on synthetic nodes with the first
+  `EACCES`) and which get `sudo` then a container (another errno, none,
+  another operation failing in `unshare`'s place, a step that did not
+  run, one not shown to follow a working `unshare`), the plain characters
+  a profile may name, the root-only rule on synthetic nodes with the first
   one that fails named (a user's, group- or others-writable, `/tmp`'s
   sticky bit, a symlink, a non-regular file, a `nosuid` mount, a
   filesystem off the local list such as FUSE or NFS, each listed one
-  passing), the walk on a temporary directory (no symlink followed; a
+  passing, the list itself pinned), the walk on a temporary directory (no symlink followed; a
   relative path, `..`, a missing or removed file refused, where it
   stopped named), on `/proc` (its type read, refused) and on system
   binaries, against the standard library's view), `prune` (`--all` and

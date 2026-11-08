@@ -10,7 +10,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rnk_sandbox::{
-    Fallbacks, KernelFs, MountResult, Sandbox, StepResult, SubordinateIds, UsernsReport,
+    Fallbacks, KernelFs, MountResult, Sandbox, StepResult, SubordinateIds, UsernsCapabilities,
+    UsernsReport,
 };
 use rnk_store::{BuildPaths, Store};
 
@@ -111,7 +112,7 @@ pub(crate) fn plan(
     binary: Option<&Path>,
 ) -> Result<Plan, NotHere> {
     let euid = rustix::process::geteuid().as_raw();
-    // With capabilities, AppArmor's switch is not what stops a later step.
+    // With capabilities, AppArmor's switch is not what stops any step.
     let capable = euid != 0 && capabilities(euid, binary)?;
     let unprobed = |refusal| NotHere {
         refusal,
@@ -157,11 +158,7 @@ pub(crate) fn plan(
     };
     if let Some(step) = report.stop(allowed) {
         let rbind = matches!(report.proc, MountResult::Rbind { .. });
-        let stop = if capable {
-            Stop::Unknown
-        } else {
-            stop_at(step, report)
-        };
+        let stop = stop_for(step, capable, &Steps::probed(report));
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
             guidance(step, stop, rbind, euid, binary),
@@ -204,18 +201,13 @@ fn capabilities(euid: u32, binary: Option<&Path>) -> Result<bool, NotHere> {
         }
     };
     let Some(step) = found.stop() else {
-        return Ok(found.unshare == StepResult::Ok && found.mount_ns == StepResult::Ok);
+        return Ok(shown_capable(&found));
     };
     tracing::info!(
         "ranikust: user namespace probe: stops at {step}, nothing written; {found}; \
          kernel.apparmor_restrict_unprivileged_userns: {}",
         super::apparmor_switch()
     );
-    let result = if step == "unshare" {
-        &found.unshare
-    } else {
-        &found.mount_ns
-    };
     Err(NotHere {
         refusal: Refusal {
             kind: Kind::Other,
@@ -224,7 +216,7 @@ fn capabilities(euid: u32, binary: Option<&Path>) -> Result<bool, NotHere> {
             ),
             guidance: guidance(
                 step,
-                Stop::at(step, &found.unshare, result),
+                stop_for(step, false, &Steps::checked(&found)),
                 false,
                 euid,
                 binary,
@@ -234,20 +226,60 @@ fn capabilities(euid: u32, binary: Option<&Path>) -> Result<bool, NotHere> {
     })
 }
 
-/// What stopped the probe at `step`, as the advice weighs it
-/// ([`Stop::at`]); for the map, the last one tried.
-fn stop_at(step: &str, report: &UsernsReport) -> Stop {
+/// Whether the capability check shows a user namespace with capabilities:
+/// both its steps ran and worked.
+fn shown_capable(found: &UsernsCapabilities) -> bool {
+    found.unshare == StepResult::Ok && found.mount_ns == StepResult::Ok
+}
+
+/// The results of the steps the advice weighs, from the probe or the
+/// capability check; `None`: the step is not reported.
+struct Steps<'a> {
+    unshare: &'a StepResult,
+    /// The last map tried.
+    map: Option<&'a StepResult>,
+    chown: Option<&'a StepResult>,
+    mount_ns: &'a StepResult,
+}
+
+impl<'a> Steps<'a> {
+    fn probed(report: &'a UsernsReport) -> Self {
+        Self {
+            unshare: &report.unshare,
+            map: report.maps.last().map(|(_, result)| result),
+            chown: Some(&report.chown),
+            mount_ns: &report.mount_ns,
+        }
+    }
+
+    fn checked(found: &'a UsernsCapabilities) -> Self {
+        Self {
+            unshare: &found.unshare,
+            map: None,
+            chown: None,
+            mount_ns: &found.mount_ns,
+        }
+    }
+}
+
+/// What stopped the probe at `step`, as the advice weighs it: [`Stop::at`]
+/// on that step's own result; `Unknown` for a step not reported, and for
+/// any step where the capability check found the namespace's capabilities
+/// (`capable`), as AppArmor's switch is then not what refused.
+fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
+    if capable {
+        return Stop::Unknown;
+    }
     let result = match step {
-        "unshare" => &report.unshare,
-        "map" => match report.maps.last() {
-            Some((_, result)) => result,
-            None => return Stop::Unknown,
-        },
-        "chown" => &report.chown,
-        "mount namespace" => &report.mount_ns,
-        _ => return Stop::Unknown,
+        "unshare" => Some(steps.unshare),
+        "map" => steps.map,
+        "chown" => steps.chown,
+        "mount namespace" => Some(steps.mount_ns),
+        _ => None,
     };
-    Stop::at(step, &report.unshare, result)
+    result.map_or(Stop::Unknown, |result| {
+        Stop::at(step, steps.unshare, result)
+    })
 }
 
 /// The state directory the probe may write in, made if missing: private
@@ -527,6 +559,88 @@ mod tests {
         }
         assert!(PROC_RBIND.contains("--allow proc.rbind"));
         assert!(PROC_RBIND.contains("not under ptrace's check"));
+    }
+
+    /// The advice weighs the result of the step that stopped the probe
+    /// alone, and no step where the capability check found the namespace's
+    /// capabilities.
+    #[test]
+    fn a_stop_is_weighed_on_its_own_step() {
+        use rnk_sandbox::StepFailure;
+        let failed = |op, errno| {
+            StepResult::Failed(StepFailure {
+                op,
+                errno: Some(errno),
+                detail: None,
+            })
+        };
+        let ok = StepResult::Ok;
+        let not_run = StepResult::NotRun("the probe's child stopped before it");
+        let refused = failed("write uid_map", libc::EPERM);
+        let eacces = failed("unshare(CLONE_NEWUSER)", libc::EACCES);
+        let all = |r| Steps {
+            unshare: &ok,
+            map: Some(r),
+            chown: Some(r),
+            mount_ns: r,
+        };
+        for step in ["map", "chown", "mount namespace"] {
+            assert_eq!(stop_for(step, false, &all(&refused)), Stop::InNamespace);
+            assert_eq!(stop_for(step, true, &all(&refused)), Stop::Unknown);
+            assert_eq!(stop_for(step, false, &all(&not_run)), Stop::Unknown);
+        }
+        let map_only = Steps {
+            map: Some(&refused),
+            ..all(&not_run)
+        };
+        assert_eq!(stop_for("map", false, &map_only), Stop::InNamespace);
+        assert_eq!(stop_for("chown", false, &map_only), Stop::Unknown);
+        assert_eq!(stop_for("mount namespace", false, &map_only), Stop::Unknown);
+        let unreported = Steps {
+            map: None,
+            chown: None,
+            ..all(&refused)
+        };
+        assert_eq!(stop_for("map", false, &unreported), Stop::Unknown);
+        assert_eq!(stop_for("chown", false, &unreported), Stop::Unknown);
+        let at_unshare = Steps {
+            unshare: &eacces,
+            ..all(&not_run)
+        };
+        assert_eq!(
+            stop_for("unshare", false, &at_unshare),
+            Stop::Unshare(libc::EACCES)
+        );
+        assert_eq!(stop_for("unshare", true, &at_unshare), Stop::Unknown);
+        for step in ["proc", "sysfs", "overlay", "hook"] {
+            assert_eq!(stop_for(step, false, &all(&refused)), Stop::Unknown);
+        }
+    }
+
+    /// Only a check whose two steps both worked shows capabilities.
+    #[test]
+    fn only_both_steps_working_show_capabilities() {
+        let caps = |unshare, mount_ns, cut_short: Option<&str>| UsernsCapabilities {
+            unshare,
+            mount_ns,
+            cut_short: cut_short.map(String::from),
+        };
+        let not_run = || StepResult::NotRun("the probe's child stopped before it");
+        let refused = || {
+            StepResult::Failed(rnk_sandbox::StepFailure {
+                op: "unshare(CLONE_NEWNS)",
+                errno: Some(libc::EPERM),
+                detail: None,
+            })
+        };
+        assert!(shown_capable(&caps(StepResult::Ok, StepResult::Ok, None)));
+        assert!(!shown_capable(&caps(StepResult::Ok, refused(), None)));
+        assert!(!shown_capable(&caps(
+            StepResult::Ok,
+            not_run(),
+            Some("killed by signal 9")
+        )));
+        assert!(!shown_capable(&caps(not_run(), not_run(), Some("killed"))));
     }
 
     /// The probe writes nothing in a directory the store would refuse, and
