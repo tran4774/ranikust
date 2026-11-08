@@ -449,9 +449,10 @@ impl Shared {
     /// Whether the owner check of pulled blobs skips the ignored paths: on
     /// `/` with the stages kept as tars only, where a base layer is
     /// extracted with the ignore list and a `COPY --from` image is checked
-    /// again whole before it is unpacked. Otherwise
+    /// again whole before it is unpacked. Without them
     /// [`Kaniko::prepare_source`] unpacks the blobs whole into a directory
-    /// with no check of its own, so every path is checked (ADR-0144).
+    /// with no check of its own; off `/` every path is checked anyway
+    /// (ADR-0144).
     fn pulled_owners_skip_ignored(&self) -> bool {
         self.is_slash() && self.tars.get().is_some()
     }

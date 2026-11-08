@@ -2269,6 +2269,9 @@ fn red_team_a_cached_blob_s_names_are_checked_cleaned_as_the_extraction_cleans_t
         ],
     );
     root.apply_layer(&skipped).unwrap();
+    for n in ["a", "b", "c", "d", "e"] {
+        assert!(!f.host.join("ranikust").join(n).exists(), "{n}");
+    }
     let out = red_team_raw_layer(&f, "out", &["ranikust/../f"]);
     let e = root.apply_layer(&out).unwrap_err();
     assert!(red_team_is_unmapped(&e, uid, "/f"), "{e}");

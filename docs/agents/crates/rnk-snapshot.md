@@ -300,7 +300,11 @@ that found a bug stay as its regression test.
   `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`);
   on `/` pulled blobs skip the ignored paths only with the stages kept as
   tars
-  (`on_slash_pulled_blobs_skip_the_ignored_paths_only_with_the_stages_kept_as_tars`).
+  (`on_slash_pulled_blobs_skip_the_ignored_paths_only_with_the_stages_kept_as_tars`;
+  red team: each use of a kept spool checked for itself, image or base
+  first, `red_team_a_spool_s_uses_in_any_order_each_get_their_own_check`;
+  a cached blob's names checked cleaned as the extraction cleans them,
+  `red_team_a_cached_blob_s_names_are_checked_cleaned_as_the_extraction_cleans_them`).
 - **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
   ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
   `FROM <stage>` copied with no inode shared, a parent with a layer open
@@ -313,11 +317,7 @@ that found a bug stay as its regression test.
   paths (ADR-0098, ADR-0144;
   `off_slash_the_owner_check_covers_the_ignored_paths`), a cached blob's
   too, before the root changes
-  (`a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`;
-  red team: each use of a kept spool checked for itself, image or base
-  first, `red_team_a_spool_s_uses_in_any_order_each_get_their_own_check`;
-  a cached blob's names checked cleaned as the extraction cleans them,
-  `red_team_a_cached_blob_s_names_are_checked_cleaned_as_the_extraction_cleans_them`).
+  (`a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`).
   In a binary of its own
   (`tests/deep_chain.rs`, the soft `RLIMIT_NOFILE` raised to the hard one):
   a chain of up to 100,000 levels (as many as the copy holds descriptors
