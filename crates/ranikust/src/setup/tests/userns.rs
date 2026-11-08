@@ -1044,3 +1044,4 @@ fn a_regular_user_s_prune_all_empties_a_state_directory_of_subordinate_ids() {
 }
 
 mod layers;
+mod red_team;

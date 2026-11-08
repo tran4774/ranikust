@@ -332,3 +332,165 @@ fn root_s_range_shares_no_id_with_an_account_or_another_range() {
     );
     assert!(root_range_in(etc.path()).is_ok());
 }
+
+/// Red team (ADR-0104, ADR-0139): a `ranikust` line whose end passes
+/// `u32`, whose count is 0 or that is padded, signed, hex, commented,
+/// CRLF-ended or has a field more is never taken, so root's range stays
+/// missing and `--userns` is refused; one ending at the last id the
+/// kernel maps is taken, and an id or line at that end still overlaps.
+#[test]
+fn red_team_root_s_range_takes_no_overflowing_or_padded_ranikust_line() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &[u8]| fs::write(etc.path().join(name), text).unwrap();
+    write(PASSWD, b"root:x:0:0::/:/bin/sh\n");
+    write(GROUP, b"root:x:0:\n");
+    write(SUBGID, b"ranikust:800000:65536\n");
+    for bad in [
+        &b"ranikust:4294967295:1"[..],
+        b"ranikust:4294901761:65536",
+        b"ranikust:1:4294967295",
+        b"ranikust:99999999999:1",
+        b"ranikust:600000:4294967296",
+        b"ranikust:600000:18446744073709551617",
+        b"ranikust:600000:0",
+        b"ranikust:-600000:65536",
+        b"ranikust:+600000:65536",
+        b"ranikust: 600000:65536",
+        b"ranikust:600000:65536 ",
+        b"ranikust:600000:65536\r",
+        b" ranikust:600000:65536",
+        b"#ranikust:600000:65536",
+        b"ranikust:0x927c0:65536",
+        b"ranikust:600000:65536:",
+        b"ranikust::600000:65536",
+        b"\xef\xbb\xbfranikust:600000:65536",
+        b"ranikust\x00:600000:65536",
+        b"ranikust:600000\x00:65536",
+        b"ranikust:600000:65536\xff",
+    ] {
+        let mut text = bad.to_vec();
+        text.push(b'\n');
+        write(SUBUID, &text);
+        let why = root_range_in(etc.path()).unwrap_err();
+        assert!(
+            why.contains("subuid has no ranikust range"),
+            "{}: {why}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+    // The last range the kernel maps: ids up to 4294967294.
+    write(SUBUID, b"ranikust:4294901759:65536\n");
+    assert_eq!(
+        root_range_in(etc.path()).map(|s| s.uids),
+        Ok(IdRange {
+            start: 4_294_901_759,
+            count: 65_536
+        })
+    );
+    write(SUBUID, b"ranikust:4294901759:65536\nx:4294967294:1\n");
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("overlaps line 2 of"), "{why}");
+    write(SUBUID, b"ranikust:4294901759:65536\n");
+    write(
+        PASSWD,
+        b"root:x:0:0::/:/bin/sh\ntop:x:4294967294:0::/:/bin/sh\n",
+    );
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("uid 4294967294 of top in"), "{why}");
+}
+
+/// Red team (ADR-0139): a second `ranikust` line, the same or not, a
+/// commented or non-UTF-8 line and one whose count reaches every id all
+/// count as another range where their numbers overlap root's, so
+/// `--userns` is refused; a line whose numbers say nothing (a comment
+/// with words, no count) does not.
+#[test]
+fn red_team_duplicates_comments_and_binary_lines_still_overlap_root_s_range() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &[u8]| fs::write(etc.path().join(name), text).unwrap();
+    write(PASSWD, b"root:x:0:0::/:/bin/sh\n");
+    write(GROUP, b"root:x:0:\n");
+    write(SUBGID, b"ranikust:800000:65536\n");
+    for (other, line) in [
+        (&b"ranikust:600000:65536"[..], 2),
+        (b"ranikust:665535:1", 2),
+        (b"#x:600001:1", 2),
+        (b"#:600001:1", 2),
+        (b"\xff\xfe:600001:1", 2),
+        (b"x:0:4294967295", 2),
+        (b"x:1:4294967295", 2),
+        (b"\x00:600001:1", 2),
+        (b"x:\t600001:1", 2),
+    ] {
+        let mut text = b"ranikust:600000:65536\n".to_vec();
+        text.extend_from_slice(other);
+        text.push(b'\n');
+        write(SUBUID, &text);
+        let why = root_range_in(etc.path()).unwrap_err();
+        assert!(
+            why.contains(&format!("overlaps line {line} of")),
+            "{}: {why}",
+            String::from_utf8_lossy(other)
+        );
+    }
+    // The other range before root's: the line number is its own.
+    write(SUBUID, b"x:600001:1\nranikust:600000:65536\n");
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("overlaps line 1 of"), "{why}");
+    write(
+        SUBUID,
+        b"ranikust:600000:65536\n# old ranikust:600000:65536 line\n#\n\n:::\nx:600001\n",
+    );
+    assert!(root_range_in(etc.path()).is_ok());
+}
+
+/// Red team (ADR-0098, ADR-0139): huge id files, 200000 accounts, groups
+/// and ranges with an 8 MiB line of junk and NULs among them, are read in
+/// full without a panic; root's range, last, is taken, and an account or
+/// a range at the very end that holds one of its ids still refuses it.
+#[test]
+fn red_team_huge_id_files_are_read_whole_and_fail_closed() {
+    const N: u32 = 200_000;
+    let etc = tempfile::tempdir().unwrap();
+    let (mut passwd, mut group, mut sub) = (Vec::new(), Vec::new(), Vec::new());
+    for n in 0..N {
+        let id = 1000 + n;
+        passwd.extend_from_slice(format!("a{n}:x:{id}:{id}::/:/bin/sh\n").as_bytes());
+        group.extend_from_slice(format!("g{n}:x:{id}:\n").as_bytes());
+        // Ten ids each, from 1000000, below root's range.
+        sub.extend_from_slice(format!("a{n}:{}:10\n", 1_000_000 + 10 * n).as_bytes());
+    }
+    let junk: Vec<u8> = (0..(8 << 20)).map(|i| b"9:\x00\xff"[i % 4]).collect();
+    for f in [&mut passwd, &mut group, &mut sub] {
+        f.extend_from_slice(&junk);
+        f.push(b'\n');
+    }
+    sub.extend_from_slice(b"ranikust:600000000:65536\n");
+    let write = |name: &str, text: &[u8]| fs::write(etc.path().join(name), text).unwrap();
+    write(PASSWD, &passwd);
+    write(GROUP, &group);
+    write(SUBUID, &sub);
+    write(SUBGID, &sub);
+    let want = IdRange {
+        start: 600_000_000,
+        count: 65_536,
+    };
+    assert_eq!(
+        root_range_in(etc.path()),
+        Ok(SubordinateIds {
+            uids: want,
+            gids: want
+        })
+    );
+    let mut late = sub.clone();
+    late.extend_from_slice(b"z:600065535:1\n");
+    write(SUBUID, &late);
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("subuid, z:600065535:1"), "{why}");
+    write(SUBUID, &sub);
+    let mut late = group.clone();
+    late.extend_from_slice(b"last:x:600000000:\n");
+    write(GROUP, &late);
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("gid 600000000 of last in"), "{why}");
+}

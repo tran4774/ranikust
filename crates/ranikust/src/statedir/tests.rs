@@ -636,3 +636,5 @@ fn red_team_a_home_through_a_proc_link_is_refused_and_nothing_is_made() {
         assert_eq!(fs::read_dir(&home).unwrap().count(), 0, "{via}");
     }
 }
+
+mod red_team;

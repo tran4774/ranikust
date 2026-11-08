@@ -469,7 +469,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`a_userns_state_directory_is_the_mapped_root_s_below_parents_it_may_search`,
   `a_userns_state_directory_is_never_at_below_or_above_root_s_default`,
   `a_userns_state_directory_is_given_before_it_takes_its_name`,
-  `the_nearest_existing_directory_is_where_a_missing_one_is_made`),
+  `the_nearest_existing_directory_is_where_a_missing_one_is_made`; its
+  red team, `statedir/tests/red_team.rs`:
+  `red_team_userns_refusals_make_nothing_whatever_the_layout`, a missing
+  chain below a parent root does not own, a symlink on the way, a
+  non-empty directory or a `..` refused with nothing made or changed),
   `setup/rootless.rs` (refusals before anything is made or changed:
   `a_missing_state_directory_on_overlayfs_is_refused_unmade`, run only
   where the temporary directory is on overlayfs, and
@@ -478,7 +482,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
   `a_probe_directory_taken_before_it_is_held_is_made_again`), `subids`
   (`root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else`,
-  `root_s_range_shares_no_id_with_an_account_or_another_range`),
+  `root_s_range_shares_no_id_with_an_account_or_another_range`; its red
+  team: a `ranikust` line whose end passes 32 bits, signed, padded, with
+  a carriage return, a BOM, a NUL, hex or a fourth field gives no range,
+  `red_team_root_s_range_takes_no_overflowing_or_padded_ranikust_line`;
+  a duplicate `ranikust` line, a line starting `#`, not UTF-8, with a NUL
+  name or a tab before its start, and a range covering every id each
+  overlap it,
+  `red_team_duplicates_comments_and_binary_lines_still_overlap_root_s_range`;
+  files of 200,000 lines and an 8 MiB line read whole, an overlap on
+  their last line refused,
+  `red_team_huge_id_files_are_read_whole_and_fail_closed`),
   `main` (`--userns` never falls back,
   `only_roots_auto_mode_falls_back_to_kaniko_mode`), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to
@@ -741,7 +755,32 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `root_deletes_nothing_in_a_probe_directory_it_gave_away` (unit suite: a
   subtree of an unmapped uid that the range's uid moves into the probe's
   directory while the probes run is left whole, by root and by the store
-  that then removes the directory inside the namespace);
+  that then removes the directory inside the namespace); the red team
+  of `--userns`'s set-up as real root (unit suite):
+  `statedir/tests/red_team.rs`
+  `red_team_root_refuses_each_unfit_userns_state_directory_writing_nothing`
+  (parents writable by group or others, sticky or not, the range's, a
+  third user's or closed to the range; symlinks; an existing directory
+  open to others or holding what is not a store; a FIFO or a file at the
+  name: each refused, nothing below `/var/lib` changed) and
+  `red_team_what_the_range_plants_before_the_rename_reaches_nothing_of_root_s`
+  (`builds`, the store's marker and probe leftovers planted in the
+  directory before its move into place as links out, hard links to
+  root's file and FIFOs: root's check, the store's, the modes and the
+  leftovers' removal never block, follow a link or change a file of
+  root's or a third user's), and `setup/tests/userns/red_team.rs`
+  `red_team_the_range_racing_root_s_set_up_changes_nothing_of_root_s`
+  (three processes of the range's first uid, with `fs.protected_hardlinks` and
+  `fs.protected_symlinks` off, race 150 set-ups in the directory
+  given to it: plants before the move into place, `builds` and the marker
+  swapped, probe directories moved, removed or their entries swapped for
+  hard links and links out; root's set-up never blocks, nothing of
+  root's or a third user's outside the state directories changes, and
+  root's directory gets no name of the range's); the quick case
+  `userns-reach` (a `--userns` `RUN`'s descriptors, writes and reach,
+  processes it leaves, ranikust's own processes as the range's first ids
+  see them, ranikust killed while a `RUN` waits:
+  [testing](../../testing.md#quick-smoke-cases));
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
   from a sealed memfd (ADR-0101);
   `seccomp_on_slash` (every `--seccomp` refused, exit 2, in kaniko mode on
