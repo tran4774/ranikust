@@ -358,7 +358,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and the next store checks it; a canary of other owners refuses `open` and
   `check_state_dir` before anything is written, a child map's from the
   parent too (`check_state_dir_for`); one that cannot be made publishes no
-  layer; stores that opened with none make one between them; a layer of
+  layer and removes only what it made; one found in place of a new one is
+  checked; stores that opened with none make one between them; a layer of
   the map without a canary is never reused; none outside a user namespace.
   `src/userns.rs`: `IdMaps` canonical however padded or ordered, a line
   past `u32::MAX` refused and a map that does not parse named, an id

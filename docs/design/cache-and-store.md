@@ -96,7 +96,8 @@ in a space of their own (`KEY_DOMAIN` in
 [`userns.rs`](../../crates/rnk-snapshot/src/userns.rs)). The maps are relative to
 the parent namespace, so nested namespaces with the same maps under parents
 with different ones share a key, and a build in one sees the owners of a
-layer the other extracted through its own maps: the overflow id for ids it
+layer the other extracted through its own maps: the overflow id (the
+sysctls `kernel.overflowuid` and `overflowgid`, usually 65534) for ids it
 does not map, other owners where the ranges overlap. This happens, for
 example, to a namespace ranikust makes in a rootless Podman container whose
 state directory is on a volume, after the user's ranges in `/etc/subuid`
@@ -139,7 +140,8 @@ maps once, when it opens, and `rnk-snapshot` keys its layers by them.
   beside the layers it guards and shares their layout version.
 - **When it is made:** with the first layer published under the map, after
   the layer's extraction and before its rename, under the canary's lock: made
-  in `tmp/<build-id>/` and renamed into place, as a layer is.
+  in `tmp/<build-id>/` and renamed into place, as a layer is. One found there
+  at the rename, made by something that took no lock, is checked instead.
 - **When it is checked:** first before anything is written in the state
   directory: rootless overlay mode and `--userns` check, from outside, the
   canary of each map the build's namespace may get (the maps `rnk-sandbox`
@@ -147,11 +149,12 @@ maps once, when it opens, and `rnk-snapshot` keys its layers by them.
   gives its own (`Store::check_state_dir_for`). Then the store, opened in the
   namespace, checks its own maps' canary as the namespace sees it, and again
   before a layer of the map is reused. Each entry must be a regular file of
-  the state directory's mount. An id a map above no longer gives shows as the
-  overflow id, and one an overlapping range gives as another id: a change
-  above that moves the first or the last id of an extent, at any depth, or a
-  `chown` of the canary on disk, shows. Only those ids are probed
-  (ADR-0128).
+  the state directory's mount, looked at in one descriptor of the canary's
+  directory, opened without following a symlink. An id a map above no
+  longer gives shows as the overflow id, and one an overlapping range gives
+  as another id: a change above that moves the first or the last id of an
+  extent, at any depth, or a `chown` of the canary on disk, shows. Only
+  those ids are probed (ADR-0128).
 - **A mismatch** (a wrong owner, a missing entry, an entry of another type, a
   canary that cannot be read, or a layer of the map found without its canary)
   refuses the build with the way out: `ranikust prune --all`, or another

@@ -141,6 +141,13 @@ fn plan(state: &Path) -> String {
 /// Why a state directory is refused for its canary.
 const CHANGED: &str = "holds layers extracted under other ids";
 
+/// The owner a namespace sees for an entry of an unmapped uid and the gid
+/// 0: the kernel's `overflowuid`, not always 65534.
+fn unmapped_uid() -> String {
+    let uid = fs::read_to_string("/proc/sys/kernel/overflowuid").unwrap();
+    format!("{}:0", uid.trim())
+}
+
 /// Asserts that rootless overlay mode's plan under the range from `first`,
 /// before the build's user namespace exists, and the store's open in that
 /// namespace each refuse the state directory `state` for its canary's
@@ -193,7 +200,7 @@ fn layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same() 
     assert!(out.starts_with("multi-range\n"), "{out}");
     let canaries = state.join("layers/v3/canary");
     assert_eq!(fs::read_dir(&canaries).unwrap().count(), 1, "{out}");
-    assert_refused(run, MOVED, "65534:0", &state);
+    assert_refused(run, MOVED, &unmapped_uid(), &state);
     // The first range's uid 1 is the overlapping one's 501.
     let shifted = format!("{}:0", FIRST - OVERLAPPING + 1);
     assert_refused(run, OVERLAPPING, &shifted, &state);
@@ -217,5 +224,5 @@ fn layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same() 
             lchown(state.join(&e.path), Some(moved(e.uid)), Some(moved(e.gid))).unwrap();
         }
     }
-    assert_refused(run, FIRST, "65534:0", &state);
+    assert_refused(run, FIRST, &unmapped_uid(), &state);
 }
