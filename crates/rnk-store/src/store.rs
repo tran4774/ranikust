@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
 use rnk_oci::Digest;
-use rnk_rootfs::{FileType, IgnoreList, OpenHow, RootPath, Stat, delete_contents};
+use rnk_rootfs::{FileType, IgnoreList, OpenHow, RootPath, Stat, chown_id, delete_contents};
 use rustix::io::Errno;
 use sha2::{Digest as _, Sha256};
 use tracing::field::Empty;
@@ -1259,14 +1259,11 @@ impl Store {
             gid: st.st_gid,
             mode: 0o755,
         });
-        // `None` is the same `-1` to `chown` ("unchanged"), which a rustix
-        // id must not hold.
-        let id = |id: u32| (id != u32::MAX).then_some(id);
         if (st.st_uid, st.st_gid) != (owner.uid, owner.gid) {
             rustix::fs::fchown(
                 &fd,
-                id(owner.uid).map(rustix::fs::Uid::from_raw),
-                id(owner.gid).map(rustix::fs::Gid::from_raw),
+                chown_id(owner.uid).map(rustix::fs::Uid::from_raw),
+                chown_id(owner.gid).map(rustix::fs::Gid::from_raw),
             )
             .map_err(|e| match e {
                 // An owner the user namespace does not map (ADR-0098).

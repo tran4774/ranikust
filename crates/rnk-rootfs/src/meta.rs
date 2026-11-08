@@ -657,9 +657,12 @@ fn chown_err(e: Errno, path: &Path, m: &Meta) -> Error {
 }
 
 /// `id` as `chown` takes it: `None` for `u32::MAX`, `chown`'s `-1`, which
-/// leaves that id unchanged. The extraction and the owner scans read it
-/// through this alone, so that they agree.
-pub(crate) fn chown_id(id: u32) -> Option<u32> {
+/// leaves that id unchanged and which a rustix `Uid` or `Gid` must not hold
+/// (a debug build aborts). The extraction, the owner scans, `rnk-store`'s
+/// cache owner and `rnk-sandbox`'s secret owner read an id through this
+/// alone, so that they agree.
+#[must_use]
+pub fn chown_id(id: u32) -> Option<u32> {
     (id != u32::MAX).then_some(id)
 }
 

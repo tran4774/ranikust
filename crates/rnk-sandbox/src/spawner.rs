@@ -18,7 +18,7 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rnk_rootfs::{RootPath, User};
+use rnk_rootfs::{RootPath, User, chown_id};
 use rustix::fs::{FileType, Mode, OFlags};
 use rustix::io::Errno;
 use rustix::mount::MountFlags;
@@ -1792,11 +1792,9 @@ fn cstring(s: impl AsRef<OsStr>) -> Result<CString> {
 /// tmpfs is sized for them plus a page each, mode 0700.
 fn child_secrets(dir: &Path, secrets: &[SecretFile]) -> Result<ChildSecrets> {
     let mut files: Vec<ChildSecret> = Vec::new();
-    // `None` is the same `-1` to `chown` ("unchanged"), which a rustix id
-    // must not hold.
-    let id = |id: u32| (id != u32::MAX).then_some(id);
     for s in secrets {
-        let (uid, gid) = (id(s.uid).map(Uid::from_raw), id(s.gid).map(Gid::from_raw));
+        let uid = chown_id(s.uid).map(Uid::from_raw);
+        let gid = chown_id(s.gid).map(Gid::from_raw);
         let mode = Mode::from_raw_mode(s.mode & 0o777);
         let target = cstring(&s.target)?;
         match files.iter_mut().find(|f| {
