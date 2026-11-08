@@ -976,7 +976,7 @@ fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
 /// spool pass refuses the layer once it is verified, naming the owner
 /// (ADR-0098).
 #[test]
-fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_before_extraction() {
+fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_by_the_spool_pass() {
     let (f, store) = Fixture::tars();
     let kept = f.layer("l1", &[("a", b"owned")]);
     let source = Arc::new(Streamed {

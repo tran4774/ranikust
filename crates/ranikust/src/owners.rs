@@ -23,8 +23,8 @@ enum Namespace {
     /// ranikust made it for a user other than root, with the user's first
     /// ranges in `/etc/subuid` and `/etc/subgid`.
     UserRanges,
-    /// ranikust made it for root with one id: root's ranges could not be
-    /// mapped into it.
+    /// ranikust made it for root with a single uid or gid: the namespace it
+    /// was started in maps no more, or its ranges could not be mapped.
     RootOneId,
     /// Root's own ranges in a container, or a namespace ranikust was
     /// started in (a rootless container's), or one that cannot be read.
@@ -152,9 +152,9 @@ fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String 
             needed_text(uid, gid)
         ),
         Namespace::RootOneId => format!(
-            "the build's user namespace maps one uid and one gid, not {}: root's ranges \
-             could not be mapped into it. Widen the id ranges of the user namespace \
-             ranikust was started in (for a rootless Podman container, those of the user \
+            "the build's user namespace maps a single uid or gid, not {}: the user namespace \
+             ranikust was started in maps no more, or its ranges could not be mapped into the \
+             build's. Widen the id ranges of the user namespace ranikust was started in (for a rootless Podman container, those of the user \
              running it in /etc/subuid and /etc/subgid, then `podman system migrate`), or \
              run ranikust as root on a host or in a rootful container",
             ids_text(uid, gid)
@@ -241,7 +241,10 @@ mod tests {
         );
         let root_only = ways_out(&user, Namespace::RootOneId, Some(&parsed(&root_one)));
         assert!(
-            root_only.contains("maps one uid and one gid, not uid 70000: root's ranges"),
+            root_only.contains(
+                "maps a single uid or gid, not uid 70000: the user namespace ranikust was started \
+                 in maps no more"
+            ),
             "{root_only}"
         );
         let gid = Unmapped::chown(Path::new("a"), None, Some(42));

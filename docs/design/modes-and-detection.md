@@ -421,9 +421,9 @@ every id maps and nothing is checked.
   `/etc/subuid` and `/etc/subgid` of at least as many ids as the highest
   one named, run as root, or run in a container; with a user's ranges,
   widen the first range to that count (ranikust maps only that one, and id
-  N is its N-th); in a namespace ranikust was started in, root's copy of a
-  container's map, or root's one-id fallback where those ranges could not
-  be mapped, widen its ranges (rootless Podman: its user's, then
+  N is its N-th); in a namespace ranikust was started in, or root's copy
+  of its map (a single uid or gid where it maps no more, or where its
+  ranges could not be mapped), widen its ranges (rootless Podman: its user's, then
   `podman system migrate`), or run as root on a host or in a rootful
   container.
 

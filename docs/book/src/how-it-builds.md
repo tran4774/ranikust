@@ -146,9 +146,9 @@ overlay mount options.
   `COPY --chown` or a `USER` the map lacks is refused the same way, when it
   comes. No flag lets a failed `chown` through: the file would get the
   wrong owner ([ADR-0098]). This holds in any user namespace, also kaniko
-  mode's in a rootless container, where a base image's layers come one at
-  a time onto `/`: each is checked before it is extracted, so the layers
-  before the refused one are already there.
+  mode's in a rootless container, where a base image's layers streamed
+  onto `/` are checked one at a time, each before it is extracted, so the
+  layers before the refused one may already be there.
 
 ## kaniko mode
 

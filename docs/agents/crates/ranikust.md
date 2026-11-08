@@ -378,10 +378,11 @@ Each step before the next; design in
   only the ids they lack: a user's one id (`Namespace::UserOneId`), install
   `uidmap` and add a first range of at least the highest id named, run as
   root or in a container; a user's ranges (`UserRanges`), widen the first
-  one to that count; root's one-id fallback (`RootOneId`), a namespace
-  ranikust was started in (`made` false: kaniko mode, root's overlay mode)
-  or root's copy of a container's (`Container`), widen its ranges. No flag
-  lets it pass.
+  one to that count; root's with a single uid or gid (`RootOneId`: the
+  namespace ranikust was started in maps no more, or its ranges could not
+  be mapped), root's copy of a container's ranges, or a namespace ranikust
+  was started in (`made` false: kaniko mode, root's overlay mode;
+  `Container`), widen its ranges. No flag lets it pass.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read
   inside the context through its `RootPath`, never by a host path.
