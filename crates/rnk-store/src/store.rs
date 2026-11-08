@@ -1773,10 +1773,13 @@ impl Store {
             }
             (canary::Found::Absent, CanaryUse::Publish) => {
                 let tmp = self.tmp_name();
-                if let Err(e) = canary::create(&self.state, maps, &tmp, DIR_MODE) {
+                // Only a `tmp` this call made is ever removed.
+                self.state.create_dir(&tmp, DIR_MODE)?;
+                let made = canary::create(&self.state, &self.state_path, maps, &tmp, DIR_MODE);
+                if !matches!(made, Ok(canary::Made::Placed)) {
                     self.discard(&tmp);
-                    return Err(e);
                 }
+                made?;
             }
         }
         // Another thread may have set it meanwhile: either way it is seen.

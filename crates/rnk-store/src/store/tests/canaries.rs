@@ -190,8 +190,8 @@ fn a_child_namespace_s_canary_is_checked_from_here_before_anything_is_written() 
     assert_eq!(tree(&paths.state), before);
 }
 
-/// A canary that cannot be made publishes no layer, and leaves neither in
-/// `tmp/`; the next layer makes it.
+/// A canary that cannot be made publishes no layer, and leaves in `tmp/`
+/// only what it did not make; the next layer makes it.
 #[test]
 fn a_canary_that_cannot_be_made_publishes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -206,9 +206,37 @@ fn a_canary_that_cannot_be_made_publishes_nothing() {
     assert!(!matches!(e, Error::IdMapChanged { .. }), "{e}");
     assert!(!paths.state.join(key(1).path()).exists(), "{e}");
     assert!(!paths.state.join(canary::path(&own_maps())).exists(), "{e}");
-    assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0, "{e}");
+    let left: Vec<_> = fs::read_dir(&tmp)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["1"], "{e}");
     layer(&store, 1).unwrap();
     assert!(paths.state.join(canary::path(&own_maps())).is_dir());
+    store.close().unwrap();
+}
+
+/// A canary whose entries cannot be given their owners (maps of ids not
+/// this process's, as a user without `CAP_CHOWN`) publishes no layer, and
+/// what it made in `tmp/` is removed.
+#[test]
+fn a_canary_half_made_is_removed() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let paths = BuildPaths::new(dir.path(), dir.path().join("state"));
+    give(Some(other_maps()));
+    let store = Store::open(&paths).unwrap();
+    let e = layer(&store, 1).unwrap_err();
+    assert!(!matches!(e, Error::IdMapChanged { .. }), "{e}");
+    assert!(!paths.state.join(key(1).path()).exists(), "{e}");
+    assert!(
+        !paths.state.join(canary::path(&other_maps())).exists(),
+        "{e}"
+    );
+    let tmp = paths.state.join("tmp").join(store.build_id());
+    assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0, "{e}");
     store.close().unwrap();
 }
 

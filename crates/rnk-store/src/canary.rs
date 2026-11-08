@@ -6,9 +6,11 @@
 //! the key; it shows in the owners the canary's entries have now.
 
 use std::collections::BTreeSet;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
-use rnk_rootfs::{FileType, OpenHow, RootPath, chown_id};
+use rnk_rootfs::{OpenHow, RootPath, chown_id};
+use rustix::fs::{AtFlags, Statx, StatxAttributes, StatxFlags};
 use rustix::io::Errno;
 use sha2::{Digest as _, Sha256};
 
@@ -128,48 +130,70 @@ pub(crate) fn check_from_parent(
     check_as(state, state_path, maps, View::Parent)
 }
 
-/// [`check`] from `view`.
+/// [`check`] from `view`. The canary's directory is opened once, never
+/// through a symlink, and each entry is looked at in that descriptor: no
+/// entry is reached from the state directory again.
 fn check_as(state: &RootPath, state_path: &Path, maps: &IdMaps, view: View) -> Result<Found> {
     let rel = path(maps);
     let changed = |why: String| Error::IdMapChanged {
         path: state_path.to_owned(),
         why,
     };
-    let denied = |e: &rnk_rootfs::Error| {
-        [Errno::ACCESS, Errno::PERM]
-            .iter()
-            .any(|n| e.raw_os_error() == Some(n.raw_os_error()))
+    let is =
+        |raw: Option<i32>, errnos: &[Errno]| errnos.iter().any(|n| raw == Some(n.raw_os_error()));
+    let denied = [Errno::ACCESS, Errno::PERM];
+    let not_dir = || {
+        changed(format!(
+            "{} is not a directory of the state directory's mount",
+            rel.display()
+        ))
     };
-    let on_mount = |st: &rnk_rootfs::Stat| !st.mount_root && st.mnt_id == state.mnt_id();
-    match state.statx(&rel) {
-        Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
-            return Ok(Found::Absent);
-        }
-        Err(e) if denied(&e) => {
+    let dir = match state.open_at(&rel, &OpenHow::path().directory().no_follow()) {
+        Ok(dir) => dir,
+        Err(e) if is(e.raw_os_error(), &[Errno::NOENT]) => return Ok(Found::Absent),
+        Err(e) if is(e.raw_os_error(), &denied) => {
             return Err(changed(format!("{} cannot be read: {e}", rel.display())));
         }
+        // A symlink, with `O_NOFOLLOW`, or anything else that is no
+        // directory.
+        Err(e) if is(e.raw_os_error(), &[Errno::NOTDIR, Errno::LOOP]) => return Err(not_dir()),
         Err(e) => return Err(e.into()),
-        Ok(st) if st.file_type() != FileType::Directory || !on_mount(&st) => {
-            return Err(changed(format!(
-                "{} is not a directory of the state directory's mount",
-                rel.display()
-            )));
-        }
-        Ok(_) => {}
+    };
+    let io = |p: &Path, e: Errno| Error::Io {
+        op: "statx",
+        path: state_path.join(p),
+        source: e.into(),
+    };
+    let on_mount = |x: &Statx| {
+        StatxFlags::from_bits_retain(x.stx_mask).contains(StatxFlags::MNT_ID)
+            && x.stx_mnt_id == state.mnt_id()
+            && !(x.stx_attributes_mask.contains(StatxAttributes::MOUNT_ROOT)
+                && x.stx_attributes.contains(StatxAttributes::MOUNT_ROOT))
+    };
+    match statx(&dir, "") {
+        Ok(x) if on_mount(&x) => {}
+        Ok(_) => return Err(not_dir()),
+        Err(e) => return Err(io(&rel, e)),
     }
     for entry in entries(maps) {
         let p = rel.join(&entry.name);
-        let st = match state.statx(&p) {
+        let st = match statx(&dir, &entry.name) {
             Ok(st) => st,
-            Err(e) if e.raw_os_error() == Some(Errno::NOENT.raw_os_error()) => {
+            Err(Errno::NOENT) => {
                 return Err(changed(format!("{} is missing", p.display())));
             }
-            Err(e) if denied(&e) => {
-                return Err(changed(format!("{} cannot be read: {e}", p.display())));
+            Err(e) if denied.contains(&e) => {
+                return Err(changed(format!(
+                    "{} cannot be read: {}",
+                    p.display(),
+                    std::io::Error::from(e)
+                )));
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(io(&p, e)),
         };
-        if st.file_type() != FileType::Regular || !on_mount(&st) {
+        let regular = rustix::fs::FileType::from_raw_mode(st.stx_mode.into())
+            == rustix::fs::FileType::RegularFile;
+        if !regular || !on_mount(&st) {
             return Err(changed(format!(
                 "{} is not a regular file of the state directory's mount",
                 p.display()
@@ -190,30 +214,62 @@ fn check_as(state: &RootPath, state_path: &Path, maps: &IdMaps, view: View) -> R
         let Some((uid, gid)) = want else {
             return Err(changed(format!("{} has no id here", p.display())));
         };
-        if (st.uid, st.gid) != (uid, gid) {
+        if (st.stx_uid, st.stx_gid) != (uid, gid) {
             return Err(changed(format!(
                 "{} is owned by {}:{}, not {uid}:{gid}{of}",
                 p.display(),
-                st.uid,
-                st.gid,
+                st.stx_uid,
+                st.stx_gid,
             )));
         }
     }
     Ok(Found::Matches)
 }
 
+/// `statx` of the entry `name` in `dir`, or of `dir` itself for an empty
+/// name, never following a symlink or an automount, with the mount id.
+fn statx(dir: &OwnedFd, name: &str) -> rustix::io::Result<Statx> {
+    let mut flags = AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT;
+    if name.is_empty() {
+        flags |= AtFlags::EMPTY_PATH;
+    }
+    rustix::fs::statx(
+        dir,
+        name,
+        flags,
+        StatxFlags::BASIC_STATS | StatxFlags::MNT_ID,
+    )
+}
+
+/// What [`create`] did with its canary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Made {
+    /// Renamed into place: `tmp` is gone.
+    Placed,
+    /// Left in `tmp`: a canary was there already, and passed [`check`].
+    Found,
+}
+
 /// Makes the canary of `maps`, which the caller found absent under its
-/// lock: each entry of [`entries`] made in the new directory `tmp` and
-/// given its owner through its descriptor, then `tmp` renamed into place,
-/// never over an existing canary. The caller removes `tmp` on failure.
+/// lock: each entry of [`entries`] made in `tmp`, a new empty directory the
+/// caller made, and given its owner through its descriptor, then `tmp`
+/// renamed into place, never over an existing canary. One there already,
+/// made by something that did not take the lock, is checked instead. The
+/// caller removes `tmp` unless it was placed.
 ///
 /// # Errors
 ///
 /// [`Error::Rootfs`] when an entry cannot be made or given its owner
 /// ([`rnk_rootfs::Error::Unmapped`] for an owner the namespace does not
-/// map), or the directory cannot be renamed.
-pub(crate) fn create(state: &RootPath, maps: &IdMaps, tmp: &Path, dir_mode: u32) -> Result<()> {
-    state.create_dir(tmp, dir_mode)?;
+/// map), or the directory cannot be renamed; as [`check`] for a canary
+/// there already.
+pub(crate) fn create(
+    state: &RootPath,
+    state_path: &Path,
+    maps: &IdMaps,
+    tmp: &Path,
+    dir_mode: u32,
+) -> Result<Made> {
     for entry in entries(maps) {
         let p = tmp.join(&entry.name);
         let fd = state.open_at(&p, &OpenHow::read().create_new(ENTRY_MODE))?;
@@ -239,8 +295,17 @@ pub(crate) fn create(state: &RootPath, maps: &IdMaps, tmp: &Path, dir_mode: u32)
     if let Some(parent) = rel.parent() {
         state.create_dir_all(parent, dir_mode)?;
     }
-    state.rename_noreplace(tmp, &rel)?;
-    Ok(())
+    match state.rename_noreplace(tmp, &rel) {
+        Ok(()) => Ok(Made::Placed),
+        Err(e) if e.raw_os_error() == Some(Errno::EXIST.raw_os_error()) => {
+            match check(state, state_path, maps)? {
+                Found::Matches => Ok(Made::Found),
+                // Gone again: nothing vouches for the maps.
+                Found::Absent => Err(e.into()),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]

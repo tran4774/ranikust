@@ -2,7 +2,7 @@
 //! ids: no test here can give a file another owner.
 
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{MetadataExt as _, symlink};
 
 use super::*;
 
@@ -33,6 +33,13 @@ fn state() -> (tempfile::TempDir, RootPath) {
     let dir = tempfile::tempdir().unwrap();
     let root = RootPath::open(dir.path()).unwrap();
     (dir, root)
+}
+
+/// `tmp/<name>`, made empty in `dir` as a store makes it for [`create`].
+fn tmp(dir: &tempfile::TempDir, name: &str) -> PathBuf {
+    let rel = Path::new("tmp").join(name);
+    fs::create_dir_all(dir.path().join(&rel)).unwrap();
+    rel
 }
 
 #[test]
@@ -98,20 +105,39 @@ fn a_canary_made_by_this_process_matches_its_own_ids() {
     let (dir, root) = state();
     let maps = own_maps();
     assert_eq!(check(&root, dir.path(), &maps).unwrap(), Found::Absent);
-    fs::create_dir(dir.path().join("tmp")).unwrap();
-    create(&root, &maps, Path::new("tmp/canary"), 0o700).unwrap();
+    let made = create(&root, dir.path(), &maps, &tmp(&dir, "canary"), 0o700).unwrap();
+    assert_eq!(made, Made::Placed);
     assert!(!dir.path().join("tmp/canary").exists());
     assert_eq!(check(&root, dir.path(), &maps).unwrap(), Found::Matches);
     let (u, g) = own();
-    let mut made: Vec<_> = fs::read_dir(dir.path().join(path(&maps)))
+    let canary = dir.path().join(path(&maps));
+    let ino = fs::metadata(&canary).unwrap().ino();
+    let mut made: Vec<_> = fs::read_dir(&canary)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     made.sort();
     assert_eq!(made, [format!("gid-{g}"), format!("uid-{u}")]);
-    // Never made over one that is there.
-    fs::create_dir(dir.path().join("tmp/again")).unwrap();
-    assert!(create(&root, &maps, Path::new("tmp/again/c"), 0o700).is_err());
+    // Never made over one that is there: that one is checked instead.
+    let again = create(&root, dir.path(), &maps, &tmp(&dir, "again"), 0o700).unwrap();
+    assert_eq!(again, Made::Found);
+    assert!(dir.path().join("tmp/again").is_dir());
+    assert_eq!(fs::metadata(&canary).unwrap().ino(), ino);
+}
+
+/// A canary that appears between the check under the lock and the rename,
+/// made by something that did not take the lock, refuses the maps unless
+/// it passes the check.
+#[test]
+fn a_canary_found_in_place_of_a_new_one_is_checked() {
+    let (dir, root) = state();
+    let maps = own_maps();
+    let rel = path(&maps);
+    fs::create_dir_all(dir.path().join(&rel)).unwrap();
+    let e = create(&root, dir.path(), &maps, &tmp(&dir, "c"), 0o700).unwrap_err();
+    assert!(matches!(e, Error::IdMapChanged { .. }), "{e}");
+    assert!(e.to_string().contains(" is missing"), "{e}");
+    assert_eq!(fs::read_dir(dir.path().join(&rel)).unwrap().count(), 0);
 }
 
 /// Each entry missing in turn refuses the canary, naming it.
@@ -120,8 +146,7 @@ fn a_canary_missing_an_entry_is_refused() {
     let maps = own_maps();
     for gone in entries(&maps) {
         let (dir, root) = state();
-        fs::create_dir(dir.path().join("tmp")).unwrap();
-        create(&root, &maps, Path::new("tmp/c"), 0o700).unwrap();
+        create(&root, dir.path(), &maps, &tmp(&dir, "c"), 0o700).unwrap();
         fs::remove_file(dir.path().join(path(&maps)).join(&gone.name)).unwrap();
         let e = check(&root, dir.path(), &maps).unwrap_err();
         assert!(matches!(e, Error::IdMapChanged { .. }), "{e}");
