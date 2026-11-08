@@ -13,8 +13,9 @@
 # ADR-0074's reach of a distinct host account is measured again: neither
 # an account with the RUN's own ids nor one with the ids they map to on
 # the host reaches it, the latter reaching a process of its own (the
-# control). In the kaniko leg, --userns with --mode=kaniko is a usage
-# error.
+# control). Then `prune --all --userns` (#207) empties the state directory
+# as the range's first uid (pruned_as_the_range). In the kaniko leg,
+# --userns with --mode=kaniko is a usage error.
 
 # Below /var/lib, which only root writes and every uid may search.
 UW=/var/lib/rnk-quick-userns
@@ -130,6 +131,77 @@ case_run() {
     sh -c 'stat -c "%u:%g %a" /home/u/f /d /bin/suid && readlink /home/u/l')" \
     "$(printf '1234:1234 644\n0:0 2750\n0:0 4755\nf')" "the --userns image's owners and modes"
   seen_from_the_host
+  pruned_as_the_range
+}
+
+# pruned_as_the_range: `prune --all --userns` (#207, ADR-0139) empties the
+# state directory the builds left as the range's first uid, in its user
+# namespace: root's own `prune --all` names it; it refuses root's default,
+# a state directory of root's and one below a directory the range's uid
+# cannot search, each left as it was; a directory of root's put in the
+# store stays, which root would have removed, the prune says how to
+# finish, and a build is refused, naming it, until it does.
+pruned_as_the_range() {
+  local log rc=0
+  log="$(sudo "$RNK" prune --all --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 1 "root's prune --all on the --userns state directory"
+  grep -qF -- "ranikust prune --all --userns --state-dir $UW/state" <<<"$log" ||
+    fail "root's prune --all on the --userns state directory: $log"
+
+  local before
+  before="$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns at root's default"
+  grep -qF "the state directory /var/lib/ranikust is root's default:" <<<"$log" ||
+    fail "prune --all --userns at root's default: $log"
+  expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
+    "root's default state directory after prune --all --userns was refused"
+
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/roots" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns on a state directory of root's"
+  grep -qF "$UW/roots is owned by uid 0, not $S" <<<"$log" ||
+    fail "prune --all --userns on a state directory of root's: $log"
+  expect "$(sudo stat -c '%u:%g %a' "$UW/roots") $(sudo ls -A "$UW/roots" | wc -l)" "0:0 700 0" \
+    "root's state directory after prune --all --userns was refused"
+
+  sudo install -d -m 700 -o "$S" -g "$G" "$UW/closed/st"
+  sudo install -m 600 -o "$S" -g "$G" /dev/null "$UW/closed/st/.ranikust-state"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/closed/st" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns below a directory its uid cannot search"
+  grep -qF "$UW/closed is not searchable by uid $S and gid $G" <<<"$log" ||
+    fail "prune --all --userns below a directory its uid cannot search: $log"
+  expect "$(sudo ls -A "$UW/closed/st")" ".ranikust-state" \
+    "the state directory prune --all --userns could not search to"
+
+  sudo test -d "$UW/state/builds" || fail "no builds/ in the --userns state directory"
+  sudo mkdir -m 755 "$UW/state/builds/rnk-roots"
+  sudo touch "$UW/state/builds/rnk-roots/f"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns with a directory of root's in the store"
+  grep -qF "ranikust: the build's user namespace: shifted range" <<<"$log" &&
+    grep -qF "unmount anything below $UW/state and remove such files by hand, as root" <<<"$log" ||
+    fail "prune --all --userns with a directory of root's in the store: $log"
+  sudo test -f "$UW/state/builds/rnk-roots/f" || fail "prune --all --userns removed a file of root's"
+  rc=0
+  log="$(urun cut --target content --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 1 "a --userns build in a state directory a prune did not finish"
+  grep -qF -- "ranikust prune --all --userns --state-dir $UW/state" <<<"$log" ||
+    fail "a --userns build in a state directory a prune did not finish: $log"
+
+  sudo rm -r "$UW/state/builds/rnk-roots"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 0 "prune --all --userns: $log"
+  grep -qxF "emptied $UW/state" <<<"$log" || fail "prune --all --userns: $log"
+  expect "$(sudo stat -c '%u:%g %a' "$UW/state") $(sudo ls -A "$UW/state" | wc -l)" "$S:$G 700 0" \
+    "the state directory prune --all --userns emptied"
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)"
+  grep -qxF "nothing to prune: $UW/state is empty" <<<"$log" || fail "prune --all --userns again: $log"
+  sudo rmdir "$UW/state"
 }
 
 # seen_from_the_host: the `seen` stage's RUNs, from the host while each

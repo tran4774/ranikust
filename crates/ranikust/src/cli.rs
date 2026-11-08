@@ -66,6 +66,14 @@ pub(crate) struct PruneArgs {
     /// one without ranikust's marker file is refused.
     #[arg(long, value_name = "DIR")]
     pub(crate) state_dir: Option<PathBuf>,
+
+    /// As root, empties the state directory of `build --userns`, which
+    /// needs its --state-dir (root's default is refused), in the user
+    /// namespace of the `ranikust` range, as that range's first uid, never
+    /// as root; refused where that uid does not own it or cannot search a
+    /// directory above it. Refused for a user other than root.
+    #[arg(long)]
+    pub(crate) userns: bool,
 }
 
 impl Cli {
