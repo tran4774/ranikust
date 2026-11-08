@@ -383,8 +383,8 @@ impl Store {
     /// # Errors
     ///
     /// [`Error::NotAStateDir`] for a foreign directory or a store
-    /// directory that is not one, [`Error::Busy`]
-    /// while an anonymous store holds it, [`Error::UsedOnSlash`] for the
+    /// directory that is not one, [`Error::Busy`] while an anonymous store
+    /// holds it, [`Error::UsedOnSlash`] for the
     /// marker of a kaniko-mode build on `/`, [`Error::PruneCutShort`] for
     /// [`PRUNING_MARKER`], [`Error::NoFlock`] when its
     /// filesystem has no `flock`, [`Error::Io`] or [`Error::Rootfs`] when
@@ -492,20 +492,20 @@ impl Store {
     /// Checks, writing nothing, that [`Store::open`] would take the
     /// existing directory `state` as a state directory now: it takes its
     /// shared `flock`, and it holds [`STATE_MARKER`] or only directories of
-    /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), no
-    /// [`BUILDING_MARKER`], and no store directory that is not a
-    /// directory. For a step that writes there before the store
-    /// opens (Q-111, (a)): the lock stays held by the [`StateDirHold`]
-    /// returned, which the caller drops once [`Store::open`] has returned,
-    /// so that nothing that takes the directory alone (`prune --all`, an
-    /// anonymous store) runs in between.
+    /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), neither
+    /// [`BUILDING_MARKER`] nor [`PRUNING_MARKER`], and no store directory
+    /// that is not a directory. For a step that writes there before the
+    /// store opens (Q-111, (a)): the lock stays held by the
+    /// [`StateDirHold`] returned, which the caller drops once
+    /// [`Store::open`] has returned, so that nothing that takes the
+    /// directory alone (`prune --all`, an anonymous store) runs in between.
     ///
     /// # Errors
     ///
-    /// [`Error::Busy`], [`Error::NoFlock`], [`Error::NotAStateDir`] and
-    /// [`Error::UsedOnSlash`] as [`Store::open`], [`Error::Io`] when
-    /// `state` cannot be resolved or read, [`Error::Rootfs`] when it cannot
-    /// be opened.
+    /// [`Error::Busy`], [`Error::NoFlock`], [`Error::NotAStateDir`],
+    /// [`Error::UsedOnSlash`] and [`Error::PruneCutShort`] as
+    /// [`Store::open`], [`Error::Io`] when `state` cannot be resolved or
+    /// read, [`Error::Rootfs`] when it cannot be opened.
     pub fn check_state_dir(state: &Path) -> Result<StateDirHold> {
         let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
             op: "resolve",
@@ -525,6 +525,7 @@ impl Store {
             }
         }
         refuse_used_on_slash(&root, &state_path)?;
+        refuse_cut_short_prune(&root, &state_path)?;
         needs_marker(&root, &state_path)?;
         check_dirs(&root, &state_path)?;
         Ok(StateDirHold { _lock: state_lock })
@@ -2448,11 +2449,21 @@ fn remove_probe_leftovers(state: &RootPath, state_path: &Path) {
             Ok(ProbeDir::Held | ProbeDir::NotOne) => {}
             Err(e) => tracing::warn!(
                 target: "rnk_store",
-                "{} left by an earlier build not removed: {e}",
-                state_path.join(rel).display()
+                "{}",
+                probe_dir_not_removed(&state_path.join(rel), &e)
             ),
         }
     }
+}
+
+/// What [`remove_probe_leftovers`] logs of the directory of the user
+/// namespace probe at `path` it could not remove for `e`.
+fn probe_dir_not_removed(path: &Path, e: &Error) -> String {
+    format!(
+        "{}, a directory of the user namespace probe, not removed (an earlier build's, or one \
+         a starting build still uses): {e}",
+        path.display()
+    )
 }
 
 /// What [`remove_probe_dir`] and [`remove_probe_named`] did with a name.

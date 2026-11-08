@@ -53,6 +53,24 @@ fn a_probe_directory_gone_before_it_is_opened_is_skipped() {
     assert!(!dir.path().join(&name).exists());
 }
 
+/// A directory of the probe the store could not remove (in a user
+/// namespace, one root made and has not yet given to its range) may be a
+/// starting build's: the warning says what it is, not whose.
+#[test]
+fn a_probe_directory_not_removed_is_named_by_what_the_store_tells() {
+    let e = Error::BadEntry {
+        path: ".ranikust-anon-userns-probe-1-2".into(),
+        reason: "changed while it was being locked; not deleted",
+    };
+    assert_eq!(
+        probe_dir_not_removed(Path::new("/s/.ranikust-anon-userns-probe-1-2"), &e),
+        "/s/.ranikust-anon-userns-probe-1-2, a directory of the user namespace probe, not \
+         removed (an earlier build's, or one a starting build still uses): \
+         state directory entry .ranikust-anon-userns-probe-1-2: changed while it was being locked; \
+         not deleted"
+    );
+}
+
 /// An emptying of the state directory removes a probe directory only under
 /// its lock: one a probe holds stays, and is named; one no probe holds,
 /// and anything else of a probe's name, goes with the rest.

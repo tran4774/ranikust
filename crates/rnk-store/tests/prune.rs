@@ -337,6 +337,9 @@ fn a_prune_cut_short_keeps_every_build_out_until_one_finishes() {
         assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
         assert!(e.to_string().ends_with("so no build uses it"), "{e}");
     }
+    // So does the check a set-up runs before it changes the directory.
+    let e = Store::check_state_dir(&state).unwrap_err();
+    assert!(matches!(e, Error::PruneCutShort { .. }), "{e}");
     assert_eq!(tree(&state), before, "the refusal changes nothing");
     assert!(Store::prune_all(&state).unwrap());
     assert_eq!(tree(&state), Vec::<PathBuf>::new());

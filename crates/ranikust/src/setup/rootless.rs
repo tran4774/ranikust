@@ -340,38 +340,23 @@ fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
 /// overlayfs, as for overlay mode as root, and one the store would take,
 /// checked without writing (Q-111, (a)); its shared lock held from then
 /// on, `euid` naming what to do with a prune cut short. Each refusal comes
-/// before anything is made or changed: overlayfs is told from the nearest
-/// directory that exists, and the store's check runs before the mode is
-/// set. `what` names the mode in messages.
+/// before anything is made or changed, in overlay mode as root's order
+/// ([`super::hold_state_dir`]). `what` names the mode in messages.
 fn state_dir_for_probe(
     state_dir: &Path,
     euid: u32,
     owner: crate::statedir::Owner,
     what: &str,
 ) -> Result<rnk_store::StateDirHold, Refusal> {
-    let refusal = |refused: crate::statedir::Refused| Refusal {
+    super::hold_state_dir(state_dir, euid, owner, || Refusal {
         kind: Kind::Other,
-        reason: refused.0,
-        guidance: "".into(),
-    };
-    // A missing state directory would be made on its nearest parent's
-    // filesystem.
-    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
-        return Err(Refusal {
-            kind: Kind::Other,
-            reason: format!(
-                "{what} cannot run here: the state directory {} is on overlayfs, a container's \
-                 own root, where it cannot keep its upper directories",
-                state_dir.display()
-            ),
-            guidance: ON_OVERLAYFS.into(),
-        });
-    }
-    let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
-    let held = rnk_store::Store::check_state_dir(state_dir)
-        .map_err(|e| super::store_refusal(&e, state_dir, euid))?;
-    staged.finish().map_err(refusal)?;
-    Ok(held)
+        reason: format!(
+            "{what} cannot run here: the state directory {} is on overlayfs, a container's own \
+             root, where it cannot keep its upper directories",
+            state_dir.display()
+        ),
+        guidance: ON_OVERLAYFS.into(),
+    })
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`

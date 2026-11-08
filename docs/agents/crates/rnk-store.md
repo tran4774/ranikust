@@ -59,7 +59,7 @@ impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, build lock, clean-up
-    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING and store-directory checks, writing nothing: before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
+    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING and store-directory checks, writing nothing: before overlay mode sets the state directory's mode and before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -254,7 +254,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   tells no build cut short
   (`a_probe_directory_left_tells_no_build_cut_short`). `src/store/tests.rs`:
   every directory the store makes is one that holds data or a build's
-  own (`each_store_directory_holds_data_or_a_builds_own_files`).
+  own (`each_store_directory_holds_data_or_a_builds_own_files`); the
+  warning for a probe directory not removed names no earlier build
+  (`a_probe_directory_not_removed_is_named_by_what_the_store_tells`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a
@@ -315,8 +317,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `NotPruned`, and `open` refused while anything stays (a `0555` directory
   as a user); the rename before any removal and no file made (the order of
   inotify events); a prune cut short inside a layer, or after the last
-  entry, keeps every store out (`PruneCutShort`, nothing changed) until a
-  prune finishes; a `.ranikust-pruning` that is not a regular file refused
+  entry, keeps every store out (`PruneCutShort`, from `check_state_dir`
+  too, nothing changed) until a prune finishes; a `.ranikust-pruning` that
+  is not a regular file refused
   by both until removed; `abandon` empties a store with no data, whoever
   made it, what dead builds and the sandbox left included, and leaves as
   `close` does one with an entry in `blobs/`, `layers/` or `caches/`, one
