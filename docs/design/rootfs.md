@@ -161,7 +161,8 @@ never called.
   fails the layer before `/` changes
   ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123). In a user namespace
   it calls `check_headers_and_owners`, which also notes each owner the
-  extraction would set that a `MappedIds` lacks; `scan_owners` does the
+  extraction would set that a `MappedIds` lacks, skipping the paths the
+  ignore list keeps as the extraction does; `scan_owners` does the
   same as the overlay form reads a tar (devices left out). Both fill one
   `Unmapped`, the refusal `Error::Unmapped` carries, as a `chown` that fails
   with `EINVAL` does

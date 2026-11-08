@@ -802,7 +802,8 @@ layer is.
   too;
   per stage a layer is extracted as it arrives (ADR-0055). In a user
   namespace the same pass, base layers' and cached ones' alike, refuses an
-  owner the namespace does not map once the layer is verified, just before
+  owner the namespace does not map, on a path the ignore list does not
+  skip, once the layer is verified, just before
   that layer is extracted
   ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)).
   Per stage, in a user namespace, no layer, base or cached, is streamed:

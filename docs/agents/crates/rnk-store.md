@@ -79,7 +79,7 @@ impl Store {
               E: Into<Box<dyn std::error::Error + Send + Sync>>;      //   -> fsync a blob -> rename
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf>;  // caches/<sha256(id)>, created if missing
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
-        cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed; an owner the user namespace does not map: Error::Rootfs(Unmapped) naming caches/<name> (ADR-0098)
+        target: &Path, cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed; an owner the user namespace does not map: Error::Rootfs(Unmapped) naming `target`, the mount's target in the root (ADR-0098)
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
     pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it fails once it took the directory as a store, undoing() then the directory emptied where abandon would (logged where it cannot be), the error returned
     pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER (Error::NotAbandoned names what stays, the marker kept); true: emptied; false: another build holds it, or it holds data or a name the store does not make
@@ -221,7 +221,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   concurrent `fill` from threads runs `f` once, leftovers of a dead build
   removed and a running build's kept, `close`, `cache_dir`; a new cache's
   owner, and an id of `u32::MAX` left the process's
-  (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`); a directory
+  (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`), an owner refused
+  with `EINVAL` named by the mount's target (`src/store/tests.rs`,
+  `a_cache_owner_refused_with_einval_names_the_mount_s_target`); a directory
   holding only the probe's directories is marked and they are removed, and
   anything else with them still refused
   (`open_marks_a_directory_holding_only_ranikusts_leftovers`); another

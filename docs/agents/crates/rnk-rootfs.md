@@ -80,11 +80,11 @@ pub fn extract_live(dst: &RootPath, tar: impl Read, keep: &IgnoreList) -> Result
 pub fn extract_live_literal(dst, tar, keep) -> Result<()>; // as extract_live with Whiteouts::Literal (a kept stage, ADR-0056): `.wh.*` names are files
 pub fn extract_overlay(dst: &RootPath, tar: impl Read, lowers: &[&RootPath], devices: DeviceNodes) -> Result<Extracted>; // overlay form over lowers (nearest first); a hardlink into a lower is copied (splits it, as copy-up, ADR-0012); DeviceNodes::Skip (a user namespace, ADR-0106): no block or character device nor hardlink to one, each counted in nodes_skipped; a link to one the same layer left out past a 1 MiB budget for the names remembered (one warning, ADR-0128), or that a lower layer left out (ADR-0131), is linked to what the layer has at that name, else copied from the nearest lower layer that shows it (ADR-0012), else refused; FIFOs and whiteouts still made, a device as the layer's root refused as with Create; Extracted { root_set }: whether the tar had `./`
 pub fn check_headers(tar: impl Read) -> Result<()>; // reads a tar as extract, extract_live and extract_overlay do, writing nothing: their framing, `tar-header` limit and every refusal a header shows alone, values over the kernel's limits included (#179), with their errors, a directory path held to 4094 bytes as extract_live on / holds it; what the root or the ignore list decides is left to them (rnk-snapshot's spool pass on /, ADR-0123)
-pub fn check_headers_and_owners(tar: impl Read, found: &mut Unmapped) -> Result<()>; // check_headers, noting in `found` each owner extract_live would set that its map lacks (rnk-snapshot's spool pass, ADR-0098)
+pub fn check_headers_and_owners(tar: impl Read, keep: &IgnoreList, found: &mut Unmapped) -> Result<()>; // check_headers, noting in `found` each owner extract_live with `keep` would set that its map lacks: a path `keep` covers is skipped as extract_live skips it, one reached through a symlink still noted (rnk-snapshot's spool pass, ADR-0098)
 pub fn scan_owners(tar: impl Read, found: &mut Unmapped) -> Result<()>; // the same for extract_overlay (devices skipped as in a user namespace, ADR-0106; FIFOs made): Snapshotter::check_owners before any layer is extracted
 pub fn chown_id(id: u32) -> Option<u32>; // None for u32::MAX, chown's -1, "unchanged" (#212): the one rule by which set_meta, the owner scans, rnk-store's cache owner and rnk-sandbox's secret owner read an id; a rustix Uid or Gid never holds it
-pub struct MappedIds; // parse(uid_map, gid_map): the ids a user namespace maps, from /proc/<pid>/{uid,gid}_map; maps_uid, maps_gid, is_one_id (either map)
-pub struct Unmapped;  // Error::Unmapped's refusal (ADR-0098): owners(map) filled by the scans (8 ids of each kind named, each with its first path, the rest counted), chown(path, uid, gid) (a chown that failed with EINVAL: set_meta, rnk-store's cache owner), user(step, uid, gid, groups) (rnk-sandbox's RUN user switch; 8 groups named, the rest counted); highest_uid(map), highest_gid(map): the highest ids met that map lacks (all where None; u32::MAX, chown's "unchanged", never), for the ways out (ranikust). No flag lets one pass
+pub struct MappedIds; // parse(uid_map, gid_map): the ids a user namespace maps, from /proc/<pid>/{uid,gid}_map, the one parser of a map (rnk-snapshot's UserNamespace reads them); uid_lines, gid_lines (each line [inside, outside, count], sorted), maps_uid, maps_gid, is_one_id (either map)
+pub struct Unmapped;  // Error::Unmapped's refusal (ADR-0098): owners(map) filled by the scans (8 ids of each kind named, each with its first path, the rest counted), chown(path, uid, gid) (a chown that failed with EINVAL: set_meta, rnk-store's cache owner named by the mount's target, rnk-sandbox's secret owner by its first target), user(step, uid, gid, groups) (rnk-sandbox's RUN user switch; 8 groups named, the rest counted); highest_uid(map), highest_gid(map): the highest ids met that map lacks (all where None; u32::MAX, chown's "unchanged", never), for the ways out (ranikust). No flag lets one pass
 pub fn set_extension_header_limit(bytes: u64); // the `tar-header` limit (DEFAULT_EXTENSION_HEADER_LIMIT, 1 MiB; ADR-0079): the crate's only process-wide setting, set before any build; Error::ExtensionHeader past it
 pub fn copy(src: &RootPath, from, dst: &RootPath, to, o: &CopyOpts) -> Result<()>; // COPY/ADD of one resolved source; FICLONE, else data ranges only (SEEK_DATA/SEEK_HOLE, copy_file_range), holes kept; a file holding more than the size read first is refused, never cut short
 pub fn copy_filtered(src, from, dst, to, o, keep: &dyn Fn(&Path, bool) -> bool) -> Result<()>; // copy without the entries `keep` refuses (.dockerignore; the ignore list; a refused mount point is skipped, not an error)
@@ -174,11 +174,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the end, the header check's errors; a `chown`'s `EINVAL` in `src/meta.rs`
   as `Error::Unmapped`; an owner of `u32::MAX`, from PAX or base-256, left
   unchanged (`chown`'s -1) by every extraction, the process's on a new
-  entry, and no owner to the scans, #212); their
+  entry, and no owner to the scans, #212; a map's lines kept sorted, a
+  count past `u32` refused); their
   red team (`tests/red_team_owners.rs`:
   hostile headers, PAX, global PAX, GNU long names, base-256, duplicates,
   whiteouts, hardlinks, special files, framing and entries past the end,
-  each scanned as both extraction forms `chown`, or refused alike; a
+  each scanned as both extraction forms `chown`, or refused alike; an
+  ignored path skipped by the live scan as `extract_live` skips it, one
+  reached through a symlink still named; a
   refusal of 5,000 owners under hostile names names 16;
   `tests/red_team_owners_memory.rs`: 200,000 owners and PAX sets near the
   `tar-header` limit scanned in under 4 MiB);

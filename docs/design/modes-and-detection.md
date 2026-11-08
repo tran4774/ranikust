@@ -514,8 +514,9 @@ the namespace does not map, whether it maps one id or ranges; no flag lets a
 failed `chown` pass
 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
 The map is the process's own `/proc/self/uid_map` and `gid_map`: the one
-ranikust wrote (probe step 2), or the container's. In the initial namespace
-every id maps and nothing is checked.
+ranikust wrote (probe step 2), or the container's, read by
+`rnk_snapshot::UserNamespace` alone. In the initial namespace every id maps
+and nothing is checked.
 
 - **Base layers, before extraction.** `Snapshotter::check_owners`
   decompresses each base layer once more and reads its tar headers as the
@@ -527,13 +528,14 @@ every id maps and nothing is checked.
   user namespace: it pulls the blobs, which are checked the same way
   before any is extracted. On `/`, where no blob is kept, a streamed layer
   is checked in the pass that spools and verifies it, before that layer is
-  extracted, so a base image's earlier layers may be on `/` already
+  extracted, its paths the ignore list keeps skipped as the extraction
+  skips them, so a base image's earlier layers may be on `/` already
   ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md));
   a `COPY --from=<image>` spools and checks all its layers before any is
   unpacked.
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
-  entry, `COPY --chown`, a cache mount's owner) refuses at once, naming the
-  file. So does a `RUN`'s switch to its user (`setgroups`, `setgid`,
+  entry, `COPY --chown`, a cache mount's owner, a secret file's) refuses at
+  once, naming the file (a mount by its target). So does a `RUN`'s switch to its user (`setgroups`, `setgid`,
   `setuid`, for `USER`), naming the ids, where nothing else explains the
   `EINVAL`: in a user namespace other than the initial one, with no more
   supplementary groups than the kernel's `NGROUPS_MAX` (65536); otherwise

@@ -77,6 +77,10 @@ pub struct LayerDir;                               // layers/<algo>/<hex>/: diff
 pub struct LayerDiff;                              // upper + lowers; new(upper, lowers), is_empty(), entries(), export(o, out)
 pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check; also as root of a user namespace (ranikust's #74 probe, in a child)
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
+pub struct UserNamespace;                          // src/userns.rs: the one reader of /proc/self/{uid,gid}_map (ADR-0098)
+impl UserNamespace { pub fn current() -> Result<Option<Self>>; // None in the initial one (rnk_store::user_namespace_proc); Error::Io naming uid_map or gid_map when one cannot be read or parsed
+    pub fn ids(&self) -> &MappedIds; pub fn uid_map(&self) -> &str; pub fn gid_map(&self) -> &str; // the maps in canonical form, the layer key's input (ADR-0104)
+    pub fn root_uid_outside(&self) -> Option<u32>; } // the uid outside that uid 0 inside has: who made it, for the binary's ways out
 pub const OVERLAY_OPTIONS: &str = "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile"; // [decided] ADR-0016
 pub const MAX_LOWERS: usize = 500;                 // refused beyond, no merging yet (ADR-0032)
 
@@ -152,15 +156,16 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
 - `check_owners` (`src/owners.rs`, ADR-0098): in a user namespace other
   than the initial one, each blob is decompressed once more and its headers
   read as its extraction reads them (`rnk_rootfs::scan_owners` for overlay,
-  `check_headers_and_owners` for kaniko mode), its diff ID verified, and
+  `check_headers_and_owners` for kaniko mode, skipping the paths the
+  ignore list keeps as `extract_live` does), its diff ID verified, and
   every owner the namespace's maps (`UserNamespace`'s `MappedIds`) lack is
   named in one refusal; overlay skips a layer whose key is already in the
   store. Off `/`, in a user namespace (`in_initial_user_namespace`, read
   once per snapshotter), kaniko mode streams no base layer, so its layers
   come as blobs and are all checked first. On `/` a streamed layer is not
   a blob: the spool pass (`Spooled::of`) notes its owners in the same read
-  as its headers and refuses once the layer is verified, before it is
-  extracted (ADR-0137). A `chown`
+  as its headers, against the namespace `Kaniko` read once, and refuses
+  once the layer is verified, before it is extracted (ADR-0137). A `chown`
   that fails with `EINVAL` during extraction is refused the same way
   (`rnk_rootfs::Error::Unmapped`).
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
@@ -244,8 +249,9 @@ that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
-  `tests/layers.rs`); the id map's canonical form and the mapped key, apart
-  from every chain ID (`src/userns.rs`); the owner check of every layer
+  `tests/layers.rs`); the id map's canonical form, root's outside uid, a
+  map that does not parse named `uid_map` or `gid_map`, and the mapped key,
+  unchanged and apart from every chain ID (`src/userns.rs`); the owner check of every layer
   not kept, before any extraction, a kept one unread (`src/owners.rs`,
   ADR-0098; red team: an owner in a later gzip member, or a zstd frame
   past a skippable one, named; a blob behind a skippable frame refused by
@@ -329,7 +335,10 @@ that found a bug stay as its regression test.
   `src/kaniko/root/tests.rs`, a base or `COPY --from` image layer with a bad
   header is refused before any of it is written or any directory made, and
   keeps no spool; in a user namespace only `/` takes a streamed base layer
-  (ADR-0098, ADR-0137). `tests/spans.rs`: on `/` a streamed layer is decoded
+  (ADR-0098, ADR-0137), its owners checked in the spool pass against the
+  namespace the build read, the ignore list's paths skipped
+  (`on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass`;
+  red team in `rnk-rootfs`'s `tests/red_team_owners.rs`). `tests/spans.rs`: on `/` a streamed layer is decoded
   once before its extraction, a refused one once and never extracted
   (ADR-0123).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
