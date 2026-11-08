@@ -26,9 +26,15 @@ after=0
 {
   echo "kernel: $(uname -r)"
   echo "os: $(. /etc/os-release && echo "$PRETTY_NAME")"
-  echo "docker: $(sudo docker version --format '{{.Server.Version}}')"
+  # No Docker daemon (RANIKUST_VM_RELEASE=alma9): `docker` is Podman's.
+  if command -v dockerd >/dev/null || ! command -v podman >/dev/null; then
+    echo "docker: $(sudo docker version --format '{{.Server.Version}}')"
+  else
+    echo "podman: $(sudo podman version --format '{{.Client.Version}}')"
+  fi
   echo "cgroup: $(stat -fc %T /sys/fs/cgroup)"
   echo "apparmor: $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)"
+  ! command -v getenforce >/dev/null || echo "selinux: $(getenforce)"
   echo "cpus: $(nproc)"
   echo "memory: $(awk '/^MemTotal/ { printf "%d MiB", $2 / 1024 }' /proc/meminfo); swap: $(awk '/^SwapTotal/ { printf "%d MiB", $2 / 1024 }' /proc/meminfo)"
   echo "vm: ${RANIKUST_VM_SIZE:-unknown}"
