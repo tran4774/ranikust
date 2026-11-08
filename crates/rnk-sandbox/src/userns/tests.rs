@@ -134,6 +134,30 @@ fn root_tries_its_ranges_then_one_id_and_a_user_newuidmap_then_one_id() {
 }
 
 #[test]
+fn the_capability_check_names_the_step_refused_and_never_a_child_cut_short() {
+    let found = capabilities_of(&[(UNSHARE, EPERM), (DONE, 0)], None);
+    assert_eq!(found.stop(), Some("unshare"));
+    assert_eq!(
+        found.to_string(),
+        "unshare(CLONE_NEWUSER): EPERM; unshare(CLONE_NEWNS): not run (no user namespace)"
+    );
+    let found = capabilities_of(&[(UNSHARE, 0), (NEWNS, EPERM), (DONE, 0)], None);
+    assert_eq!(found.stop(), Some("mount namespace"));
+    assert_eq!(
+        found.to_string(),
+        "unshare(CLONE_NEWUSER): ok; unshare(CLONE_NEWNS): EPERM"
+    );
+    let found = capabilities_of(&[(UNSHARE, 0), (NEWNS, 0), (DONE, 0)], None);
+    assert_eq!(found.stop(), None);
+    let died = "the probe's child died of signal 9".to_owned();
+    for records in [&[][..], &[(UNSHARE, 0)][..]] {
+        let found = capabilities_of(records, Some(died.clone()));
+        assert_eq!(found.stop(), None, "{found}");
+        assert!(found.to_string().ends_with(&format!("; {died}")), "{found}");
+    }
+}
+
+#[test]
 fn a_refused_unshare_leaves_every_later_step_not_run() {
     let a = assemble(&one_id(1000), &[(CHDIR, 0), (UNSHARE, EPERM)], None, None);
     assert_eq!(a.unshare, failed("unshare(CLONE_NEWUSER)", EPERM));
@@ -801,6 +825,24 @@ fn is_eperm(r: &StepResult) -> bool {
             ..
         })
     )
+}
+
+/// As root: the capability check, which needs no directory, passes on a
+/// host; under Docker's defaults `unshare` is refused.
+#[test]
+#[ignore = "T2c: default: unshare(CLONE_NEWUSER) as root; Docker's defaults refuse it"]
+fn the_capability_check_as_root_passes_on_a_host_and_stops_at_unshare_in_docker() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let found = capabilities().unwrap();
+    measured(&format!("user namespace capabilities as root: {found}"));
+    assert_eq!(found.cut_short, None);
+    if seccomp_without_sys_admin() {
+        assert_eq!(found.stop(), Some("unshare"), "{found}");
+        assert!(is_eperm(&found.unshare), "{found}");
+    } else {
+        assert_eq!(found.stop(), None, "{found}");
+        assert_eq!(found.mount_ns, StepResult::Ok);
+    }
 }
 
 /// As root: on a host every step a `RUN` needs passes with this process's

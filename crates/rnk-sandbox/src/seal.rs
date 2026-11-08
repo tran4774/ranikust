@@ -262,6 +262,8 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Resu
         }
     };
     let binary = mount_of(exe.as_fd(), walk);
+    // Only the advice where no user namespace is usable weighs it, and says
+    // so where it is unknown.
     let path = path_of(exe.as_fd()).ok();
     let run = |way, copy: OwnedFd, failed: &[(SealedCopy, io::Error)]| {
         execute(&copy, &marker(way, binary, path.as_deref(), failed))
@@ -786,6 +788,7 @@ fn copy_run(value: &OsStr, walk: bool) -> Sealing {
     let unsealed = |why| Sealing::Unsealed {
         why,
         binary: mount_of(exe.as_fd(), walk),
+        // As above: unknown, the advice says so.
         path: path_of(exe.as_fd()).ok(),
     };
     let Some(Marker {

@@ -85,8 +85,10 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> No
 }
 
 /// The user namespace probe for rootless overlay mode, before the build's
-/// user namespace: the state directory's check ([`state_dir_for_probe`]),
-/// the subordinate ids of this user ([`crate::subids`]), then the steps and
+/// user namespace: for a user other than root, whether it gets one with
+/// capabilities, with nothing written ([`without_capabilities`]); the state
+/// directory's check ([`state_dir_for_probe`]), the subordinate ids of this
+/// user ([`crate::subids`]), then the steps and
 /// the overlay mount in a user namespace, in a directory made for them in
 /// the state directory, named as the leftovers an anonymous store removes,
 /// and removed after. Logs the probe's line, whose verdict counts an rbind
@@ -105,6 +107,11 @@ pub(crate) fn plan(
     binary: Option<&Path>,
 ) -> Result<Plan, NotHere> {
     let euid = rustix::process::geteuid().as_raw();
+    if euid != 0
+        && let Some(not_here) = without_capabilities(euid, binary)
+    {
+        return Err(not_here);
+    }
     let unprobed = |refusal| NotHere {
         refusal,
         probed: false,
@@ -171,6 +178,33 @@ pub(crate) fn plan(
         fallbacks,
         proc_rbind: bind_proc,
         held,
+    })
+}
+
+/// The refusal of a user other than root (`euid`) that gets no user
+/// namespace with capabilities, before the state directory is made or
+/// anything else written (#81), logged as the probe's line; `binary` as for
+/// [`plan`]. `None` where it gets one, or where the check cannot tell: the
+/// probe decides then.
+fn without_capabilities(euid: u32, binary: Option<&Path>) -> Option<NotHere> {
+    let found = rnk_sandbox::probe_user_namespace_capabilities()
+        .inspect_err(|e| tracing::debug!("ranikust: user namespace capability check: {e}"))
+        .ok()?;
+    let step = found.stop()?;
+    tracing::info!(
+        "ranikust: user namespace probe: stops at {step}, nothing written; {found}; \
+         kernel.apparmor_restrict_unprivileged_userns: {}",
+        super::apparmor_switch()
+    );
+    Some(NotHere {
+        refusal: Refusal {
+            kind: Kind::Other,
+            reason: format!(
+                "rootless overlay mode cannot run here: the user namespace probe stops at {step}"
+            ),
+            guidance: guidance(step, false, euid, binary),
+        },
+        probed: true,
     })
 }
 

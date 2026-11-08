@@ -106,5 +106,5 @@ pub use stop::{StopSignal, StopSignals, block_stop_signals};
 pub use supervise::{FORWARDED_STOP, Forked, Supervised, Waiting, fork_to_wait};
 pub use userns::{
     BuildUserNamespace, IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds,
-    UsernsReport, probe_user_namespace,
+    UsernsCapabilities, UsernsReport, probe_user_namespace, probe_user_namespace_capabilities,
 };

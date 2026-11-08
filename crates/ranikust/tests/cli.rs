@@ -306,7 +306,7 @@ fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
     let err = stderr(&out);
     let advice = err
         .lines()
-        .find_map(|l| l.strip_prefix("  "))
+        .find_map(|l| l.strip_prefix("  ").filter(|l| l.contains("with sudo")))
         .unwrap_or_else(|| panic!("no advice: {err}"));
     let at = |part: &str| advice.find(part);
     let sudo = at("run ranikust as root, with sudo").expect(advice);
@@ -315,12 +315,13 @@ fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
     let restricted = fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
         .is_ok_and(|v| v.trim_ascii() == b"1");
     if restricted {
-        let profile =
-            at("or, as root, install ranikust as /usr/local/bin/ranikust first").expect(advice);
+        // As /usr/local/bin/ranikust, or elsewhere where /usr/local/bin is
+        // not root's alone.
+        let profile = at("or, as root, install ranikust ").expect(advice);
         assert!(sudo < profile && profile < container, "{advice}");
         // Named as `/proc/self/exe` names it: no symlink on the way.
         let binary = fs::canonicalize(env!("CARGO_BIN_EXE_ranikust")).expect("binary");
-        let named = format!("{} is not a path only root can change", binary.display());
+        let named = format!("{} is not a path only root can change (", binary.display());
         assert!(advice.contains(&named), "{advice}");
     } else {
         assert!(!advice.contains("AppArmor"), "{advice}");

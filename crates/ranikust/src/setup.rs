@@ -888,17 +888,21 @@ fn probe_in_scratch(
     };
     let keep = keeps_dir(None, overlay.as_ref().and_then(|r| r.as_ref().err()));
     let overlay = overlay.map(|r| r.map_err(|e| e.to_string()));
-    let apparmor = match std::fs::read_to_string(APPARMOR_USERNS) {
-        Ok(v) => v.trim().to_owned(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
-        Err(e) => format!("unreadable: {e}"),
-    };
     let probed = Probed {
         report,
         overlay,
-        apparmor,
+        apparmor: apparmor_switch(),
     };
     (Ok(probed), keep)
+}
+
+/// [`APPARMOR_USERNS`]'s value for the probe's line.
+fn apparmor_switch() -> String {
+    match std::fs::read_to_string(APPARMOR_USERNS) {
+        Ok(v) => v.trim().to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
+        Err(e) => format!("unreadable: {e}"),
+    }
 }
 
 /// `rnk-snapshot`'s overlay probe in `dir`, run in the user namespace: the

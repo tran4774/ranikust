@@ -402,6 +402,110 @@ pub fn probe_user_namespace(
     probe_in(dir, subordinate)
 }
 
+/// What [`probe_user_namespace_capabilities`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsernsCapabilities {
+    /// `unshare(CLONE_NEWUSER)`.
+    pub unshare: StepResult,
+    /// `unshare(CLONE_NEWNS)` in the new user namespace, with no id map:
+    /// it needs `CAP_SYS_ADMIN` there.
+    pub mount_ns: StepResult,
+    /// Why the child stopped before it reported, when it did.
+    pub cut_short: Option<String>,
+}
+
+impl UsernsCapabilities {
+    /// The step refused, named as [`UsernsReport::stop`] names it:
+    /// `unshare` or `mount namespace`. `None` where both worked, and where
+    /// neither was refused but the child stopped before it reported: only
+    /// [`probe_user_namespace`] can tell then.
+    #[must_use]
+    pub fn stop(&self) -> Option<&'static str> {
+        if matches!(self.unshare, StepResult::Failed(_)) {
+            Some("unshare")
+        } else if matches!(self.mount_ns, StepResult::Failed(_)) {
+            Some("mount namespace")
+        } else {
+            None
+        }
+    }
+}
+
+impl fmt::Display for UsernsCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // A step refused by its own operation shows only the errno.
+        let step = |f: &mut fmt::Formatter<'_>, label: &str, r: &StepResult| match r {
+            StepResult::Failed(e) if e.op == label => write!(f, "{label}: {}", e.cause()),
+            r => write!(f, "{label}: {r}"),
+        };
+        step(f, UNSHARE_USER, &self.unshare)?;
+        f.write_str("; ")?;
+        step(f, UNSHARE_MOUNT, &self.mount_ns)?;
+        if let Some(c) = &self.cut_short {
+            write!(f, "; {c}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether this process gets a user namespace it holds capabilities in,
+/// tried with nothing written: a forked child makes one and, with no id
+/// map, a mount namespace in it. A user namespace given no capabilities
+/// (Ubuntu's AppArmor switch, ADR-0004) stops at the mount namespace. For a
+/// caller that refuses before it writes anything; where this passes, only
+/// [`probe_user_namespace`] tells whether a `RUN` can run.
+///
+/// Call in the single-threaded start-up window, as
+/// [`probe_user_namespace`]. Reported only. One
+/// `rnk_sandbox.probe_userns_capabilities` span.
+///
+/// # Errors
+///
+/// [`crate::Error::NotSingleThreaded`] when other threads exist; a pipe or
+/// the fork failing; [`Error::ProbeChildLeft`] when the child is still
+/// there after it was killed.
+pub fn probe_user_namespace_capabilities() -> Result<UsernsCapabilities> {
+    crate::setup::require_single_thread()?;
+    capabilities()
+}
+
+fn capabilities() -> Result<UsernsCapabilities> {
+    let span = tracing::debug_span!("rnk_sandbox.probe_userns_capabilities", ok = Empty);
+    let _entered = span.enter();
+    // Never written: the child asks for no map.
+    let plan = Plan::OneId {
+        uid_map: Vec::new(),
+        gid_map: Vec::new(),
+    };
+    let run = supervise(&plan, false, None, -1, ATTEMPT_DEADLINE, |args| {
+        // SAFETY: the child of the fork, right after it returned 0.
+        unsafe { capabilities_child(args) }
+    })?;
+    let found = capabilities_of(&run.records.list, run.cut_short);
+    span.record("ok", found.stop().is_none());
+    Ok(found)
+}
+
+/// [`UsernsCapabilities`] from the child's records.
+fn capabilities_of(records: &[(u8, i32)], cut_short: Option<String>) -> UsernsCapabilities {
+    let step = |op: u8, name: &'static str| match records.iter().find(|r| r.0 == op) {
+        Some(&(_, 0)) => StepResult::Ok,
+        Some(&(_, e)) => StepResult::Failed(StepFailure::errno(name, e)),
+        None => StepResult::NotRun(STOPPED),
+    };
+    let unshare = step(UNSHARE, UNSHARE_USER);
+    let mount_ns = if unshare == StepResult::Ok {
+        step(NEWNS, UNSHARE_MOUNT)
+    } else {
+        StepResult::NotRun("no user namespace")
+    };
+    UsernsCapabilities {
+        unshare,
+        mount_ns,
+        cut_short,
+    }
+}
+
 /// What the step child works on, in the probe's directory, made and opened
 /// here before the fork. The mount points, `proc` and `sys`, are opened by
 /// the child: a mount needs a target in the child's own mount namespace.
@@ -1280,9 +1384,7 @@ fn send(report: BorrowedFd<'_>, op: u8, r: rustix::io::Result<()>) {
 /// the probe's directory as working directory, the user namespace, the
 /// map. `false` when the child must stop (reported).
 fn enter(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
-    child::default_signals();
-    let armed = rustix::process::set_parent_process_death_signal(Some(Signal::KILL)).is_ok();
-    if !armed || rustix::process::getppid() != Some(a.parent) {
+    if !start(a) {
         return false;
     }
     if a.dir >= 0 {
@@ -1301,6 +1403,40 @@ fn enter(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
     let r = unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWUSER) };
     send(report, UNSHARE, r);
     r.is_ok() && map_in_child(a, report)
+}
+
+/// Every child's start: default signals, death with this process. `false`
+/// when this process is gone already.
+fn start(a: &ChildArgs<'_>) -> bool {
+    child::default_signals();
+    let armed = rustix::process::set_parent_process_death_signal(Some(Signal::KILL)).is_ok();
+    armed && rustix::process::getppid() == Some(a.parent)
+}
+
+/// The child of [`capabilities`]: the user namespace, then, unmapped, the
+/// mount namespace, each reported. Nothing is mounted, and both go when it
+/// exits.
+///
+/// # Safety
+///
+/// Call only in the child of a fork, right after it returned 0.
+unsafe fn capabilities_child(a: &ChildArgs<'_>) -> ! {
+    // SAFETY: the report pipe's write end, open in this process.
+    let report = unsafe { BorrowedFd::borrow_raw(a.report) };
+    if start(a) {
+        // SAFETY: `NEWUSER` does not unshare the descriptor table, the only
+        // flag `unshare_unsafe` is unsafe for; this child is single-threaded.
+        let r = unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWUSER) };
+        send(report, UNSHARE, r);
+        if r.is_ok() {
+            // SAFETY: as above, for `NEWNS`.
+            let r = unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWNS) };
+            send(report, NEWNS, r);
+        }
+        send(report, DONE, Ok(()));
+    }
+    // SAFETY: `_exit` ends this process at once.
+    unsafe { libc::_exit(0) }
 }
 
 /// The mount namespace, owned by the new user namespace, with `/` a

@@ -475,8 +475,11 @@ apparmor_profile() {
   trap 'sudo rm -f "$MARKER"; apparmor_undo' EXIT
   sudo install -m 0755 -o root -g root "$RNK" "$AA_BINARY"
   mkdir -m 700 -p "$aa" "$aa/w" "$aa/ctx"
-  log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/w" 2>&1)" || rc=$?
+  # A state directory not made yet: the refusal writes nothing.
+  log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/new" 2>&1)" || rc=$?
   printf '%s\n' "$log" >"$dir/apparmor-before.log"
+  [ ! -e "$aa/new" ] ||
+    { echo "error: user: the refusal made the state directory $aa/new:" >&2; echo "$log" >&2; exit 1; }
   local advice
   advice="$(advice_of "$log")"
   if usr_local_bin_root_only; then
@@ -487,9 +490,9 @@ apparmor_profile() {
       { echo "error: user: expected the profile as shipped for $AA_BINARY, got $rc:" >&2; echo "$log" >&2; exit 1; }
   else
     [ "$rc" = 1 ] && in_order "$advice" 'run ranikust as root, with sudo; ' \
-      'install ranikust as /usr/local/bin/ranikust first' \
-      "$AA_BINARY is not a path only root can change" 'or run ranikust in a container' ||
-      { echo "error: user: expected the install under a root-only /usr/local/bin first, got $rc:" >&2; echo "$log" >&2; exit 1; }
+      'install ranikust first in a directory only root can change, which /usr/local/bin is not here' \
+      "$AA_BINARY is not a path only root can change (" 'or run ranikust in a container' ||
+      { echo "error: user: expected the install in a root-only directory first, got $rc:" >&2; echo "$log" >&2; exit 1; }
   fi
   echo "user: $AA_BINARY, root's, without the profile: refused; advice: sudo, the profile, a container"
   sudo cp "$HOME/rnk/guest/apparmor-ranikust" "$AA_PROFILE"
@@ -512,6 +515,15 @@ apparmor_profile() {
   [ "$rc" = 0 ] && grep -q '^label: ranikust (unconfined)$' <<<"$log" ||
     { echo "error: user: expected a RUN under the profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: a RUN keeps the profile: $(grep '^label: ' <<<"$log")"
+  # Measured, for the docs: whether an unconfined program of this user may
+  # enter the profile without being ranikust.
+  if command -v aa-exec >/dev/null; then
+    got="$(aa-exec -p ranikust -- unshare --user --map-root-user --mount true 2>&1)" && got="ok: $got" ||
+      got="refused: $got"
+    echo "user: measured: aa-exec -p ranikust -- unshare -Urm, with" \
+      "kernel.apparmor_restrict_unprivileged_unconfined=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined 2>/dev/null || echo absent):" \
+      "$got"
+  fi
   apparmor_undo
   trap 'sudo rm -f "$MARKER"' EXIT
 }
@@ -594,8 +606,8 @@ grep -E 'user namespace probe|rootless' <<<"$log" || true
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
   [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
     in_order "$(advice_of "$log")" 'where kernel.apparmor_restrict_unprivileged_userns is 1, as here' \
-      'run ranikust as root, with sudo; ' 'or, as root, install ranikust as /usr/local/bin/ranikust first' \
-      "$(realpath "$RNK") is not a path only root can change" '; or run ranikust in a container' ||
+      'run ranikust as root, with sudo; ' 'or, as root, install ranikust ' \
+      "$(realpath "$RNK") is not a path only root can change (" '; or run ranikust in a container' ||
     { echo "error: user: expected rootless overlay mode refused, with sudo, the profile after an install under /usr/local/bin, then a container, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it; advice: sudo, the profile after an install under /usr/local/bin, a container"
   apparmor_profile
