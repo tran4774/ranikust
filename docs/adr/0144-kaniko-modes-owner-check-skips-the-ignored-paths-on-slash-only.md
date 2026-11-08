@@ -4,19 +4,18 @@ date: 2026-11-08
 decision-makers: Tran Nguyen (maintainer)
 ---
 
-# ADR-0144: Kaniko mode's owner check skips the ignored paths only where the extraction skips them, on `/`
+# ADR-0144: Kaniko mode's owner check skips the ignored paths on `/` only
 
 ## Context and Problem Statement
 
 [ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)
 refuses an image with an owner the build's user namespace does not map, and
 reads the owners before the layers are extracted.
-Kaniko mode extracts a base layer with the ignore list
-(`rnk_rootfs::extract_live`), which leaves out the paths it covers:
-`/proc`, `/sys`, `/dev`, `/ranikust`, `/etc/mtab`, the runtime's markers,
-the mounts inside the root, the state directory and `--ignore-path`
-(`kaniko::ignore_list`). A check that read every entry refused an image
-whose only unmapped owners sit on paths that no extraction writes.
+Kaniko mode extracts a base layer with the
+[ignore list](../design/kaniko-mode.md#ignore-list)
+(`rnk_rootfs::extract_live`), which leaves out the paths it covers. A check
+that read every entry refused an image whose only unmapped owners sit on
+paths that no extraction writes.
 [ADR-0137](0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)
 left those owners open ("Not decided here", #209), and #209 asked for the
 ignore list in the scan on `/`. The question put to the maintainer in the
@@ -27,8 +26,9 @@ branch of #209 built it?
 
 The options weighed while building #209.
 
-- (a) Skip the ignored paths only where the extraction that follows skips
-  them, on `/`; check every path elsewhere (recommended, the branch).
+- (a) Skip the ignored paths on `/` only, where the extraction that follows
+  skips them; off `/` check every path, the ones its extraction skips too
+  (recommended, the branch).
 - (b) Check every path everywhere, as before #209: an image is refused for
   owners on paths kaniko mode on `/` never writes.
 - (c) Skip the ignored paths off `/` too: #209 decided only `/`, and off `/`
@@ -38,19 +38,19 @@ The options weighed while building #209.
 ## Decision Outcome
 
 In kaniko mode in a user namespace, the owner check skips the paths the
-ignore list covers only for a layer extracted on `/` with that list; a
-`COPY --from` image on `/`, and every layer off `/`, are checked on every
-path.
+ignore list covers only on `/`, for a layer extracted there with that list;
+a `COPY --from` image on `/`, and every layer off `/`, are checked on every
+path, the ones the stage's extraction skips too.
 
 The maintainer's answer (2026-11-08: "Ghi ADR như nhánh làm (khuyến
 nghị)", "Record the ADR as the branch did it (recommended)") stood for
 option (a).
 
 - **On `/`, base and cached layers.** The spool pass of a streamed layer
-  (`Spooled::of`), `Snapshotter::check_owners` for kept blobs, and the
+  (`Spooled::of`), `Snapshotter::check_owners` for pulled blobs, and the
   check before a cached blob is applied (`apply_layer`) all skip what the
-  build's ignore list covers, tested on the same cleaned path as the
-  extraction tests. An entry reached through a symlink is still noted
+  build's ignore list covers, matched on the same cleaned path the
+  extraction matches. An entry reached through a symlink is still noted
   **[code]**.
 - **`COPY --from=<image>` on `/`.** It is unpacked into a directory of the
   state directory with no ignore list, so its owners are checked on every

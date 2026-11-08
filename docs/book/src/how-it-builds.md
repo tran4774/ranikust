@@ -507,4 +507,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md
 [ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md
 [ADR-0141]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0141-an-owner-of-4294967295-over-an-earlier-layers-directory-is-an-accepted-difference-between-the-modes.md
-[ADR-0144]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md
+[ADR-0144]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md

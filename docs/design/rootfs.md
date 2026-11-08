@@ -163,7 +163,7 @@ never called.
   the extraction would set that a `MappedIds` lacks, skipping the paths the
   ignore list it is given keeps, as the extraction does (kaniko mode gives
   it one only on `/`,
-  [ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md));
+  [ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md));
   `scan_owners` does the same as the overlay form reads a tar (devices left
   out). Both fill one
   `Unmapped`, the refusal `Error::Unmapped` carries, as a `chown` that fails

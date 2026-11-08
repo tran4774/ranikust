@@ -535,7 +535,7 @@ nothing is checked.
   base is read again for it. Off `/` every path is checked, the ignored
   ones too; a cached layer is checked as a base layer is, before
   `apply_layer` extracts it
-  ([ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md)).
+  ([ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md)).
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
   entry, `COPY --chown`, a cache mount's owner, a secret file's) refuses at
   once, naming the file (a mount by its target). So does a `RUN`'s switch to
