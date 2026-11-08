@@ -306,6 +306,24 @@ fn meta_options_hold_no_names_paths_or_arguments() {
     assert_eq!(options["compression"], "gzip");
 }
 
+/// `--userns` builds in overlay mode in a user namespace (ADR-0104):
+/// refused with `--mode=kaniko` before anything runs, else kept, and
+/// counted in the run's options.
+#[test]
+fn userns_is_refused_with_kaniko_mode_only() {
+    let err = config(&["--no-push", "--userns", "--mode=kaniko"]).expect_err("kaniko mode");
+    assert!(err.0.contains("--userns"), "{}", err.0);
+    assert!(err.0.contains("--mode=kaniko"), "{}", err.0);
+    for mode in ["--mode=auto", "--mode=overlay"] {
+        let ok = config(&["--no-push", "--userns", mode]).expect(mode);
+        assert!(ok.userns, "{mode}");
+        assert_eq!(ok.meta_options()["userns"], true, "{mode}");
+    }
+    let off = config(&["--no-push"]).expect("config");
+    assert!(!off.userns);
+    assert_eq!(off.meta_options()["userns"], false);
+}
+
 #[test]
 fn value_names_match_the_flags() {
     assert_eq!(name(Mode::Kaniko), "kaniko");

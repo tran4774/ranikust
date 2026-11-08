@@ -43,6 +43,10 @@ use sha2::Digest as _;
 // inline module, so that its own `mod tests` resolves as in the binary.
 #[path = "../src"]
 mod src {
+    #[expect(
+        dead_code,
+        reason = "root's ranikust range is the binary's --userns alone"
+    )]
     pub(crate) mod subids;
 }
 use src::subids;
@@ -174,9 +178,12 @@ fn enter_user_namespace(work: &Path) -> Result<Fallbacks, BoxError> {
     let subordinate = subids::lookup(rustix::process::geteuid().as_raw())?;
     let scratch = work.join("userns-probe");
     fs::create_dir_all(&scratch)?;
-    let report = rnk_sandbox::probe_user_namespace(&RootPath::open(&scratch)?, subordinate)?;
+    let report = rnk_sandbox::probe_user_namespace(
+        &RootPath::open(&scratch)?,
+        rnk_sandbox::BuildIds::Own(subordinate),
+    )?;
     println!("userns probe: {report}");
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)?;
+    let userns = rnk_sandbox::enter_build_user_namespace(rnk_sandbox::BuildIds::Own(subordinate))?;
     println!("userns: {userns}");
     Ok(report.fallbacks())
 }

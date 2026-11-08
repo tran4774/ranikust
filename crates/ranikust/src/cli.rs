@@ -379,6 +379,18 @@ pub(crate) struct BuildArgs {
     #[arg(long, value_enum, default_value_t = Mode::Auto, help_heading = "ranikust")]
     pub(crate) mode: Mode,
 
+    /// As root, runs the whole build in a user namespace whose root is an
+    /// unprivileged uid of the host, the first of the `ranikust` range of
+    /// /etc/subuid and /etc/subgid, so that a process escaping a `RUN` is
+    /// not the host's root (ADR-0003, ADR-0104); refused where that range
+    /// or such a namespace is missing, never building without it. The
+    /// state directory must be its own: owned by that uid (ranikust makes
+    /// a missing one), below directories only root owns and that uid may
+    /// search. A user other than root builds in a user namespace anyway.
+    /// Refused with --mode=kaniko.
+    #[arg(long, help_heading = "ranikust")]
+    pub(crate) userns: bool,
+
     /// State directory holding the store and every build root ranikust
     /// makes; kaniko's `--kaniko-dir` (ADR-0050) [default:
     /// /var/lib/ranikust as root, else ~/.local/share/ranikust].

@@ -213,6 +213,9 @@ pub(crate) struct BuildConfig {
     pub(crate) snapshot_workers: NonZeroUsize,
     /// The requested mode.
     pub(crate) mode: Mode,
+    /// `--userns`: root builds in a user namespace of its `ranikust`
+    /// range (ADR-0104).
+    pub(crate) userns: bool,
     /// The state directory, absolute: `--state-dir`, else
     /// [`default_state_dir`] (ADR-0050).
     pub(crate) state_dir: PathBuf,
@@ -403,6 +406,15 @@ impl BuildConfig {
         if args.targets.iter().any(String::is_empty) {
             return Err(Invalid("--target names an empty stage".to_owned()));
         }
+        // `--userns` builds in overlay mode in the build's user namespace
+        // (ADR-0104); kaniko mode has no user namespace to build in.
+        if args.userns && args.mode == Mode::Kaniko {
+            return Err(Invalid(
+                "--userns cannot be used with --mode=kaniko: it builds in overlay mode, in a user \
+                 namespace; drop one of them"
+                    .to_owned(),
+            ));
+        }
         // One stage per build (ADR-0049): kaniko's list builds the stages
         // after the first and throws them away.
         if args.targets.len() > 1 {
@@ -475,6 +487,7 @@ impl BuildConfig {
             ignore_paths: args.ignore_paths.iter().map(|p| clean(p)).collect(),
             snapshot_workers: args.snapshot_workers.unwrap_or(SNAPSHOT_WORKERS),
             mode: args.mode,
+            userns: args.userns,
             state_dir: match args.state_dir.as_deref() {
                 Some(dir) => absolute(dir),
                 None => default_state_dir(
@@ -539,6 +552,7 @@ impl BuildConfig {
             "snapshot_mode": name(self.snapshot_mode),
             "snapshot_workers": self.snapshot_workers.get(),
             "targets": self.targets.len(),
+            "userns": self.userns,
         })
     }
 }

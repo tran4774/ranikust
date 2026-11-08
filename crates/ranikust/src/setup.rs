@@ -296,7 +296,7 @@ pub(crate) fn enter_build_userns(
         guidance: "".into(),
         reason: format!("cannot read this user's subordinate ids: {e}"),
     })?;
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
+    let userns = rnk_sandbox::enter_build_user_namespace(rnk_sandbox::BuildIds::Own(subordinate))
         .map_err(|e| userns_refusal(e, euid, no_userns))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     Ok(userns)
@@ -781,24 +781,26 @@ fn probe_user_namespace(store: &Store) -> Result<Probed, String> {
     } else {
         (None, store.build_dir(), "userns-probe".to_owned())
     };
-    probe_in_dir(parent, &name, None)
+    probe_in_dir(parent, &name, rnk_sandbox::BuildIds::Own(None))
 }
 
-/// The probes, for the subordinate ids `subordinate`, in `parent/name`,
-/// made for them and removed after, unless a child of the probe was left
-/// there. A directory with the name a store removes
-/// ([`rnk_store::USERNS_PROBE_PREFIX`]) is held by its exclusive `flock`
-/// while the probes use it, and for this process's life when a child was
-/// left: the store removes one only where it takes that lock.
+/// The probes, for the ids `ids` maps, in `parent/name`, made for them
+/// and removed after, unless a child of the probe was left there. With a
+/// shifted range (`--userns`), the namespace's root owns what its children
+/// write in: the directory and the overlay probe's. A directory with the
+/// name a store removes ([`rnk_store::USERNS_PROBE_PREFIX`]) is held by its
+/// exclusive `flock` while the probes use it, and for this process's life
+/// when a child was left: the store removes one only where it takes that
+/// lock.
 pub(crate) fn probe_in_dir(
     parent: &Path,
     name: &str,
-    subordinate: Option<rnk_sandbox::SubordinateIds>,
+    ids: rnk_sandbox::BuildIds,
 ) -> Result<Probed, String> {
     let root = RootPath::open(parent).map_err(|e| e.to_string())?;
     let (scratch, held) = make_probe_dir(&root, parent, name)?;
     let (r, left) = match own_group(&root, name) {
-        Ok(_) => probe_in_scratch(&scratch, &parent.join(name), subordinate),
+        Ok(_) => probe_in_scratch(&scratch, &parent.join(name), ids),
         Err(e) => (Err(e.to_string()), false),
     };
     if left {
@@ -855,6 +857,33 @@ fn hold_dir(dir: &RootPath) -> Result<OwnedFd, String> {
     Ok(fd)
 }
 
+/// Gives the directory `name` in `root`, which this process just made, to
+/// `owner`'s uid and gid, checked on the pinned entry: in a directory
+/// another process of that uid may write, a name swapped meanwhile for
+/// anything but a directory of this process's is left as it is, and
+/// refused.
+fn give_dir(root: &RootPath, name: &str, owner: (u32, u32)) -> Result<(), String> {
+    let euid = rustix::process::geteuid().as_raw();
+    let given = root
+        .set_meta_if(name, |st| {
+            (st.file_type() == rnk_rootfs::FileType::Directory && st.uid == euid).then(|| {
+                rnk_rootfs::Meta {
+                    uid: Some(owner.0),
+                    gid: Some(owner.1),
+                    ..rnk_rootfs::Meta::default()
+                }
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    if given {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name} is no longer the directory made for the probe"
+        ))
+    }
+}
+
 /// Gives the directory `name` in `root` the process's gid and no setgid
 /// bit, as the store's own directories get (ADR-0099): a setgid parent's
 /// gid, which no map holds, would stop the probe's `chown` in the user
@@ -877,16 +906,23 @@ fn own_group(root: &RootPath, name: &str) -> rnk_rootfs::Result<bool> {
 fn probe_in_scratch(
     scratch: &RootPath,
     path: &Path,
-    subordinate: Option<rnk_sandbox::SubordinateIds>,
+    ids: rnk_sandbox::BuildIds,
 ) -> (Result<Probed, String>, bool) {
-    let report = match rnk_sandbox::probe_user_namespace(scratch, subordinate) {
+    let report = match rnk_sandbox::probe_user_namespace(scratch, ids) {
         Ok(report) => report,
         Err(e) => return (Err(e.to_string()), keeps_dir(Some(&e), None)),
     };
     let overlay = match report.map() {
         Some(_) => {
-            if let Err(e) = scratch.create_dir("overlay", 0o700) {
-                return (Err(e.to_string()), false);
+            let made = scratch
+                .create_dir("overlay", 0o700)
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    ids.shifted_root()
+                        .map_or(Ok(()), |owner| give_dir(scratch, "overlay", owner))
+                });
+            if let Err(e) = made {
+                return (Err(e), false);
             }
             report.in_namespace(overlay_in_namespace, &path.join("overlay"))
         }

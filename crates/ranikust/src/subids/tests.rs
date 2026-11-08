@@ -206,3 +206,46 @@ fn red_team_hostile_id_files_give_only_the_user_s_first_range() {
     );
     assert_eq!(lookup_in(etc.path(), 1002), Ok(None));
 }
+
+/// Root's range for `--userns` (ADR-0104): the first well-formed
+/// `ranikust` line of each file, by that name only; none, one from 0 or a
+/// range in one file only is refused.
+#[test]
+fn root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| fs::write(etc.path().join(name), text).unwrap();
+    // Missing files: no range, saying which file; the guidance, what to add.
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("subuid has no ranikust range"), "{why}");
+    assert!(ROOT_RANGE_GUIDANCE.contains("ranikust:<start>:65536"));
+    assert!(ROOT_RANGE_GUIDANCE.contains("/etc/subuid and /etc/subgid"));
+    // Root's other entries, podman's and a uid are not taken; malformed
+    // lines are passed over.
+    write(
+        SUBUID,
+        "root:100000:65536\ncontainers:200000:65536\n0:300000:65536\nranikust:5\n\
+         ranikust:1:0\nRanikust:7:7\nranikust :8:8\nranikust:600000:65536\nranikust:700000:5\n",
+    );
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("subgid has no ranikust range"), "{why}");
+    write(SUBGID, "ranikust:800000:1000\n");
+    assert_eq!(
+        root_range_in(etc.path()),
+        Ok(SubordinateIds {
+            uids: IdRange {
+                start: 600_000,
+                count: 65_536
+            },
+            gids: IdRange {
+                start: 800_000,
+                count: 1000
+            },
+        })
+    );
+    // A range from 0 would map the host's root.
+    write(SUBGID, "ranikust:0:65536\nranikust:800000:1000\n");
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("starts at 0"), "{why}");
+    // Root's own lookup maps its own ids, the ranikust entry or not.
+    assert_eq!(lookup_in(etc.path(), 0), Ok(None));
+}

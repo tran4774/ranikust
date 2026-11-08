@@ -72,6 +72,8 @@ const UNSHARE_MOUNT: &str = "unshare(CLONE_NEWNS)";
 const MKNOD_OP: &str = "mknod";
 /// In the child's mount namespace, before any mount.
 const SLAVE_OP: &str = "make / a recursive slave mount";
+/// [`assume_root`], once a shifted map is written.
+pub(crate) const ASSUME_OP: &str = "take the namespace's root as its ids";
 
 /// Which id map a user namespace of the probe or the build got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +88,10 @@ pub enum IdMap {
     Newuidmap,
     /// One id: this process's own uid and gid as 0.
     OneId,
+    /// Root's ids moved to a range of the host's (`--userns`, ADR-0104):
+    /// uid and gid 0 are each range's first id, and this process takes
+    /// them once the map is written; root's own ids are unmapped.
+    Shifted,
 }
 
 impl fmt::Display for IdMap {
@@ -94,6 +100,7 @@ impl fmt::Display for IdMap {
             Self::Ranges => "multi-range",
             Self::Newuidmap => "newuidmap",
             Self::OneId => "one uid",
+            Self::Shifted => "shifted range",
         })
     }
 }
@@ -116,6 +123,33 @@ pub struct SubordinateIds {
     pub uids: IdRange,
     /// The first range of `/etc/subgid` for the user.
     pub gids: IdRange,
+}
+
+/// Which ids a user namespace of the probe or the build maps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildIds {
+    /// This process's own ids as 0: root's every id, each to itself, else
+    /// one id; another user's own ids as 0 and these subordinate ids from
+    /// 1 through `newuidmap` and `newgidmap`, else one id.
+    Own(Option<SubordinateIds>),
+    /// Root's ids moved to these ranges ([`IdMap::Shifted`], `--userns`):
+    /// 0 inside is each range's first id, and nothing else is mapped. No
+    /// other map is tried, so that no fallback maps the host's root; a
+    /// user other than root cannot write such a map.
+    Shifted(SubordinateIds),
+}
+
+impl BuildIds {
+    /// The host's uid and gid of the namespace's root where they are not
+    /// this process's own ([`BuildIds::Shifted`]): what the probe gives
+    /// the files its children must own.
+    #[must_use]
+    pub fn shifted_root(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Own(_) => None,
+            Self::Shifted(sub) => Some((sub.uids.start, sub.gids.start)),
+        }
+    }
 }
 
 /// A step that failed: the operation, and its errno or what else is known.
@@ -394,12 +428,9 @@ impl fmt::Display for UsernsReport {
 /// [`crate::Error::NotSingleThreaded`] when other threads exist; a host-side
 /// error: the probe's files, a pipe, the fork. A refused step is not an
 /// error: it is in the report.
-pub fn probe_user_namespace(
-    dir: &RootPath,
-    subordinate: Option<SubordinateIds>,
-) -> Result<UsernsReport> {
+pub fn probe_user_namespace(dir: &RootPath, ids: BuildIds) -> Result<UsernsReport> {
     crate::setup::require_single_thread()?;
-    probe_in(dir, subordinate)
+    probe_in(dir, ids)
 }
 
 /// What the step child works on, in the probe's directory, made and opened
@@ -414,15 +445,15 @@ struct Targets {
     chown: OwnedFd,
 }
 
-fn probe_in(root: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport> {
+fn probe_in(root: &RootPath, ids: BuildIds) -> Result<UsernsReport> {
     let span = tracing::debug_span!("rnk_sandbox.probe_userns", ok = Empty, map = Empty);
     let _entered = span.enter();
-    let targets = make_targets(root)?;
+    let targets = make_targets(root, ids.shifted_root())?;
     let euid = rustix::process::geteuid().as_raw();
     let egid = rustix::process::getegid().as_raw();
     let mut maps = Vec::new();
     let mut last = None;
-    for candidate in plans(euid, egid, subordinate) {
+    for candidate in plans(euid, egid, ids) {
         let plan = match candidate {
             Ok(plan) => plan,
             Err((kind, result)) => {
@@ -476,7 +507,8 @@ fn report_of(maps: Vec<(IdMap, StepResult)>, last: Option<(Plan, Attempt)>) -> U
             mknod: a.mknod,
             cut_short: a.cut_short,
         },
-        // `plans` always ends with one id; unreachable, reported as such.
+        // No map could be tried: a shifted range asked of a user other than
+        // root (`plans` otherwise ends with one id).
         None => UsernsReport {
             unshare: StepResult::NotRun(NO_MAP),
             maps,
@@ -491,10 +523,13 @@ fn report_of(maps: Vec<(IdMap, StepResult)>, last: Option<(Plan, Attempt)>) -> U
     }
 }
 
-/// Makes the [`Targets`]; on a failure, removes what it made first.
-fn make_targets(root: &RootPath) -> Result<Targets> {
+/// Makes the [`Targets`], given to `owner` with the probe's directory
+/// when the namespace's root is not this process's ids
+/// ([`BuildIds::shifted_root`]): its capabilities there cover only files of
+/// mapped ids. On a failure, removes what it made first.
+fn make_targets(root: &RootPath, owner: Option<(u32, u32)>) -> Result<Targets> {
     let mut made = Vec::new();
-    let r = make_each(root, &mut made);
+    let r = make_each(root, owner, &mut made);
     if r.is_err() {
         for (name, dir) in made.into_iter().rev() {
             remove_one(root, name, dir);
@@ -503,13 +538,29 @@ fn make_targets(root: &RootPath) -> Result<Targets> {
     r
 }
 
-fn make_each(root: &RootPath, made: &mut Vec<(&'static str, bool)>) -> Result<Targets> {
+fn make_each(
+    root: &RootPath,
+    owner: Option<(u32, u32)>,
+    made: &mut Vec<(&'static str, bool)>,
+) -> Result<Targets> {
     root.create_dir("proc", 0o700)?;
     made.push(("proc", true));
     root.create_dir("sys", 0o700)?;
     made.push(("sys", true));
     let chown = root.open_at("chown", &OpenHow::write().create_new(0o600))?;
     made.push(("chown", false));
+    if let Some((uid, gid)) = owner {
+        let meta = rnk_rootfs::Meta {
+            uid: Some(uid),
+            gid: Some(gid),
+            ..rnk_rootfs::Meta::default()
+        };
+        // The directory last: until then it is the caller's alone, so no
+        // name in it can be swapped.
+        for name in ["proc", "sys", "chown", "."] {
+            root.set_meta(name, &meta)?;
+        }
+    }
     let dir = root.open_at(".", &OpenHow::path().directory())?;
     Ok(Targets { dir, chown })
 }
@@ -557,6 +608,10 @@ enum Plan {
     },
     /// The child writes one id of its own.
     OneId { uid_map: Vec<u8>, gid_map: Vec<u8> },
+    /// This process (root) writes a range of the host's ids from 0, which
+    /// leaves its own unmapped; the child then takes the namespace's root
+    /// as its ids ([`assume_root`]).
+    Shifted { uid_map: Vec<u8>, gid_map: Vec<u8> },
 }
 
 impl Plan {
@@ -565,7 +620,14 @@ impl Plan {
             Self::Ranges { .. } => IdMap::Ranges,
             Self::Newuidmap { .. } => IdMap::Newuidmap,
             Self::OneId { .. } => IdMap::OneId,
+            Self::Shifted { .. } => IdMap::Shifted,
         }
+    }
+
+    /// Whether the child takes the namespace's root as its ids once the map
+    /// is written: its own ids are not in the map.
+    fn assumes_root(&self) -> bool {
+        matches!(self, Self::Shifted { .. })
     }
 
     /// Whether this process writes the map (the child waits for it).
@@ -576,7 +638,9 @@ impl Plan {
     /// The smallest mapped uid and gid other than 0, inside the namespace.
     fn other_ids(&self) -> Option<(u32, u32)> {
         match self {
-            Self::Ranges { uid_map, gid_map } => Some((other_id(uid_map)?, other_id(gid_map)?)),
+            Self::Ranges { uid_map, gid_map } | Self::Shifted { uid_map, gid_map } => {
+                Some((other_id(uid_map)?, other_id(gid_map)?))
+            }
             Self::Newuidmap { .. } => Some((1, 1)),
             Self::OneId { .. } => None,
         }
@@ -586,7 +650,7 @@ impl Plan {
     fn own_map(&self) -> Option<(&[u8], &[u8])> {
         match self {
             Self::OneId { uid_map, gid_map } => Some((uid_map, gid_map)),
-            Self::Ranges { .. } | Self::Newuidmap { .. } => None,
+            Self::Ranges { .. } | Self::Newuidmap { .. } | Self::Shifted { .. } => None,
         }
     }
 }
@@ -595,8 +659,12 @@ impl Plan {
 fn plans(
     euid: u32,
     egid: u32,
-    subordinate: Option<SubordinateIds>,
+    ids: BuildIds,
 ) -> Vec<std::result::Result<Plan, (IdMap, StepResult)>> {
+    let subordinate = match ids {
+        BuildIds::Shifted(sub) => return vec![shifted(euid, sub)],
+        BuildIds::Own(sub) => sub,
+    };
     let mut plans = Vec::new();
     if euid == 0 {
         plans.push(ranges().map_err(|f| (IdMap::Ranges, StepResult::Failed(f))));
@@ -623,6 +691,22 @@ fn plans(
         gid_map: format!("0 {egid} 1\n").into_bytes(),
     }));
     plans
+}
+
+/// [`Plan::Shifted`] of `sub`: only root may write it, and a range from 0
+/// would map the host's root.
+fn shifted(euid: u32, sub: SubordinateIds) -> std::result::Result<Plan, (IdMap, StepResult)> {
+    let why = if euid != 0 {
+        "only root maps a shifted range"
+    } else if sub.uids.start == 0 || sub.gids.start == 0 {
+        "a shifted range from 0 maps the host's root"
+    } else {
+        return Ok(Plan::Shifted {
+            uid_map: format!("0 {} {}\n", sub.uids.start, sub.uids.count).into_bytes(),
+            gid_map: format!("0 {} {}\n", sub.gids.start, sub.gids.count).into_bytes(),
+        });
+    };
+    Err((IdMap::Shifted, StepResult::NotRun(why)))
 }
 
 /// [`Plan::Ranges`] from this process's own maps.
@@ -780,6 +864,8 @@ const SYSFS: u8 = 16;
 const SYSFS_RBIND: u8 = 17;
 const MKNOD: u8 = 18;
 const DONE: u8 = 19;
+/// [`assume_root`], right after the map.
+const ASSUME: u8 = 21;
 /// [`run_closure`]'s result: the errno field holds the outcome (bits 16 to
 /// 23) and the length of the text that follows (bits 0 to 15).
 const RESULT: u8 = 20;
@@ -795,6 +881,9 @@ struct ChildArgs<'a> {
     /// The map the child writes itself (one id), else `None`: this process
     /// writes it.
     own_map: Option<(&'a [u8], &'a [u8])>,
+    /// The child takes the namespace's root as its ids after the map
+    /// ([`Plan::assumes_root`]).
+    assume: bool,
     /// The `chown` target, and the ids to give it.
     chown: Option<(RawFd, u32, u32)>,
     /// The probe's directory; -1 for none.
@@ -858,6 +947,7 @@ fn supervise(
         go: go_r.as_raw_fd(),
         user,
         own_map: plan.own_map(),
+        assume: plan.assumes_root(),
         chown,
         dir,
     };
@@ -973,11 +1063,12 @@ unsafe fn close_unused(a: &ChildArgs<'_>) {
     unsafe { child::close_all_except(&keep) };
 }
 
-/// Writes the child's map from here: [`Plan::Ranges`] directly, as root
-/// may; [`Plan::Newuidmap`] through the setuid tools.
+/// Writes the child's map from here: [`Plan::Ranges`] and
+/// [`Plan::Shifted`] directly, as root may; [`Plan::Newuidmap`] through the
+/// setuid tools.
 fn write_map(plan: &Plan, pid: Pid) -> std::result::Result<(), StepFailure> {
     match plan {
-        Plan::Ranges { uid_map, gid_map } => {
+        Plan::Ranges { uid_map, gid_map } | Plan::Shifted { uid_map, gid_map } => {
             write_proc(pid, "uid_map", "write uid_map", uid_map)?;
             write_proc(pid, "gid_map", "write gid_map", gid_map)
         }
@@ -1196,6 +1287,10 @@ fn assemble(
         .find(|r| *r != StepResult::Ok)
         .unwrap_or(StepResult::Ok)
     };
+    let map = match map {
+        StepResult::Ok if plan.assumes_root() => step(ASSUME, ASSUME_OP),
+        other => other,
+    };
     if map != StepResult::Ok {
         return Attempt {
             unshare,
@@ -1322,7 +1417,9 @@ fn enter_mount_namespace(report: BorrowedFd<'_>) -> bool {
 }
 
 /// Gets the map: waits for this process's write, or writes one id. A user
-/// other than root is made dumpable for it, then not dumpable again.
+/// other than root is made dumpable for it, then not dumpable again. Then,
+/// for a shifted map, the namespace's root as the child's ids, still a
+/// child of this process.
 fn map_in_child(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
     if a.user
         && let Err(e) = rustix::process::set_dumpable_behavior(DumpableBehavior::Dumpable)
@@ -1360,7 +1457,38 @@ fn map_in_child(a: &ChildArgs<'_>, report: BorrowedFd<'_>) -> bool {
         send(report, DUMPABLE, Err(e));
         return false;
     }
+    if mapped && a.assume {
+        let r = assume_root(Some(Signal::KILL)).and_then(|()| {
+            if rustix::process::getppid() == Some(a.parent) {
+                Ok(())
+            } else {
+                Err(Errno::SRCH)
+            }
+        });
+        send(report, ASSUME, r);
+        return r.is_ok();
+    }
     mapped
+}
+
+/// Takes the namespace's root as this process's ids, once a shifted map
+/// is written: no supplementary group (root's own are unmapped), then gid
+/// 0, then uid 0, which keeps the capabilities the namespace gave (the
+/// effective uid becomes its root). The change makes the process dumpable
+/// as `suid_dumpable` says and clears its parent-death signal, so it is
+/// made not dumpable (ADR-0051) and `pdeath` set again.
+///
+/// Raw system calls, for this thread only: call while single-threaded.
+pub(crate) fn assume_root(pdeath: Option<Signal>) -> rustix::io::Result<()> {
+    use rustix::process::{Gid, Uid};
+    rustix::thread::set_thread_groups(&[])?;
+    rustix::thread::set_thread_res_gid(Gid::ROOT, Gid::ROOT, Gid::ROOT)?;
+    rustix::thread::set_thread_res_uid(Uid::ROOT, Uid::ROOT, Uid::ROOT)?;
+    rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
+    if pdeath.is_some() {
+        rustix::process::set_parent_process_death_signal(pdeath)?;
+    }
+    Ok(())
 }
 
 /// Writes `text` to this process's own `/proc` file `path` in one write, as

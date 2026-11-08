@@ -7,6 +7,7 @@ fn dir(path: &str, uid: u32, mode: u32) -> ChainDir {
     ChainDir {
         path: PathBuf::from(path),
         uid,
+        gid: 0,
         mode,
     }
 }
@@ -22,22 +23,78 @@ fn default_chain() -> Vec<ChainDir> {
 }
 
 fn refusal(chain: &[ChainDir], has_state: bool) -> String {
-    check_chain(chain, 0, has_state).unwrap_err().0
+    check_chain(chain, Owner::Me(0), has_state).unwrap_err().0
 }
 
 #[test]
 fn the_default_and_roots_sticky_directory_pass() {
-    check_chain(&default_chain(), 0, true).unwrap();
+    check_chain(&default_chain(), Owner::Me(0), true).unwrap();
     check_chain(
         &[
             dir("/tmp/s", 0, 0o700),
             dir("/tmp", 0, 0o1777),
             dir("/", 0, 0o755),
         ],
-        0,
+        Owner::Me(0),
         true,
     )
     .unwrap();
+}
+
+/// `--userns`'s range from 100000 (uid) and 200000 (gid).
+const MAPPED: Owner = Owner::Mapped {
+    uid: 100_000,
+    gid: 200_000,
+};
+
+/// `--userns` (ADR-0104): the state directory is the mapped root's; every
+/// parent root's alone, written by no one else even where sticky, and
+/// searchable by the mapped uid through the bits that apply to it.
+#[test]
+fn a_userns_state_directory_is_the_mapped_root_s_below_parents_it_may_search() {
+    let mapped = |chain: &[ChainDir], has_state| check_chain(chain, MAPPED, has_state);
+    let mut c = default_chain();
+    c[0].uid = 100_000;
+    mapped(&c, true).unwrap();
+    // Root's own state directory is never given to it.
+    let why = mapped(&default_chain(), true).unwrap_err().0;
+    assert!(why.contains("owned by uid 0, not 100000"), "{why}");
+    assert!(why.contains("--state-dir of its own"), "{why}");
+    // Before creation, each existing directory is a parent.
+    mapped(&default_chain()[1..], false).unwrap();
+    let parent = |uid, gid, mode| {
+        let mut c = default_chain();
+        c[0].uid = 100_000;
+        c[1].uid = uid;
+        c[1].gid = gid;
+        c[1].mode = mode;
+        mapped(&c, true).map_err(|r| r.0)
+    };
+    let searchable = parent(0, 0, 0o711);
+    assert!(searchable.is_ok(), "{searchable:?}");
+    for (uid, gid, mode, want) in [
+        (0, 0, 0o750, "not searchable by uid 100000 and gid 200000"),
+        (0, 0, 0o700, "not searchable"),
+        // The group's bit applies to the mapped gid, the others' not.
+        (0, 200_000, 0o701, "not searchable"),
+        // The mapped uid itself may own no parent: it could rename the
+        // state directory away from root's path.
+        (100_000, 0, 0o755, "owned by uid 100000, not root"),
+        (1000, 0, 0o755, "owned by uid 1000, not root"),
+        // Root's sticky directory protects nothing the mapped uid owns.
+        (0, 0, 0o1777, "writable by group or others"),
+    ] {
+        let why = parent(uid, gid, mode).unwrap_err();
+        assert!(why.contains(want), "{uid} {gid} {mode:o}: {why}");
+    }
+    assert!(parent(0, 200_000, 0o710).is_ok());
+    // The effective user's rule is unchanged: root's sticky `/tmp` passes.
+    let tmp = [
+        dir("/tmp/s", 0, 0o700),
+        dir("/tmp", 0, 0o1777),
+        dir("/", 0, 0o755),
+    ];
+    check_chain(&tmp, Owner::Me(0), true).unwrap();
 }
 
 #[test]
@@ -78,7 +135,7 @@ fn a_parent_another_user_owns_or_may_write_is_refused() {
 fn before_creation_every_entry_is_a_parent() {
     // `/var/lib` exists, the state directory not yet: `/var/lib` is judged
     // as a parent, not as the state directory.
-    check_chain(&default_chain()[1..], 0, false).unwrap();
+    check_chain(&default_chain()[1..], Owner::Me(0), false).unwrap();
     let mut c = default_chain()[1..].to_vec();
     c[0].mode = 0o777;
     assert!(refusal(&c, false).contains("/var/lib is writable"));
@@ -245,7 +302,7 @@ fn missing_directories_are_made_below_the_checked_one_never_through_a_symlink() 
     let at = || open_dir(tmp.path(), OFlags::PATH).unwrap();
     symlink(victim.path(), tmp.path().join("a")).unwrap();
     let state = tmp.path().join("a/b/state");
-    let why = create_missing(at(), tmp.path(), &state, euid)
+    let why = create_missing(at(), tmp.path(), &state, Owner::Me(euid))
         .unwrap_err()
         .0;
     assert!(why.contains("without following a symlink"), "{why}");
@@ -255,14 +312,14 @@ fn missing_directories_are_made_below_the_checked_one_never_through_a_symlink() 
     let open = tmp.path().join("open");
     fs::create_dir(&open).unwrap();
     fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
-    let why = create_missing(at(), tmp.path(), &open.join("b/state"), euid)
+    let why = create_missing(at(), tmp.path(), &open.join("b/state"), Owner::Me(euid))
         .unwrap_err()
         .0;
     assert!(why.contains("writable by group or others"), "{why}");
     assert_eq!(fs::read_dir(&open).unwrap().count(), 0);
     // Otherwise every missing directory is made, mode 0700.
     let state = tmp.path().join("c/d/state");
-    let fd = create_missing(at(), tmp.path(), &state, euid).unwrap();
+    let fd = create_missing(at(), tmp.path(), &state, Owner::Me(euid)).unwrap();
     let st = rustix::fs::fstat(&fd).unwrap();
     let new = fs::metadata(&state).unwrap();
     assert_eq!((st.st_dev, st.st_ino), (new.dev(), new.ino()));
@@ -347,7 +404,7 @@ fn the_system_directory_check_itself_refuses_them() {
         let Ok(fd) = open_dir(Path::new(sys), OFlags::RDONLY) else {
             continue;
         };
-        let Err(why) = accept_existing(&fd, Path::new(sys), 0) else {
+        let Err(why) = accept_existing(&fd, Path::new(sys), Owner::Me(0)) else {
             panic!("{sys} accepted");
         };
         assert!(

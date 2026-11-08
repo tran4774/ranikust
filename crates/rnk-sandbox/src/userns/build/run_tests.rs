@@ -14,7 +14,7 @@ use rustix::process::DumpableBehavior;
 use super::super::tests::{as_user, in_subreaper, measured, subordinate_range};
 use super::tests::one_id_parent;
 use crate::{
-    BindMount, Caps, Error, KernelFs, MountKind, Network, RunSpec, Sandbox, Stdio, Step,
+    BindMount, BuildIds, Caps, Error, KernelFs, MountKind, Network, RunSpec, Sandbox, Stdio, Step,
     SubordinateIds, UsernsReport,
 };
 
@@ -255,11 +255,11 @@ fn start_sandbox(
     fs::create_dir(&scratch).map_err(|e| s(&e))?;
     let report: UsernsReport = crate::probe_user_namespace(
         &rnk_rootfs::RootPath::open(&scratch).map_err(|e| s(&e))?,
-        sub,
+        BuildIds::Own(sub),
     )
     .map_err(|e| s(&e))?;
     out.push(format!("report={report}"));
-    let userns = crate::enter_build_user_namespace(sub).map_err(|e| s(&e))?;
+    let userns = crate::enter_build_user_namespace(BuildIds::Own(sub)).map_err(|e| s(&e))?;
     out.push(format!("userns={userns}"));
     let sandbox_dir = top.join("sandbox");
     let fallbacks = if proc_rbind {

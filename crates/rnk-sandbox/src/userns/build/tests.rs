@@ -6,8 +6,8 @@ use rustix::process::DumpableBehavior;
 
 use super::super::tests::{as_user, in_subreaper, measured, subordinate_range};
 use super::super::{
-    CHDIR, DUMPABLE, GID_MAP, IdRange, NEWNS, READY, Records, SETGROUPS, UID_MAP, UNSHARE,
-    UNSHARE_USER, mirror,
+    CHDIR, DUMPABLE, GID_MAP, IdRange, NEWNS, READY, Records, SETGROUPS, SubordinateIds, UID_MAP,
+    UNSHARE, UNSHARE_USER, mirror,
 };
 use super::*;
 
@@ -270,7 +270,7 @@ fn the_build_user_namespace_is_refused_beside_other_threads() {
         let _ = wait.recv();
     });
     let before = fs::read_link("/proc/self/ns/user").unwrap();
-    let r = crate::enter_build_user_namespace(None);
+    let r = crate::enter_build_user_namespace(BuildIds::Own(None));
     drop(done);
     spare.join().unwrap();
     assert!(
@@ -326,7 +326,7 @@ impl Described {
 /// single-threaded child that ends after, made not dumpable first as
 /// ranikust is (ADR-0051), and describes the outcome as one line of
 /// [`Described`]'s fields.
-fn describe(sub: Option<SubordinateIds>) -> String {
+fn describe(ids: BuildIds) -> String {
     let link = |ns: &str| {
         fs::read_link(format!("/proc/self/ns/{ns}"))
             .map(|p| p.display().to_string())
@@ -336,7 +336,7 @@ fn describe(sub: Option<SubordinateIds>) -> String {
     if let Err(e) = rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable) {
         return format!("err\tPR_SET_DUMPABLE: {e}\t\t\t\t\t\t\t\t\t");
     }
-    let r = crate::enter_build_user_namespace(sub);
+    let r = crate::enter_build_user_namespace(ids);
     let flat = |path: &str| {
         fs::read_to_string(path).map_or_else(
             |e| format!("unreadable: {e}"),
@@ -437,7 +437,7 @@ fn red_team_the_build_user_namespace_is_whole_or_not_entered() {
         .zip(subordinate_range("/etc/subgid", &name, uid))
         .map(|(uids, gids)| SubordinateIds { uids, gids });
     for sub in [None, sub] {
-        let line = in_subreaper(|| describe(sub));
+        let line = in_subreaper(|| describe(BuildIds::Own(sub)));
         measured(&format!("build user namespace as uid {uid}: {line}"));
         let d = Described::parse(&line);
         check_kept(&d, uid, gid, &line);
@@ -468,7 +468,7 @@ fn the_build_user_namespace_of_root_maps_every_id_it_has() {
             .join(" ")
     };
     let (uid_map, gid_map) = (mirrored("uid_map"), mirrored("gid_map"));
-    let line = in_subreaper(|| describe(None));
+    let line = in_subreaper(|| describe(BuildIds::Own(None)));
     measured(&format!("build user namespace as root: {line}"));
     let d = Described::parse(&line);
     check_kept(&d, 0, 0, &line);
@@ -480,6 +480,83 @@ fn the_build_user_namespace_of_root_maps_every_id_it_has() {
     assert_eq!((d.uid_map, d.gid_map), (uid_map, gid_map), "{line}");
     assert_eq!(d.setgroups, "allow");
     assert_eq!(d.passed_over, "");
+}
+
+/// A user other than root asking for a shifted range (`--userns`) is
+/// refused before any change, with no other map tried in its place.
+#[test]
+fn a_shifted_range_is_refused_to_a_user_other_than_root_before_any_change() {
+    let uid = rustix::process::geteuid().as_raw();
+    if uid == 0 {
+        // Root enters it: the T2 test below.
+        return;
+    }
+    let gid = rustix::process::getegid().as_raw();
+    let line = in_subreaper(|| describe(BuildIds::Shifted(super::super::tests::shifted_ids())));
+    let d = Described::parse(&line);
+    check_kept(&d, uid, gid, &line);
+    assert_eq!(d.outcome, "err", "{line}");
+    assert_eq!(
+        d.passed_over, "shifted range: not run (only root maps a shifted range)",
+        "{line}"
+    );
+}
+
+/// T2: root's shifted range (`--userns`, ADR-0104): the process is root of
+/// a namespace that maps the range alone, from 0, so that its uid and gid
+/// on the host are the range's first, with no supplementary group left, no
+/// other map tried, and `setgroups` allowed; a file it makes is owned on
+/// the host by those ids.
+#[test]
+#[ignore = "T2: real root enters the build's user namespace with a shifted range"]
+fn the_build_user_namespace_of_a_shifted_range_makes_root_the_range_s_first_ids() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let sub = super::super::tests::shifted_ids();
+    let tmp = tempfile::tempdir().unwrap();
+    // As `--userns`'s state directory: its parents searchable, itself the
+    // namespace's root's.
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    let dir = tmp.path().join("state");
+    fs::create_dir(&dir).unwrap();
+    std::os::unix::fs::chown(&dir, Some(sub.uids.start), Some(sub.gids.start)).unwrap();
+    let made = dir.join("made");
+    let out = in_subreaper(|| {
+        let line = describe(BuildIds::Shifted(sub));
+        let groups = fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("Groups:").map(|g| g.trim().to_owned()))
+            })
+            .unwrap_or_else(|| "unreadable".to_owned());
+        let wrote = fs::write(&made, b"").map_or_else(|e| e.to_string(), |()| "made".to_owned());
+        format!("{line}\n{groups}\n{wrote}")
+    });
+    measured(&format!("build user namespace with a shifted range: {out}"));
+    let mut lines = out.split('\n');
+    let line = lines.next().unwrap_or_default();
+    let d = Described::parse(line);
+    check_kept(&d, 0, 0, line);
+    assert_eq!(
+        (d.outcome.as_str(), d.map.as_str()),
+        ("ok", "shifted range"),
+        "{out}"
+    );
+    assert_eq!(
+        d.uid_map,
+        format!("0 {} {}", sub.uids.start, sub.uids.count)
+    );
+    assert_eq!(
+        d.gid_map,
+        format!("0 {} {}", sub.gids.start, sub.gids.count)
+    );
+    assert_eq!(d.setgroups, "allow");
+    assert_eq!(d.passed_over, "");
+    assert_eq!(lines.next(), Some(""), "supplementary groups: {out}");
+    assert_eq!(lines.next(), Some("made"), "{out}");
+    let meta = fs::metadata(dir.join("made")).unwrap();
+    assert_eq!((meta.uid(), meta.gid()), (sub.uids.start, sub.gids.start));
 }
 
 /// Moves this (forked, single-threaded) process into a user namespace of
@@ -508,7 +585,7 @@ pub(super) fn one_id_parent() -> std::result::Result<(), String> {
 fn the_build_user_namespace_below_one_id_is_told_one_uid() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let line = in_subreaper(|| match one_id_parent() {
-        Ok(()) => describe(None),
+        Ok(()) => describe(BuildIds::Own(None)),
         Err(e) => format!("error: {e}"),
     });
     measured(&format!("build user namespace below one id: {line}"));
@@ -684,10 +761,10 @@ fn the_build_user_namespace_of_a_regular_user_maps_its_ranges_else_one_uid() {
     );
     let restricted = fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
         .is_ok_and(|v| v.trim() == "1");
-    let ranged = as_user(uid, gid, || describe(Some(sub)));
-    let no_ranges = as_user(uid, gid, || describe(None));
+    let ranged = as_user(uid, gid, || describe(BuildIds::Own(Some(sub))));
+    let no_ranges = as_user(uid, gid, || describe(BuildIds::Own(None)));
     let no_uidmap = in_subreaper(|| match hide_uidmap() {
-        Ok(()) => as_user(uid, gid, || describe(Some(sub))),
+        Ok(()) => as_user(uid, gid, || describe(BuildIds::Own(Some(sub)))),
         Err(e) => format!("error: {e}"),
     });
     for (leg, line) in [
@@ -836,15 +913,19 @@ fn mount_below_a_shared_one(base: &Path) -> String {
         release(pid, go);
         // The build's: entered, then a tmpfs and a file in it.
         let inner = base.join("inner");
-        let (pid, said, go) = hold(move || match crate::enter_build_user_namespace(None) {
-            Ok(ns) => match tmpfs(&inner).and_then(|()| {
-                fs::write(inner.join("x"), b"x").map_err(|e| Errno::from_io_error(&e).unwrap())
-            }) {
-                Ok(()) => ns.map.to_string(),
-                Err(e) => format!("error: mount: {e}"),
-            },
-            Err(e) => format!("error: {e}"),
-        });
+        let (pid, said, go) =
+            hold(
+                move || match crate::enter_build_user_namespace(BuildIds::Own(None)) {
+                    Ok(ns) => match tmpfs(&inner).and_then(|()| {
+                        fs::write(inner.join("x"), b"x")
+                            .map_err(|e| Errno::from_io_error(&e).unwrap())
+                    }) {
+                        Ok(()) => ns.map.to_string(),
+                        Err(e) => format!("error: mount: {e}"),
+                    },
+                    Err(e) => format!("error: {e}"),
+                },
+            );
         let line = [
             control,
             said,
@@ -914,7 +995,7 @@ fn under_limit(knob: &str, limit: u32, rounds: usize) -> Vec<String> {
             return format!("error: {knob}: {e}");
         }
         (0..rounds)
-            .map(|_| in_subreaper(|| describe(None)))
+            .map(|_| in_subreaper(|| describe(BuildIds::Own(None))))
             .collect::<Vec<_>>()
             .join("\n")
     });

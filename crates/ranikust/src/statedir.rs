@@ -22,6 +22,45 @@ impl fmt::Display for Refused {
     }
 }
 
+/// Whose the state directory is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Owner {
+    /// The effective user, this uid.
+    Me(u32),
+    /// Under `--userns` (ADR-0104), root's build runs as this uid and gid
+    /// of the host, its user namespace's root: it must own the state
+    /// directory and search every directory above it, which only root may
+    /// own or write, sticky or not, since it may rename what it owns.
+    Mapped { uid: u32, gid: u32 },
+}
+
+impl Owner {
+    /// This process's effective user.
+    pub(crate) fn me() -> Self {
+        Self::Me(rustix::process::geteuid().as_raw())
+    }
+
+    fn uid(self) -> u32 {
+        match self {
+            Self::Me(uid) | Self::Mapped { uid, .. } => uid,
+        }
+    }
+
+    /// What a refused state directory should become.
+    fn advice(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Self::Me(euid) => private_state(euid).into(),
+            Self::Mapped { uid, gid } => format!(
+                "with --userns, use a --state-dir of its own, owned by uid {uid} and gid {gid} \
+                 (ranikust makes a missing one for them), below directories that only root owns \
+                 and may write and that uid {uid} may search, such as /var/lib/ranikust-userns; \
+                 root's own state directory is never given to it (ADR-0104)"
+            )
+            .into(),
+        }
+    }
+}
+
 /// What a refused state directory should become, for the effective user;
 /// the refused one may be the default itself.
 fn private_state(euid: u32) -> &'static str {
@@ -60,7 +99,19 @@ fn private_state(euid: u32) -> &'static str {
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
-    let euid = rustix::process::geteuid().as_raw();
+    prepare_for(state_dir, Owner::me())
+}
+
+/// [`prepare`] for `owner`. For [`Owner::Mapped`], the rule is
+/// [`check_chain`]'s for it, and what this process (root) makes is given
+/// to it: the state directory, made `0700` and owned by its uid and gid,
+/// and each missing directory above it, root's with mode `0711`, so that
+/// it may search them. An existing state directory is never given.
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused> {
     let existing = state_dir
         .ancestors()
         .find(|p| std::fs::symlink_metadata(p).is_ok())
@@ -68,22 +119,22 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
     let is_state = existing == state_dir;
     let fd = open_dir(existing, OFlags::PATH)?;
     if is_state {
-        refuse_slash(&fd, state_dir, euid)?;
+        refuse_slash(&fd, state_dir, owner)?;
     }
-    check_chain(&walk(&fd, existing)?, euid, is_state)?;
+    check_chain(&walk(&fd, existing)?, owner, is_state)?;
     // Readable, so it can be listed and its mode set through it.
-    let fd = create_missing(fd, existing, state_dir, euid)?;
-    refuse_slash(&fd, state_dir, euid)?;
-    accept_existing(&fd, state_dir, euid)?;
-    check_chain(&walk(&fd, state_dir)?, euid, true)?;
-    make_private(&fd, state_dir, euid)?;
+    let fd = create_missing(fd, existing, state_dir, owner)?;
+    refuse_slash(&fd, state_dir, owner)?;
+    accept_existing(&fd, state_dir, owner)?;
+    check_chain(&walk(&fd, state_dir)?, owner, true)?;
+    make_private(&fd, state_dir, owner)?;
     match rustix::fs::openat(
         &fd,
         "builds",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     ) {
-        Ok(builds) => make_private(&builds, &state_dir.join("builds"), euid),
+        Ok(builds) => make_private(&builds, &state_dir.join("builds"), owner),
         Err(Errno::NOENT) => Ok(()),
         Err(e) => Err(Refused(format!(
             "cannot open {}: {e}",
@@ -118,7 +169,7 @@ pub(crate) enum Found {
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
-    let euid = rustix::process::geteuid().as_raw();
+    let owner = Owner::me();
     match std::fs::symlink_metadata(state_dir) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Found::Missing),
@@ -130,8 +181,8 @@ pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
         }
     }
     let fd = open_dir(state_dir, OFlags::RDONLY)?;
-    refuse_slash(&fd, state_dir, euid)?;
-    check_chain(&walk(&fd, state_dir)?, euid, true)?;
+    refuse_slash(&fd, state_dir, owner)?;
+    check_chain(&walk(&fd, state_dir)?, owner, true)?;
     match rnk_store::Store::check_prune(state_dir) {
         Ok(found) if found.entries => Ok(Found::Entries(found)),
         Ok(_) => Ok(Found::Empty),
@@ -174,7 +225,7 @@ fn check_for_commands_beside(
         )));
     }
     let chain = walk(&fd, state_dir)?;
-    if let Some((d, why)) = breach(&chain, check.uid, true) {
+    if let Some((d, why)) = breach(&chain, Owner::Me(check.uid), true) {
         return Err(Refused(format!(
             "{} {why}, which a build refuses: no other user may write a state directory or a \
              directory above it; fix the owner or mode, or remove the directory by hand",
@@ -203,7 +254,9 @@ fn check_for_commands_beside(
 
 /// Creates what is missing of `state_dir` below `existing`, its nearest
 /// existing directory, open as `parent` and already checked; returns the
-/// state directory, opened for reading.
+/// state directory, opened for reading. For [`Owner::Mapped`], a missing
+/// directory above it is made searchable (`0711`) and the state directory
+/// given to the owner, each only when made here.
 ///
 /// Each missing name is made with `mkdirat` in the directory opened before
 /// it, then opened from that descriptor, one name at a time, with no
@@ -216,7 +269,7 @@ fn create_missing(
     parent: OwnedFd,
     existing: &Path,
     state_dir: &Path,
-    euid: u32,
+    owner: Owner,
 ) -> Result<OwnedFd, Refused> {
     let rest = state_dir.strip_prefix(existing).map_err(|_| {
         Refused(format!(
@@ -249,17 +302,28 @@ fn create_missing(
     let mut path = existing.to_path_buf();
     for (i, name) in names.iter().enumerate() {
         path.push(name);
-        match rustix::fs::mkdirat(&at, *name, Mode::from_raw_mode(0o700)) {
-            Ok(()) | Err(Errno::EXIST) => {}
+        let made = match rustix::fs::mkdirat(&at, *name, Mode::from_raw_mode(0o700)) {
+            Ok(()) => true,
+            Err(Errno::EXIST) => false,
             Err(e) => {
                 return Err(Refused(format!(
                     "cannot create the state directory {}: {e}",
                     path.display()
                 )));
             }
-        }
+        };
         let last = i + 1 == names.len();
-        let how = if last { OFlags::RDONLY } else { OFlags::PATH };
+        let mapped = match owner {
+            Owner::Mapped { uid, gid } => Some((uid, gid)),
+            Owner::Me(_) => None,
+        };
+        // Root, which reads any directory, changes the mode or owner of
+        // what it made through the descriptor it checks.
+        let how = if last || mapped.is_some() {
+            OFlags::RDONLY
+        } else {
+            OFlags::PATH
+        };
         let next = rustix::fs::openat2(
             &at,
             *name,
@@ -273,14 +337,34 @@ fn create_missing(
                 path.display()
             ))
         })?;
+        if let (true, Some((uid, gid))) = (made, mapped) {
+            let given = if last {
+                rustix::fs::fchown(
+                    &next,
+                    Some(rustix::fs::Uid::from_raw(uid)),
+                    Some(rustix::fs::Gid::from_raw(gid)),
+                )
+            } else {
+                rustix::fs::fchmod(&next, Mode::from_raw_mode(0o711))
+            };
+            given.map_err(|e| {
+                let what = if last {
+                    "the --userns build's own"
+                } else {
+                    "searchable"
+                };
+                Refused(format!("cannot make {} {what}: {e}", path.display()))
+            })?;
+        }
         if !last {
             let st = rustix::fs::fstat(&next).map_err(|e| stat_err(&path, e))?;
             let dir = ChainDir {
                 path: path.clone(),
                 uid: st.st_uid,
+                gid: st.st_gid,
                 mode: st.st_mode & 0o7777,
             };
-            check_chain(std::slice::from_ref(&dir), euid, false)?;
+            check_chain(std::slice::from_ref(&dir), owner, false)?;
         }
         at = next;
     }
@@ -289,14 +373,14 @@ fn create_missing(
 
 /// Refuses `fd` when it is the root directory `/`: never a state directory,
 /// whose mode would be changed.
-fn refuse_slash(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refused> {
+fn refuse_slash(fd: &OwnedFd, state_dir: &Path, owner: Owner) -> Result<(), Refused> {
     let me = rustix::fs::fstat(fd).map_err(|e| stat_err(state_dir, e))?;
     let slash = rustix::fs::stat("/").map_err(|e| stat_err(Path::new("/"), e))?;
     if (me.st_dev, me.st_ino) == (slash.st_dev, slash.st_ino) {
         return Err(Refused(format!(
             "the state directory {} is /: {}",
             state_dir.display(),
-            private_state(euid)
+            owner.advice()
         )));
     }
     Ok(())
@@ -341,7 +425,7 @@ pub(crate) const SYSTEM_DIRS: [&str; 30] = [
 
 /// [`check_contents`], and for a directory without the store's marker,
 /// not one of [`SYSTEM_DIRS`].
-fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refused> {
+fn accept_existing(fd: &OwnedFd, state_dir: &Path, owner: Owner) -> Result<(), Refused> {
     if check_contents(fd, state_dir)? {
         return Ok(());
     }
@@ -354,7 +438,7 @@ fn accept_existing(fd: &OwnedFd, state_dir: &Path, euid: u32) -> Result<(), Refu
             "the state directory {} is the system directory {sys}: ranikust would make it \
              mode 0700; {}",
             state_dir.display(),
-            private_state(euid)
+            owner.advice()
         ))),
         None => Ok(()),
     }
@@ -409,15 +493,15 @@ fn check_contents(fd: &OwnedFd, state_dir: &Path) -> Result<bool, Refused> {
 /// Sets `fd`'s mode to `0700` when group or others may reach into it, and
 /// checks it reads back so: a filesystem that ignores `chmod` would leave
 /// the build roots open to other users.
-fn make_private(fd: &OwnedFd, dir: &Path, euid: u32) -> Result<(), Refused> {
+fn make_private(fd: &OwnedFd, dir: &Path, owner: Owner) -> Result<(), Refused> {
     let st = rustix::fs::fstat(fd).map_err(|e| stat_err(dir, e))?;
-    if st.st_uid != euid || st.st_mode & 0o022 != 0 {
+    if st.st_uid != owner.uid() || st.st_mode & 0o022 != 0 {
         return Err(Refused(format!(
             "unsafe state directory: {} is owned by uid {} with mode {:o}; {}",
             dir.display(),
             st.st_uid,
             st.st_mode & 0o7777,
-            private_state(euid)
+            owner.advice()
         )));
     }
     if st.st_mode & 0o077 == 0 {
@@ -432,7 +516,7 @@ fn make_private(fd: &OwnedFd, dir: &Path, euid: u32) -> Result<(), Refused> {
              roots would be open to other users; {}",
             dir.display(),
             st.st_mode & 0o7777,
-            private_state(euid)
+            owner.advice()
         )));
     }
     tracing::info!(
@@ -486,6 +570,7 @@ fn walk(fd: &OwnedFd, path: &Path) -> Result<Vec<ChainDir>, Refused> {
                 .next()
                 .map_or_else(|| PathBuf::from("?"), Path::to_owned),
             uid: st.st_uid,
+            gid: st.st_gid,
             mode: st.st_mode & 0o7777,
         });
         let parent = rustix::fs::openat(
@@ -510,45 +595,74 @@ fn walk(fd: &OwnedFd, path: &Path) -> Result<Vec<ChainDir>, Refused> {
 pub(crate) struct ChainDir {
     pub(crate) path: PathBuf,
     pub(crate) uid: u32,
+    pub(crate) gid: u32,
     /// The raw `st_mode` permission bits, sticky included.
     pub(crate) mode: u32,
 }
 
 /// ADR-0050's rule on `chain`, nearest first, up to `/`. With `has_state`,
-/// the first entry is the state directory: owned by `euid` and not writable
-/// by group or others. Every other entry is a parent: owned by root or
-/// `euid`, and not writable by group or others unless it is root's sticky
-/// directory (`/tmp`), where no one may rename what root owns.
+/// the first entry is the state directory: owned by `owner` and not
+/// writable by group or others. Every other entry is a parent: owned by
+/// root or the effective user ([`Owner::Me`]), and not writable by group or
+/// others unless it is root's sticky directory (`/tmp`), where no one may
+/// rename what root owns. For [`Owner::Mapped`], a parent is owned by root,
+/// not writable by group or others even where sticky, and searchable by
+/// its uid and gid (ADR-0003, ADR-0104).
 ///
 /// # Errors
 ///
 /// [`Refused`] naming the first directory that breaks the rule.
-pub(crate) fn check_chain(chain: &[ChainDir], euid: u32, has_state: bool) -> Result<(), Refused> {
-    match breach(chain, euid, has_state) {
+pub(crate) fn check_chain(
+    chain: &[ChainDir],
+    owner: Owner,
+    has_state: bool,
+) -> Result<(), Refused> {
+    match breach(chain, owner, has_state) {
         None => Ok(()),
         Some((d, why)) => Err(Refused(format!(
             "unsafe state directory: {} {why}; the build roots and the store live there, so no \
              other user may write it or a directory above it; {}",
             d.path.display(),
-            private_state(euid)
+            owner.advice()
         ))),
     }
 }
 
 /// The first directory of `chain` that breaks [`check_chain`]'s rule, with
 /// how, as "is …".
-fn breach(chain: &[ChainDir], euid: u32, has_state: bool) -> Option<(&ChainDir, String)> {
+fn breach(chain: &[ChainDir], owner: Owner, has_state: bool) -> Option<(&ChainDir, String)> {
+    let uid = owner.uid();
     for (i, d) in chain.iter().enumerate() {
         if i == 0 && has_state {
-            if d.uid != euid {
-                return Some((d, format!("is owned by uid {}, not {euid}", d.uid)));
+            if d.uid != uid {
+                return Some((d, format!("is owned by uid {}, not {uid}", d.uid)));
             }
             if d.mode & 0o022 != 0 {
                 return Some((d, "is writable by group or others".to_owned()));
             }
             continue;
         }
-        if d.uid != 0 && d.uid != euid {
+        if let Owner::Mapped { uid, gid } = owner {
+            // The build's uid could rename what it owns in a sticky
+            // directory, and root reaches the state directory by path.
+            if d.uid != 0 {
+                return Some((d, format!("is owned by uid {}, not root", d.uid)));
+            }
+            if d.mode & 0o022 != 0 {
+                return Some((d, "is writable by group or others".to_owned()));
+            }
+            if !searchable(d, uid, gid) {
+                return Some((
+                    d,
+                    format!(
+                        "is not searchable by uid {uid} and gid {gid}, the build's root on \
+                         the host under --userns"
+                    ),
+                ));
+            }
+            continue;
+        }
+        if d.uid != 0 && d.uid != uid {
             return Some((d, format!("is owned by uid {}", d.uid)));
         }
         let sticky_root = d.uid == 0 && d.mode & 0o1000 != 0;
@@ -557,6 +671,20 @@ fn breach(chain: &[ChainDir], euid: u32, has_state: bool) -> Option<(&ChainDir, 
         }
     }
     None
+}
+
+/// Whether `uid`, with `gid` and no supplementary group, may search `d`
+/// by its mode: the owner's bit for its owner, else the group's for its
+/// group, else the others'. An ACL that grants more is not read.
+fn searchable(d: &ChainDir, uid: u32, gid: u32) -> bool {
+    let bit = if d.uid == uid {
+        0o100
+    } else if d.gid == gid {
+        0o010
+    } else {
+        0o001
+    };
+    d.mode & bit != 0
 }
 
 /// Whether `dir` is on overlayfs, which cannot hold an overlay upper
