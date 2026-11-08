@@ -226,3 +226,5 @@ fn layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same() 
     }
     assert_refused(run, FIRST, &unmapped_uid(), &state);
 }
+
+mod red_team;

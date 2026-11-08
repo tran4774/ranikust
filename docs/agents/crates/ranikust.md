@@ -905,12 +905,24 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   into the first one, or after a `chown` on disk, refused with
   `prune --all`, the state directory unchanged, the plan's refusal marked
   to warn under root's `--mode=auto`; under the same range the layer is
-  reused); profile `privileged`:
+  reused); its red team, `setup/tests/userns/layers/canary/red_team.rs`:
+  `red_team_builds_under_ranges_racing_on_one_state_directory_never_share_a_layer`
+  (three ranges racing for the first layer: one extracts it and makes the
+  only canary, the others are refused, and only its range reuses it) and
+  `red_team_a_changed_canary_is_refused_unchanged_by_each_check_before_a_build`
+  (an entry of another owner refused by `--userns`'s check from outside and
+  in its namespace, by kaniko mode off `/`, root's overlay mode and the
+  store, with the tree and the directory's mode unchanged; taken once the
+  owner is back); profile `privileged`:
   `red_team_overlay_xattrs_from_a_layer_never_act_in_a_mount_of_the_user_namespace`
   (overlay's own xattr names under `user.overlay.` and `trusted.overlay.` in
   a layer make no opaque directory, redirect, metacopy or whiteout in a
   stage's view in the namespace, nor after a copy-up into the next layer;
-  the layer's real whiteout and opaque directory work).
+  the layer's real whiteout and opaque directory work);
+  `red_team_a_canary_mounted_over_the_state_directory_s_own_is_refused`
+  (a good canary, entry or `layers/v3` mounted over a wrong canary refused
+  from outside and by the store, unchanged; an empty tmpfs hiding the
+  canary lets no layer be reused or published).
 - **T2** (VM; `just test-vm smoke quick`, `RANIKUST_QUICK_MODE=kaniko` for
   kaniko mode; `tests/vm/guest/quick.sh`): set-up as root, on `--privileged`
   Docker (`pivot_root`) and `SYS_ADMIN` under Docker's seccomp (`MS_MOVE`);
