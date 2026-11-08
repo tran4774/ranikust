@@ -358,18 +358,19 @@ empty directory is left so; then the range's user namespace, entered as the
 build enters it (the range alone mapped, from 0; the process then that uid
 and gid on the host, with no supplementary group); in it, `Store::prune_all`,
 as above. Before the namespace root only reads in the directory: no `chmod`,
-no marker, no deletion. A refused directory gets the advice that only a
-directory a `--userns` build accepts is emptied so, and to drop `--userns`
-for another. Where it cannot finish (a mount below, or directories of ids
-the range does not map, such as root's, that still hold entries, which that
-uid cannot empty; a file of any owner goes where its directory may be
-written), its refusal says to unmount, remove those by hand as root, and run
-it again;
-it prints no commands. Root's own `prune --all`, and a `--userns` build
-refused by a prune cut short, name `prune --all --userns` instead of root's
-commands for a marked directory the range's first uid owns, which those
-commands would refuse to empty, its other uids' entries being outside their
-filter.
+no marker, no deletion. A refusal names the rule broken, without the
+build's advice of a new `--state-dir`, and says to fix it for a directory
+the range's first uid owns, else to drop `--userns`. Where it cannot finish
+(a mount below; of a uid or gid the range does not map, such as root's, a
+directory that still holds entries, or an entry in a sticky directory, over
+which the namespace's root has no `CAP_FOWNER`), its refusal says to
+unmount, remove those by hand as root, and run it again; it prints no
+commands. Root's own `prune --all`, and a `--userns` build refused by a
+prune cut short, name `prune --all --userns` instead of root's commands
+only for a marked directory it takes (owned by the range's first uid and
+passing the checks above), which those commands would refuse to empty, its
+other uids' entries being outside their filter; so neither sends root to
+the other.
 
 The rest is Phase 5: `ranikust prune` will call `rnk-store`, which removes
 entries by total size and by age, as a build opens the store, taking the

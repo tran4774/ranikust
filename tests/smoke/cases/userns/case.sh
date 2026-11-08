@@ -138,7 +138,8 @@ case_run() {
 # state directory the builds left as the range's first uid, in its user
 # namespace: root's own `prune --all` names it; it refuses root's default,
 # a state directory of root's and one below a directory the range's uid
-# cannot search, each left as it was; a directory of root's put in the
+# cannot search, each left as it was, and root's `prune --all` does not
+# send root back to it for the last; a directory of root's put in the
 # store stays, which root would have removed, the prune says how to
 # finish, and a build is refused, naming it, until it does.
 pruned_as_the_range() {
@@ -153,7 +154,7 @@ pruned_as_the_range() {
   rc=0
   log="$(sudo "$RNK" prune --all --userns 2>&1)" || rc=$?
   expect "$rc" 1 "prune --all --userns at root's default"
-  grep -qF "the state directory /var/lib/ranikust is root's default:" <<<"$log" ||
+  grep -qF "the state directory /var/lib/ranikust is root's default" <<<"$log" ||
     fail "prune --all --userns at root's default: $log"
   expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
     "root's default state directory after prune --all --userns was refused"
@@ -175,6 +176,11 @@ pruned_as_the_range() {
     fail "prune --all --userns below a directory its uid cannot search: $log"
   expect "$(sudo ls -A "$UW/closed/st")" ".ranikust-state" \
     "the state directory prune --all --userns could not search to"
+  rc=0
+  log="$(sudo "$RNK" prune --all --state-dir "$UW/closed/st" 2>&1)" || rc=$?
+  expect "$rc" 1 "root's prune --all below a directory the range's uid cannot search"
+  ! grep -qF -- "--userns" <<<"$log" ||
+    fail "root's prune --all sent root back to prune --all --userns: $log"
 
   sudo test -d "$UW/state/builds" || fail "no builds/ in the --userns state directory"
   sudo mkdir -m 755 "$UW/state/builds/rnk-roots"
@@ -183,7 +189,7 @@ pruned_as_the_range() {
   log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
   expect "$rc" 1 "prune --all --userns with a directory of root's in the store"
   grep -qF "ranikust: the build's user namespace: shifted range" <<<"$log" &&
-    grep -qF "unmount anything below $UW/state and remove such directories by hand, as root" <<<"$log" ||
+    grep -qF "unmount anything below $UW/state and remove such entries by hand, as root" <<<"$log" ||
     fail "prune --all --userns with a directory of root's in the store: $log"
   sudo test -f "$UW/state/builds/rnk-roots/f" || fail "prune --all --userns removed a file of root's"
   rc=0

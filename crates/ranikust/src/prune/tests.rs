@@ -1922,19 +1922,18 @@ fn a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace() {
     let other = if euid == 100_000 { 100_001 } else { 100_000 };
     let range = || Ok(range_from(other, 200_000));
     for (dir, how) in [
-        ("/var/lib/ranikust", "is root's default:"),
-        ("/var/lib/ranikust/userns", "is below root's default"),
-        ("/var/lib", "is above root's default"),
+        ("/var/lib/ranikust", "is root's default"),
+        (
+            "/var/lib/ranikust/userns",
+            "is below root's default /var/lib/ranikust",
+        ),
+        ("/var/lib", "is above root's default /var/lib/ranikust"),
     ] {
         let refusal = userns_with(Path::new(dir), range).unwrap_err();
-        assert!(
-            refusal
-                .reason
-                .starts_with(&format!("the state directory {dir} {how}")),
-            "{refusal}"
-        );
-        assert!(
-            refusal.reason.contains("--state-dir of its own"),
+        // A prune makes no directory: the build's advice is left out.
+        assert_eq!(
+            refusal.reason,
+            format!("the state directory {dir} {how}"),
             "{refusal}"
         );
         assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
@@ -1950,6 +1949,7 @@ fn a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace() {
         let refusal = userns_with(&state, || Ok(range_from(euid, egid))).unwrap_err();
         let parent = format!("{} is owned by uid {euid}, not root", tmp.path().display());
         assert!(refusal.reason.contains(&parent), "{refusal}");
+        assert!(!refusal.reason.contains("--state-dir"), "{refusal}");
         assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
     }
     let missing = tmp.path().join("no/such/state");
@@ -1958,11 +1958,10 @@ fn a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace() {
     assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
 }
 
-/// Root's `prune --all` on a state directory the first uid of root's
-/// `ranikust` range owns, `--userns`'s, names `prune --all --userns`
-/// instead of root's commands, which would refuse the range's other ids;
-/// any other directory keeps root's commands. The effective uid stands in
-/// for the range's.
+/// Root's `prune --all` on a state directory `prune --all --userns` takes
+/// names that command instead of root's commands, which would refuse the
+/// range's other ids; any other directory keeps root's commands. The
+/// effective ids stand in for the range's.
 #[test]
 fn root_is_given_prune_userns_for_a_userns_state_directory() {
     let euid = rustix::process::geteuid().as_raw();
@@ -1974,26 +1973,52 @@ fn root_is_given_prune_userns_for_a_userns_state_directory() {
     marked_state(&state);
     let before = listing(tmp.path());
     let d = shell_word(state.as_os_str());
-    let way = root_commands_for(&state, || Some(euid));
+    let way = root_commands_for(&state, |uid| uid == euid);
     assert_eq!(way, userns_way(&state));
     let named = format!("ranikust prune --all --userns --state-dir {d}");
     assert!(way.contains(&named), "{way}");
     assert!(!way.contains("flock"), "{way}");
-    for userns_uid in [None, Some(euid + 1)] {
-        let commands = root_commands_for(&state, || userns_uid);
-        let want = root_empties(&state, pin_of(&state));
-        assert_eq!(commands, want, "{userns_uid:?}");
+    let commands = root_commands_for(&state, |_| false);
+    assert_eq!(commands, root_empties(&state, pin_of(&state)));
+    assert_eq!(listing(tmp.path()), before);
+}
+
+/// A state directory the range's first uid owns that `prune --all
+/// --userns` refuses (here below the test's own directory, not root's)
+/// gets root's commands from root's `prune --all`, never that command
+/// again: neither sends root to the other.
+#[test]
+fn prune_userns_and_roots_prune_never_send_root_to_each_other() {
+    let euid = rustix::process::geteuid().as_raw();
+    if euid == 0 {
+        return;
     }
+    let egid = rustix::process::getegid().as_raw();
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    marked_state(&state);
+    let before = listing(tmp.path());
+    let range = range_from(euid, egid);
+    let refusal = userns_with(&state, || Ok(range)).unwrap_err();
+    assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
+    let commands = root_commands_for(&state, |uid| userns_takes(&state, uid, range));
+    assert_eq!(commands, root_empties(&state, pin_of(&state)));
+    assert!(!commands.contains("--userns"), "{commands}");
     assert_eq!(listing(tmp.path()), before);
 }
 
 /// What a `prune --all --userns` that could not finish says: unmount,
-/// remove by hand the directories the range's uid cannot empty, then run
-/// it again, naming the state directory.
+/// remove by hand what the range's uid cannot (directories of ids it does
+/// not map that hold entries, such entries in a sticky directory), then
+/// run it again, naming the state directory.
 #[test]
 fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
     let text = userns_unfinished(Path::new("/srv/rnk state"));
-    assert!(text.contains("directories of ids"), "{text}");
+    assert!(
+        text.contains("directories that still hold entries"),
+        "{text}"
+    );
+    assert!(text.contains("entries in a sticky directory"), "{text}");
     assert!(
         text.contains("unmount anything below '/srv/rnk state'"),
         "{text}"

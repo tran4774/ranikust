@@ -281,6 +281,23 @@ pub(crate) fn check_for(state_dir: &Path, owner: Owner) -> Result<Found, Refused
     }
 }
 
+/// [`check_for`] for a prune, which makes nothing: its refusals end at the
+/// rule broken, without `owner`'s advice ([`Owner::advice`]), a
+/// `--state-dir` of its own, which would not empty this one.
+///
+/// # Errors
+///
+/// As [`check_for`].
+pub(crate) fn check_for_prune(state_dir: &Path, owner: Owner) -> Result<Found, Refused> {
+    check_for(state_dir, owner).map_err(|Refused(reason)| {
+        let advice = owner.advice();
+        match reason.strip_suffix(advice.as_ref()) {
+            Some(rule) => Refused(rule.trim_end_matches([':', ';', ' ']).to_owned()),
+            None => Refused(reason),
+        }
+    })
+}
+
 /// The build's rule for the state directory at `state_dir`, which `check`
 /// describes, before a refusal prints commands that act on it: opened
 /// again without following a symlink, it is that directory; it and its
