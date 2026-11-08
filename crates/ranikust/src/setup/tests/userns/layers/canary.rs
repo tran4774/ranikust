@@ -119,28 +119,49 @@ fn extract(state: &Path) -> String {
     }
 }
 
-/// Asserts that `out` refuses the state directory `state` for its canary's
-/// `uid-1` owned by `owner` as the namespace sees it, with the way out, and
-/// that `state` is still `before`.
-fn assert_refused(out: &str, owner: &str, state: &Path, before: &[Entry]) {
-    assert!(out.starts_with("refused\t"), "{out}");
-    assert!(
-        out.contains("holds layers extracted under other ids"),
-        "{out}"
-    );
-    assert!(
-        out.contains(&format!("/uid-1 is owned by {owner}, not 1:0")),
-        "{out}"
-    );
-    assert!(out.contains("ranikust prune --all"), "{out}");
-    assert_eq!(tree(state), before, "{out}");
+/// Rootless overlay mode's plan ([`crate::setup::rootless::plan`]), which
+/// checks and holds the state directory, then probes in it, before the
+/// build's user namespace exists: `planned`, or `refused\t<refusal>`.
+fn plan(state: &Path) -> String {
+    match crate::setup::rootless::plan(state, false, false, None) {
+        Ok(_) => "planned".to_owned(),
+        Err(n) => format!("refused\t{}", n.refusal),
+    }
+}
+
+/// Why a state directory is refused for its canary.
+const CHANGED: &str = "holds layers extracted under other ids";
+
+/// Asserts that rootless overlay mode's plan under the range from `first`,
+/// before the build's user namespace exists, and the store's open in that
+/// namespace each refuse the state directory `state` for its canary's
+/// `uid-1` owned by `owner`, with the way out, and that `state` is still as
+/// it was.
+fn assert_refused(
+    run: impl Fn(u32, fn(&Path) -> String) -> String,
+    first: u32,
+    owner: &str,
+    state: &Path,
+) {
+    let before = tree(state);
+    for out in [run(first, plan), run(first, extract)] {
+        assert!(out.starts_with("refused\t"), "{out}");
+        assert!(out.contains(CHANGED), "{out}");
+        assert!(
+            out.contains(&format!("/uid-1 is owned by {owner}, not 1:0")),
+            "{out}"
+        );
+        assert!(out.contains("ranikust prune --all"), "{out}");
+        assert_eq!(tree(state), before, "{out}");
+    }
 }
 
 /// T1, as root of a rootless Podman container: the base layer a build
 /// extracted, nested in a namespace whose range starts at [`FIRST`], is
-/// reused by the next build there; a build there once the range moved past
-/// or into the first, or once the state directory was chowned on disk, is
-/// refused before anything changes, with the way out.
+/// reused by the next build there; once the range moved past or into the
+/// first, or once the state directory was chowned on disk, rootless
+/// overlay mode is refused there before anything changes, by its plan and
+/// by the store, with the way out.
 #[test]
 #[ignore = "T1: default: root in a rootless Podman container moves the range of a namespace enclosing the build's"]
 fn layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same() {
@@ -156,18 +177,21 @@ fn layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same() 
     );
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
-    let run = |first| in_child(None, || under_range(first, || extract(&state)));
-    let out = run(FIRST);
+    let run = |first, f: fn(&Path) -> String| in_child(None, || under_range(first, || f(&state)));
+    let out = run(FIRST, extract);
     assert!(out.starts_with("multi-range\n"), "{out}");
     let canaries = state.join("layers/v3/canary");
     assert_eq!(fs::read_dir(&canaries).unwrap().count(), 1, "{out}");
-    let before = tree(&state);
-    assert_refused(&run(MOVED), "65534:0", &state, &before);
+    assert_refused(run, MOVED, "65534:0", &state);
     // The first range's uid 1 is the overlapping one's 501.
     let shifted = format!("{}:0", FIRST - OVERLAPPING + 1);
-    assert_refused(&run(OVERLAPPING), &shifted, &state, &before);
+    assert_refused(run, OVERLAPPING, &shifted, &state);
+    // The plan passes the canary under the same range (its probe may stop
+    // later, as it does where `/proc` is masked).
+    let planned = run(FIRST, plan);
+    assert!(!planned.contains(CHANGED), "{planned}");
     // The same path and inode: the layer is reused, not extracted again.
-    assert_eq!(run(FIRST), out);
+    assert_eq!(run(FIRST, extract), out);
     assert_eq!(fs::read_dir(&canaries).unwrap().count(), 1, "{out}");
     let range = FIRST..FIRST + COUNT;
     let moved = |id: u32| {
@@ -182,6 +206,5 @@ fn layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same() 
             lchown(state.join(&e.path), Some(moved(e.uid)), Some(moved(e.gid))).unwrap();
         }
     }
-    let before = tree(&state);
-    assert_refused(&run(FIRST), "65534:0", &state, &before);
+    assert_refused(run, FIRST, "65534:0", &state);
 }

@@ -816,7 +816,7 @@ fn overlay_mode_refuses_its_state_directory_unchanged() {
     // The control: taken, it is made private.
     let euid = rustix::process::geteuid().as_raw();
     let me = crate::statedir::Owner::me();
-    drop(hold_state_dir(&state, euid, me, || unreachable!("on overlayfs")).unwrap());
+    drop(hold_state_dir(&state, euid, me, &[], || unreachable!("on overlayfs")).unwrap());
     assert_eq!(seen().1, 0o700);
 }
 

@@ -109,6 +109,18 @@ impl IdMaps {
     pub(crate) fn gid_extents(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         extents(&self.gid_map)
     }
+
+    /// The uid of the parent namespace that the uid `id` inside is, or
+    /// `None` where no extent holds it.
+    pub(crate) fn uid_outside(&self, id: u32) -> Option<u32> {
+        outside(&self.uid_map, id)
+    }
+
+    /// The gid of the parent namespace that the gid `id` inside is, as
+    /// [`IdMaps::uid_outside`].
+    pub(crate) fn gid_outside(&self, id: u32) -> Option<u32> {
+        outside(&self.gid_map, id)
+    }
 }
 
 /// `map`'s lines, each `inside outside count`, sorted and with single
@@ -146,14 +158,31 @@ fn canonical(map: &str) -> Option<String> {
     )
 }
 
-/// The first and the last id inside of each line of a [`canonical`] map.
-fn extents(map: &str) -> impl Iterator<Item = (u32, u32)> + '_ {
+/// The `inside outside count` lines of a [`canonical`] map.
+fn lines(map: &str) -> impl Iterator<Item = [u32; 3]> + '_ {
     map.lines().filter_map(|line| {
         let mut n = line.split(' ').map(|w| w.parse::<u32>().ok());
-        let (Some(Some(inside)), _, Some(Some(count))) = (n.next(), n.next(), n.next()) else {
+        let (Some(Some(inside)), Some(Some(outside)), Some(Some(count))) =
+            (n.next(), n.next(), n.next())
+        else {
             return None;
         };
-        Some((inside, inside + (count - 1)))
+        Some([inside, outside, count])
+    })
+}
+
+/// The first and the last id inside of each line of a [`canonical`] map.
+fn extents(map: &str) -> impl Iterator<Item = (u32, u32)> + '_ {
+    lines(map).map(|[inside, _, count]| (inside, inside + (count - 1)))
+}
+
+/// The id outside that `id` inside is in a [`canonical`] map, whose lines
+/// end below `u32::MAX` on both sides.
+fn outside(map: &str, id: u32) -> Option<u32> {
+    lines(map).find_map(|[inside, outside, count]| {
+        (inside..=inside + (count - 1))
+            .contains(&id)
+            .then(|| outside + (id - inside))
     })
 }
 
@@ -261,6 +290,28 @@ mod tests {
         let maps = IdMaps::parse("1 100000 65536\n0 1000 1\n", "0 0 4294967295\n").unwrap();
         assert_eq!(maps.uid_extents().collect::<Vec<_>>(), [(0, 0), (1, 65536)]);
         assert_eq!(maps.gid_extents().collect::<Vec<_>>(), [(0, 4_294_967_294)]);
+    }
+
+    /// An id inside is the parent's id its extent gives, the ends of each
+    /// extent included; one no extent holds is none.
+    #[test]
+    fn an_id_inside_is_the_parent_s_its_extent_gives() {
+        let maps = IdMaps::parse("1 100000 65536\n0 1000 1\n", "0 0 4294967295\n").unwrap();
+        let uids: Vec<_> = [0, 1, 2, 65536, 65537]
+            .map(|id| maps.uid_outside(id))
+            .into();
+        assert_eq!(
+            uids,
+            [
+                Some(1000),
+                Some(100_000),
+                Some(100_001),
+                Some(165_535),
+                None
+            ]
+        );
+        assert_eq!(maps.gid_outside(4_294_967_294), Some(4_294_967_294));
+        assert_eq!(maps.gid_outside(u32::MAX), None);
     }
 
     /// In a user namespace other than the initial one, `current` holds this

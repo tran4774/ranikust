@@ -152,6 +152,22 @@ impl BuildIds {
             Self::Shifted(sub) => Some((sub.uids.start, sub.gids.start)),
         }
     }
+
+    /// The uid and gid maps [`crate::enter_build_user_namespace`] may give
+    /// the build's user namespace for these ids, in the order it tries
+    /// them, as `/proc/self` there shows them: relative to this process's
+    /// namespace, for a check made before the namespace exists (the
+    /// store's canary of a map, ADR-0128).
+    #[must_use]
+    pub fn maps(&self) -> Vec<(String, String)> {
+        let euid = rustix::process::geteuid().as_raw();
+        let egid = rustix::process::getegid().as_raw();
+        plans(euid, egid, *self)
+            .into_iter()
+            .flatten()
+            .map(|plan| plan.maps())
+            .collect()
+    }
 }
 
 /// A step that failed: the operation, and its errno or what else is known.
@@ -753,6 +769,23 @@ impl Plan {
             }
             Self::Newuidmap { .. } => Some((1, 1)),
             Self::OneId { .. } => None,
+        }
+    }
+
+    /// The uid and gid maps this plan writes: [`run_tool`]'s for
+    /// [`Plan::Newuidmap`].
+    fn maps(&self) -> (String, String) {
+        match self {
+            Self::Ranges { uid_map, gid_map }
+            | Self::OneId { uid_map, gid_map }
+            | Self::Shifted { uid_map, gid_map } => (
+                String::from_utf8_lossy(uid_map).into_owned(),
+                String::from_utf8_lossy(gid_map).into_owned(),
+            ),
+            Self::Newuidmap { uid, gid, sub, .. } => (
+                format!("0 {uid} 1\n1 {} {}\n", sub.uids.start, sub.uids.count),
+                format!("0 {gid} 1\n1 {} {}\n", sub.gids.start, sub.gids.count),
+            ),
         }
     }
 

@@ -133,6 +133,73 @@ fn root_tries_its_ranges_then_one_id_and_a_user_newuidmap_then_one_id() {
     }
 }
 
+/// The maps of each plan are those it writes: `newuidmap`'s own id as 0
+/// and the range from 1, the others' as written.
+#[test]
+fn each_plan_gives_the_maps_it_writes() {
+    let sub = SubordinateIds {
+        uids: IdRange {
+            start: 100_000,
+            count: 65536,
+        },
+        gids: IdRange {
+            start: 200_000,
+            count: 1000,
+        },
+    };
+    let newuidmap = Plan::Newuidmap {
+        uid: 1000,
+        gid: 1001,
+        sub,
+        tools: (PathBuf::from("/u"), PathBuf::from("/g")),
+    };
+    assert_eq!(
+        newuidmap.maps(),
+        (
+            "0 1000 1\n1 100000 65536\n".to_owned(),
+            "0 1001 1\n1 200000 1000\n".to_owned()
+        )
+    );
+    let maps = |ids| -> Vec<(String, String)> {
+        plans(0, 0, ids)
+            .into_iter()
+            .flatten()
+            .map(|p| p.maps())
+            .collect()
+    };
+    assert_eq!(
+        maps(BuildIds::Shifted(shifted_ids())),
+        [("0 300000 65536\n".to_owned(), "0 400000 1000\n".to_owned())]
+    );
+    // Root's own ranges, each to itself, then one id.
+    let own = maps(BuildIds::Own(None));
+    let mirror = |name: &str| -> String {
+        std::fs::read_to_string(format!("/proc/self/{name}"))
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                format!("{} {} {}\n", f[0], f[0], f[2])
+            })
+            .collect()
+    };
+    assert_eq!(
+        own,
+        [
+            (mirror("uid_map"), mirror("gid_map")),
+            ("0 0 1\n".to_owned(), "0 0 1\n".to_owned())
+        ]
+    );
+    assert_eq!(
+        BuildIds::Own(None).maps().len(),
+        if rustix::process::geteuid().is_root() {
+            2
+        } else {
+            1
+        }
+    );
+}
+
 pub(super) fn shifted_ids() -> SubordinateIds {
     SubordinateIds {
         uids: IdRange {

@@ -21,6 +21,7 @@
 //! ├── layers/v3/canary/<hex>/        a canary per id map: its owners must not change
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
 //! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
+//! ├── locks/layers/v3/canary/<hex>   a canary's lock
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
 //! ├── builds/<build-id>/, <build-id>.lock      one per running build
 //! ├── .ranikust-anon-userns-probe-*/ rootless overlay mode's probe, locked while in use: removed here

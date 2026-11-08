@@ -174,7 +174,13 @@ pub(crate) fn plan(
         })?;
         (BuildIds::Own(subordinate), crate::statedir::Owner::me())
     };
-    let held = state_dir_for_probe(state_dir, euid, owner, what).map_err(unprobed)?;
+    // A map `IdMaps` does not take fails the store's open in the namespace.
+    let children: Vec<_> = ids
+        .maps()
+        .iter()
+        .filter_map(|(uid_map, gid_map)| rnk_store::IdMaps::parse(uid_map, gid_map))
+        .collect();
+    let held = state_dir_for_probe(state_dir, euid, owner, &children, what).map_err(unprobed)?;
     if userns {
         // The store, in the namespace, removes those it was given.
         super::remove_own_probe_leftovers(state_dir);
@@ -336,15 +342,17 @@ fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
 }
 
 /// The state directory the probe may write in: [`super::hold_state_dir`]
-/// with the user namespace probe's overlayfs refusal. `what` names the
-/// mode in messages.
+/// with the maps the build's user namespace may get (`children`) and the
+/// user namespace probe's overlayfs refusal. `what` names the mode in
+/// messages.
 fn state_dir_for_probe(
     state_dir: &Path,
     euid: u32,
     owner: crate::statedir::Owner,
+    children: &[rnk_store::IdMaps],
     what: &str,
 ) -> Result<rnk_store::StateDirHold, Refusal> {
-    super::hold_state_dir(state_dir, euid, owner, || Refusal {
+    super::hold_state_dir(state_dir, euid, owner, children, || Refusal {
         kind: Kind::Other,
         reason: format!(
             "{what} cannot run here: the state directory {} is on overlayfs, a container's own \
@@ -816,7 +824,7 @@ mod tests {
         private(&foreign);
         std::fs::write(foreign.join("precious"), "x").unwrap();
         let me = crate::statedir::Owner::me();
-        let refusal = state_dir_for_probe(&foreign, 1000, me, "rootless").unwrap_err();
+        let refusal = state_dir_for_probe(&foreign, 1000, me, &[], "rootless").unwrap_err();
         assert!(
             refusal
                 .reason
@@ -826,7 +834,7 @@ mod tests {
         );
         assert_eq!(names(&foreign), ["precious"]);
         let new = tmp.path().join("new");
-        let held = state_dir_for_probe(&new, 1000, me, "rootless").unwrap();
+        let held = state_dir_for_probe(&new, 1000, me, &[], "rootless").unwrap();
         assert!(names(&new).is_empty());
         // Held until the store opens: no prune empties it meanwhile.
         let pruned = rnk_store::Store::prune_all(&new);
@@ -849,7 +857,7 @@ mod tests {
         }
         let me = crate::statedir::Owner::me();
         let state = tmp.path().join("a/state");
-        let refusal = state_dir_for_probe(&state, 1000, me, "rootless").unwrap_err();
+        let refusal = state_dir_for_probe(&state, 1000, me, &[], "rootless").unwrap_err();
         assert!(
             refusal.reason.contains("is on overlayfs"),
             "{}",
@@ -880,7 +888,7 @@ mod tests {
         set(&open, 0o755);
         let euid = rustix::process::geteuid().as_raw();
         let alone = crate::setup::tests::LockedElsewhere::new(&open);
-        let refusal = state_dir_for_probe(&open, euid, me, "rootless").unwrap_err();
+        let refusal = state_dir_for_probe(&open, euid, me, &[], "rootless").unwrap_err();
         assert!(
             refusal.reason.contains("another build is using"),
             "{}",
@@ -889,7 +897,7 @@ mod tests {
         assert_eq!(mode(&open), 0o755);
         drop(alone);
         std::fs::write(open.join(rnk_store::BUILDING_MARKER), "").unwrap();
-        let refusal = state_dir_for_probe(&open, euid, me, "rootless").unwrap_err();
+        let refusal = state_dir_for_probe(&open, euid, me, &[], "rootless").unwrap_err();
         assert!(
             refusal.reason.contains("kaniko-mode build on /"),
             "{}",
@@ -898,7 +906,7 @@ mod tests {
         assert_eq!(mode(&open), 0o755);
         // Taken, it is made private.
         std::fs::remove_file(open.join(rnk_store::BUILDING_MARKER)).unwrap();
-        drop(state_dir_for_probe(&open, euid, me, "rootless").unwrap());
+        drop(state_dir_for_probe(&open, euid, me, &[], "rootless").unwrap());
         assert_eq!(mode(&open), 0o700);
     }
 }

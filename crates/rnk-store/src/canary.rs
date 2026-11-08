@@ -87,9 +87,20 @@ pub(crate) fn entries(maps: &IdMaps) -> Vec<Entry> {
     by_uid.chain(by_gid).collect()
 }
 
+/// Where a canary is checked from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum View {
+    /// The user namespace of the maps: an entry's owner is its id.
+    Inside,
+    /// That namespace's parent, before the namespace exists: an entry's
+    /// owner is the id the maps give its id there.
+    Parent,
+}
+
 /// Checks the canary of `maps` in the state directory `state`, writing
 /// nothing: absent, or there with every entry of [`entries`] a regular file
-/// of the owner it must have, as this process's user namespace shows it.
+/// of the owner it must have, as this process's user namespace, whose maps
+/// they are, shows it.
 ///
 /// # Errors
 ///
@@ -98,6 +109,27 @@ pub(crate) fn entries(maps: &IdMaps) -> Vec<Entry> {
 /// one of another type or owner; [`Error::Rootfs`] when it cannot be read
 /// otherwise.
 pub(crate) fn check(state: &RootPath, state_path: &Path, maps: &IdMaps) -> Result<Found> {
+    check_as(state, state_path, maps, View::Inside)
+}
+
+/// [`check`] from the parent of a user namespace whose maps are `maps`,
+/// relative to this process's namespace: one this process may make. Each
+/// entry must be owned by the ids `maps` give its own here, which is what
+/// the namespace would see as its own.
+///
+/// # Errors
+///
+/// As [`check`].
+pub(crate) fn check_from_parent(
+    state: &RootPath,
+    state_path: &Path,
+    maps: &IdMaps,
+) -> Result<Found> {
+    check_as(state, state_path, maps, View::Parent)
+}
+
+/// [`check`] from `view`.
+fn check_as(state: &RootPath, state_path: &Path, maps: &IdMaps, view: View) -> Result<Found> {
     let rel = path(maps);
     let changed = |why: String| Error::IdMapChanged {
         path: state_path.to_owned(),
@@ -143,14 +175,27 @@ pub(crate) fn check(state: &RootPath, state_path: &Path, maps: &IdMaps) -> Resul
                 p.display()
             )));
         }
-        if (st.uid, st.gid) != (entry.uid, entry.gid) {
+        let (want, of) = match view {
+            View::Inside => (Some((entry.uid, entry.gid)), String::new()),
+            View::Parent => (
+                maps.uid_outside(entry.uid).zip(maps.gid_outside(entry.gid)),
+                format!(
+                    " (the build's user namespace's {}:{})",
+                    entry.uid, entry.gid
+                ),
+            ),
+        };
+        // An entry's ids are the ends of the maps' extents, so the maps give
+        // each: none would be a bug, refused all the same.
+        let Some((uid, gid)) = want else {
+            return Err(changed(format!("{} has no id here", p.display())));
+        };
+        if (st.uid, st.gid) != (uid, gid) {
             return Err(changed(format!(
-                "{} is owned by {}:{}, not {}:{}",
+                "{} is owned by {}:{}, not {uid}:{gid}{of}",
                 p.display(),
                 st.uid,
                 st.gid,
-                entry.uid,
-                entry.gid
             )));
         }
     }

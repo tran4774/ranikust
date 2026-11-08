@@ -276,7 +276,9 @@ impl Overlay {
     /// # Errors
     ///
     /// [`Error::UnsafePath`] when the state directory's path holds overlay
-    /// option syntax; [`Error::Rootfs`] when it cannot be opened.
+    /// option syntax; [`Error::Rootfs`] when it cannot be opened;
+    /// [`Error::State`] when the store's maps give no ids, which
+    /// [`rnk_store::IdMaps`] rules out.
     pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self> {
         mount::check_path(store.state_dir())?;
         let state = Arc::new(RootPath::open(store.state_dir())?);

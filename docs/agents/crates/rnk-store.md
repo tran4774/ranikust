@@ -65,6 +65,7 @@ pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send 
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, the id maps read and their canary checked (IdMapChanged), build lock, clean-up
     pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING, store-directory and canary checks, writing nothing: before overlay mode sets the state directory's mode and before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
+    pub fn check_state_dir_for(state: &Path, children: &[IdMaps]) -> Result<StateDirHold>; // check_state_dir, then the canary of each child's map checked from here (owners the ids each map gives outside; IdMapChanged): rootless overlay mode before its probe and the build's user namespace
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -349,10 +350,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   not a regular file (a symlink, a directory, a canary that is a file or a
   symlink) refused with the way out; the first layer under a map makes it
   and the next store checks it; a canary of other owners refuses `open` and
-  `check_state_dir` before anything is written; a layer of the map without
-  a canary is never reused; none outside a user namespace. `src/userns.rs`:
-  `IdMaps` canonical however padded or ordered, a line past `u32::MAX`
-  refused.
+  `check_state_dir` before anything is written, a child map's from the
+  parent too (`check_state_dir_for`); one that cannot be made publishes no
+  layer; stores that opened with none make one between them; a layer of
+  the map without a canary is never reused; none outside a user namespace.
+  `src/userns.rs`: `IdMaps` canonical however padded or ordered, a line
+  past `u32::MAX` refused, an id inside given its parent's.
 - **T0** `tests/prune.rs` (`prune_all`, the test user's own files): every
   kind of entry a build leaves emptied, marker last; refused while a build
   holds the store, nothing removed; a directory without a regular marker

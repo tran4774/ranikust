@@ -371,14 +371,16 @@ pub(crate) fn set_up(
     refuse_overlay: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    let held = hold_state_dir(state_dir, euid, crate::statedir::Owner::me(), || Refusal {
-        kind: Kind::OverlayUnusable,
-        reason: format!(
-            "the state directory {} is on overlayfs, a container's own root, where overlay \
+    let held = hold_state_dir(state_dir, euid, crate::statedir::Owner::me(), &[], || {
+        Refusal {
+            kind: Kind::OverlayUnusable,
+            reason: format!(
+                "the state directory {} is on overlayfs, a container's own root, where overlay \
              mode cannot keep its upper directories",
-            state_dir.display()
-        ),
-        guidance: ON_OVERLAYFS.into(),
+                state_dir.display()
+            ),
+            guidance: ON_OVERLAYFS.into(),
+        }
     })?;
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
@@ -431,11 +433,12 @@ pub(crate) fn set_up(
 /// refusal before anything in it is changed: overlayfs first, told from
 /// the nearest directory that exists, where a missing one would be made
 /// (refused with `on_overlayfs()`); then [`crate::statedir::stage`]'s
-/// checks; then [`Store::check_state_dir`], which writes nothing (Q-111,
-/// (a)); only then the mode [`crate::statedir::Staged::finish`] sets.
-/// `euid` names what to do with a prune cut short. The hold keeps the
-/// state directory's shared lock until the caller's [`Store::open`] has
-/// its own.
+/// checks; then [`Store::check_state_dir_for`] with `children`, the maps
+/// the build's user namespace may get when the store opens there, which
+/// writes nothing (Q-111, (a); the canary, ADR-0128); only then the mode
+/// [`crate::statedir::Staged::finish`] sets. `euid` names what to do with
+/// a prune cut short. The hold keeps the state directory's shared lock
+/// until the caller's [`Store::open`] has its own.
 ///
 /// # Errors
 ///
@@ -445,6 +448,7 @@ pub(crate) fn hold_state_dir(
     state_dir: &Path,
     euid: u32,
     owner: crate::statedir::Owner,
+    children: &[rnk_store::IdMaps],
     on_overlayfs: impl FnOnce() -> Refusal,
 ) -> Result<rnk_store::StateDirHold, Refusal> {
     let refusal = |refused: crate::statedir::Refused| Refusal {
@@ -456,7 +460,8 @@ pub(crate) fn hold_state_dir(
         return Err(on_overlayfs());
     }
     let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
-    let held = Store::check_state_dir(state_dir).map_err(|e| store_refusal(&e, state_dir, euid))?;
+    let held = Store::check_state_dir_for(state_dir, children)
+        .map_err(|e| store_refusal(&e, state_dir, euid))?;
     staged.finish().map_err(refusal)?;
     Ok(held)
 }

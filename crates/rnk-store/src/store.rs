@@ -463,12 +463,13 @@ impl Store {
         marker_checked(&state);
         check_dirs(&state, &state_path)?;
         let id_maps = namespace_maps()?;
-        let canary_seen = OnceLock::new();
-        if let Some(maps) = &id_maps
-            && canary::check(&state, &state_path, maps)? == canary::Found::Matches
-        {
-            let _ = canary_seen.set(());
-        }
+        let canary_seen = match &id_maps {
+            Some(maps) => match canary::check(&state, &state_path, maps)? {
+                canary::Found::Matches => OnceLock::from(()),
+                canary::Found::Absent => OnceLock::new(),
+            },
+            None => OnceLock::new(),
+        };
         if unmarked {
             mark(&state, &state_path)?;
         }
@@ -542,6 +543,20 @@ impl Store {
     /// `state` or the namespace's maps cannot be resolved or read,
     /// [`Error::Rootfs`] when it cannot be opened.
     pub fn check_state_dir(state: &Path) -> Result<StateDirHold> {
+        Self::check_state_dir_for(state, &[])
+    }
+
+    /// [`Store::check_state_dir`] for a store this process will open in a
+    /// user namespace it makes, whose maps (relative to this process's
+    /// namespace) may be any of `children`: also no canary of one of them
+    /// whose owners, seen from here, differ from the ids it gives
+    /// (ADR-0128). So a step that writes in the state directory before that
+    /// store opens comes after the canary's refusal.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::check_state_dir`].
+    pub fn check_state_dir_for(state: &Path, children: &[IdMaps]) -> Result<StateDirHold> {
         let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
             op: "resolve",
             path: state.to_owned(),
@@ -565,6 +580,9 @@ impl Store {
         check_dirs(&root, &state_path)?;
         if let Some(maps) = namespace_maps()? {
             canary::check(&root, &state_path, &maps)?;
+        }
+        for maps in children {
+            canary::check_from_parent(&root, &state_path, maps)?;
         }
         Ok(StateDirHold { _lock: state_lock })
     }
@@ -1008,7 +1026,9 @@ impl Store {
     }
 
     /// The published entry `key`, if any. Published entries are complete
-    /// and never change, so no lock is needed to read them.
+    /// and never change, so no lock is needed to read them; in a user
+    /// namespace, a layer's first use takes its canary's lock
+    /// ([`Store::fill`]).
     ///
     /// # Errors
     ///
@@ -1713,7 +1733,11 @@ impl Store {
     /// these maps without the canary made before it) and a publication
     /// makes it. Nothing for a blob, or outside a user namespace.
     fn canary_before(&self, key: &EntryKey, then: CanaryUse) -> Result<()> {
-        let (EntryKey::Layer(_), Some(maps)) = (key, &self.id_maps) else {
+        match key {
+            EntryKey::Layer(_) => {}
+            EntryKey::Blob(_) => return Ok(()),
+        }
+        let Some(maps) = &self.id_maps else {
             return Ok(());
         };
         if self.canary_seen.get().is_some() {
@@ -1740,6 +1764,7 @@ impl Store {
                 }
             }
         }
+        // Another thread may have set it meanwhile: either way it is seen.
         let _ = self.canary_seen.set(());
         Ok(())
     }

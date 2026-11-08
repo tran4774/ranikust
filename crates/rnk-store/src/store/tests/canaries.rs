@@ -20,15 +20,28 @@ fn own_maps() -> IdMaps {
     IdMaps::parse(&format!("{u} {u} 1\n"), &format!("{g} {g} 1\n")).unwrap()
 }
 
-/// Maps none of whose ids is this process's.
+/// An id other than `id`.
+fn other(id: u32) -> u32 {
+    if id == 4242 { 4243 } else { 4242 }
+}
+
+/// Maps none of whose ids is this process's, root's included.
 fn other_maps() -> IdMaps {
     let (u, g) = own();
-    let other = |id: u32| if id == 4242 { 4243 } else { 4242 };
     IdMaps::parse(
-        &format!("0 1000 1\n{} 100000 10\n", other(u)),
-        &format!("0 1000 1\n{} 100000 10\n", other(g)),
+        &format!("{} 100000 1\n", other(u)),
+        &format!("{} 100000 1\n", other(g)),
     )
     .unwrap()
+}
+
+/// Plants the canary of `maps`, each entry this process's.
+fn plant(state: &Path, maps: &IdMaps) {
+    let rel = canary::path(maps);
+    fs::create_dir_all(state.join(&rel)).unwrap();
+    for e in canary::entries(maps) {
+        fs::write(state.join(&rel).join(&e.name), b"").unwrap();
+    }
 }
 
 /// Stores opened on this thread read `maps` as their namespace's.
@@ -119,18 +132,15 @@ fn a_canary_of_other_owners_refuses_the_state_directory_before_anything_is_writt
     let paths = BuildPaths::new(dir.path(), dir.path().join("state"));
     give(Some(other_maps()));
     Store::open(&paths).unwrap().close().unwrap();
-    let rel = canary::path(&other_maps());
-    fs::create_dir_all(paths.state.join(&rel)).unwrap();
-    for e in canary::entries(&other_maps()) {
-        fs::write(paths.state.join(&rel).join(&e.name), b"").unwrap();
-    }
+    plant(&paths.state, &other_maps());
     let before = tree(&paths.state);
     let e = Store::open(&paths).unwrap_err();
     let text = e.to_string();
     assert!(matches!(e, Error::IdMapChanged { .. }), "{text}");
     let (u, g) = own();
+    let (ou, og) = (other(u), other(g));
     assert!(
-        text.contains(&format!("/uid-0 is owned by {u}:{g}, not 0:0")),
+        text.contains(&format!("/uid-{ou} is owned by {u}:{g}, not {ou}:{og}")),
         "{text}"
     );
     assert!(text.contains("ranikust prune --all"), "{text}");
@@ -143,6 +153,85 @@ fn a_canary_of_other_owners_refuses_the_state_directory_before_anything_is_writt
     Store::open(&paths).unwrap().close().unwrap();
     give(None);
     Store::open(&paths).unwrap().close().unwrap();
+}
+
+/// Before a store opens in a user namespace this process makes, the canary
+/// of each map it may get is checked from here: owned by the ids the map
+/// gives its entries' own. One of other owners refuses the state directory
+/// before anything is written; one of the ids the map gives, or none, does
+/// not.
+#[test]
+fn a_child_namespace_s_canary_is_checked_from_here_before_anything_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = BuildPaths::new(dir.path(), dir.path().join("state"));
+    give(None);
+    Store::open(&paths).unwrap().close().unwrap();
+    let (u, g) = own();
+    let child = |uid: u32| IdMaps::parse(&format!("0 {uid} 1\n"), &format!("0 {g} 1\n")).unwrap();
+    // This process's ids are the child's 0: its canary, as made there.
+    let same = child(u);
+    let moved = child(other(u));
+    let unplanted = IdMaps::parse("0 100000 10\n", "0 100000 10\n").unwrap();
+    plant(&paths.state, &same);
+    plant(&paths.state, &moved);
+    let before = tree(&paths.state);
+    drop(Store::check_state_dir_for(&paths.state, &[same.clone(), unplanted]).unwrap());
+    let e = Store::check_state_dir_for(&paths.state, &[same, moved]).unwrap_err();
+    let text = e.to_string();
+    assert!(matches!(e, Error::IdMapChanged { .. }), "{text}");
+    assert!(
+        text.contains(&format!(
+            "/uid-0 is owned by {u}:{g}, not {}:{g} (the build's user namespace's 0:0)",
+            other(u)
+        )),
+        "{text}"
+    );
+    assert!(text.contains("ranikust prune --all"), "{text}");
+    assert_eq!(tree(&paths.state), before);
+}
+
+/// A canary that cannot be made publishes no layer, and leaves neither in
+/// `tmp/`; the next layer makes it.
+#[test]
+fn a_canary_that_cannot_be_made_publishes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = BuildPaths::new(dir.path(), dir.path().join("state"));
+    give(Some(own_maps()));
+    let store = Store::open(&paths).unwrap();
+    // The canary's temporary name, after the layer's (`tmp/<id>/0`), taken.
+    let tmp = paths.state.join("tmp").join(store.build_id());
+    fs::create_dir_all(&tmp).unwrap();
+    fs::write(tmp.join("1"), b"").unwrap();
+    let e = layer(&store, 1).unwrap_err();
+    assert!(!matches!(e, Error::IdMapChanged { .. }), "{e}");
+    assert!(!paths.state.join(key(1).path()).exists(), "{e}");
+    assert!(!paths.state.join(canary::path(&own_maps())).exists(), "{e}");
+    assert_eq!(fs::read_dir(&tmp).unwrap().count(), 0, "{e}");
+    layer(&store, 1).unwrap();
+    assert!(paths.state.join(canary::path(&own_maps())).is_dir());
+    store.close().unwrap();
+}
+
+/// Two stores that opened with no canary: the first layer makes it, and
+/// the other store finds it under its lock and makes none.
+#[test]
+fn stores_that_opened_with_no_canary_make_one_between_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = BuildPaths::new(dir.path(), dir.path().join("state"));
+    give(Some(own_maps()));
+    let a = Store::open(&paths).unwrap();
+    let b = Store::open(&paths).unwrap();
+    layer(&a, 1).unwrap();
+    let canary = paths.state.join(canary::path(&own_maps()));
+    let made = fs::metadata(&canary).unwrap().ino();
+    layer(&b, 2).unwrap();
+    assert_eq!(
+        b.get(&key(1)).unwrap(),
+        Some(paths.state.join(key(1).path()))
+    );
+    assert_eq!(fs::metadata(&canary).unwrap().ino(), made);
+    a.close().unwrap();
+    b.close().unwrap();
 }
 
 /// A layer under the maps with no canary there (one gone, or published

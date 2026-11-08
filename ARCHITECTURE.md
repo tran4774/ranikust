@@ -147,7 +147,10 @@ publication by atomic rename, start-up clean-up, the emptying of `prune --all`
 while no build holds the state directory (ADR-0105), and `BuildPaths`, the
 paths handed down to every crate. It tells whether the process runs in a user
 namespace (by the inode of `/proc/self/ns/user`), for its own directories'
-group and `rnk-snapshot`'s layer keys and device nodes. `prune` by size and
+group and `rnk-snapshot`'s layer keys and device nodes, reads that
+namespace's id maps (`IdMaps`, which `rnk-snapshot` keys layers by), and
+guards the layers extracted under each map with a canary that refuses them
+once the ids above it changed (ADR-0128). `prune` by size and
 age comes in Phase 5. **Must not** decide what
 an entry contains (the caller fills a temporary entry, `rnk-store` publishes
 it), transfer blobs, decode layers, mount, or delete except through
