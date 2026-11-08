@@ -235,7 +235,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and one planted once `open` found the directory unmarked refused before
   the marker is written
   (`a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked`,
-  in `src/store/tests.rs`); another anonymous name, a file or a symlink
+  in `src/store/tests.rs`); a FIFO, a socket, a character device, a dead
+  link, a link to itself or to a FIFO outside at each store directory's
+  name, in a marked or an unmarked directory, refused by both without being
+  opened or blocking, the tree unchanged
+  (`red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened`);
+  another anonymous name, a file or a symlink
   with the probe's prefix is refused and left as it was
   (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
@@ -341,7 +346,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   symlink on it, last or not, told apart (`is_symlink_on`) from a
   missing, unmarked or symlinked-marker one; in a cache mount, symlinks out
   (absolute, climbing), a hardlink and a FIFO, and a build directory that
-  is a symlink out, removed, what they lead to unchanged.
+  is a symlink out, removed, what they lead to unchanged; each store
+  directory planted as a link out (absolute, climbing, to a FIFO), a FIFO
+  or a socket removed without blocking, what a link leads to unchanged
+  (`red_team_prune_all_never_reaches_through_a_planted_store_directory`).
 - To do: `prune` by size and age (Phase 5); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device
   nodes, foreign owners).

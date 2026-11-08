@@ -267,6 +267,102 @@ fn a_store_directory_that_is_not_a_real_directory_is_refused_unchanged() {
     }
 }
 
+/// Red team: a store directory planted as a special file or as a link that leads nowhere, in a
+/// marked state directory or an unmarked one, is refused unopened, without blocking, with
+/// nothing changed (T4).
+#[test]
+fn red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened() {
+    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    use std::os::unix::fs::symlink;
+    let top = tempfile::tempdir().unwrap();
+    let fifo_out = top.path().join("fifo-out");
+    mkfifo(&fifo_out);
+    // A FIFO opened by mistake blocks: each call runs on a thread of its own.
+    let unblocked = |case: &str, f: Box<dyn FnOnce() -> Result<(), Error> + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let r = f().map_err(|e| (matches!(e, Error::NotAStateDir { .. }), e.to_string()));
+            tx.send(r).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("{case}: blocked"))
+    };
+    let mut planted = 0;
+    for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
+        for plant in [
+            "a FIFO",
+            "a socket",
+            "a character device",
+            "a dead link",
+            "a link to itself",
+            "a link to a FIFO out",
+        ] {
+            for marked in [true, false] {
+                let dir = tempfile::tempdir_in(top.path()).unwrap();
+                let base = dir.path().to_owned();
+                let state = base.join(".ranikust");
+                if marked {
+                    Store::open(&paths(&base)).unwrap().close().unwrap();
+                    fs::remove_dir_all(state.join(d)).unwrap();
+                } else {
+                    fs::create_dir(&state).unwrap();
+                }
+                let at = state.join(d);
+                match plant {
+                    "a FIFO" => mkfifo(&at),
+                    "a socket" => drop(std::os::unix::net::UnixListener::bind(&at).unwrap()),
+                    "a character device" => {
+                        // 0:0, a whiteout: the only device node a user may make.
+                        let made = mknodat(
+                            CWD,
+                            &at,
+                            FileType::CharacterDevice,
+                            Mode::from_raw_mode(0o600),
+                            0,
+                        );
+                        if let Err(e) = made {
+                            eprintln!("skipped {plant}: {e}");
+                            continue;
+                        }
+                    }
+                    "a dead link" => symlink("missing", &at).unwrap(),
+                    "a link to itself" => symlink(d, &at).unwrap(),
+                    _ => symlink(&fifo_out, &at).unwrap(),
+                }
+                planted += 1;
+                let case = format!("{d} as {plant}, marked {marked}");
+                let kind = if plant.contains("link") {
+                    "a symlink"
+                } else {
+                    "a special file"
+                };
+                let before = tree(&state);
+                let check = |r: Result<(), (bool, String)>| {
+                    let (not_a_state_dir, shown) =
+                        r.err().unwrap_or_else(|| panic!("{case}: taken"));
+                    assert!(not_a_state_dir, "{case}: {shown}");
+                    if marked {
+                        let says = format!("holds {d}, which is {kind}");
+                        assert!(shown.contains(&says), "{case}: {shown}");
+                    }
+                    assert_eq!(tree(&state), before, "{case}");
+                };
+                let opened = base.clone();
+                check(unblocked(
+                    &case,
+                    Box::new(move || Store::open(&paths(&opened)).map(|s| s.close().unwrap())),
+                ));
+                let checked = state.clone();
+                check(unblocked(
+                    &case,
+                    Box::new(move || Store::check_state_dir(&checked).map(drop)),
+                ));
+            }
+        }
+    }
+    assert!(planted >= 6 * 5 * 2, "planted {planted}");
+}
+
 /// A probe directory of a build cut short before its store opened is
 /// ranikust's own: the directory is still a new store, and the store
 /// removes it once open.

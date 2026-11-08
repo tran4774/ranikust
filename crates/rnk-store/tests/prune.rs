@@ -470,6 +470,86 @@ fn links_out_of_the_state_directory_are_removed_not_followed() {
     assert_eq!(fs::read(outside.join("sub/f")).unwrap(), b"keep");
 }
 
+/// Red team: `prune --all` on a state directory whose store directory is planted as a link out
+/// (absolute, climbing, to a FIFO), a FIFO or a socket never reaches through it nor blocks,
+/// and empties the directory (T4).
+#[test]
+fn red_team_prune_all_never_reaches_through_a_planted_store_directory() {
+    use std::os::unix::fs::{MetadataExt as _, symlink};
+    let top = tempfile::tempdir().unwrap();
+    let outside = top.path().join("outside");
+    fs::create_dir_all(outside.join("sub")).unwrap();
+    fs::write(outside.join("own"), b"keep").unwrap();
+    fs::write(outside.join("sub/f"), b"keep").unwrap();
+    let fifo = |p: &Path| {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            p,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+    };
+    fifo(&outside.join("fifo"));
+    let seen = || -> Vec<(PathBuf, u32, u64, Vec<u8>)> {
+        let mut v: Vec<_> = tree(&outside)
+            .into_iter()
+            .map(|p| {
+                let m = fs::symlink_metadata(outside.join(&p)).unwrap();
+                let data = if m.is_file() {
+                    fs::read(outside.join(&p)).unwrap()
+                } else {
+                    Vec::new()
+                };
+                (p, m.mode(), m.nlink(), data)
+            })
+            .collect();
+        v.push((
+            PathBuf::new(),
+            fs::metadata(&outside).unwrap().mode(),
+            0,
+            Vec::new(),
+        ));
+        v
+    };
+    let before = seen();
+    for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
+        for plant in [
+            "an absolute link out",
+            "a link climbing out",
+            "a link to a FIFO",
+            "a FIFO",
+            "a socket",
+        ] {
+            let case = format!("{d} as {plant}");
+            let state = top.path().join(format!("{d}-{}", plant.replace(' ', "-")));
+            used_store(&state);
+            let at = state.join(d);
+            fs::remove_dir_all(&at).unwrap();
+            match plant {
+                "an absolute link out" => symlink(&outside, &at).unwrap(),
+                "a link climbing out" => symlink("../outside", &at).unwrap(),
+                "a link to a FIFO" => symlink(outside.join("fifo"), &at).unwrap(),
+                "a FIFO" => fifo(&at),
+                _ => drop(std::os::unix::net::UnixListener::bind(&at).unwrap()),
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let pruned = state.clone();
+            std::thread::spawn(move || {
+                let r = Store::prune_all(&pruned).map_err(|e| e.to_string());
+                tx.send(r).unwrap();
+            });
+            let r = rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{case}: blocked"));
+            assert_eq!(r, Ok(true), "{case}");
+            assert_eq!(tree(&state), Vec::<PathBuf>::new(), "{case}");
+            assert_eq!(seen(), before, "{case}");
+        }
+    }
+}
+
 /// A store with no data leaves the state directory empty when abandoned,
 /// whoever made it, the sandbox's directory and what dead builds left
 /// included, so that kaniko mode on `/` takes it (ADR-0136); one with an
