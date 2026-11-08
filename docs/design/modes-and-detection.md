@@ -451,7 +451,12 @@ the host's mount namespace, with no chroot; the sealed copy's marker
 carries it (`rnk_sandbox::Sealing::binary_path`). A chroot, or a mount
 namespace that no container check finds in a user namespace that maps
 every id as the host's does, shows a tree root chose, which the check
-takes for the host's: only root can set one up. Neither that path nor
+takes for the host's: only root can set one up. A setuid sandbox a user
+can start (bubblewrap, Apptainer) mounts what it shows `nosuid`, which the
+check refuses (below) **[external]** (bubblewrap 1fb0aa2
+`bind-mount.c:511,532`, `bubblewrap.c:980,1354,3284`; Apptainer 330fb19
+`internal/pkg/runtime/engine/apptainer/container_linux.go:117,152-158`,
+which drops `nosuid` only for root with "allow setuid"). Neither that path nor
 `/proc/self/exe` proves the file is ranikust (a marker may name any file,
 and under a loader `/proc/self/exe` is the loader), so the path holds
 ranikust itself only where `/proc/self/exe` is the file mapped at one of

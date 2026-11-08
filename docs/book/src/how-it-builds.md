@@ -50,7 +50,13 @@ Where none of that works a regular user is refused (see
   `--seccomp` changes the profile, [ADR-0109]). It gets no SELinux label of
   its own: it keeps the context of the process that started ranikust, so on a
   host with SELinux enforcing the sandbox holds it, not policy as for a
-  container ([ADR-0140]).
+  container ([ADR-0140]). Nor does ranikust apply an AppArmor profile of its
+  own: where root has loaded
+  [ranikust's sample profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
+  ranikust and every `RUN` run under it, which confines nothing and allows
+  user namespaces, a reach the
+  [threat model](https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks)
+  accepts.
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]). ranikust itself runs from a copy of its

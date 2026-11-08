@@ -467,7 +467,12 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   ([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md)).
   It keeps the SELinux context of the process that started ranikust
   (`unconfined_t` for an interactive user, the container's label inside a
-  container **[inferred]**), and no AppArmor profile is applied. On a host
+  container **[inferred]**), and ranikust applies no AppArmor profile of
+  its own: where root has loaded the sample profile
+  ([`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust)),
+  ranikust and every `RUN` it starts run under it, which confines nothing
+  and allows user namespaces, the reach the profile's entry below accepts.
+  On a host
   with SELinux enforcing, a container runtime confines its containers with
   `container_t` and an MCS pair of their own **[external]**; a `RUN` is held
   by the sandbox alone, so a kernel bug or a retained capability that crosses
@@ -494,7 +499,12 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   ranikust runs in, and offers the profile only in the host's user
   namespace and in no container it detects. A chroot, or a namespace root
   set up to look like the host's, shows a tree root chose; only root can
-  set one up.
+  set one up. A setuid sandbox a user can start (bubblewrap, Apptainer)
+  mounts what it shows `nosuid`, and the check refuses a path on a
+  `nosuid` mount **[external]** (bubblewrap 1fb0aa2 `bind-mount.c:511,532`,
+  `bubblewrap.c:980,1354,3284`; Apptainer 330fb19
+  `internal/pkg/runtime/engine/apptainer/container_linux.go:117,152-158`,
+  which drops `nosuid` only for root with "allow setuid").
 
 ## 7. Not verified yet
 
