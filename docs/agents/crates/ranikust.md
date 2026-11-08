@@ -315,7 +315,8 @@ Each step before the next; design in
 5. **Overlay mode** (`setup::set_up`): `enter_namespace`
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
    `unshare(CLONE_NEWNS)`, `/` rslave) → `setup::hold_state_dir`, every
-   refusal before anything is made or changed, as in rootless overlay mode:
+   refusal before anything in the state directory is changed, as in
+   rootless overlay mode:
    overlayfs from `statedir::nearest_existing` (a container's root: mount a
    volume), `statedir::stage`, `Store::check_state_dir`, and only then
    `Staged::finish` sets the modes → `rnk_store::Store::open`
@@ -541,8 +542,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   overlay mode's refusal order through `setup::set_up`, run unprivileged
   and skipped as root: `overlay_mode_refuses_its_state_directory_unchanged`
   and `overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade`;
-  the probe's
-  directory: `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
+  the probe's directory:
+  `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
   `a_probe_directory_taken_before_it_is_held_is_made_again`,
   `a_probe_directory_gone_once_made_is_taken_not_an_error`), `subids`

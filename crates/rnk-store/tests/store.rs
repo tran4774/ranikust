@@ -251,6 +251,11 @@ fn a_store_directory_that_is_not_a_real_directory_is_refused_unchanged() {
                     shown.contains(&format!("holds {d}, which is {plant}")),
                     "{case}: {shown}"
                 );
+                assert_eq!(
+                    shown.contains("or move"),
+                    plant == "a symlink",
+                    "{case}: {shown}"
+                );
             };
             refused(Store::open(&paths(dir.path())).expect_err(&case));
             assert_eq!(tree(&state), before, "{case}");
@@ -1659,8 +1664,8 @@ fn tree(dir: &Path) -> Vec<(PathBuf, u32, u32, u32, i64, i64, u64)> {
 }
 
 /// Red team: a store directory planted as a symlink out never has its target changed (T13):
-/// the open refuses one planted before it, and one planted while the store is open resolves
-/// in the state directory.
+/// the open refuses one planted before it; through one planted while the store is open, the
+/// store's own writes stay in the state directory.
 #[test]
 fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1727,29 +1732,28 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
                     let cache = store
                         .cache_lease("c", CacheSharing::Shared, None, &never)
                         .map(|l| l.path().to_owned());
-                    let seen: Vec<_> = [layer, blob, cache]
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .collect();
-                    filled += usize::from(!seen.is_empty());
+                    // A directory swapped while the store is open may fail its close.
                     let _ = store.close();
                     assert_eq!(tree(&outside), before, "{case}");
-                    // What the store hands out never resolves out of it.
-                    for p in &seen {
-                        if let Ok(real) = fs::canonicalize(p) {
+                    for (through, done) in [("layers", layer), ("blobs", blob), ("caches", cache)] {
+                        let Ok(p) = done else { continue };
+                        if through != d {
+                            let real = fs::canonicalize(&p).unwrap();
                             assert!(real.starts_with(&state), "{case}: {}", real.display());
+                            continue;
                         }
-                    }
-                    // The twin, in the root, is what the symlink led to.
-                    if twin && d == "layers" && !seen.is_empty() {
-                        assert!(
-                            inside.join("v3/sha256").join(digest(1).encoded()).is_dir(),
-                            "{case}"
-                        );
+                        // The store wrote where the symlink leads in the state
+                        // directory; the host path it hands back dangles.
+                        filled += 1;
+                        let rest = p.strip_prefix(state.join(d)).unwrap();
+                        assert!(inside.join(rest).symlink_metadata().is_ok(), "{case}");
+                        let e = fs::canonicalize(&p).unwrap_err();
+                        assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{case}");
                     }
                 }
             }
         }
     }
-    assert!(filled >= 8, "the store filled on {filled} plants only");
+    // At least each twin of `blobs`, `layers` and `caches`, absolute or climbing.
+    assert!(filled >= 6, "the store filled through {filled} plants only");
 }

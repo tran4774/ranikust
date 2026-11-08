@@ -344,7 +344,7 @@ fn userns_refusal(e: SandboxError, euid: u32, no_userns: Cow<'static, str>) -> R
 
 /// Sets overlay mode up for a build whose state directory is `state_dir`,
 /// once [`enter_namespace`] succeeded: the state directory's checks, each
-/// refusal before anything is made or changed ([`hold_state_dir`]; refused
+/// refusal before anything in it is changed ([`hold_state_dir`]; refused
 /// on overlayfs, a container's own root, ADR-0050), the store (marker
 /// check, start-up clean-up), the probes of
 /// `rnk-sandbox` and `rnk-snapshot`, the outcome, then the spawner thread.
@@ -428,7 +428,7 @@ pub(crate) fn set_up(
 }
 
 /// The state directory of a build as `owner`, made where missing, each
-/// refusal before anything is made or changed: overlayfs first, told from
+/// refusal before anything in it is changed: overlayfs first, told from
 /// the nearest directory that exists, where a missing one would be made
 /// (refused with `on_overlayfs()`); then [`crate::statedir::stage`]'s
 /// checks; then [`Store::check_state_dir`], which writes nothing (Q-111,

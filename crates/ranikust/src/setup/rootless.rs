@@ -336,8 +336,8 @@ fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
 }
 
 /// The state directory the probe may write in: [`super::hold_state_dir`]
-/// with rootless mode's overlayfs refusal. `what` names the mode in
-/// messages.
+/// with the user namespace probe's overlayfs refusal. `what` names the
+/// mode in messages.
 fn state_dir_for_probe(
     state_dir: &Path,
     euid: u32,

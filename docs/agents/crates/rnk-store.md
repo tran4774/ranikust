@@ -283,9 +283,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the open refuses it, and `own_group` leaves it alone
   (`a_symlink_at_a_store_directory_s_name_keeps_its_group`); a symlink out
   of the state directory at each store directory's name, absolute or
-  climbing, is refused at open, resolves in the state directory when
-  planted while the store is open, and leaves what it leads to, setgid
-  and of another group, unchanged
+  climbing, is refused at open; planted while the store is open, the
+  store's own writes through it stay in the state directory; either way
+  what it leads to, setgid and of another group, is unchanged
   (`red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead

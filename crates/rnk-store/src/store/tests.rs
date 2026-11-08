@@ -55,7 +55,7 @@ fn a_probe_directory_gone_before_it_is_opened_is_skipped() {
 
 /// A directory of the probe the store could not remove (in a user
 /// namespace, one root made and has not yet given to its range) may be a
-/// starting build's: the warning names both.
+/// starting build's: the warning names an earlier build and a starting one.
 #[test]
 fn a_probe_directory_not_removed_is_named_by_what_the_store_tells() {
     let e = Error::BadEntry {

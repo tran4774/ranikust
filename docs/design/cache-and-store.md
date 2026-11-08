@@ -202,12 +202,13 @@ no data emptied, `prune --all`): one a probe holds stays, and keeps a store
 with no data as it is. One the store cannot remove stays, with a warning
 that names it as the probe's directory and both builds it may belong to,
 an earlier one or one starting: in the namespace of a `--userns` build,
-another build's start may have made it and not yet given it to the range. `check_state_dir` runs `Store::open`'s
-refusals, a prune cut short included, writing nothing; overlay mode, as
-root, rootless or under `--userns`, runs it before it sets the state
-directory's mode (and, in a user namespace, before its probe), so that every refusal of
-the state directory comes before anything there is changed, and keeps the
-state directory's shared lock until the store opens. In overlay mode an upper
+another build's start may have made it and not yet given it to the range.
+`check_state_dir` runs `Store::open`'s refusals, a prune cut short
+included, writing nothing; overlay mode, as root, rootless or under
+`--userns`, runs it before it sets the state directory's mode (and, in a
+user namespace, before its probe), so that every refusal of the state
+directory comes before anything there is changed, and keeps the state
+directory's shared lock until the store opens. In overlay mode an upper
 directory written under `volatile` is never trusted after a crash.
 
 A rootless set-up that fails before its build, where root's `--mode=auto`
