@@ -26,6 +26,14 @@ OUT="$HOME/rnk/out/el9"
 W=/var/tmp/rnk-el9 U="$HOME/rnk-el9"
 ROOT_STATE=/var/lib/ranikust USER_STATE="$HOME/.local/share/ranikust"
 AUDIT=/var/log/audit/audit.log
+# What each leg must log, measured on AlmaLinux 9.8 (kernel 5.14.0-687): its
+# kernel takes overlay's lowerdir+ (a backport), refuses mknod and a sysfs of
+# the namespace's own with EPERM, and has no AppArmor switch.
+PROBE_STEPS="unshare(CLONE_NEWNS): ok; proc: new instance; sysfs: rbind of /sys (mount sysfs: EPERM); mknod: EPERM; overlay: ok, fsconfig(lowerdir+); kernel.apparmor_restrict_unprivileged_userns: absent"
+ROOT_PROBE="user namespace probe (reported only): passes; unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; $PROBE_STEPS"
+ROOT_SETUP="set up for overlay mode as root, RUN enters its root with pivot_root, overlay mounts with fsconfig(lowerdir+)"
+USER_PROBE="user namespace probe: passes; unshare(CLONE_NEWUSER): ok; map: newuidmap; chown: ok; $PROBE_STEPS"
+USER_SETUP="ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance, sysfs: a read-only rbind (for a RUN with --network=none, a new instance where it mounts, else the rbind with no network device), overlay mounts with fsconfig(lowerdir+)"
 
 fail() { echo "error: $*" >&2; exit 1; }
 
@@ -77,7 +85,7 @@ avc_since() {
 # digest; fails unless the build passed in the leg's mode with the user
 # namespace probe's line expected there.
 leg_build() {
-  local leg=$1 name=$2 log rc=0 line
+  local leg=$1 name=$2 log rc=0 line probe setup
   shift 2
   if [ "$leg" = root ]; then
     log="$(sudo "$RNK" "$@" 2>&1)" || rc=$?
@@ -87,21 +95,15 @@ leg_build() {
   printf '%s\n' "$log" >"$OUT/$leg-$name.log"
   line="$(grep -Eo 'user namespace probe( \(reported only\))?: .*' <<<"$log" || true)"
   echo "$leg: $name: ${line:-no user namespace probe line}" >&2
-  grep -Eo 'set up for .*|RUN selinux context: .*' <<<"$log" | sed "s/^/$leg: $name: /" >&2 || true
+  grep -Eo 'set up for .*|^RUN selinux context: .*' <<<"$log" | sed "s/^/$leg: $name: /" >&2 || true
   [ "$rc" = 0 ] || { echo "$log" >&2; fail "$leg: $name: the build failed ($rc)"; }
   [ "$(grep -c . <<<"$line")" = 1 ] || { echo "$log" >&2; fail "$leg: $name: want one user namespace probe line"; }
   case "$leg" in
-    root)
-      [[ "$line" == "user namespace probe (reported only): passes; unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; unshare(CLONE_NEWNS): ok; proc: new instance; "* ]] &&
-        grep -Eq 'set up for overlay mode as root, RUN enters its root with pivot_root, overlay mounts with (fsconfig\(lowerdir\+\)|mount\(2\))' <<<"$log" ||
-        { echo "$log" >&2; fail "root: $name: want overlay mode as root and the probe passing"; }
-      ;;
-    user)
-      [[ "$line" == "user namespace probe: passes; unshare(CLONE_NEWUSER): ok; map: newuidmap; chown: ok; unshare(CLONE_NEWNS): ok; proc: new instance; "* ]] &&
-        grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
-        { echo "$log" >&2; fail "user: $name: want rootless overlay mode with a new proc and the probe passing"; }
-      ;;
+    root) probe=$ROOT_PROBE setup=$ROOT_SETUP ;;
+    user) probe=$USER_PROBE setup=$USER_SETUP ;;
   esac
+  [ "$line" = "$probe" ] || { echo "$log" >&2; fail "$leg: $name: want the probe line: $probe"; }
+  grep -qF "$setup" <<<"$log" || { echo "$log" >&2; fail "$leg: $name: want the mode: $setup"; }
   smoke_digest "$log" || { echo "$log" >&2; fail "$leg: $name: no digest in the log"; }
 }
 
