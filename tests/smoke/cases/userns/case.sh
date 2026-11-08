@@ -1,10 +1,12 @@
 # --userns as root (#83, ADR-0003, ADR-0104), T2 only (the VM's quick
 # suite): ranikust runs as real root with a `ranikust` range of its own in
 # /etc/subuid and /etc/subgid, both restored after. Refused before
-# anything is written without the range, with a state directory below a
+# anything is written without the range, with a range another line
+# overlaps, with a state directory below a
 # directory the range's first uid cannot search, with an existing state
 # directory of root's, at or below root's default, and with a flag of kaniko mode
-# alone; missing parents are made root's 0711; a RUN's uid 0 is the
+# alone; missing parents are made root's 0711, the build names --userns
+# and leaves no probe directory; a RUN's uid 0 is the
 # range's first uid on the host, by its uid_map, gid_map and status read
 # from the host and by the owner there of a file it makes; the
 # --reproducible digest equals the same build's without --userns; and
@@ -55,6 +57,15 @@ case_run() {
   echo "ranikust:$S:65536" | sudo tee -a /etc/subuid >/dev/null
   echo "ranikust:$G:65536" | sudo tee -a /etc/subgid >/dev/null
 
+  echo "rnk-quick-overlap:$((S + 1)):1" | sudo tee -a /etc/subuid >/dev/null
+  rc=0
+  log="$(urun overlap --target content --state-dir "$UW/overlap" 2>&1)" || rc=$?
+  sudo sed -i '/^rnk-quick-overlap:/d' /etc/subuid
+  expect "$rc" 1 "--userns with a range another range overlaps"
+  grep -qF "the ranikust range $S:65536 of /etc/subuid overlaps line" <<<"$log" ||
+    fail "--userns with a range another range overlaps: $log"
+  ! sudo test -e "$UW/overlap" || fail "--userns made a state directory for an overlapped range"
+
   sudo mkdir -m 700 "$UW/closed"
   rc=0
   log="$(urun closed --target content --state-dir "$UW/closed/state" 2>&1)" || rc=$?
@@ -101,8 +112,12 @@ case_run() {
   rc=0
   log="$(urun nested --target content --state-dir "$UW/new/a/state" 2>&1)" || rc=$?
   expect "$rc" 0 "--userns below missing parents: $log"
+  grep -qF "ranikust: overlay mode with --userns, in the build's user namespace of the ranikust range" \
+    <<<"$log" || fail "the --userns build's mode line: $log"
   expect "$(sudo stat -c '%u:%g %a' "$UW/new" "$UW/new/a" "$UW/new/a/state" | paste -sd ' ')" \
     "0:0 711 0:0 711 $S:$G 700" "the --userns state directory and the parents it made"
+  expect "$(sudo find "$UW/new" -maxdepth 3 \( -name '.ranikust-anon-userns-probe-*' \
+    -o -name '.ranikust-new-*' \) | wc -l)" 0 "probe and unnamed directories --userns left"
 
   local mapped plain
   mapped="$(udigest userns --reproducible --target content \

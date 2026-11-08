@@ -53,6 +53,9 @@ pub(crate) enum Outcome {
         sandbox: Caps,
         /// For `rnk-snapshot`.
         overlay: OverlayCaps,
+        /// Root's `--userns`, in the `ranikust` range's namespace (ADR-0003,
+        /// ADR-0139), rather than a user's rootless build.
+        userns: bool,
     },
 }
 
@@ -63,8 +66,17 @@ impl fmt::Display for Outcome {
                 f.write_str("overlay mode as root")?;
                 (sandbox, overlay)
             }
-            Outcome::OverlayRootless { sandbox, overlay } => {
-                f.write_str("overlay mode, rootless, in the build's user namespace")?;
+            Outcome::OverlayRootless {
+                sandbox,
+                overlay,
+                userns,
+            } => {
+                f.write_str(if *userns {
+                    "overlay mode with --userns, in the build's user namespace of the ranikust \
+                     range"
+                } else {
+                    "overlay mode, rootless, in the build's user namespace"
+                })?;
                 (sandbox, overlay)
             }
         };

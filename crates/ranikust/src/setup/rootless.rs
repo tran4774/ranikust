@@ -322,11 +322,6 @@ pub(crate) fn set_up(
         BuildIds::Own(_) => false,
         BuildIds::Shifted(_) => true,
     };
-    let what = if shifted {
-        "--userns"
-    } else {
-        "rootless overlay mode"
-    };
     let userns = rnk_sandbox::enter_build_user_namespace(ids)
         .map_err(|e| entry_refusal(e, euid, shifted))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
@@ -344,7 +339,9 @@ pub(crate) fn set_up(
     let store = opened.map_err(super::inside_userns)?;
     // The store holds the directory now.
     drop(held);
-    match in_store(state_dir, &store, fallbacks, scanned, seccomp, then, what) {
+    match in_store(
+        state_dir, &store, fallbacks, scanned, seccomp, then, shifted,
+    ) {
         Ok((outcome, sandbox)) => Ok(Setup {
             outcome,
             state_dir: state_dir.to_path_buf(),
@@ -362,7 +359,7 @@ pub(crate) fn set_up(
 }
 
 /// [`set_up`]'s steps once the store is open: the outcome and the
-/// sandbox. `what` names the mode in messages.
+/// sandbox, under `--userns` with `userns`.
 fn in_store(
     state_dir: &Path,
     store: &rnk_store::Store,
@@ -370,8 +367,13 @@ fn in_store(
     scanned: bool,
     seccomp: &Seccomp,
     then: &Then<'_>,
-    what: &str,
+    userns: bool,
 ) -> Result<(Outcome, Sandbox), Refusal> {
+    let what = if userns {
+        "--userns"
+    } else {
+        "rootless overlay mode"
+    };
     let fail = |reason: String| broken(what, &reason);
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
@@ -392,6 +394,7 @@ fn in_store(
     let outcome = Outcome::OverlayRootless {
         sandbox: caps,
         overlay,
+        userns,
     };
     let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| fail(e.to_string()))?;
     if then.userns_network {
