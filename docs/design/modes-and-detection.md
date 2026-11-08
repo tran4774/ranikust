@@ -429,8 +429,8 @@ refusal's guidance line gives, in order
    where the capability check found the namespace's capabilities, or a
    refusal once the probe passed gets items 1 and 3 alone. Have root load
    ranikust's AppArmor profile,
-   [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three lines
-   granting `userns,` with `flags=(unconfined)`, bound to
+   [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three
+   lines granting `userns,` with `flags=(unconfined)`, bound to
    `/usr/local/bin/ranikust` (as podman's profile is to podman), into
    `/etc/apparmor.d/ranikust` with `apparmor_parser -r`. A profile gives a
    user namespace to whatever is at its path, so it is offered for the
@@ -453,11 +453,9 @@ the group bits), none is a symlink, each is on a mount without `nosuid`
 of a local filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs,
 tmpfs, overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS,
 shows owners and modes a user or a server sets), and the file is a regular
-one:
-each component is opened `O_PATH` from the one above without following a
-symlink. A sticky directory
-such as `/tmp` fails, since any user may take the name once it is gone; so
-does any error, a removed binary (`(deleted)`) included. Any value of the
+one: each component is opened `O_PATH` from the one above without
+following a symlink. A sticky directory such as `/tmp` fails, since any
+user may take the name once it is gone; so does any error, a removed binary (`(deleted)`) included. Any value of the
 switch but `1`, or none (Ubuntu 22.04, other distributions), offers no
 profile. With the profile loaded the binary keeps it through the sealed
 copy's `execveat`, which no other profile attaches to, and so does a `RUN`

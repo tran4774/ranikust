@@ -107,6 +107,27 @@ fn the_advice_gives_sudo_then_the_profile_then_a_container() {
     );
 }
 
+/// The name [`Stop::at`] matches is rnk-sandbox's own for `unshare`'s
+/// operation: its report shows a step refused by its own operation with
+/// the errno alone, so a rename on either side fails here.
+#[test]
+fn the_unshare_operation_is_rnk_sandbox_s() {
+    let found = rnk_sandbox::UsernsCapabilities {
+        unshare: StepResult::Failed(StepFailure {
+            op: UNSHARE_USER,
+            errno: Some(libc::EACCES),
+            detail: None,
+        }),
+        mount_ns: StepResult::NotRun("no user namespace"),
+        cut_short: None,
+    };
+    let shown = found.to_string();
+    assert!(
+        shown.starts_with(&format!("{UNSHARE_USER}: EACCES")),
+        "{shown}"
+    );
+}
+
 /// The profile is offered only where AppArmor may be what refused: a step
 /// refused in a user namespace `unshare` made, or `unshare` itself refused
 /// with `EACCES`. `unshare` refused otherwise (a seccomp filter's or

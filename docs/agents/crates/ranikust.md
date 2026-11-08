@@ -61,8 +61,8 @@ writer) before `unshare`, the probes and the state directory's checks.
   step that did not run, a namespace `rootless::capabilities` found
   capable, or a refusal once the probe passed, never), for a path only
   root may change on a mount without `nosuid` of a local filesystem
-  (`no_userns::LOCAL`); a container. The path it weighs is the one the binary started from
-  (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
+  (`no_userns::LOCAL`); a container. The path it weighs is the one the
+  binary started from (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
   `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
   rbind works. With the rbind, `main.rs` then runs the peer scan, the check
   of the PID namespace from files with no ptrace check (ADR-0134) and the
@@ -471,10 +471,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   for a user stopped at `unshare`, the map, `chown` or the mount namespace
   or by the test hook, `--allow proc.rbind` for a refused new `proc` whose
   rbind works, else running as root; the stop weighed on its own step's
-  result, none where the capability check showed capabilities (both its
-  steps worked); `setup/no_userns/tests.rs`: the
-  advice's wording and order in each case (the switch at 1 or not; the
-  shipped path, another root-only one, the install as
+  result (the capability check's through `Steps::checked`; the probe's
+  report cannot be built in a test, so `Steps::probed` is not covered),
+  none where the capability check showed capabilities (both its steps
+  worked); `setup/no_userns/tests.rs`: rnk-sandbox's name for `unshare`'s
+  operation, the advice's wording and order in each case (the switch at 1
+  or not; the shipped path, another root-only one, the install as
   `/usr/local/bin/ranikust` or, where that directory fails, elsewhere),
   which stops offer the profile (a step in the namespace, `unshare`'s
   `EACCES`) and which get `sudo` then a container (another errno, none,
@@ -484,9 +486,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   one that fails named (a user's, group- or others-writable, `/tmp`'s
   sticky bit, a symlink, a non-regular file, a `nosuid` mount, a
   filesystem off the local list such as FUSE or NFS, each listed one
-  passing, the list itself pinned), the walk on a temporary directory (no symlink followed; a
-  relative path, `..`, a missing or removed file refused, where it
-  stopped named), on `/proc` (its type read, refused) and on system
+  passing, the list itself pinned), the walk on a temporary directory (no
+  symlink followed; a relative path, `..`, a missing or removed file
+  refused, where it stopped named), on `/proc` (its type read, refused) and on system
   binaries, against the standard library's view), `prune` (`--all` and
   `--state-dir` parsed, `--kaniko-dir`
   refused; without `--all` a usage error naming Phase 5; root refused

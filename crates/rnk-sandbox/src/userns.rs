@@ -64,8 +64,7 @@ const NO_MAP: &str = "no id map";
 const STOPPED: &str = "the probe's child stopped before it";
 
 // The operations of the steps that are their own label in the report.
-/// ranikust's advice (`setup::no_userns`) matches this name: a rename
-/// there too.
+/// ranikust's advice matches this name; a test there fails on a rename.
 const UNSHARE_USER: &str = "unshare(CLONE_NEWUSER)";
 /// To a mapped id other than 0.
 const CHOWN_OP: &str = "chown";

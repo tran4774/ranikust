@@ -503,6 +503,8 @@ fn broken(reason: String) -> Refusal {
 
 #[cfg(test)]
 mod tests {
+    use rnk_sandbox::StepFailure;
+
     use super::*;
 
     /// A user other than root whose user namespace has no capabilities
@@ -566,7 +568,6 @@ mod tests {
     /// capabilities.
     #[test]
     fn a_stop_is_weighed_on_its_own_step() {
-        use rnk_sandbox::StepFailure;
         let failed = |op, errno| {
             StepResult::Failed(StepFailure {
                 op,
@@ -626,21 +627,41 @@ mod tests {
             cut_short: cut_short.map(String::from),
         };
         let not_run = || StepResult::NotRun("the probe's child stopped before it");
-        let refused = || {
-            StepResult::Failed(rnk_sandbox::StepFailure {
-                op: "unshare(CLONE_NEWNS)",
-                errno: Some(libc::EPERM),
-                detail: None,
-            })
-        };
         assert!(shown_capable(&caps(StepResult::Ok, StepResult::Ok, None)));
-        assert!(!shown_capable(&caps(StepResult::Ok, refused(), None)));
         assert!(!shown_capable(&caps(
             StepResult::Ok,
             not_run(),
             Some("killed by signal 9")
         )));
         assert!(!shown_capable(&caps(not_run(), not_run(), Some("killed"))));
+    }
+
+    /// The capability check's stop is weighed on its own step's result, as
+    /// the probe's is.
+    #[test]
+    fn the_check_s_stop_is_weighed_on_its_own_step() {
+        let failed = |op, errno| {
+            StepResult::Failed(StepFailure {
+                op,
+                errno: Some(errno),
+                detail: None,
+            })
+        };
+        let weighed = |found: &UsernsCapabilities| {
+            stop_for(found.stop().unwrap(), false, &Steps::checked(found))
+        };
+        let in_namespace = UsernsCapabilities {
+            unshare: StepResult::Ok,
+            mount_ns: failed("unshare(CLONE_NEWNS)", libc::EPERM),
+            cut_short: None,
+        };
+        assert_eq!(weighed(&in_namespace), Stop::InNamespace);
+        let at_unshare = UsernsCapabilities {
+            unshare: failed("unshare(CLONE_NEWUSER)", libc::EACCES),
+            mount_ns: StepResult::NotRun("no user namespace"),
+            cut_short: None,
+        };
+        assert_eq!(weighed(&at_unshare), Stop::Unshare(libc::EACCES));
     }
 
     /// The probe writes nothing in a directory the store would refuse, and
