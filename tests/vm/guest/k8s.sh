@@ -36,8 +36,8 @@ teardown() {
   set +e
   [ -z "$restrict_was" ] || sudo sysctl -q -w "kernel.apparmor_restrict_unprivileged_userns=$restrict_was"
   [ -n "$started" ] || return 0
-  # The journal too when k3s itself died; a hung API server never holds
-  # the suite (timeout).
+  # The journal too when k3s itself died; a hung API server does not hold
+  # the teardown (timeout).
   if [ "$rc" != 0 ] || [ "${#FAILED[@]}" != 0 ]; then
     timeout 60 sudo "$K3S" kubectl get events -A --sort-by=.lastTimestamp >"$OUT/events.txt" 2>&1
     sudo journalctl -u rnk-k3s --no-pager >"$OUT/k3s.log" 2>&1

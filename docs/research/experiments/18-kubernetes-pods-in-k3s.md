@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Complete, 2026-11-08 |
 | **Question** | Which mode does `--mode=auto` pick, or why does it refuse, in the Kubernetes rows of the privilege matrix, and does a write to `/proc/sys` fail in a `hostUsers: false` pod with an unmasked `/proc`? |
-| **Answer** | A default pod builds in kaniko mode on `/`; `hostUsers: false` pods with `procMount: Unmasked` are refused, AppArmor confined or not; a restricted pod is refused at `unshare` with `EPERM`. In the unconfined one, a write of `kernel/core_pattern` fails with `EACCES`. |
+| **Answer** | A default pod builds in kaniko mode on `/`; `hostUsers: false` pods with `procMount: Unmasked` are refused, AppArmor confined or not; a restricted pod is refused at `unshare` with `EPERM`. In both of those, a write of `kernel/core_pattern` fails with `EACCES`. |
 | **Related** | [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (rows 7a to 7d), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (case (ii)), [ADR-0054](../../adr/0054-refuse-kaniko-on-root-where-root-may-mount-and-no-effect-context-flags.md); [modes and detection](../../design/modes-and-detection.md#where-environments-land); [testing](../../testing.md#privilege-matrix-in-kubernetes) |
 | **Original** | none: the T2 `k8s` suite, `tests/vm/guest/k8s.sh` |
 
@@ -19,10 +19,12 @@
   overlay mode off wherever `/proc/sys` is writable, which applies ADR-0107's
   case (ii), written for the default AppArmor profile, to an unconfined pod
   too, and kaniko mode on `/` is refused there (ADR-0054) **[measured]**.
-- A write of `kernel/core_pattern`'s own value fails with `EACCES` in the
-  unconfined `procMount: Unmasked` pod (row 7b) **[measured]**: the first
-  datum ADR-0107 waits for before deciding its option (d). In the confined
-  one (row 7c) the AppArmor profile alone accounts for the same `EACCES`.
+- A write of `kernel/core_pattern`'s own value fails with `EACCES` in both
+  `procMount: Unmasked` pods, unconfined (row 7b) and with the default
+  profile (row 7c) **[measured]**: the first datum ADR-0107 waits for before
+  deciding its option (d). The kernel's own sysctl permission check refuses
+  it first, root in the pod not being the initial namespace's root; in row
+  7c the profile would refuse it too **[inferred]**.
 
 ## Questions
 
@@ -43,8 +45,9 @@
   node, the pause image `registry.k8s.io/pause:3.10.1` by digest; the
   kubelet sets no default seccomp profile.
 - ranikust from `main` at 3464a501 (#194), static musl, release; the suite
-  of branch `test/privilege-matrix-k3s` (#86): run 1 at 63e66a82, run 2
-  with 43bd452d's fix of the pods' image, run 3 at c23daa83.
+  of branch `test/privilege-matrix-k3s`, the pull request of #86: run 1 at
+  63e66a82, run 2 with 43bd452d's fix of the pods' image, run 3 at
+  c23daa83, run 4 at 7041063d.
 
 ## Method
 
@@ -55,9 +58,9 @@ uid, AppArmor label, `uid_map`, seccomp mode, `no_new_privs`, effective
 capabilities and the mount of `/proc/sys`. The `hostUsers: false` pods get an
 `emptyDir` at the state directory, made `0700`, and the restricted pod a
 state directory on `/dev/shm`. In the root pods `pod.sh` first writes
-`kernel/core_pattern`'s own value back and prints the result. Three runs of
-the suite, one pod per row each: the second and third agree on every row; in
-the first, rows 7a and the masked ones failed on a harness bug (the pods'
+`kernel/core_pattern`'s own value back and prints the result. Four runs of
+the suite, one pod per row each: the last three agree on every row; in the
+first, rows 7a and the masked ones failed on a harness bug (the pods'
 image left `/var/lib` writable by its group, which ranikust refuses) and
 rows 7b to 7d agree.
 
@@ -81,10 +84,12 @@ A root pod in the `restricted` namespace is refused at admission
 2. Row 7b is refused, not rootless overlay mode: the routing keeps rootless
    off for the writable `/proc/sys` whatever the AppArmor profile (row 7b).
 3. Root in a `hostUsers: false` pod cannot write `kernel/core_pattern` even
-   with `/proc/sys` mounted read-write and AppArmor unconfined (row 7b). In
-   row 7c containerd's profile, which like Docker's denies writes below
-   `/proc/sys/kernel` but for `shm*`, explains the `EACCES` without the
-   kernel's check **[inferred]**.
+   with `/proc/sys` mounted read-write and AppArmor unconfined (row 7b); with
+   the default profile (row 7c) the same. Opening the file for writing meets
+   the sysctl's permission check, for which that root is not the host's,
+   before any AppArmor hook **[inferred]**; containerd's profile, like
+   Docker's, also denies writes to most of `/proc/sys/kernel`
+   **[inferred]**, so row 7c alone cannot tell the two apart.
 4. On an Ubuntu 24.04 node, an unconfined pod's own user namespaces have no
    capabilities while the switch is 1 (the masked row at 1); at 0 only the
    masked `/proc` stops the probe (the masked row at 0).
@@ -108,7 +113,7 @@ A root pod in the `restricted` namespace is refused at admission
   Bottlerocket, OpenShift), SELinux nodes and a kubelet with
   `seccompDefault` were not run.
 - The 7d refusal's hint names AppArmor's switch, while there the seccomp
-  profile blocks `unshare` (a defect of the hint, to be tracked as an issue).
+  profile blocks `unshare`: a defect of the hint.
 
 ## Reproduction
 

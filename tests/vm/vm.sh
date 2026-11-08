@@ -968,8 +968,8 @@ guest_step() {
 }
 
 # Every suite but push, in the order given (k8s last), after the network
-# check; then push, in a step of its own, the only time the registry gate is open
-# (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
+# check; then push, in a step of its own, the only time the registry gate is
+# open (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
 # once the guest reports the other suites finished, which root in the VM
 # (or a process running as rnk) could bring forward, and shuts when the
 # push step reports its end, or at about PUSH_DEADLINE whatever the guest

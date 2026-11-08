@@ -14,9 +14,10 @@
 # RANIKUST_LOG_T0, the caller's seconds since its start, puts the `[stage
 # +Ns]` lines on the caller's clock, so a run's log keeps one timeline.
 # RANIKUST_K3S_CACHE, a directory of the caller's (vm.sh: the VM image
-# cache), keeps the k3s download for the next run, and this script deletes
-# there a failed download and every other k3s-* file (older pins); without
-# it the download goes straight into the stage.
+# cache), keeps the k3s download for the next run; this script deletes
+# there a download that failed and, after one that did not, every other
+# k3s-* file (older pins). Without it the download goes straight into the
+# stage.
 set -euo pipefail
 
 T0="${RANIKUST_LOG_T0:-0}"

@@ -442,9 +442,9 @@ the step and errno it prints. Under a minute in the VM after its boot.
   image, from `registry.k8s.io` by digest at each run (k3s's default is on
   Docker Hub; `RANIKUST_VM_IMAGE_REGISTRY` mirrors Docker Hub only, and the
   VM cache does not keep it), with containerd's retries; a failed pull
-  shows in the pods' `describe` files. The pods' image (the VM's static `busybox`, `ranikust`, `guest/k8s/pod.sh`,
-  the context) is made with `docker import` and imported into k3s's
-  containerd. k3s is stopped at the end, but its network set-up (interfaces,
+  shows in the pods' `describe` files. The pods' image (the VM's static
+  `busybox`, `ranikust`, `guest/k8s/pod.sh`, the context) is made with
+  `docker import` and imported into k3s's containerd. k3s is stopped at the end, but its network set-up (interfaces,
   iptables rules) stays until the VM goes, so `vm.sh` runs `k8s` after the
   other suites, whatever the order given, and refuses it with `push`.
 - **Controls.** Each pod first prints what it got (`pod.sh`): its uid, its
