@@ -4,7 +4,7 @@
 //! the maps (ADR-0104) and leaves device nodes out of them (ADR-0106), and
 //! the store guards those layers with the maps' canary (ADR-0128). The maps
 //! are read here, once per store, and parsed by [`MappedIds::parse`]
-//! (ADR-0144).
+//! (ADR-0098).
 
 use std::fs::File;
 use std::io::{self, Read as _};

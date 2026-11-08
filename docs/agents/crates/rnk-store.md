@@ -60,7 +60,7 @@ Boundaries: `crates/rnk-store/src/lib.rs`. In short:
 ```rust
 pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
 pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace other than the initial one, told by the inode of ns/user (nsfs checked), not by the map; None in the initial one
-pub struct IdMaps;  // a user namespace's uid_map and gid_map, parsed by rnk_rootfs::MappedIds::parse (ADR-0144) and kept canonical (lines sorted, single spaces): current() reads them there, read once by open (None in the initial one; Error::Io naming uid_map or gid_map), parse(uid, gid) -> Option; uid_map(), gid_map() -> &str, ids() -> &MappedIds; a range reaching u32::MAX on either side is refused, as the kernel does
+pub struct IdMaps;  // a user namespace's uid_map and gid_map, parsed by rnk_rootfs::MappedIds::parse (ADR-0098) and kept canonical (lines sorted, single spaces): current() reads them there, read once by open (None in the initial one; Error::Io naming uid_map or gid_map), parse(uid, gid) -> Option; uid_map(), gid_map() -> &str, ids() -> &MappedIds; a range reaching u32::MAX on either side is refused, as the kernel does
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {

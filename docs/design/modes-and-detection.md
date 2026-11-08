@@ -527,8 +527,7 @@ failed `chown` pass
 The map is the process's own `/proc/self/uid_map` and `gid_map`: the one
 ranikust wrote (probe step 2), or the container's, read by
 `rnk_store::IdMaps` for `rnk_snapshot::UserNamespace`. In the initial
-namespace every id maps and
-nothing is checked.
+namespace every id maps and nothing is checked.
 
 - **Base layers, before extraction.** `Snapshotter::check_owners`
   decompresses each base layer once more and reads its tar headers as the

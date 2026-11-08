@@ -6,7 +6,7 @@
 //! different ones share keys, which the store's canary of the maps guards
 //! (ADR-0128). For the layer keys, the owner checks and the binary's
 //! guidance the maps are those [`IdMaps`] reads and [`MappedIds::parse`]
-//! parses (ADR-0144).
+//! parses (ADR-0098).
 
 use std::sync::OnceLock;
 

@@ -13,7 +13,8 @@ const NAMED: usize = 8;
 
 /// The uids and gids a user namespace maps: the ids inside it that the lines
 /// of its `uid_map` and `gid_map` give, and the lines themselves: the
-/// parser the owner checks and the layer keys use (ADR-0098).
+/// parser the owner checks, the layer keys and `rnk-store`'s `IdMaps` (its
+/// canary) use (ADR-0098).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MappedIds {
     /// Inclusive ranges, sorted, neither overlapping nor adjacent.
