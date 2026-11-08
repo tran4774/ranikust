@@ -3,7 +3,7 @@
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
 #   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push,
-#                                 secrets, ultra; default unit smoke
+#                                 secrets, ultra, k8s; default unit smoke
 #
 # `quick` (the small Dockerfiles of tests/smoke/cases, a minute or two) is
 # for smoke tests and proofs of concept that need real root; `e2e` (the
@@ -13,7 +13,10 @@
 # performance numbers or an acceptance run (docs/testing.md#which-test-for-what).
 # `secrets` runs kaniko mode on `/` in default Docker containers with
 # attacker `RUN`s that try to read ranikust's state and credentials
-# (ADR-0051).
+# (ADR-0051). `k8s` installs k3s (the release of guest/k8s/pin.env, its
+# download kept in the cache) and runs the Kubernetes rows of the privilege
+# matrix in pods (ADR-0100 rows 7a-7d); run it alone or last: k3s's network
+# set-up (its interfaces and iptables rules) stays until the VM goes.
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -27,7 +30,7 @@
 #   RANIKUST_VM_RELEASE  Ubuntu release: noble (24.04, kernel 6.8, default)
 #                        or jammy (22.04, kernel 5.15)
 #   RANIKUST_VM_CACHE    verified image cache (cloud images, provisioned base
-#                        images, e2e reference images), default
+#                        images, e2e reference images, the k3s binary), default
 #                        tests/e2e/_vm-image of the main checkout, shared by
 #                        every git worktree (gitignored)
 #   RANIKUST_VM_LOCK_WAIT  seconds to wait for another run's VM to finish,
@@ -90,7 +93,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 SUITES=("$@")
 [ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra)" ;; esac
+  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra | k8s) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra, k8s)" ;; esac
 done
 case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 case "$GOLDEN_ON" in 0 | 1) ;; *) die "RANIKUST_VM_GOLDEN must be 0 or 1" ;; esac
@@ -332,7 +335,7 @@ fi
 # left running must not hold the one-VM lock after this script.
 STAGE="$TARGET/vm/stage"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-RANIKUST_LOG_T0=$SECONDS bash "$HERE/stage.sh" "$STAGE" net "${SUITES[@]}" 9>&-
+RANIKUST_LOG_T0=$SECONDS RANIKUST_K3S_CACHE="$CACHE/k3s" bash "$HERE/stage.sh" "$STAGE" net "${SUITES[@]}" 9>&-
 
 if wants e2e || wants ultra; then
   # The reference images, saved once from the host's podman (where
