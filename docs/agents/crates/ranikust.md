@@ -707,7 +707,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changing nothing, and GNU `find` beside them emptying; directories the
   walk listed swapped for symlinks to look-alikes outside, and the tree
   being walked moved out, while GNU `find` deletes under each script,
-  nothing outside removed; `/`, system directories and `$HOME` refused,
+  root's after an unfinished `prune --all --userns` among them, nothing
+  outside removed; that command, for the same paths, acting only on the
+  directory checked in each shell, and in a tree past `PATH_MAX`, a wide
+  directory, a FIFO, a socket, a setuid file, symlink loops, a hardlink
+  out and names `find` could read as options, all but the marker going
+  without blocking, nothing outside, a FIFO marker changing nothing;
+  `prune --all --userns` refusing root's default, below and above it
+  however spelt, and a symlink at or on the path, a trailing `/` or `/.`
+  included, nothing changed; `/`, system directories and `$HOME` refused,
   where they hold anything, by the read-only checks a user's `prune --all`
   runs before its namespace, and given no commands by root's refusal;
   `--userns` parsed and refused for a user other than root, before the

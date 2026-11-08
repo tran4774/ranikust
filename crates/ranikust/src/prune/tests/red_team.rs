@@ -2,7 +2,9 @@
 //! paths a shell may read otherwise, real tools that are not GNU `find`,
 //! directories swapped while GNU `find` walks, system directories; as root
 //! (T2c), entries of other ids, special files and links out, and a
-//! filesystem mounted below.
+//! filesystem mounted below. Of `prune --all --userns` (ADR-0146): its
+//! refusals of root's default however spelt and of symlinks, and root's
+//! command after it in hostile trees; as root, the `userns` quick case.
 
 use std::mem::MaybeUninit;
 use std::os::unix::fs::{MetadataExt as _, symlink};
@@ -180,6 +182,8 @@ fn red_team_busybox_tools_change_nothing_without_gnu_find() {
 /// swaps every directory the walk listed and has not entered for a symlink
 /// to a directory outside holding the same names, then moves the tree
 /// being walked out and adds a file to it there: nothing outside goes.
+/// Root's removal of what `prune --all --userns` left too, this test's ids
+/// standing for the range's, whose filter takes the files outside.
 #[test]
 fn red_team_directories_swapped_during_the_walk_lead_nowhere_out() {
     use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
@@ -188,9 +192,10 @@ fn red_team_directories_swapped_during_the_walk_lead_nowhere_out() {
     let tmp = private_tempdir();
     let me = pin_of(tmp.path()).uid;
     let scripts = [
-        ROOT_SCRIPT.to_owned(),
-        root_script(&Owner::of(me)),
-        USER_SCRIPT.to_owned(),
+        (ROOT_SCRIPT.to_owned(), rnk_store::STATE_MARKER),
+        (root_script(&Owner::of(me)), rnk_store::STATE_MARKER),
+        (USER_SCRIPT.to_owned(), rnk_store::STATE_MARKER),
+        (userns_left_script(own_range()), rnk_store::PRUNING_MARKER),
     ];
     let names: Vec<String> = (0..DIRS).map(|d| format!("w{d:02}")).collect();
     let (outside, aside, state) = (
@@ -199,11 +204,14 @@ fn red_team_directories_swapped_during_the_walk_lead_nowhere_out() {
         tmp.path().join("state"),
     );
     let walked = state.join("caches/k");
-    for script in &scripts {
+    for (script, marker) in &scripts {
         // A round whose racer saw no deletion in time is run again.
         let mut swapped = 0;
         for _ in 0..3 {
             marked_state(&state);
+            if *marker != rnk_store::STATE_MARKER {
+                fs::rename(state.join(rnk_store::STATE_MARKER), state.join(marker)).unwrap();
+            }
             fs::create_dir(&aside).unwrap();
             for name in &names {
                 for dir in [walked.join(name), outside.join(name)] {
@@ -550,4 +558,274 @@ fn red_team_roots_commands_leave_a_filesystem_mounted_below() {
     })
     .join()
     .unwrap();
+}
+
+/// A state directory a `prune --all --userns` left unfinished: as
+/// [`marked_state`], its marker renamed to `.ranikust-pruning`.
+fn pruning_state(state: &Path) {
+    marked_state(state);
+    fs::rename(
+        state.join(rnk_store::STATE_MARKER),
+        state.join(rnk_store::PRUNING_MARKER),
+    )
+    .unwrap();
+}
+
+/// The command an unfinished `prune --all --userns` prints for root for
+/// `dir`, this test's ids standing for the range's, cut from its guidance
+/// line as the error report writes it.
+fn printed_for_userns(dir: &Path) -> String {
+    let guidance = userns_unfinished(dir, Ok(pin_of(dir)), own_range());
+    let mut out = Vec::new();
+    crate::report_to(&mut out, "left", &guidance).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let line = text
+        .lines()
+        .nth(1)
+        .unwrap_or_else(|| panic!("no guidance: {text}"));
+    let first = format!("( {ENV_CHECK} && CDPATH= cd -P -- ");
+    let start = line
+        .find(&first)
+        .unwrap_or_else(|| panic!("no commands: {line}"));
+    let end = line
+        .rfind("; then run ranikust prune --all --userns --state-dir ")
+        .expect(line);
+    line[start..end].to_owned()
+}
+
+/// T4: root's command after an unfinished `prune --all --userns`, for a
+/// path a shell must quote or may read otherwise, run by each shell
+/// present as printed: all but the marker of the directory ranikust
+/// checked goes, or, where the shell reads another path, nothing changes.
+#[test]
+fn red_team_userns_printed_paths_act_only_on_the_checked_directory_in_any_shell() {
+    let tmp = private_tempdir();
+    let cases: [(&[u8], &[u8]); 6] = [
+        (b"-p 'q' \"d\" $HOME \\ !x `id` *", b"-n"),
+        (b"p", b"nl\nname"),
+        (b"\xff\xfe", b"st"),
+        (b"e\x1b]0;x\x07", b"-"),
+        (b"[ab]*?", b"{a,b}"),
+        (b"-rf", b"--"),
+    ];
+    let shells = shells();
+    assert!(!shells.is_empty());
+    for (s, sh) in shells.iter().enumerate() {
+        for (c, (p, n)) in cases.iter().enumerate() {
+            let base = tmp.path().join(format!("{s}-{c}"));
+            let cwd = base.join("cwd");
+            let outside = base.join("outside");
+            fs::create_dir_all(&cwd).unwrap();
+            fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::create_dir_all(&outside).unwrap();
+            fs::write(outside.join("keep"), b"x").unwrap();
+            let state = base.join(OsStr::from_bytes(p)).join(OsStr::from_bytes(n));
+            pruning_state(&state);
+            symlink(&outside, state.join("blobs/out")).unwrap();
+            let command = printed_for_userns(&state);
+            let word = shell_word(state.as_os_str());
+            assert!(
+                command.contains(&format!("cd -P -- {word} && ")),
+                "{command}"
+            );
+            let read = shell_run(sh, &format!("printf %s {word}"), &cwd);
+            assert!(read.status.success(), "{sh:?}: {read:?}");
+            let decoy = (read.stdout != state.as_os_str().as_bytes()).then(|| {
+                let read = Path::new(OsStr::from_bytes(&read.stdout));
+                assert!(
+                    !read.components().any(|c| c == Component::ParentDir),
+                    "{sh:?} reads {word} as {read:?}"
+                );
+                let at = cwd.join(read);
+                assert!(at.starts_with(&cwd), "{sh:?} reads {word} as {at:?}");
+                pruning_state(&at);
+                at
+            });
+            let before = listing(&base);
+            let ran = shell_run(sh, &command, &cwd);
+            assert!(outside.join("keep").is_file(), "{sh:?} {c}");
+            match decoy {
+                Some(decoy) => {
+                    assert!(!ran.status.success(), "{sh:?} {c}: {ran:?}");
+                    assert_eq!(listing(&base), before, "{sh:?} {c}: {decoy:?}");
+                }
+                None => {
+                    assert!(ran.status.success(), "{sh:?} {c}: {ran:?}");
+                    let left: Vec<_> = fs::read_dir(&state)
+                        .unwrap()
+                        .map(|e| e.unwrap().file_name())
+                        .collect();
+                    assert_eq!(left, [OsStr::new(rnk_store::PRUNING_MARKER)], "{sh:?} {c}");
+                }
+            }
+            fs::remove_dir_all(&base).unwrap();
+        }
+    }
+}
+
+/// Makes `depth` nested directories `d` below `top`, by descriptor (past
+/// `PATH_MAX`), with `link`, a symlink to `to`, at the bottom.
+fn deep_tree(top: &Path, depth: usize, to: &Path) {
+    use rustix::fs::{Mode, OFlags};
+    let how = OFlags::DIRECTORY | OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut fd = rustix::fs::open(top, how, Mode::empty()).unwrap();
+    for _ in 0..depth {
+        rustix::fs::mkdirat(&fd, "d", Mode::from_raw_mode(0o700)).unwrap();
+        fd = rustix::fs::openat(&fd, "d", how, Mode::empty()).unwrap();
+    }
+    rustix::fs::symlinkat(to, &fd, "link").unwrap();
+}
+
+/// T4: root's command after an unfinished `prune --all --userns`, this
+/// test's ids standing for the range's, in a tree a `RUN` could leave: a
+/// tree deeper than `PATH_MAX` with a symlink out at its bottom, a wide
+/// directory, a FIFO, a socket, a setuid file, symlink loops, a hardlink
+/// to a file outside, names `find` or a shell could read as options or
+/// patterns, a `.ranikust-pruning` below the top: all but the marker
+/// goes, nothing outside, without blocking. A FIFO as the marker: nothing
+/// changes, without blocking.
+#[test]
+fn red_team_userns_leftovers_deep_wide_and_special_go_without_blocking() {
+    let tmp = private_tempdir();
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(outside.join("dir")).unwrap();
+    fs::write(outside.join("keep"), b"keep").unwrap();
+    fs::write(outside.join("dir/keep"), b"keep").unwrap();
+    let state = tmp.path().join("state");
+    pruning_state(&state);
+    fs::create_dir_all(state.join("builds/deep")).unwrap();
+    deep_tree(&state.join("builds/deep"), 3000, &outside);
+    let wide = state.join("caches/wide");
+    fs::create_dir_all(&wide).unwrap();
+    for i in 0..5000 {
+        fs::write(wide.join(format!("f{i}")), b"").unwrap();
+    }
+    let odd = state.join("layers/odd");
+    fs::create_dir_all(&odd).unwrap();
+    let names = "-delete -exec ( ) ! \\ ; {} *?[a] -- - -L -xdev .ranikust-pruning";
+    for name in names.split(' ').chain([" lead", "trail ", "\n", "\t"]) {
+        fs::write(odd.join(name), b"x").unwrap();
+    }
+    fs::create_dir_all(state.join("tmp/.ranikust-pruning")).unwrap();
+    fs::write(state.join("tmp/.ranikust-pruning/f"), b"x").unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        odd.join("fifo"),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    drop(std::os::unix::net::UnixListener::bind(odd.join("sock")).unwrap());
+    fs::write(odd.join("suid"), b"x").unwrap();
+    fs::set_permissions(odd.join("suid"), fs::Permissions::from_mode(0o4755)).unwrap();
+    symlink("loop", odd.join("loop")).unwrap();
+    symlink("b", odd.join("a")).unwrap();
+    symlink("a", odd.join("b")).unwrap();
+    symlink(outside.join("dir"), odd.join("out")).unwrap();
+    fs::hard_link(outside.join("keep"), odd.join("hard")).unwrap();
+    let victims = listing(&outside);
+    let script = userns_left_script(own_range());
+    let started = Instant::now();
+    let out = Command::new("timeout")
+        .args([
+            "300",
+            "bash",
+            "-c",
+            &in_dir(&state, pin_of(&state), &script),
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    measured(&format!(
+        "root's command after prune --all --userns, 3000 deep and 5000 wide: {:?}",
+        started.elapsed()
+    ));
+    assert!(out.status.success(), "{out:?}");
+    let left: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, [OsStr::new(rnk_store::PRUNING_MARKER)]);
+    assert_eq!(listing(&outside), victims);
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
+    assert_eq!(
+        fs::symlink_metadata(outside.join("keep")).unwrap().nlink(),
+        1
+    );
+    // A FIFO where the marker is: refused, nothing opened or changed.
+    fs::remove_file(state.join(rnk_store::PRUNING_MARKER)).unwrap();
+    marked_state(&state);
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        state.join(rnk_store::PRUNING_MARKER),
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let before = listing(tmp.path());
+    let out = Command::new("timeout")
+        .args(["20", "bash", "-c", &in_dir(&state, pin_of(&state), &script)])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no regular .ranikust-pruning here"),
+        "{out:?}"
+    );
+    assert_eq!(listing(tmp.path()), before);
+}
+
+/// T4: `prune --all --userns` refuses root's default, a path below it and
+/// one above it however the path is spelt (`.`, repeated or trailing
+/// slashes), before the range's namespace and changing nothing; a symlink
+/// at the state directory's path, followed by a trailing `/` or `/.`, or on
+/// it is refused, never followed.
+#[test]
+fn red_team_userns_prune_refuses_roots_default_however_spelt() {
+    let user_ns = fs::read_link("/proc/self/ns/user").unwrap();
+    let range = || Ok(range_from(100_000, 200_000));
+    let below = "is below root's default /var/lib/ranikust";
+    let above = "is above root's default /var/lib/ranikust";
+    for (dir, how) in [
+        ("/var/lib/ranikust/.", "is root's default"),
+        ("/var/lib/ranikust/", "is root's default"),
+        ("//var/lib/ranikust", "is root's default"),
+        ("/var//lib/./ranikust", "is root's default"),
+        ("/var/lib/ranikust/./userns/", below),
+        ("/var/lib/ranikust//x/y", below),
+        ("/./var/lib", above),
+        ("/var/", above),
+        ("/", above),
+    ] {
+        let refusal = userns_with(Path::new(dir), range).unwrap_err();
+        assert_eq!(
+            refusal.reason,
+            format!("the state directory {dir} {how}"),
+            "{refusal}"
+        );
+        assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
+    }
+    let euid = rustix::process::geteuid().as_raw();
+    let egid = rustix::process::getegid().as_raw();
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    pruning_state(&state);
+    symlink(&state, tmp.path().join("link")).unwrap();
+    symlink(tmp.path(), tmp.path().join("up")).unwrap();
+    let before = listing(tmp.path());
+    for dir in [
+        tmp.path().join("link"),
+        tmp.path().join("link/"),
+        tmp.path().join("link/."),
+        tmp.path().join("up/state"),
+    ] {
+        let refusal = userns_with(&dir, || Ok(range_from(euid, egid))).unwrap_err();
+        assert!(refusal.reason.contains("symbolic link"), "{refusal}");
+        assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
+    }
+    assert_eq!(listing(tmp.path()), before);
+    assert_eq!(fs::read_link("/proc/self/ns/user").unwrap(), user_ns);
 }
