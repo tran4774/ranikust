@@ -135,36 +135,76 @@ fn needed_text(uid: Option<u32>, gid: Option<u32>) -> String {
     }
 }
 
+/// The widest range the ways out ask an administrator for: `useradd`'s
+/// default count. A wider one would likely take ids another user or a real
+/// account holds, so past it they ask for root or a container instead.
+const RANGE_MAX: u32 = 65536;
+
+/// What every way out that names a range says of it.
+const NO_OVERLAP: &str =
+    "a range must not overlap another user's range or the ids of a real account";
+
 fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String {
     let (uid, gid) = highest(found, ids);
-    match ns {
-        Namespace::UserOneId => format!(
+    let named = ids_text(uid, gid);
+    let too_few = [uid, gid]
+        .into_iter()
+        .flatten()
+        .any(|id| id > RANGE_MAX)
+        .then(|| {
+            format!(
+                "a range in /etc/subuid and /etc/subgid usually gives {RANGE_MAX} ids, too few \
+                 for {named}, and {NO_OVERLAP}"
+            )
+        });
+    match (ns, too_few) {
+        (Namespace::UserOneId, None) => format!(
             "the build's user namespace maps one uid and one gid, as for a user without \
              newuidmap and newgidmap or without ranges of its own: install uidmap (Ubuntu \
              does not by default) and give this user a first range in /etc/subuid and \
-             /etc/subgid of at least {}, run ranikust as root, or run it in a container",
+             /etc/subgid of at least {} ({NO_OVERLAP}), run ranikust as root, or run it in a \
+             container",
             needed_text(uid, gid)
         ),
-        Namespace::UserRanges => format!(
+        (Namespace::UserOneId, Some(too_few)) => format!(
+            "the build's user namespace maps one uid and one gid, as for a user without \
+             newuidmap and newgidmap or without ranges of its own; {too_few}: run ranikust as \
+             root, or run it in a container"
+        ),
+        (Namespace::UserRanges, None) => format!(
             "the build's user namespace maps this user's first range in /etc/subuid and \
-             /etc/subgid from id 1 on: widen that range to at least {}, run ranikust as \
-             root, or run it in a container",
+             /etc/subgid from id 1 on: widen that range to at least {} ({NO_OVERLAP}), run \
+             ranikust as root, or run it in a container",
             needed_text(uid, gid)
         ),
-        Namespace::RootOneId => format!(
-            "the build's user namespace maps a single uid or gid, not {}: the user namespace \
-             ranikust was started in maps no more, or its ranges could not be mapped into the \
-             build's. Widen the id ranges of the user namespace ranikust was started in (for a rootless Podman container, those of the user \
-             running it in /etc/subuid and /etc/subgid, then `podman system migrate`), or \
-             run ranikust as root on a host or in a rootful container",
-            ids_text(uid, gid)
+        (Namespace::UserRanges, Some(too_few)) => format!(
+            "the build's user namespace maps this user's first range in /etc/subuid and \
+             /etc/subgid from id 1 on; {too_few}: run ranikust as root, or run it in a \
+             container"
         ),
-        Namespace::Container => format!(
-            "the user namespace ranikust was started in does not map {}: widen its id \
+        (Namespace::RootOneId, None) => format!(
+            "the build's user namespace maps a single uid or gid, not {named}: the user \
+             namespace ranikust was started in maps no more, or its ranges could not be \
+             mapped into the build's. Widen the id ranges of the user namespace ranikust was \
+             started in (for a rootless Podman container, those of the user running it in \
+             /etc/subuid and /etc/subgid, then `podman system migrate`; {NO_OVERLAP}), or run \
+             ranikust as root on a host or in a rootful container"
+        ),
+        (Namespace::RootOneId, Some(too_few)) => format!(
+            "the build's user namespace maps a single uid or gid, not {named}: the user \
+             namespace ranikust was started in maps no more, or its ranges could not be \
+             mapped into the build's; {too_few}: run ranikust as root on a host or in a \
+             rootful container"
+        ),
+        (Namespace::Container, None) => format!(
+            "the user namespace ranikust was started in does not map {named}: widen its id \
              ranges (for a rootless Podman container, those of the user running it in \
-             /etc/subuid and /etc/subgid, then `podman system migrate`), or run ranikust as \
-             root on a host or in a rootful container",
-            ids_text(uid, gid)
+             /etc/subuid and /etc/subgid, then `podman system migrate`; {NO_OVERLAP}), or run \
+             ranikust as root on a host or in a rootful container"
+        ),
+        (Namespace::Container, Some(too_few)) => format!(
+            "the user namespace ranikust was started in does not map {named}; {too_few}: run \
+             ranikust as root on a host or in a rootful container"
         ),
     }
 }
@@ -225,10 +265,11 @@ mod tests {
             assert!(one_id.contains(part), "{part}: {one_id}");
         }
         // The primary gid 0 is mapped: only the uid is named.
-        let user = Unmapped::user("set the user id", 70000, 0, &[]);
-        let widen = ways_out(&user, Namespace::UserRanges, Some(&parsed(&ranges)));
+        let narrow = maps("0 1000 1\n1 100000 1000\n", "0 1000 1\n1 100000 1000\n");
+        let user = Unmapped::user("set the user id", 5000, 0, &[]);
+        let widen = ways_out(&user, Namespace::UserRanges, Some(&parsed(&narrow)));
         assert!(
-            widen.contains("widen that range to at least 70000 subordinate uids, run"),
+            widen.contains("widen that range to at least 5000 subordinate uids (a range must"),
             "{widen}"
         );
         // Maps that hold every id named (an EINVAL of another cause) name
@@ -236,13 +277,13 @@ mod tests {
         let all = maps("0 0 4294967295\n", "0 0 4294967295\n");
         let unknown = ways_out(&user, Namespace::UserRanges, Some(&parsed(&all)));
         assert!(
-            unknown.contains("at least 70000 subordinate uids, run"),
+            unknown.contains("at least 5000 subordinate uids (a range must"),
             "{unknown}"
         );
         let root_only = ways_out(&user, Namespace::RootOneId, Some(&parsed(&root_one)));
         assert!(
             root_only.contains(
-                "maps a single uid or gid, not uid 70000: the user namespace ranikust was started \
+                "maps a single uid or gid, not uid 5000: the user namespace ranikust was started \
                  in maps no more"
             ),
             "{root_only}"
@@ -254,10 +295,59 @@ mod tests {
             "{container}"
         );
         assert!(container.contains("podman system migrate"), "{container}");
+        // A range asked for must not take another's ids.
+        for text in [&one_id, &widen, &root_only, &container] {
+            assert!(text.contains(NO_OVERLAP), "{text}");
+        }
         // No flag is a way out.
         for text in [one_id, widen, root_only, container] {
             assert!(!text.contains("--"), "{text}");
         }
+    }
+
+    /// Past the count `useradd` gives a range, the ways out name the id
+    /// but ask no range that wide: root or a container instead. An id of
+    /// `u32::MAX`, which `chown` reads as "unchanged", is no id to map.
+    #[test]
+    fn an_id_past_a_usual_range_asks_for_root_or_a_container_not_a_wider_range() {
+        let far = Unmapped::chown(Path::new("far"), Some(3_000_000_000), Some(42));
+        let edge = Unmapped::chown(Path::new("edge"), Some(65536), None);
+        let past = Unmapped::chown(Path::new("past"), Some(65537), None);
+        for ns in [
+            Namespace::UserOneId,
+            Namespace::UserRanges,
+            Namespace::RootOneId,
+            Namespace::Container,
+        ] {
+            let text = ways_out(&far, ns, None);
+            assert!(text.contains("uid 3000000000"), "{ns:?}: {text}");
+            assert!(
+                text.contains("usually gives 65536 ids, too few for uid 3000000000 and gid 42"),
+                "{ns:?}: {text}"
+            );
+            assert!(!text.contains("subordinate uids"), "{ns:?}: {text}");
+            assert!(!text.contains("widen"), "{ns:?}: {text}");
+            assert!(!text.contains("install uidmap"), "{ns:?}: {text}");
+            assert!(text.contains("run ranikust as root"), "{ns:?}: {text}");
+            assert!(text.contains(NO_OVERLAP), "{ns:?}: {text}");
+            assert!(
+                !ways_out(&edge, ns, None).contains("too few"),
+                "{ns:?}: {text}"
+            );
+            assert!(
+                ways_out(&past, ns, None).contains("too few for uid 65537"),
+                "{ns:?}: {text}"
+            );
+        }
+        assert!(
+            ways_out(&edge, Namespace::UserRanges, None)
+                .contains("widen that range to at least 65536 subordinate uids")
+        );
+        // `-1:42` asks for gid 42 alone.
+        let unchanged = Unmapped::chown(Path::new("a"), Some(u32::MAX), Some(42));
+        let text = ways_out(&unchanged, Namespace::UserOneId, None);
+        assert!(text.contains("of at least 42 subordinate gids ("), "{text}");
+        assert!(!text.contains("4294967295"), "{text}");
     }
 
     /// The refusal is found however deep the libraries wrap it, through

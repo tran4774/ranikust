@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// How many ids of each kind [`Unmapped`] names; entries past them are
-/// counted.
+/// How many ids of each kind [`Unmapped`] names, and how many of a `RUN`'s
+/// supplementary groups; entries or groups past them are counted.
 const NAMED: usize = 8;
 
 /// The uids and gids a user namespace maps: the ids inside it that the lines
@@ -201,9 +201,10 @@ impl Unmapped {
     /// The highest uid met that `map` does not hold: the one a map must
     /// reach. A refused call does not tell which of its ids failed, so
     /// without `map` each of them counts; a scan's own map always applies.
+    /// `u32::MAX`, which `chown` reads as "unchanged", is none.
     #[must_use]
     pub fn highest_uid(&self, map: Option<&MappedIds>) -> Option<u32> {
-        let unmapped = |id: &u32| map.is_none_or(|m| !m.maps_uid(*id));
+        let unmapped = |id: &u32| *id != u32::MAX && map.is_none_or(|m| !m.maps_uid(*id));
         match &*self.0 {
             Found::Owners { highest, .. } => highest[0],
             Found::Chown { uid, .. } => uid.filter(unmapped),
@@ -215,7 +216,7 @@ impl Unmapped {
     /// [`Unmapped::highest_uid`].
     #[must_use]
     pub fn highest_gid(&self, map: Option<&MappedIds>) -> Option<u32> {
-        let unmapped = |id: &u32| map.is_none_or(|m| !m.maps_gid(*id));
+        let unmapped = |id: &u32| *id != u32::MAX && map.is_none_or(|m| !m.maps_gid(*id));
         match &*self.0 {
             Found::Owners { highest, .. } => highest[1],
             Found::Chown { gid, .. } => gid.filter(unmapped),
@@ -319,8 +320,12 @@ impl fmt::Display for Unmapped {
             } => {
                 write!(f, "{step} for uid {uid}, gid {gid}")?;
                 if !groups.is_empty() {
-                    let list: Vec<String> = groups.iter().map(u32::to_string).collect();
+                    let list: Vec<String> =
+                        groups.iter().take(NAMED).map(u32::to_string).collect();
                     write!(f, ", groups {}", list.join(" "))?;
+                    if groups.len() > NAMED {
+                        write!(f, " and {} more", groups.len() - NAMED)?;
+                    }
                 }
                 f.write_str(": an id this user namespace does not map")
             }
@@ -461,5 +466,25 @@ mod tests {
             (c.highest_uid(Some(&ranges)), c.highest_gid(Some(&ranges))),
             (Some(70000), None)
         );
+        // `chown` reads `u32::MAX` as "unchanged": no id a map must reach.
+        let c = Unmapped::chown(Path::new("a"), Some(u32::MAX), Some(42));
+        assert_eq!((c.highest_uid(None), c.highest_gid(None)), (None, Some(42)));
+        // Eight groups are named, the rest counted, all of them weighed.
+        let many: Vec<u32> = (100..111).collect();
+        let u = Unmapped::user("set supplementary groups", 1000, 1000, &many);
+        assert_eq!(
+            u.to_string(),
+            "set supplementary groups for uid 1000, gid 1000, groups 100 101 102 103 104 105 106 \
+             107 and 3 more: an id this user namespace does not map"
+        );
+        assert_eq!(u.highest_gid(None), Some(1000));
+        assert_eq!(u.highest_gid(Some(&ranges)), None);
+        let u = Unmapped::user(
+            "set supplementary groups",
+            0,
+            0,
+            &[70000, 70001, 2, 3, 4, 5, 6, 7, 80000],
+        );
+        assert_eq!(u.highest_gid(Some(&ranges)), Some(80000));
     }
 }

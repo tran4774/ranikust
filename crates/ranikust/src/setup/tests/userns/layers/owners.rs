@@ -154,12 +154,16 @@ fn check_one_id(out: &str) {
         ),
         "{out}"
     );
-    for image in ["owned", "far"] {
+    // A range for the owners, but none past what `useradd` gives one.
+    for (image, range) in [
+        ("owned", "install uidmap"),
+        ("far", "usually gives 65536 ids, too few for uid 3000000000"),
+    ] {
         let ways = field(out, &format!("{image} ways"));
         for part in [
             "maps one uid and one gid,",
-            "install uidmap",
-            "/etc/subuid and /etc/subgid of at least",
+            range,
+            "must not overlap another user's range",
             "as root",
             "in a container",
         ] {
@@ -239,9 +243,13 @@ fn an_owner_past_the_container_s_ranges_is_refused_before_extraction() {
     );
     let ways = field(&out, "far ways");
     assert!(
-        ways.contains("does not map uid 3000000000 and gid 3000000000: widen its id ranges"),
+        ways.contains(
+            "does not map uid 3000000000 and gid 3000000000; a range in /etc/subuid and \
+             /etc/subgid usually gives 65536 ids, too few"
+        ),
         "{out}"
     );
+    assert!(ways.contains("in a rootful container"), "{out}");
     assert!(field(&out, "far extract").ends_with(UNMAPPED), "{out}");
     assert_eq!(field(&out, "published"), "3", "{out}");
 }
@@ -351,13 +359,16 @@ fn an_owner_past_a_user_s_ranges_is_refused_before_extraction() {
         ),
         "{out}"
     );
+    // No range that wide is asked for: root or a container instead.
+    let ways = field(&out, "far ways");
     assert!(
-        field(&out, "far ways").contains(
-            "widen that range to at least 3000000000 subordinate uids and 3000000000 subordinate \
-             gids"
+        ways.contains(
+            "from id 1 on; a range in /etc/subuid and /etc/subgid usually gives 65536 ids, too \
+             few for uid 3000000000 and gid 3000000000, and a range must not overlap"
         ),
         "{out}"
     );
+    assert!(!ways.contains("widen"), "{out}");
     assert!(field(&out, "far extract").ends_with(UNMAPPED), "{out}");
     assert_eq!(field(&out, "published"), "3", "{out}");
 }
