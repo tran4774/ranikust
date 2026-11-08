@@ -529,7 +529,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `container` (every signal
   of kaniko's container check on a fake host, in kaniko's order),
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
-  reached, what cannot be told, the bound counted in threads; `walk`'s
+  reached, the entry named by ranikust's own pid probed as any other, what
+  cannot be told, the bound counted in threads; ranikust's own entry, as
+  `/proc/self` names it, passing the real probe; `walk`'s
   on fake threads: a later thread reached, threads passed over or gone, a
   process whose threads may not be listed; the real probe on each of
   ranikust's own threads and a missing pid; one thread, or the process

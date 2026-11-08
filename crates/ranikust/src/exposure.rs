@@ -164,9 +164,10 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-/// Warns about each other process listed in `/proc` whose
-/// `/proc/<pid>/environ` ranikust can read and which sets one of `variables`
-/// ([`secret_variables`]) to a non-empty value ([`credential_warning`]);
+/// Warns about each process listed in `/proc` but ranikust ([`own_entry`])
+/// whose `/proc/<pid>/environ` ranikust can read and which sets one of
+/// `variables` ([`secret_variables`]) to a non-empty value
+/// ([`credential_warning`]);
 /// nothing is said when `/proc` cannot be listed. The caller runs it after
 /// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust reads with
 /// the capabilities a root `RUN` keeps (ADR-0078).
@@ -175,8 +176,12 @@ pub(crate) fn warn_credential_holders(variables: &[String]) {
     let Ok(dir) = fs::read_dir("/proc") else {
         return;
     };
-    let me = std::process::id().to_string();
-    for pid in dir.flatten().filter_map(|e| other_pid(e.file_name(), &me)) {
+    let me = own_entry();
+    let others = dir
+        .flatten()
+        .filter_map(|e| pid_of(e.file_name()))
+        .filter(|pid| me.as_ref() != Some(pid));
+    for pid in others {
         let Ok(environ) = fs::read(format!("/proc/{pid}/environ")) else {
             continue;
         };
@@ -205,11 +210,22 @@ fn credential_warning(process: &Process, found: &[&str]) -> String {
 }
 
 /// The pid an entry of `/proc` names, when it names a process (digits
-/// only) other than ranikust (`me`).
-fn other_pid(name: OsString, me: &str) -> Option<String> {
+/// only).
+fn pid_of(name: OsString) -> Option<String> {
     name.into_string()
         .ok()
-        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n != me)
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// ranikust's entry in `/proc`, as `/proc/self` names it; none when `/proc`
+/// shows no entry for it. Not `getpid()`, its pid in its own PID namespace,
+/// which may not be the one `/proc` shows.
+fn own_entry() -> Option<String> {
+    fs::read_link("/proc/self")
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()
 }
 
 /// The name a process gives itself (`/proc/<pid>/comm`), escaped, empty
@@ -317,7 +333,10 @@ pub(crate) enum PeerScan {
 /// or `/proc/<pid>/root` where its threads may not be listed): a `RUN` on
 /// `/` shares the PID namespace and could reach that process's files, which
 /// the container's own mount table does not show (ADR-0101). It counts only
-/// the processes ranikust can open as it starts.
+/// the processes ranikust can open as it starts. ranikust's own entry is
+/// probed as any other, and passes: its threads share its mount namespace,
+/// and `getpid()` would name it only in its own PID namespace, which may not
+/// be the one `/proc` shows.
 ///
 /// `started_in` is ranikust's mount namespace as it started
 /// ([`mount_namespace`], opened before the set-up may enter one of its own
@@ -349,11 +368,10 @@ fn scan(
     limit: usize,
     mut probe: impl FnMut(&str, usize) -> (Peer, usize),
 ) -> PeerScan {
-    let me = std::process::id().to_string();
     let mut seen = 0;
     for name in names {
         let pid = match name {
-            Ok(name) => match other_pid(name, &me) {
+            Ok(name) => match pid_of(name) {
                 Some(pid) => pid,
                 None => continue,
             },
@@ -873,10 +891,9 @@ mod tests {
 
     #[test]
     fn a_peer_scan_refuses_the_first_process_reached_in_another_mount_namespace() {
-        let me = std::process::id().to_string();
         let mut probed = Vec::new();
         let found = scan(
-            names(&["self", "1", &me, "2", "3", "x9", "4", "5"]),
+            names(&["self", "1", "2", "3", "x9", "4", "5"]),
             PEER_SCAN_LIMIT,
             |pid, _| {
                 probed.push(pid.to_owned());
@@ -890,9 +907,41 @@ mod tests {
             },
         );
         assert_eq!(found, PeerScan::Reachable(process("4", "sleep")));
-        // Neither ranikust itself nor an entry that is not a pid is probed,
-        // and the scan stops at the first process reached.
+        // An entry that is not a pid is not probed, and the scan stops at
+        // the first process reached.
         assert_eq!(probed, ["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn a_peer_scan_probes_the_entry_named_by_ranikusts_own_pid_too() {
+        // In a `/proc` of an enclosing PID namespace, that entry is another
+        // process.
+        let me = std::process::id().to_string();
+        let mut probed = Vec::new();
+        let found = scan(names(&[&me]), PEER_SCAN_LIMIT, |pid, _| {
+            probed.push(pid.to_owned());
+            (Peer::Reachable("sleep".into()), 1)
+        });
+        assert_eq!(found, PeerScan::Reachable(process(&me, "sleep")));
+        assert_eq!(probed, [me]);
+    }
+
+    #[test]
+    fn ranikusts_own_entry_passes_the_peer_scan() {
+        let now = mount_namespace().unwrap().id;
+        let entry = own_entry().unwrap();
+        assert_eq!(entry, std::process::id().to_string());
+        // A second thread at least, whichever thread runs the test.
+        let (stop, parked) = std::sync::mpsc::channel::<()>();
+        let second = std::thread::spawn(move || parked.recv());
+        let found = scan(
+            names(&["self", "thread-self", &entry]),
+            PEER_SCAN_LIMIT,
+            |pid, left| probe([now, now], pid, left),
+        );
+        drop(stop);
+        second.join().unwrap().unwrap_err();
+        assert_eq!(found, PeerScan::None);
     }
 
     #[test]
