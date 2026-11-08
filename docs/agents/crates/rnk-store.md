@@ -238,16 +238,16 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   in `src/store/tests.rs`); a FIFO, a socket, a character device, a dead
   link, a link to itself or to a FIFO outside at each store directory's
   name refused by `open` and by `check_state_dir` without blocking, the
-  tree unchanged and, under an inotify watch, the special file or the FIFO
-  never opened: in a marked directory for the store directory, named, in an
-  unmarked one for having no marker
+  tree unchanged and, under an inotify watch, a FIFO at the name or where
+  the link leads never opened: in a marked directory for the store
+  directory, named, in an unmarked one for having no marker
   (`red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened`);
   a link out of the state directory, absolute or climbing, or to a FIFO
   outside, at `layers/v3`, `layers/v3/sha256`, `blobs/sha256` or a cache
   directory, where it leads an entry of the type the store publishes for
   the key (a directory for a layer, a file for a blob): the store's `get`,
-  `fill` and `cache_dir` each return, never block, change anything outside
-  or hand back what is there
+  `fill` and `cache_dir` never block, change anything outside or hand back
+  what is there
   (`red_team_a_link_out_below_a_store_directory_changes_nothing_outside`);
   another anonymous name, a file or a symlink
   with the probe's prefix is refused and left as it was
@@ -358,6 +358,7 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   is a symlink out, removed, what they lead to unchanged; each store
   directory planted as a link out (absolute, climbing, to a FIFO), a FIFO
   or a socket removed without blocking, what a link leads to unchanged
+  and, under an inotify watch, the FIFO a link leads to never opened
   (`red_team_prune_all_never_reaches_through_a_planted_store_directory`).
 - To do: `prune` by size and age (Phase 5); two builds as real root sharing
   one store, with a layer extracted through `rnk-rootfs::extract` (device

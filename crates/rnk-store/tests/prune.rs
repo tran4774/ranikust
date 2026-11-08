@@ -7,10 +7,12 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::RecvTimeoutError;
 
 use rnk_oci::Digest;
 use rnk_store::{BuildPaths, CacheSharing, EntryKey, Error, Store};
+
+mod common;
+use common::{Opens, unblocked};
 
 fn digest(n: u8) -> Digest {
     Digest::from_sha256_bytes(&[n; 32])
@@ -491,6 +493,7 @@ fn red_team_prune_all_never_reaches_through_a_planted_store_directory() {
         .unwrap();
     };
     fifo(&outside.join("fifo"));
+    Opens::control(top.path());
     let seen = || -> Vec<(PathBuf, u32, u64, Vec<u8>)> {
         let mut v: Vec<_> = tree(&outside)
             .into_iter()
@@ -533,19 +536,12 @@ fn red_team_prune_all_never_reaches_through_a_planted_store_directory() {
                 "a FIFO" => fifo(&at),
                 _ => drop(std::os::unix::net::UnixListener::bind(&at).unwrap()),
             }
-            let (tx, rx) = std::sync::mpsc::channel();
+            let opens = Opens::watch(&[&outside.join("fifo")]);
             let pruned = state.clone();
-            // The receiver is gone only once the case has failed as blocked.
-            let worker = std::thread::spawn(move || {
-                drop(tx.send(Store::prune_all(&pruned).map_err(|e| e.to_string())));
+            let r = unblocked(&case, move || {
+                Store::prune_all(&pruned).map_err(|e| e.to_string())
             });
-            let r = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-                Ok(r) => r,
-                Err(RecvTimeoutError::Timeout) => panic!("{case}: blocked"),
-                Err(RecvTimeoutError::Disconnected) => {
-                    std::panic::resume_unwind(worker.join().unwrap_err())
-                }
-            };
+            assert!(!opens.seen(), "{case}: the FIFO out opened");
             assert_eq!(r, Ok(true), "{case}");
             assert_eq!(tree(&state), Vec::<PathBuf>::new(), "{case}");
             assert_eq!(seen(), before, "{case}");
