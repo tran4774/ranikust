@@ -153,11 +153,11 @@ guards the layers extracted under each map with a canary that refuses them
 once the ids above it changed (ADR-0128). `IdMaps` is the only reader and
 parser of `/proc/self/{uid,gid}_map` (with `rnk_rootfs::MappedIds::parse`):
 the others take the maps from it (ADR-0098), except `rnk-sandbox`, which
-does not depend on `rnk-store` and reads its own
+does not depend on `rnk-store` and reads and parses its own
 ([card](docs/agents/crates/rnk-sandbox.md)). `prune` by size and age comes
-in Phase 5. **Must not** decide what an entry contains
-(the caller fills a temporary entry, `rnk-store` publishes it), transfer
-blobs, decode layers, mount, or delete except through `rnk-rootfs`.
+in Phase 5. **Must not** decide what an entry contains (the caller fills a
+temporary entry, `rnk-store` publishes it), transfer blobs, decode layers,
+mount, or delete except through `rnk-rootfs`.
 
 ### `rnk-sandbox`
 

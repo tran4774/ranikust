@@ -898,8 +898,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `layers_extracted_under_a_moved_range_are_refused_and_reused_under_the_same`
   (#183, ADR-0128: a build nested in a namespace whose range moved past or
   into the first one, or after a `chown` on disk, refused with
-  `prune --all`, the state directory unchanged, the plan's refusal one
-  that warns under root's `--mode=auto`; under the same range the layer is
+  `prune --all`, the state directory unchanged, the plan's refusal marked
+  to warn under root's `--mode=auto`; under the same range the layer is
   reused); profile `privileged`:
   `red_team_overlay_xattrs_from_a_layer_never_act_in_a_mount_of_the_user_namespace`
   (overlay's own xattr names under `user.overlay.` and `trusted.overlay.` in

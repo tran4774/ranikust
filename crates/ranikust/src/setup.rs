@@ -135,9 +135,9 @@ pub(crate) enum Kind {
     Broken,
     /// The state directory holds layers extracted under other ids than the
     /// build's user namespace gives (ADR-0128): routed as [`Kind::Other`],
-    /// but the operator must empty it or pass another, so where root's
-    /// `--mode=auto` passes rootless overlay mode over for kaniko mode, it
-    /// warns.
+    /// but the operator must empty it or pass another, so root's
+    /// `--mode=auto` logs it as a warning where it passes rootless overlay
+    /// mode over for kaniko mode ([`Refusal::warns_on_fallback`]).
     IdMapChanged,
 }
 

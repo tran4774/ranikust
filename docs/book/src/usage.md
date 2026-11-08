@@ -79,8 +79,8 @@ container) also refuses a state directory whose layers were extracted under
 other ids than the namespace gives now: after the subordinate ranges of an
 enclosing container changed, or a `chown` of the directory on disk. It
 changes nothing there and names the ways out: `prune --all`, or another
-`--state-dir`. Where root may not mount, `--mode=auto` logs this refusal as
-a warning and tries kaniko mode.
+`--state-dir`. As root that may not mount, `--mode=auto` without `--userns`
+logs this refusal as a warning and tries kaniko mode.
 
 Root is refused, a container's root included: it empties its state directory
 with ordinary tools while no build uses it and nothing is mounted below it,
