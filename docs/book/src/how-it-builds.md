@@ -140,13 +140,15 @@ overlay mount options.
   that is one id. Before extracting any layer of an image, ranikust reads
   their owners and refuses the image where one is not mapped, naming the
   owners, the files that have them and the ways out: install `uidmap`
-  (Ubuntu does not by default) and give the user ranges in `/etc/subuid`
-  and `/etc/subgid` that reach them, widen the ranges it has, run as root,
-  or run in a container (whose ranges must reach them too). A `COPY --chown`
-  or a `USER` the map lacks is refused the same way, when it comes. No flag
-  lets a failed `chown` through: the file would get the wrong owner
-  ([ADR-0098]). This holds in any user namespace, also kaniko mode's in a
-  rootless container.
+  (Ubuntu does not by default) and give the user a first range in
+  `/etc/subuid` and `/etc/subgid` that reaches them, widen the one it has,
+  run as root, or run in a container (whose ranges must reach them too). A
+  `COPY --chown` or a `USER` the map lacks is refused the same way, when it
+  comes. No flag lets a failed `chown` through: the file would get the
+  wrong owner ([ADR-0098]). This holds in any user namespace, also kaniko
+  mode's in a rootless container, where a base image's layers come one at
+  a time onto `/`: each is checked before it is extracted, so the layers
+  before the refused one are already there.
 
 ## kaniko mode
 

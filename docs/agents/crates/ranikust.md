@@ -375,11 +375,13 @@ Each step before the next; design in
   `build::Failed` carries it out of the build, found among the error's
   sources (`owners::find`), and `owners::guidance` gives the ways out by who
   made the namespace and its maps (`/proc/self/uid_map`, `gid_map`), naming
-  only the ids they lack: with one id (which map), install `uidmap` and add
-  ranges of at least the highest id named, run as root or in a container;
-  with a user's ranges, widen them to that count; in a namespace ranikust
-  was started in (`made` false: kaniko mode, root's overlay mode) or root's
-  copy of a container's, widen its ranges. No flag lets it pass.
+  only the ids they lack: a user's one id (`Namespace::UserOneId`), install
+  `uidmap` and add a first range of at least the highest id named, run as
+  root or in a container; a user's ranges (`UserRanges`), widen the first
+  one to that count; root's one-id fallback (`RootOneId`), a namespace
+  ranikust was started in (`made` false: kaniko mode, root's overlay mode)
+  or root's copy of a container's (`Container`), widen its ranges. No flag
+  lets it pass.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read
   inside the context through its `RootPath`, never by a host path.

@@ -179,8 +179,8 @@ fn check_one_id(out: &str) {
 /// file).
 fn hide_uidmap() -> Result<(), String> {
     use rustix::mount::MountPropagationFlags;
-    // SAFETY: this forked child is single-threaded, so no other thread
-    // shares the mount namespace it leaves.
+    // SAFETY: `NEWNS` does not unshare the descriptor table, the only flag
+    // `unshare_unsafe` is unsafe for.
     unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNS) }
         .map_err(|e| format!("unshare: {e}"))?;
     rustix::mount::mount_change(
@@ -353,7 +353,8 @@ fn an_owner_past_a_user_s_ranges_is_refused_before_extraction() {
     );
     assert!(
         field(&out, "far ways").contains(
-            "widen them to at least 3000000000 subordinate uids and 3000000000 subordinate gids"
+            "widen that range to at least 3000000000 subordinate uids and 3000000000 subordinate \
+             gids"
         ),
         "{out}"
     );

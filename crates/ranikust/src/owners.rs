@@ -18,12 +18,14 @@ const MAP_MAX: u64 = 64 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Namespace {
     /// ranikust made it for a user other than root, with one id: no
-    /// `newuidmap` and `newgidmap`, or no ranges of the user's own. The text
-    /// says which map gives one id (`one uid and one gid`).
-    UserOneId(&'static str),
-    /// ranikust made it for a user other than root, with the user's
+    /// `newuidmap` and `newgidmap`, or no ranges of the user's own.
+    UserOneId,
+    /// ranikust made it for a user other than root, with the user's first
     /// ranges in `/etc/subuid` and `/etc/subgid`.
     UserRanges,
+    /// ranikust made it for root with one id: root's ranges could not be
+    /// mapped into it.
+    RootOneId,
     /// Root's own ranges in a container, or a namespace ranikust was
     /// started in (a rootless container's), or one that cannot be read.
     Container,
@@ -92,19 +94,18 @@ fn namespace(made: bool, maps: Option<&(String, String)>) -> Namespace {
             _ => None,
         }
     });
-    match root_outside {
-        Some(0) | None => Namespace::Container,
-        Some(_) => match (ids.is_one_uid(), ids.is_one_gid()) {
-            (true, true) => Namespace::UserOneId("one uid and one gid"),
-            (true, false) => Namespace::UserOneId("one uid"),
-            (false, true) => Namespace::UserOneId("one gid"),
-            (false, false) => Namespace::UserRanges,
-        },
+    match (root_outside, ids.is_one_id()) {
+        (None, _) => Namespace::Container,
+        (Some(0), true) => Namespace::RootOneId,
+        (Some(0), false) => Namespace::Container,
+        (Some(_), true) => Namespace::UserOneId,
+        (Some(_), false) => Namespace::UserRanges,
     }
 }
 
 /// The highest ids of `found` that `ids` does not map; all of them where
-/// the maps are unknown or hold every one (they changed since).
+/// the maps are unknown, or hold every one (the call failed with `EINVAL`
+/// for another reason).
 fn highest(found: &Unmapped, ids: Option<&MappedIds>) -> (Option<u32>, Option<u32>) {
     match (found.highest_uid(ids), found.highest_gid(ids)) {
         (None, None) => (found.highest_uid(None), found.highest_gid(None)),
@@ -122,11 +123,11 @@ fn ids_text(uid: Option<u32>, gid: Option<u32>) -> String {
     }
 }
 
-/// The subordinate ids a user's ranges need to map `uid` and `gid`: in the
-/// map ranikust writes (`0 <user> 1`, then `1 <first> <count>`), id N is
-/// the N-th of the range.
+/// The subordinate ids a user's first range needs to map `uid` and `gid`:
+/// in the map ranikust writes (`0 <user> 1`, then `1 <first> <count>`), id
+/// N is the N-th of the range, and 0 is the user's own.
 fn needed_text(uid: Option<u32>, gid: Option<u32>) -> String {
-    match (uid, gid) {
+    match (uid.filter(|&u| u > 0), gid.filter(|&g| g > 0)) {
         (Some(u), Some(g)) => format!("{u} subordinate uids and {g} subordinate gids"),
         (Some(u), None) => format!("{u} subordinate uids"),
         (None, Some(g)) => format!("{g} subordinate gids"),
@@ -137,18 +138,26 @@ fn needed_text(uid: Option<u32>, gid: Option<u32>) -> String {
 fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String {
     let (uid, gid) = highest(found, ids);
     match ns {
-        Namespace::UserOneId(one) => format!(
-            "the build's user namespace maps {one}, as for a user without newuidmap and \
-             newgidmap or without ranges of its own: install uidmap (Ubuntu does not by \
-             default) and give this user ranges in /etc/subuid and /etc/subgid of at least \
-             {}, run ranikust as root, or run it in a container",
+        Namespace::UserOneId => format!(
+            "the build's user namespace maps one uid and one gid, as for a user without \
+             newuidmap and newgidmap or without ranges of its own: install uidmap (Ubuntu \
+             does not by default) and give this user a first range in /etc/subuid and \
+             /etc/subgid of at least {}, run ranikust as root, or run it in a container",
             needed_text(uid, gid)
         ),
         Namespace::UserRanges => format!(
-            "the build's user namespace maps this user's ranges in /etc/subuid and \
-             /etc/subgid from id 1 on: widen them to at least {}, run ranikust as root, or \
-             run it in a container",
+            "the build's user namespace maps this user's first range in /etc/subuid and \
+             /etc/subgid from id 1 on: widen that range to at least {}, run ranikust as \
+             root, or run it in a container",
             needed_text(uid, gid)
+        ),
+        Namespace::RootOneId => format!(
+            "the build's user namespace maps one uid and one gid, not {}: root's ranges \
+             could not be mapped into it. Widen the id ranges of the user namespace \
+             ranikust was started in (for a rootless Podman container, those of the user \
+             running it in /etc/subuid and /etc/subgid, then `podman system migrate`), or \
+             run ranikust as root on a host or in a rootful container",
+            ids_text(uid, gid)
         ),
         Namespace::Container => format!(
             "the user namespace ranikust was started in does not map {}: widen its id \
@@ -182,16 +191,13 @@ mod tests {
             "0 1000 1\n1 100000 65536\n",
         );
         let root = maps("0 0 1\n1 100000 65536\n", "0 0 1\n1 100000 65536\n");
-        assert_eq!(
-            namespace(true, one.as_ref()),
-            Namespace::UserOneId("one uid and one gid")
-        );
-        assert_eq!(
-            namespace(true, gid_one.as_ref()),
-            Namespace::UserOneId("one gid")
-        );
+        let root_one = maps("0 0 1\n", "0 0 1\n");
+        assert_eq!(namespace(true, one.as_ref()), Namespace::UserOneId);
+        assert_eq!(namespace(true, gid_one.as_ref()), Namespace::UserOneId);
         assert_eq!(namespace(true, ranges.as_ref()), Namespace::UserRanges);
         assert_eq!(namespace(true, root.as_ref()), Namespace::Container);
+        assert_eq!(namespace(true, root_one.as_ref()), Namespace::RootOneId);
+        assert_eq!(namespace(false, root_one.as_ref()), Namespace::Container);
         assert_eq!(namespace(false, one.as_ref()), Namespace::Container);
         assert_eq!(namespace(false, ranges.as_ref()), Namespace::Container);
         assert_eq!(namespace(true, None), Namespace::Container);
@@ -206,17 +212,13 @@ mod tests {
                 .unwrap()
         };
         let chown = Unmapped::chown(Path::new("/app"), Some(1000), Some(1000));
-        let one_id = ways_out(
-            &chown,
-            Namespace::UserOneId("one uid and one gid"),
-            Some(&parsed(&one)),
-        );
+        let one_id = ways_out(&chown, Namespace::UserOneId, Some(&parsed(&one)));
         for part in [
             "maps one uid and one gid,",
             "install uidmap",
             "Ubuntu does not by default",
-            "ranges in /etc/subuid and /etc/subgid of at least 1000 subordinate uids and 1000 \
-             subordinate gids",
+            "a first range in /etc/subuid and /etc/subgid of at least 1000 subordinate uids \
+             and 1000 subordinate gids",
             "run ranikust as root",
             "in a container",
         ] {
@@ -226,15 +228,21 @@ mod tests {
         let user = Unmapped::user("set the user id", 70000, 0, &[]);
         let widen = ways_out(&user, Namespace::UserRanges, Some(&parsed(&ranges)));
         assert!(
-            widen.contains("widen them to at least 70000 subordinate uids, run"),
+            widen.contains("widen that range to at least 70000 subordinate uids, run"),
             "{widen}"
         );
-        // Maps that hold every id named (changed since) name them all.
+        // Maps that hold every id named (an EINVAL of another cause) name
+        // them all, but 0, which is the user's own.
         let all = maps("0 0 4294967295\n", "0 0 4294967295\n");
         let unknown = ways_out(&user, Namespace::UserRanges, Some(&parsed(&all)));
         assert!(
-            unknown.contains("at least 70000 subordinate uids and 0 subordinate gids"),
+            unknown.contains("at least 70000 subordinate uids, run"),
             "{unknown}"
+        );
+        let root_only = ways_out(&user, Namespace::RootOneId, Some(&parsed(&root_one)));
+        assert!(
+            root_only.contains("maps one uid and one gid, not uid 70000: root's ranges"),
+            "{root_only}"
         );
         let gid = Unmapped::chown(Path::new("a"), None, Some(42));
         let container = ways_out(&gid, Namespace::Container, None);
@@ -244,7 +252,7 @@ mod tests {
         );
         assert!(container.contains("podman system migrate"), "{container}");
         // No flag is a way out.
-        for text in [one_id, widen, container] {
+        for text in [one_id, widen, root_only, container] {
             assert!(!text.contains("--"), "{text}");
         }
     }

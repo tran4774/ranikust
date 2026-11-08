@@ -404,9 +404,10 @@ every id maps and nothing is checked.
   ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)).
   kaniko mode checks blobs the same way; a layer streamed onto `/` is
   checked in the pass that spools and verifies it, before that layer is
-  extracted, so an image's earlier layers may be on `/` already; a layer
-  streamed into a directory per stage (a namespace other than a
-  container's) is refused at its first `chown` that fails.
+  extracted, so a base image's earlier layers may be on `/` already (a
+  `COPY --from=<image>` spools and checks all its layers before any is
+  unpacked); a layer streamed into a directory per stage (a namespace
+  other than a container's) is refused at its first `chown` that fails.
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
   entry, `COPY --chown`, a cache mount's owner) and a `RUN`'s switch to its
   user (`setgroups`, `setgid`, `setuid`, for `USER`) refuse at once, naming
@@ -415,13 +416,14 @@ every id maps and nothing is checked.
   path that has it, counts the other entries, and gives the map. `ranikust`
   adds the ways out, by who made the namespace and from the ids its maps
   lack (a refused call does not tell which of its ids failed): with one id
-  (a user without `newuidmap` and `newgidmap`, or without ranges; it says
-  which map), install `uidmap` (Ubuntu does not by default) and give the
-  user ranges in `/etc/subuid` and `/etc/subgid` of at least as many ids as
-  the highest one named, run as root, or run in a container; with a user's
-  ranges, widen them to that count (in ranikust's map, id N is the N-th of
-  the range); in a namespace ranikust was started in, or root's copy of a
-  container's map, widen its ranges (rootless Podman: its user's, then
+  (a user without `newuidmap` and `newgidmap`, or without ranges), install
+  `uidmap` (Ubuntu does not by default) and give the user a first range in
+  `/etc/subuid` and `/etc/subgid` of at least as many ids as the highest
+  one named, run as root, or run in a container; with a user's ranges,
+  widen the first range to that count (ranikust maps only that one, and id
+  N is its N-th); in a namespace ranikust was started in, root's copy of a
+  container's map, or root's one-id fallback where those ranges could not
+  be mapped, widen its ranges (rootless Podman: its user's, then
   `podman system migrate`), or run as root on a host or in a rootful
   container.
 

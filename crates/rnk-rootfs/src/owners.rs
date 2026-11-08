@@ -47,19 +47,9 @@ impl MappedIds {
     /// without `newuidmap` and `newgidmap` does.
     #[must_use]
     pub fn is_one_id(&self) -> bool {
-        self.is_one_uid() || self.is_one_gid()
-    }
-
-    /// Whether the uid map gives one id only.
-    #[must_use]
-    pub fn is_one_uid(&self) -> bool {
-        matches!(self.uids.as_slice(), [(a, b)] if a == b)
-    }
-
-    /// Whether the gid map gives one id only.
-    #[must_use]
-    pub fn is_one_gid(&self) -> bool {
-        matches!(self.gids.as_slice(), [(a, b)] if a == b)
+        [&self.uids, &self.gids]
+            .iter()
+            .any(|r| matches!(r.as_slice(), [(a, b)] if a == b))
     }
 }
 
@@ -471,7 +461,5 @@ mod tests {
             (c.highest_uid(Some(&ranges)), c.highest_gid(Some(&ranges))),
             (Some(70000), None)
         );
-        let one_gid = map("0 1000 1\n1 100000 65536\n", "0 1000 1\n");
-        assert!(one_gid.is_one_id() && one_gid.is_one_gid() && !one_gid.is_one_uid());
     }
 }
