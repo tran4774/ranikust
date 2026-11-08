@@ -76,26 +76,32 @@ writer) before `unshare`, the probes and the state directory's checks.
   root may mount; it never falls back (`Via::falls_back`) and skips
   `rootless_kept_off`. `plan(.., userns: true)` first reads root's range
   (`subids::root_range`: the first well-formed `ranikust` line of each
-  file, by that name only, none starting at 0, sharing no id with another
-  line of the file, nor the uids with `/etc/passwd`'s, the gids with
-  `/etc/group`'s and `/etc/passwd`'s primary ones; local files only; else
-  refused with `ROOT_RANGE_GUIDANCE`), then checks the state directory for
+  file, by that name only, none starting at 0, no account named
+  `ranikust` in `/etc/passwd`, sharing no id with any range another line
+  of the file may give (`ranges_shadow_may_read`: the first three fields,
+  each `strtoul` base-0 reading, in 128 bits; a line whose numbers it
+  cannot read, or with a NUL, refused), nor the uids with `/etc/passwd`'s,
+  the gids with `/etc/group`'s and `/etc/passwd`'s primary ones (base 10,
+  as glibc); local files only, with a warning where `/etc/nsswitch.conf`
+  names a `subid:` module (`subid_module`); else refused with
+  `ROOT_RANGE_GUIDANCE`), then checks the state directory for
   the range's first ids in `rootless::state_dir_for_probe`: overlayfs from
   `statedir::nearest_existing`, then `statedir::stage` with
   `Owner::Mapped` (missing directories made by `make_given` under a
   `.ranikust-new-` name, given, then renamed with `RENAME_NOREPLACE`), then
   `Store::check_state_dir`, and only then `Staged::finish` sets the modes.
   `setup::remove_own_probe_leftovers` removes an empty `0700` probe
-  directory of root's a killed build left (one that is not empty stays,
-  and the store warns of it), then the probe runs with
+  directory of root's a killed build left (`02700` too, made in a setgid
+  state directory; one that is not empty stays, and the store warns of
+  it), then the probe runs with
   `rnk_sandbox::BuildIds::Shifted`, the probe's directory and its `overlay`
   given to those ids (`setup::give_dir`); neither `probe_in_dir` nor
   `rnk_sandbox::probe_user_namespace` deletes anything in a directory
   given away, and `probe_in_dir` refuses a name without
   `USERNS_PROBE_PREFIX`: it releases its lock and the store removes it
-  inside the namespace. A probe directory another build's start removed,
-  or a store locked, before it was held is made again once under another
-  name
+  inside the namespace. A probe directory another build's start removed
+  (even between its `mkdirat` and its open, `removed_once_made`), or a
+  store locked, before it was held is made again once under another name
   (`make_probe_dir_again`). `set_up` enters the namespace with the same ids;
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names
   `--userns`. Its messages name `--userns`, its guidance
@@ -174,7 +180,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O; `--userns` refused with `--mode=kaniko` and for a user other than root), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
 | `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `probe_in_dir` (its `BuildIds`), `give_dir`, `remove_own_probe_leftovers`, `volume_hint`; `setup/rootless.rs`: `plan` (`userns` for `--userns`), `state_dir_for_probe`, `NotHere`, `set_up`, `refused_by_hook`, `USERNS_UNUSABLE` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `prepare_for`, `stage` (the checks and the missing directories, no mode changed yet) and its `Staged::finish` (the modes), `nearest_existing`, and `Owner` (`Me`, or `Mapped`: `--userns`'s range's first ids own the state directory, parents only root's, not writable even sticky, searchable by those ids through mode bits alone; a missing one made under a temporary name, given to them, then renamed into place, missing parents `0711`; an existing one of root's, and one at, below or above root's default, refused), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
-| `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; `root_range`, `ROOT_ENTRY`, `ROOT_RANGE_GUIDANCE`: root's `ranikust` range for `--userns`, sharing no id with another range or a local account; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
+| `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; `root_range`, `ROOT_ENTRY`, `ROOT_RANGE_GUIDANCE`: root's `ranikust` range for `--userns`, sharing no id with another range or a local account, with no account of that name; `subid_module`: the NSS `subid:` module it warns of; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101), `check_pid_namespace` (with the rbind: PID 2 a kernel thread, or PID 1 sharing no mount ID with the `MountNamespace` read `with_mounts` at start, ADR-0134), `UNCHECKED_PROC_FILES`, `Reach` (`Slash`, `ProcRbind`: the build that the peer-scan refusal and the build-argument warnings name) |
 | `limits.rs` | `--limit <name>=<value>`: bounds on what a registry or image can make ranikust hold or wait for (ADR-0079, T15) |
@@ -502,15 +508,20 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (the
   probe's directory: `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
-  `a_probe_directory_taken_before_it_is_held_is_made_again`), `subids`
+  `a_probe_directory_taken_before_it_is_held_is_made_again`,
+  `a_probe_directory_gone_once_made_is_taken_not_an_error`), `subids`
   (`root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else`,
-  `root_s_range_shares_no_id_with_an_account_or_another_range`; its red
+  `root_s_range_shares_no_id_with_an_account_or_another_range`,
+  `an_account_named_ranikust_refuses_root_s_range`,
+  `lines_shadow_reads_as_overlapping_are_counted`,
+  `every_reading_of_a_line_s_numbers_counts`,
+  `the_subid_module_is_libsubid_s_reading_of_nsswitch`; its red
   team: a `ranikust` line whose end passes 32 bits, signed, padded, with
   a carriage return, a BOM, a NUL, hex or a fourth field gives no range,
   `red_team_root_s_range_takes_no_overflowing_or_padded_ranikust_line`;
   a duplicate `ranikust` line, a line starting `#`, not UTF-8, with a NUL
-  name or a tab before its start, and a range covering every id each
-  overlap it,
+  or a tab before its start, and a range covering every id each refuse
+  it, naming the line,
   `red_team_duplicates_comments_and_binary_lines_still_overlap_root_s_range`;
   files of 200,000 lines and an 8 MiB line read whole, an overlap on
   their last line refused,

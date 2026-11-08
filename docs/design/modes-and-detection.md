@@ -378,8 +378,10 @@ Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
   rootless overlay mode's.
 - Root's `--userns` builds in the build's user namespace of its `ranikust`
   range or is refused, before anything is written, where the range is
-  missing (naming the line to add to `/etc/subuid` and `/etc/subgid`) or
-  shares an id with an account or another range (naming it), or the
+  missing (naming the line to add to `/etc/subuid` and `/etc/subgid`),
+  shares an id with an account or another range or sits beside a line it
+  cannot read as `newuidmap` may (naming it), or an account is named
+  `ranikust`, or the
   state directory is not one for the range's first uid (saying what it must
   be), and otherwise where a step of the namespace fails, never in another
   mode (`USERNS_UNUSABLE`); with `--mode=kaniko` it is a usage error.

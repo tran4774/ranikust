@@ -170,9 +170,20 @@ ranikust:<start>:65536
 
 in both files, with a `<start>` above 0 that no account and no other range
 uses, such as one past the last range there. Without it the build is refused
-before anything is written, and so it is where the range shares an id with
-another line of those files or with an account of `/etc/passwd` or
-`/etc/group` (accounts from LDAP or SSSD are not checked). Every `--userns`
+before anything is written, and so it is where:
+
+- the range shares an id with another line of those files, as any version of
+  `newuidmap` may read that line, or with an account of `/etc/passwd` or
+  `/etc/group`;
+- a line of those files has a start or count that is not a plain number;
+- an account is named `ranikust`: `newuidmap` would give it the range.
+
+Only these files are checked: not accounts from LDAP or SSSD, and not the
+ranges other tools hand out, so keep `<start>` outside those in use on the
+host: an NSS `subid:` module such as SSSD's or FreeIPA's (`newuidmap` then
+reads it instead of the files, and ranikust warns of it), the kubelet's pod
+user namespaces, systemd's `DynamicUser` (61184–65519) and
+`systemd-nspawn --private-users=pick` (524288–1879048191). Every `--userns`
 build runs as that range: they are kept apart from the host, not from each
 other.
 

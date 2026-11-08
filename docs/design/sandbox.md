@@ -902,11 +902,27 @@ with another map:
   the host and before anything is written. Where either is missing, or starts
   at 0, the build is refused, naming the line to add to both files,
   `ranikust:<start>:65536`, `<start>` left to the admin. It is refused too
-  where the range shares an id with another line of the same file, or the uid
-  range with a uid of `/etc/passwd`, or the gid range with a gid of
-  `/etc/group` or a primary gid of `/etc/passwd`, naming that line or account:
-  the build's ids would be theirs. Only these local files are read, not
-  accounts that NSS takes from elsewhere (LDAP, SSSD).
+  where `/etc/passwd` has an account named `ranikust`, which `newuidmap` and
+  `newgidmap` would let map the range, and where the range shares an id with
+  another line of the same file, or the uid range with a uid of
+  `/etc/passwd`, or the gid range with a gid of `/etc/group` or a primary gid
+  of `/etc/passwd`, naming that line or account: the build's ids would be
+  theirs. Another line counts as every range a version of shadow's tools may
+  read it as: its first three fields where it has more, its numbers as
+  `strtoul` reads them in base 0 (hex after `0x`, both the octal and the
+  decimal reading after a leading 0), a count past 32 bits whole. A line of
+  three fields or more whose start or count is not such a number, or with a
+  NUL byte, is refused, naming it; one ending in `\r` is counted without it.
+  `/etc/passwd` and `/etc/group` ids are read in base 10, as glibc reads
+  them. Only these local files are read: not accounts or ids that NSS takes
+  from elsewhere (LDAP, SSSD), and not the ranges other allocators hand out,
+  so choose a `<start>` outside each of them in use on the host:
+  - an NSS `subid:` module (libsubid, as SSSD or FreeIPA provide), which
+    `newuidmap` then reads instead of `/etc/subuid` and `/etc/subgid`;
+    ranikust warns where `/etc/nsswitch.conf` names one other than `files`;
+  - the kubelet's pod user namespaces;
+  - systemd's `DynamicUser` (61184–65519);
+  - `systemd-nspawn --private-users=pick` (524288–1879048191).
 - **The map** (`BuildIds::Shifted`, logged as `shifted range`) is
   `0 <start> <count>` for uids and for gids: the range alone, root's own ids
   unmapped. Root writes it from outside, as for its multi-range map; no other
@@ -985,11 +1001,13 @@ builds, which share the range
 in rootless mode too
 ([ADR-0083](../adr/0083-the-command-gets-its-own-cgroup-where-delegated-and-a-user-namespace-in-phase-3.md)
 (b), [#34](https://github.com/tran4774/ranikust/issues/34)): under `--userns`
-the init still runs as the namespace's root. An image with an owner outside
-the range is to be refused with guidance, as in rootless mode
-([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
-[#208](https://github.com/tran4774/ranikust/issues/208)); until then its
-extraction fails at that owner's `chown`.
+the init still runs as the namespace's root. Ways out that name the
+`ranikust` range, for an image with an owner outside it, are
+[#208](https://github.com/tran4774/ranikust/issues/208): such an image is
+already refused before any of its layers is extracted, as in every user
+namespace
+([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)),
+but with rootless mode's ways out.
 
 ## Failure handling
 

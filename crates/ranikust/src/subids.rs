@@ -98,7 +98,7 @@ pub(crate) fn root_range() -> Result<SubordinateIds, String> {
         Ok(text) => {
             if let Some(module) = subid_module(&text) {
                 tracing::warn!(
-                    "ranikust: {} names the subid module {module}: newuidmap and newgidmap \
+                    "ranikust: {} names the subid module {module:?}: newuidmap and newgidmap \
                      take ranges from it, not from /etc/subuid and /etc/subgid, so --userns \
                      cannot tell whether it hands out ids of the ranikust range; give that \
                      range a <start> it does not use",

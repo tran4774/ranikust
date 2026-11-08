@@ -96,13 +96,23 @@ Decided while building #83, as implementation choices under ADR-0104:
   `ranikust` uid range that holds an id of `/etc/passwd` or overlaps another
   line of `/etc/subuid` is refused before anything is written, naming the id or
   the line, and the same for the gid range against `/etc/group`, the primary
-  gids of `/etc/passwd` and `/etc/subgid`. Only those local files are read: a
-  static binary has no NSS, so ids that only a directory service (LDAP, SSSD)
-  knows are not checked.
+  gids of `/etc/passwd` and `/etc/subgid`. So is an account named `ranikust`
+  in `/etc/passwd`, to which `newuidmap` and `newgidmap` would give the range.
+  Another line counts as every range a version of shadow's tools may read it
+  as, and one whose numbers cannot be read so is refused
+  ([sandbox](../design/sandbox.md#--userns)). Only those local files are read:
+  a static binary has no NSS, so accounts and ids that only a directory
+  service (LDAP, SSSD) knows are not checked, nor are the ranges other
+  allocators hand out: an NSS `subid:` module (libsubid, through SSSD or
+  FreeIPA), which `newuidmap` then reads instead of the files, the kubelet's
+  pod user namespaces, systemd's `DynamicUser` (61184–65519) and
+  `systemd-nspawn --private-users=pick` (524288–1879048191). The docs advise
+  a `<start>` outside them, and a warning names an NSS `subid:` module.
 - **[ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)'s
-  refusal of an owner outside the range** is a task of its own,
-  [#208](https://github.com/tran4774/ranikust/issues/208); until then such an
-  image's extraction fails at that owner's `chown`.
+  refusal of an owner outside the range** applies as in every user
+  namespace, before extraction; ways out that name the `ranikust` range, not
+  rootless mode's, are a task of their own,
+  [#208](https://github.com/tran4774/ranikust/issues/208).
 - **[ADR-0074](0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)'s
   residual, measured again** under `--userns`, is recorded where that residual
   is: section 6 of the threat model and
@@ -122,7 +132,7 @@ Decided while building #83, as implementation choices under ADR-0104:
 - Bad, because until #206 lands the operator must let the range's uid read the
   docker config and the secret sources a `--userns` build uses.
 - Neutral, because the overlap check reads local files only, which the docs
-  say.
+  say, with the allocators it cannot see.
 
 ## Evidence
 
