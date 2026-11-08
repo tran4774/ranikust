@@ -1,12 +1,11 @@
 //! The subordinate ids of the user ranikust runs as, for the build's user
 //! namespace (`rnk_sandbox::enter_build_user_namespace`): the first range
 //! `/etc/subuid` and `/etc/subgid` give the user, by name or by uid, in
-//! decimal with no leading 0 (which `newuidmap` and `newgidmap` read as
-//! octal, so such a line is passed over); for root's `--userns`, the
-//! `ranikust` entry alone ([`root_range`], ADR-0104). Read on the host
-//! before the namespace is entered. The name comes from `/etc/passwd` only:
-//! a static binary has no NSS, so a user known only to a directory service
-//! is matched by uid.
+//! decimal (`newuidmap` and `newgidmap` read a leading 0 as octal, so such
+//! a line is passed over); for root's `--userns`, the `ranikust` entry
+//! alone ([`root_range`], ADR-0104). Read on the host before the namespace
+//! is entered. The name comes from `/etc/passwd` only: a static binary has
+//! no NSS, so a user known only through NSS is matched by uid.
 
 use rnk_sandbox::{IdRange, SubordinateIds};
 
@@ -77,9 +76,10 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// [`ranges_shadow_may_read`] counts them. Those local files only: a static
 /// binary has no NSS, so an account or id only NSS knows (LDAP, SSSD,
 /// systemd's `DynamicUser` and userdb) is not seen, nor are the ranges
-/// another allocator hands out (an NSS `subid:` module, which `newuidmap` then reads instead of the
-/// files and of which a warning is logged; the kubelet's for pods; systemd's
-/// `DynamicUser` and `systemd-nspawn --private-users=pick`). Lines end at
+/// another allocator hands out (an NSS `subid:` module, which `newuidmap`
+/// then reads instead of the files and of which a warning is logged; the
+/// kubelet's for pods; systemd's `DynamicUser` and `systemd-nspawn
+/// --private-users=pick`). Lines end at
 /// `\n` alone, as shadow's own parser reads them: a `ranikust` line ending
 /// in `\r` is not well-formed, so not found, unlike [`lookup`], which takes
 /// `\r\n` as a line end too. Read on the host before anything is written.
@@ -225,15 +225,14 @@ struct Held {
     file: String,
 }
 
-/// `line` for a message: lossy UTF-8, what is not printable escaped, cut
-/// after 80 characters.
+/// `line` for a message: lossy UTF-8 cut after 80 characters, what is not
+/// printable escaped.
 fn shown(line: &[u8]) -> String {
-    let mut text = String::from_utf8_lossy(line).escape_debug().to_string();
-    if let Some((cut, _)) = text.char_indices().nth(80) {
-        text.truncate(cut);
-        text.push_str("...");
+    let text = String::from_utf8_lossy(line);
+    match text.char_indices().nth(80) {
+        Some((cut, _)) => format!("{}...", text[..cut].escape_debug()),
+        None => text.escape_debug().to_string(),
     }
-    text
 }
 
 /// The ids in field `field` (from 0) of each line of `bytes`, a
@@ -392,8 +391,8 @@ fn user_name(passwd: &[u8], uid: u32) -> Option<&str> {
 }
 
 /// The first well-formed range (`owner:start:count`) of `text` whose owner
-/// is `name` or `uid` in decimal: numbers in decimal with no leading 0,
-/// which `newuidmap` and `newgidmap` read as octal, a count of at least
+/// is `name` or `uid` in decimal: numbers in decimal with no leading 0
+/// (`newuidmap` and `newgidmap` read one as octal), a count of at least
 /// one, whose end (`start + count`) fits in 32 bits, as the kernel takes a
 /// map's line.
 fn first_range(text: &str, name: Option<&str>, uid: u32) -> Option<IdRange> {
