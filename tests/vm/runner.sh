@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The T2 suites as real root on a GitHub-hosted runner (ADR-0090), and the
-# privilege matrix's runner rows as its user (ADR-0100). Such a
-# runner is a fresh VM GitHub makes for one job and deletes after it, with
+# privilege matrix's runner rows as its user (ADR-0100). Such a runner is a
+# fresh VM GitHub makes for one job and deletes after it, with
 # passwordless sudo: it takes the place of tests/vm/vm.sh's QEMU VM, and the
 # same guest scripts run on it, staged at ~/rnk by tests/vm/stage.sh. The
 # workflow .github/workflows/t2.yml is the only caller: this script refuses

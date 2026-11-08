@@ -6,11 +6,11 @@ name: T2
 # for the local QEMU VM (`just test-vm`) and the VPS container lane (`just
 # test-container`). tests/vm/runner.sh refuses to run anywhere else.
 #
-# Separate from ci.yml: these jobs run as root and take longer; ci.yml stays
-# what `just ci` runs. No secrets, a read-only token, never
-# pull_request_target: a fork's pull request runs its own code as root on a
-# machine of GitHub's, which is what the runner is for. Benchmarks (e2e,
-# ultra) and the push suite stay local.
+# Separate from ci.yml: these jobs run with root, through sudo, and take
+# longer; ci.yml stays what `just ci` runs. No secrets, a read-only token,
+# never pull_request_target: a fork's pull request runs its own code as
+# root on a machine of GitHub's, which is what the runner is for.
+# Benchmarks (e2e, ultra) and the push suite stay local.
 #
 # Lanes (ADR-0095): the jobs run only on a full run (a pull request that is
 # ready for review, a draft labelled `ci:full`, a manual run with "Run
