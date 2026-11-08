@@ -906,11 +906,19 @@ fn make_probe_dir(
 }
 
 /// Whether `e`, from [`RootPath::create_sub_root`], says the directory it
-/// made was gone when it opened it: another build's start may remove it
-/// for a leftover ([`remove_own_probe_leftovers`]) right after `mkdirat`.
+/// made was gone when it opened or listed it: another build's start may
+/// remove it for a leftover ([`remove_own_probe_leftovers`]) right after
+/// `mkdirat`.
 fn removed_once_made(e: &rnk_rootfs::Error) -> bool {
-    matches!(e, rnk_rootfs::Error::Io { op: "open", source, .. }
-        if source.raw_os_error() == Some(Errno::NOENT.raw_os_error()))
+    match e {
+        rnk_rootfs::Error::Io {
+            op: "open" | "readdir",
+            source,
+            ..
+        } => source.raw_os_error() == Some(Errno::NOENT.raw_os_error()),
+        rnk_rootfs::Error::Changed { .. } => true,
+        _ => false,
+    }
 }
 
 /// Removes each directory of the user namespace probe in `parent`

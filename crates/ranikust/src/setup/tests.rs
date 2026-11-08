@@ -94,7 +94,7 @@ fn a_probe_directory_taken_before_it_is_held_is_made_again() {
     assert!(names().is_empty());
 }
 
-/// A probe directory removed between its `mkdirat` and its open was taken
+/// A probe directory removed between its `mkdirat` and its listing was taken
 /// by another build's start: its name is made again, as when it is taken
 /// before it is held. Another failure, or the `mkdirat`'s own, is not.
 #[test]
@@ -105,6 +105,10 @@ fn a_probe_directory_gone_once_made_is_taken_not_an_error() {
         source: std::io::Error::from_raw_os_error(errno.raw_os_error()),
     };
     assert!(removed_once_made(&io("open", Errno::NOENT)));
+    assert!(removed_once_made(&io("readdir", Errno::NOENT)));
+    assert!(removed_once_made(&rnk_rootfs::Error::Changed {
+        path: "p".into()
+    }));
     assert!(!removed_once_made(&io("open", Errno::ACCESS)));
     assert!(!removed_once_made(&io("mkdir", Errno::NOENT)));
     assert!(!removed_once_made(&rnk_rootfs::Error::InvalidPath {

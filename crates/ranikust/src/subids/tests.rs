@@ -56,6 +56,8 @@ fn a_malformed_or_empty_range_is_passed_over() {
         "u: 1:5\n",
         "u:1:0\n",
         "u:x:5\n",
+        "u:0100000:5\n",
+        "u:100000:05\n",
         "u:4294967295:1\n",
         "u:4294967294:2\n",
         "u:4294967296:1\n",
@@ -64,8 +66,9 @@ fn a_malformed_or_empty_range_is_passed_over() {
     ] {
         assert_eq!(first_range(bad, Some("u"), 1000), None, "{bad:?}");
     }
-    // The next well-formed one counts; the last id the kernel maps is
-    // 4294967294.
+    // A lone 0 is a number; the next well-formed line counts; the last id
+    // the kernel maps is 4294967294.
+    assert_eq!(first_range("u:0:5\n", Some("u"), 1000), range(0, 5));
     assert_eq!(
         first_range("u:1:0\nu:4294967294:1\n", Some("u"), 1000),
         range(u32::MAX - 1, 1)
@@ -448,6 +451,27 @@ fn every_reading_of_a_line_s_numbers_counts() {
     assert!(with("ranikust:100000:65536", b"u:0100000:1").is_err());
     assert!(with("ranikust:32768:1000", b"u:0100000:1").is_err());
     assert!(with("ranikust:40000:1000", b"u:0100000:1").is_ok());
+    // The message shows what is not printable escaped, in a line or a name.
+    let why = with(ours, "u:600001:1\u{202e}".as_bytes()).unwrap_err();
+    assert!(
+        why.contains(r"\u{202e}") && !why.contains('\u{202e}'),
+        "{why:?}"
+    );
+    write(
+        PASSWD,
+        b"root:x:0:0::/:/bin/sh\na\x1bb:x:600001:1::/:/bin/sh\n",
+    );
+    let why = with(ours, b"").unwrap_err();
+    assert!(
+        why.contains(r"of a\u{1b}b in") && !why.contains('\x1b'),
+        "{why:?}"
+    );
+    write(PASSWD, b"root:x:0:0::/:/bin/sh\n");
+    let why = with(ours, b"u:600001:1\r").unwrap_err();
+    assert!(
+        why.contains(r"u:600001:1\r:") && !why.contains('\r'),
+        "{why:?}"
+    );
     for apart in [
         &b"u:0x10:5"[..],
         b"u:5:0",
@@ -555,6 +579,8 @@ fn red_team_root_s_range_takes_no_overflowing_or_padded_ranikust_line() {
         b" ranikust:600000:65536",
         b"#ranikust:600000:65536",
         b"ranikust:0x927c0:65536",
+        b"ranikust:0600000:65536",
+        b"ranikust:600000:065536",
         b"ranikust:600000:65536:",
         b"ranikust::600000:65536",
         b"\xef\xbb\xbfranikust:600000:65536",

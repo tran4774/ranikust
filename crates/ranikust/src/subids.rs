@@ -1,7 +1,8 @@
 //! The subordinate ids of the user ranikust runs as, for the build's user
 //! namespace (`rnk_sandbox::enter_build_user_namespace`): the first range
-//! `/etc/subuid` and `/etc/subgid` give the user, by name or by uid, as
-//! `newuidmap` and `newgidmap` read them; for root's `--userns`, the
+//! `/etc/subuid` and `/etc/subgid` give the user, by name or by uid, in
+//! decimal with no leading 0 (which `newuidmap` and `newgidmap` read as
+//! octal, so such a line is passed over); for root's `--userns`, the
 //! `ranikust` entry alone ([`root_range`], ADR-0104). Read on the host
 //! before the namespace is entered. The name comes from `/etc/passwd` only:
 //! a static binary has no NSS, so a user known only to a directory service
@@ -61,9 +62,9 @@ pub(crate) const ROOT_ENTRY: &str = "ranikust";
 /// What to do where root has no range for `--userns` (ADR-0104): the
 /// lines to add, the start left to the admin.
 pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:65536 to both \
-     /etc/subuid and /etc/subgid, with a <start> above 0 that no account and no other range \
-     uses, such as one past the last range of those files, and no account named ranikust \
-     (ADR-0104)";
+     /etc/subuid and /etc/subgid, in decimal with no leading 0, with a <start> above 0 that \
+     no account, no other range and no other allocator of ids (an NSS subid module, the \
+     kubelet, systemd) uses, and no account named ranikust (ADR-0104)";
 
 /// Root's range for `--userns` (ADR-0104): in each of `/etc/subuid` and
 /// `/etc/subgid`, the first well-formed range whose owner is
@@ -74,9 +75,9 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// range none of `/etc/group`'s gids or of `/etc/passwd`'s primary gids;
 /// and neither any range another line of its file may give, as
 /// [`ranges_shadow_may_read`] counts them. Those local files only: a static
-/// binary has no NSS, so an account or id only a directory service (LDAP,
-/// SSSD) knows is not seen, nor are the ranges another allocator hands out
-/// (an NSS `subid:` module, which `newuidmap` then reads instead of the
+/// binary has no NSS, so an account or id only NSS knows (LDAP, SSSD,
+/// systemd's `DynamicUser` and userdb) is not seen, nor are the ranges
+/// another allocator hands out (an NSS `subid:` module, which `newuidmap` then reads instead of the
 /// files and of which a warning is logged; the kubelet's for pods; systemd's
 /// `DynamicUser` and `systemd-nspawn --private-users=pick`). Lines end at
 /// `\n` alone, as shadow's own parser reads them: a `ranikust` line ending
@@ -200,7 +201,10 @@ fn root_range_in(etc: &std::path::Path) -> Result<SubordinateIds, String> {
         if let Some(h) = held.iter().find(|h| (start..end).contains(&h.id.into())) {
             return Err(format!(
                 "{ours} holds {} {} of {} in {}: the build's ids would be that account's",
-                h.kind, h.id, h.name, h.file
+                h.kind,
+                h.id,
+                shown(h.name.as_bytes()),
+                h.file
             ));
         }
         Ok(r)
@@ -221,13 +225,15 @@ struct Held {
     file: String,
 }
 
-/// `line` for a message: lossy UTF-8, cut after 80 characters.
+/// `line` for a message: lossy UTF-8, what is not printable escaped, cut
+/// after 80 characters.
 fn shown(line: &[u8]) -> String {
-    let text = String::from_utf8_lossy(line);
-    match text.char_indices().nth(80) {
-        Some((cut, _)) => format!("{}...", &text[..cut]),
-        None => text.into_owned(),
+    let mut text = String::from_utf8_lossy(line).escape_debug().to_string();
+    if let Some((cut, _)) = text.char_indices().nth(80) {
+        text.truncate(cut);
+        text.push_str("...");
     }
+    text
 }
 
 /// The ids in field `field` (from 0) of each line of `bytes`, a
@@ -386,8 +392,10 @@ fn user_name(passwd: &[u8], uid: u32) -> Option<&str> {
 }
 
 /// The first well-formed range (`owner:start:count`) of `text` whose owner
-/// is `name` or `uid` in decimal: a count of at least one, whose end
-/// (`start + count`) fits in 32 bits, as the kernel takes a map's line.
+/// is `name` or `uid` in decimal: numbers in decimal with no leading 0,
+/// which `newuidmap` and `newgidmap` read as octal, a count of at least
+/// one, whose end (`start + count`) fits in 32 bits, as the kernel takes a
+/// map's line.
 fn first_range(text: &str, name: Option<&str>, uid: u32) -> Option<IdRange> {
     let uid = uid.to_string();
     range_of(text, |owner| Some(owner) == name || owner == uid)
@@ -410,8 +418,16 @@ fn parse_range(line: &str) -> Option<(&str, IdRange)> {
     if f.next().is_some() {
         return None;
     }
-    let (start, count) = (decimal(start)?, decimal(count)?);
+    let (start, count) = (range_number(start)?, range_number(count)?);
     (count >= 1 && start.checked_add(count).is_some()).then_some((owner, IdRange { start, count }))
+}
+
+/// A start or count of a range: [`decimal`], with no leading 0.
+fn range_number(s: &str) -> Option<u32> {
+    if s.len() > 1 && s.starts_with('0') {
+        return None;
+    }
+    decimal(s)
 }
 
 /// A plain decimal `u32`, without the sign or spaces `str::parse` takes.
