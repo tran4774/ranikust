@@ -308,7 +308,11 @@ that found a bug stay as its regression test.
   paths (ADR-0098, ADR-0144;
   `off_slash_the_owner_check_covers_the_ignored_paths`), a cached blob's
   too, before the root changes
-  (`a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`).
+  (`a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`;
+  red team: each use of a kept spool checked for itself, image or base
+  first, `red_team_a_spool_s_uses_in_any_order_each_get_their_own_check`;
+  a cached blob's names checked cleaned as the extraction cleans them,
+  `red_team_a_cached_blob_s_names_are_checked_cleaned_as_the_extraction_cleans_them`).
   In a binary of its own
   (`tests/deep_chain.rs`, the soft `RLIMIT_NOFILE` raised to the hard one):
   a chain of up to 100,000 levels (as many as the copy holds descriptors
