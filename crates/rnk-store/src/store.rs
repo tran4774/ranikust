@@ -391,7 +391,7 @@ impl Store {
     /// it cannot be created or opened (including
     /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8).
     pub fn open(paths: &BuildPaths) -> Result<Self> {
-        Self::open_with(paths, None::<fn()>, |_| Ok(()))
+        Self::open_with(paths, None::<fn()>, |_| {}, |_| Ok(()))
     }
 
     /// As [`Store::open`], for a set-up that falls back to kaniko mode on
@@ -405,15 +405,17 @@ impl Store {
     ///
     /// As [`Store::open`].
     pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self> {
-        Self::open_with(paths, Some(undoing), |_| Ok(()))
+        Self::open_with(paths, Some(undoing), |_| {}, |_| Ok(()))
     }
 
     /// [`Store::open`], with `undoing` as [`Store::open_or_abandon`] takes
-    /// it, and `registered` run once the build is registered: a test's
-    /// failure.
+    /// it, `marker_checked` run between the marker's check and the store
+    /// directories' (a test's plant), and `registered` once the build is
+    /// registered (a test's failure).
     fn open_with(
         paths: &BuildPaths,
         undoing: Option<impl FnOnce()>,
+        marker_checked: impl FnOnce(&RootPath),
         registered: impl FnOnce(&RootPath) -> Result<()>,
     ) -> Result<Self> {
         let host_err = |op, source| Error::Io {
@@ -443,6 +445,7 @@ impl Store {
         refuse_used_on_slash(&state, &state_path)?;
         refuse_cut_short_prune(&state, &state_path)?;
         let unmarked = needs_marker(&state, &state_path)?;
+        marker_checked(&state);
         check_dirs(&state, &state_path)?;
         if unmarked {
             mark(&state, &state_path)?;
@@ -2358,9 +2361,9 @@ fn shown_names(names: &[OsString]) -> String {
     s
 }
 
-/// Marks a state directory [`needs_marker`] found unmarked; one a build
-/// starting beside this one marked first is taken if its marker is a
-/// regular file.
+/// Writes the marker in a directory [`needs_marker`] found unmarked; where
+/// a build starting at the same time wrote it first, takes the directory
+/// if that marker is a regular file.
 fn mark(state: &RootPath, state_path: &Path) -> Result<()> {
     match state.open_at(MARKER, &OpenHow::write().create_new(0o644)) {
         Ok(_) => Ok(()),

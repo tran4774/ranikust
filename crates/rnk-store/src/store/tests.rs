@@ -550,7 +550,7 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
 
     let state = dir.path().join("plain");
     let paths = BuildPaths::new(&state, &state);
-    assert!(failed(Store::open_with(&paths, None::<fn()>, fail)));
+    assert!(failed(Store::open_with(&paths, None::<fn()>, |_| {}, fail)));
     assert!(state.join(STATE_MARKER).is_file());
 
     let state = dir.path().join("made");
@@ -561,6 +561,7 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(failed(Store::open_with(
         &paths,
         Some(|| drop(hold.take())),
+        |_| {},
         fail
     )));
     assert!(hold.is_none());
@@ -578,6 +579,7 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(failed(Store::open_with(
         &paths,
         Some(|| undone = true),
+        |_| {},
         fail
     )));
     assert!(undone);
@@ -592,11 +594,31 @@ fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     assert!(failed(Store::open_with(
         &paths,
         Some(|| undone = true),
+        |_| {},
         fail
     )));
     assert!(undone);
     assert!(state.join(STATE_MARKER).is_file());
     assert!(state.join("caches/go").is_dir());
+}
+
+/// A store directory that turns up once the open found the state directory
+/// unmarked is refused before the marker is written: the open writes
+/// nothing before its refusals.
+#[test]
+fn a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let paths = BuildPaths::new(dir.path(), &state);
+    let plant = |_: &RootPath| std::os::unix::fs::symlink("layers", state.join("blobs")).unwrap();
+    let e = Store::open_with(&paths, None::<fn()>, plant, |_| Ok(()))
+        .expect_err("a symlink as blobs/ fails the open");
+    assert!(matches!(&e, Error::NotAStateDir { .. }), "{e}");
+    let left: Vec<_> = fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(left, ["blobs"]);
 }
 
 /// A directory the store makes either holds what later builds reuse,

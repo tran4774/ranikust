@@ -126,10 +126,11 @@ Design: [locks](../../design/cache-and-store.md#locks),
   mistake; only the user-namespace probe's own directories
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
   told by `statx` without following) do not count: `open` marks the
-  directory once every refusal has passed, then removes each whose `flock` it takes (a probe
-  holds its own while it uses it), through descriptors; under `--userns`
-  this is how the probe's directory goes, which root gave the range and
-  deletes nothing in (ADR-0139); every emptying
+  directory once every refusal has passed, then removes each whose
+  `flock` it takes (a probe holds its own while it uses it), through
+  descriptors; under `--userns` this is how the probe's directory goes,
+  which root gave the range and deletes nothing in (ADR-0139); every
+  emptying
   (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
   takes the same lock, leaves one held, and keeps a store with no data
   beside it. Each of the store's directories that is there must be a
@@ -231,8 +232,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`open_marks_a_directory_holding_only_ranikusts_leftovers`); each store
   directory replaced by a symlink inside the state directory or by a file
   refused by `open` and `check_state_dir`, named, the tree unchanged
-  (`a_store_directory_that_is_not_a_real_directory_is_refused_unchanged`); another
-  anonymous name, a file or a symlink with the probe's prefix is refused and
+  (`a_store_directory_that_is_not_a_real_directory_is_refused_unchanged`),
+  and one planted once `open` found the directory unmarked refused before
+  the marker is written
+  (`a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked`,
+  in `src/store/tests.rs`); another anonymous name, a file or a symlink with the probe's prefix is refused and
   left as it was (`only_the_probes_own_directories_stand_in_for_the_marker`);
   a probe directory whose lock is held is kept
   (`open_removes_only_the_probe_directories_no_probe_holds`), by every
