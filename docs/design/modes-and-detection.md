@@ -465,14 +465,14 @@ every id maps and nothing is checked.
   failed; `-1`, which `chown` reads as "unchanged", is none): with one id
   (a user without `newuidmap` and `newgidmap`, or without ranges), install
   `uidmap` (Ubuntu does not by default) and give the user a first range in
-  `/etc/subuid` and `/etc/subgid`, in decimal with no leading 0, of at least as many ids as the highest
-  one named, run as root, or run in a container; with a user's ranges,
-  widen the first range to that count (ranikust maps only that one, and id
-  N is its N-th); in a namespace ranikust was started in, or root's copy
-  of its map (a single uid or gid where it maps no more, or where its
-  ranges could not be mapped), widen its ranges (rootless Podman: its
-  user's, then `podman system migrate`), or run as root on a host or in a
-  rootful container. Each range asked for comes with the rule that it must
+  `/etc/subuid` and `/etc/subgid`, in decimal with no leading 0, of at least
+  as many ids as the highest one named, run as root, or run in a container;
+  with a user's ranges, widen the first range to that count (ranikust maps
+  only that one, and id N is its N-th); in a namespace ranikust was started
+  in, or root's copy of its map (a single uid or gid where it maps no more,
+  or where its ranges could not be mapped), widen its ranges (rootless
+  Podman: its user's, then `podman system migrate`), or run as root on a
+  host or in a rootful container. Each range asked for comes with the rule that it must
   not overlap another user's range or a real account's ids. Past 65536
   ids, `useradd`'s default count, no wider range is asked for: the ways
   out name the ids and say to run as root or in a container.

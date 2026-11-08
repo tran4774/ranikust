@@ -103,9 +103,8 @@ Decided while building #83, as implementation choices under ADR-0104:
   ([sandbox](../design/sandbox.md#--userns)). Only those local files are read:
   a static binary has no NSS, so accounts and ids that only NSS knows
   (LDAP, SSSD, systemd's `DynamicUser` and userdb) are not checked, nor are
-  the ranges
-  other allocators hand out: an NSS `subid:` module, which `newuidmap` then
-  reads instead of the files, the kubelet and systemd
+  the ranges other allocators hand out: an NSS `subid:` module, which
+  `newuidmap` then reads instead of the files, the kubelet and systemd
   ([sandbox](../design/sandbox.md#--userns) lists them). The docs advise a
   `<start>` outside them, and a warning names an NSS `subid:` module.
 - **[ADR-0098](0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)'s
