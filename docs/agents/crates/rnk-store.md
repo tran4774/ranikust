@@ -237,13 +237,17 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`a_store_directory_planted_once_the_marker_is_checked_is_refused_unmarked`,
   in `src/store/tests.rs`); a FIFO, a socket, a character device, a dead
   link, a link to itself or to a FIFO outside at each store directory's
-  name, in a marked or an unmarked directory, refused by both without being
-  opened or blocking, the tree unchanged
+  name refused by `open` and by `check_state_dir` without blocking, the
+  tree unchanged and, under an inotify watch, the special file or the FIFO
+  never opened: in a marked directory for the store directory, named, in an
+  unmarked one for having no marker
   (`red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened`);
   a link out of the state directory, absolute or climbing, or to a FIFO
   outside, at `layers/v3`, `layers/v3/sha256`, `blobs/sha256` or a cache
-  directory: the store's `get`, `fill` and `cache_dir` never block, change
-  anything outside or hand back what is there
+  directory, where it leads an entry of the type the store publishes for
+  the key (a directory for a layer, a file for a blob): the store's `get`,
+  `fill` and `cache_dir` each return, never block, change anything outside
+  or hand back what is there
   (`red_team_a_link_out_below_a_store_directory_changes_nothing_outside`);
   another anonymous name, a file or a symlink
   with the probe's prefix is refused and left as it was

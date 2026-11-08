@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::RecvTimeoutError;
 
 use rnk_oci::Digest;
 use rnk_store::{BuildPaths, CacheSharing, EntryKey, Error, Store};
@@ -470,9 +471,7 @@ fn links_out_of_the_state_directory_are_removed_not_followed() {
     assert_eq!(fs::read(outside.join("sub/f")).unwrap(), b"keep");
 }
 
-/// Red team: `prune --all` on a state directory whose store directory is planted as a link out
-/// (absolute, climbing, to a FIFO), a FIFO or a socket never reaches through it nor blocks,
-/// and empties the directory (T4).
+/// Red team: `prune --all` through a store directory planted as a link out or a special file (T4).
 #[test]
 fn red_team_prune_all_never_reaches_through_a_planted_store_directory() {
     use std::os::unix::fs::{MetadataExt as _, symlink};
@@ -536,13 +535,17 @@ fn red_team_prune_all_never_reaches_through_a_planted_store_directory() {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let pruned = state.clone();
-            std::thread::spawn(move || {
-                let r = Store::prune_all(&pruned).map_err(|e| e.to_string());
-                tx.send(r).unwrap();
+            // The receiver is gone only once the case has failed as blocked.
+            let worker = std::thread::spawn(move || {
+                drop(tx.send(Store::prune_all(&pruned).map_err(|e| e.to_string())));
             });
-            let r = rx
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap_or_else(|_| panic!("{case}: blocked"));
+            let r = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(r) => r,
+                Err(RecvTimeoutError::Timeout) => panic!("{case}: blocked"),
+                Err(RecvTimeoutError::Disconnected) => {
+                    std::panic::resume_unwind(worker.join().unwrap_err())
+                }
+            };
             assert_eq!(r, Ok(true), "{case}");
             assert_eq!(tree(&state), Vec::<PathBuf>::new(), "{case}");
             assert_eq!(seen(), before, "{case}");

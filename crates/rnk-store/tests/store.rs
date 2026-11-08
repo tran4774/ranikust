@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
@@ -267,26 +268,54 @@ fn a_store_directory_that_is_not_a_real_directory_is_refused_unchanged() {
     }
 }
 
-/// Red team: a store directory planted as a special file or as a link that leads nowhere, in a
-/// marked state directory or an unmarked one, is refused unopened, without blocking, with
-/// nothing changed (T4).
+/// Runs `f` on a thread of its own, since a FIFO opened by mistake blocks.
+fn unblocked<T: Send + 'static>(case: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // The receiver is gone only once the case has failed as blocked.
+    let worker = thread::spawn(move || drop(tx.send(f())));
+    match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(r) => r,
+        Err(RecvTimeoutError::Timeout) => panic!("{case}: blocked"),
+        Err(RecvTimeoutError::Disconnected) => {
+            std::panic::resume_unwind(worker.join().unwrap_err())
+        }
+    }
+}
+
+/// An inotify watch for opens of some paths; `O_PATH`, which looks without opening, is not seen.
+struct Opens(std::os::fd::OwnedFd);
+
+impl Opens {
+    fn watch(paths: &[&Path]) -> Self {
+        use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+        let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).unwrap();
+        for p in paths {
+            inotify::add_watch(&fd, *p, WatchFlags::OPEN).unwrap();
+        }
+        Self(fd)
+    }
+
+    fn seen(&self) -> bool {
+        let mut buf = [0u8; 256];
+        match rustix::io::read(&self.0, &mut buf) {
+            Ok(n) => n > 0,
+            Err(rustix::io::Errno::AGAIN) => false,
+            Err(e) => panic!("read the inotify events: {e}"),
+        }
+    }
+}
+
+/// Red team: a special file or a link leading nowhere as a store directory (T4).
 #[test]
 fn red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopened() {
-    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    use rustix::fs::{CWD, FileType, Mode, OFlags, mknodat};
     use std::os::unix::fs::symlink;
     let top = tempfile::tempdir().unwrap();
     let fifo_out = top.path().join("fifo-out");
     mkfifo(&fifo_out);
-    // A FIFO opened by mistake blocks: each call runs on a thread of its own.
-    let unblocked = |case: &str, f: Box<dyn FnOnce() -> Result<(), Error> + Send>| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            let r = f().map_err(|e| (matches!(e, Error::NotAStateDir { .. }), e.to_string()));
-            tx.send(r).unwrap();
-        });
-        rx.recv_timeout(Duration::from_secs(30))
-            .unwrap_or_else(|_| panic!("{case}: blocked"))
-    };
+    let control = Opens::watch(&[&fifo_out]);
+    drop(rustix::fs::open(&fifo_out, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).unwrap());
+    assert!(control.seen(), "the control: an open is seen");
     let mut planted = 0;
     for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
         for plant in [
@@ -331,45 +360,45 @@ fn red_team_a_special_file_or_a_dead_link_as_a_store_directory_is_refused_unopen
                 }
                 planted += 1;
                 let case = format!("{d} as {plant}, marked {marked}");
-                let kind = if plant.contains("link") {
-                    "a symlink"
-                } else {
-                    "a special file"
+                let says = match (marked, plant.contains("link")) {
+                    (true, true) => format!("holds {d}, which is a symlink"),
+                    (true, false) => format!("holds {d}, which is a special file"),
+                    // An unmarked directory is refused for its names before its directories.
+                    (false, _) => "has no regular file .ranikust-state".to_owned(),
+                };
+                let opens = match plant {
+                    "a link to a FIFO out" => Some(Opens::watch(&[&fifo_out])),
+                    "a dead link" | "a link to itself" => None,
+                    _ => Some(Opens::watch(&[&at])),
                 };
                 let before = tree(&state);
-                let check = |r: Result<(), (bool, String)>| {
-                    let (not_a_state_dir, shown) =
-                        r.err().unwrap_or_else(|| panic!("{case}: taken"));
-                    assert!(not_a_state_dir, "{case}: {shown}");
-                    if marked {
-                        let says = format!("holds {d}, which is {kind}");
-                        assert!(shown.contains(&says), "{case}: {shown}");
-                    }
+                let check = |r: Result<(), Error>| {
+                    let e = r.err().unwrap_or_else(|| panic!("{case}: taken"));
+                    assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {e}");
+                    assert!(e.to_string().contains(&says), "{case}: {e}");
                     assert_eq!(tree(&state), before, "{case}");
                 };
                 let opened = base.clone();
-                check(unblocked(
-                    &case,
-                    Box::new(move || Store::open(&paths(&opened)).map(|s| s.close().unwrap())),
-                ));
+                check(unblocked(&case, move || {
+                    Store::open(&paths(&opened)).map(|s| s.close().unwrap())
+                }));
                 let checked = state.clone();
-                check(unblocked(
-                    &case,
-                    Box::new(move || Store::check_state_dir(&checked).map(drop)),
-                ));
+                check(unblocked(&case, move || {
+                    Store::check_state_dir(&checked).map(drop)
+                }));
+                assert!(!opens.is_some_and(|o| o.seen()), "{case}: opened");
             }
         }
     }
     assert!(planted >= 6 * 5 * 2, "planted {planted}");
 }
 
-/// Red team: a link out of the state directory, or to a FIFO out, planted below a store
-/// directory never makes the store block, change anything outside or hand back what is there (T13).
+/// Red team: a link out of the state directory, or to a FIFO out, below a store directory (T13).
 #[test]
 fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
     use std::os::unix::fs::symlink;
     let top = tempfile::tempdir().unwrap();
-    let mut cases = 0;
+    let mut returned = 0;
     for at in ["layers/v3", "layers/v3/sha256", "blobs/sha256", "caches/"] {
         for aim in [
             "an absolute link out",
@@ -391,7 +420,6 @@ fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
                 .fill(&EntryKey::Blob(digest(9)), |e| write_blob(e, b"x"))
                 .unwrap();
             let cache = store.cache_dir("the-id").unwrap();
-            store.close().unwrap();
             let at = if at == "caches/" {
                 cache.strip_prefix(&state).unwrap().to_owned()
             } else {
@@ -402,16 +430,29 @@ fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
                 Some("blobs") => Some(EntryKey::Blob(digest(2))),
                 _ => None,
             };
-            // What the store would find there if it followed the link out.
-            let found = match &key {
-                Some(EntryKey::Layer(d)) if at.ends_with("v3") => {
-                    outside.join("sha256").join(d.encoded())
+            // Where the link leads, an entry the store would publish if it followed the link.
+            match &key {
+                Some(key) => {
+                    let below = if at.ends_with("v3") {
+                        PathBuf::from("sha256")
+                    } else {
+                        PathBuf::new()
+                    };
+                    let found = outside.join(below).join(key.digest().encoded());
+                    let own = state.join(&at).join(found.strip_prefix(&outside).unwrap());
+                    if matches!(key, EntryKey::Layer(_)) {
+                        fs::create_dir(&own).unwrap();
+                        fs::write(own.join("f"), "host").unwrap();
+                    } else {
+                        fs::write(&own, "host").unwrap();
+                    }
+                    assert!(store.get(key).unwrap().is_some(), "the control: published");
+                    fs::create_dir_all(found.parent().unwrap()).unwrap();
+                    fs::rename(&own, &found).unwrap();
                 }
-                Some(EntryKey::Layer(d) | EntryKey::Blob(d)) => outside.join(d.encoded()),
-                _ => outside.join("in-the-cache"),
-            };
-            fs::create_dir_all(found.parent().unwrap()).unwrap();
-            fs::write(&found, "host").unwrap();
+                None => fs::write(outside.join("in-the-cache"), "host").unwrap(),
+            }
+            store.close().unwrap();
             let fifo = outside.join("fifo");
             mkfifo(&fifo);
             fs::remove_dir_all(state.join(&at)).unwrap();
@@ -421,36 +462,36 @@ fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
                 "a link climbing out" => symlink(format!("{up}outside"), state.join(&at)).unwrap(),
                 _ => symlink(&fifo, state.join(&at)).unwrap(),
             }
-            cases += 1;
             let case = format!("{} as {aim}", at.display());
             let before = tree(&outside);
-            let (tx, rx) = std::sync::mpsc::channel();
             let opened = base.clone();
-            thread::spawn(move || {
-                let mut handed = Vec::new();
-                if let Ok(store) = Store::open(&paths(&opened)) {
-                    match &key {
-                        Some(key) => {
-                            handed.extend(store.get(key).ok().flatten());
-                            let filled = match key {
-                                EntryKey::Layer(_) => store.fill(key, |e| -> io::Result<u64> {
-                                    fs::write(e.path().join("f"), "store")?;
-                                    Ok(0)
-                                }),
-                                _ => store.fill(key, |e| write_blob(e, b"store")),
-                            };
-                            handed.extend(filled.ok());
-                            handed.extend(store.get(key).ok().flatten());
-                        }
-                        None => handed.extend(store.cache_dir("the-id").ok()),
+            let (handed, ops) = unblocked(&case, move || {
+                let store = Store::open(&paths(&opened)).unwrap();
+                let (mut handed, mut ops) = (Vec::new(), 0);
+                // A refusal passes: what is judged is any path the store hands back.
+                match &key {
+                    Some(key) => {
+                        handed.extend(store.get(key).ok().flatten());
+                        let filled = match key {
+                            EntryKey::Layer(_) => store.fill(key, |e| -> io::Result<u64> {
+                                fs::write(e.path().join("f"), "store")?;
+                                Ok(0)
+                            }),
+                            _ => store.fill(key, |e| write_blob(e, b"store")),
+                        };
+                        handed.extend(filled.ok());
+                        handed.extend(store.get(key).ok().flatten());
+                        ops += 3;
                     }
-                    drop(store.close());
+                    None => {
+                        handed.extend(store.cache_dir("the-id").ok());
+                        ops += 1;
+                    }
                 }
-                tx.send(handed).unwrap();
+                store.close().unwrap();
+                (handed, ops)
             });
-            let handed = rx
-                .recv_timeout(Duration::from_secs(30))
-                .unwrap_or_else(|_| panic!("{case}: blocked"));
+            returned += ops;
             assert_eq!(tree(&outside), before, "{case}");
             for p in handed {
                 if let Ok(real) = fs::canonicalize(&p) {
@@ -464,7 +505,7 @@ fn red_team_a_link_out_below_a_store_directory_changes_nothing_outside() {
             }
         }
     }
-    assert_eq!(cases, 4 * 3);
+    assert_eq!(returned, 3 * 3 * 3 + 3, "operations returned");
 }
 
 /// A probe directory of a build cut short before its store opened is
