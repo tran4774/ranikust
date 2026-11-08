@@ -515,8 +515,9 @@ fn outer_network() -> Vec<(String, String)> {
         let name = entry.file_name().to_string_lossy().into_owned();
         let mac = match fs::read_to_string(format!("/sys/class/net/{name}/address")) {
             Ok(mac) => mac.trim().to_owned(),
-            // Gone since it was listed (another container's veth).
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            // Gone since it was listed (another container's veth): its
+            // name is still checked.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => panic!("{name}'s address: {e}"),
         };
         if name != "lo" {

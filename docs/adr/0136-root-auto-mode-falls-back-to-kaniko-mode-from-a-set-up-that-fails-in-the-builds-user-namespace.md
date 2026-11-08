@@ -87,7 +87,11 @@ its properties, stood for this.
   ([ADR-0110](0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
   Probe directories are removed by the probe, by the store's open,
   and by `Store::abandon`. A set-up killed during a fallback leaves at most
-  a store with no data, which the next failed set-up empties, and which
+  the probe's directories, which kaniko mode on `/` removes and which tell
+  no build cut short
+  ([ADR-0066](0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md)
+  counts only names an anonymous store made), and a store with no data,
+  which the next failed set-up empties, and which
   kaniko mode on `/` (`Store::open_anonymous`, under its exclusive lock)
   empties before it builds, whichever way it was chosen: it holds no
   entry a later build reuses, so the reason kaniko mode on `/` refuses a
@@ -129,8 +133,9 @@ its properties, stood for this.
   for each end of the child), `ranikust`
   `only_roots_auto_mode_falls_back_to_kaniko_mode`, `rnk-store`
   `abandon_empties_a_store_with_no_data_that_no_build_holds`,
-  `an_open_that_fails_empties_a_store_with_no_data_where_asked` and
-  `an_anonymous_store_empties_a_store_with_no_data_first`; T1 smoke
+  `an_open_that_fails_empties_a_store_with_no_data_where_asked`,
+  `an_anonymous_store_empties_a_store_with_no_data_first` and
+  `a_probe_directory_left_tells_no_build_cut_short`; T1 smoke
   case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken`, the
   set-up's last step once its sandbox started, builds in kaniko mode with
   the note and kaniko mode's line alone and leaves the state directory empty;

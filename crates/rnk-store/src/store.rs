@@ -394,9 +394,8 @@ impl Store {
     /// `/` when it fails (ADR-0136): where this open fails once it took
     /// the directory as a store (marked, by it or before), it calls
     /// `undoing`, for what must let go of the directory or not be cut
-    /// short first, then empties the
-    /// directory where [`Store::abandon`] would, logging what it cannot,
-    /// and returns the error.
+    /// short first, then empties the directory where [`Store::abandon`]
+    /// would, logging what it cannot, and returns the error.
     ///
     /// # Errors
     ///
@@ -1407,9 +1406,9 @@ impl Store {
     /// mode on `/` (ADR-0136). A set-up killed before it got here leaves
     /// such a store, which the next one that fails empties, as kaniko mode
     /// on `/` does ([`Store::open_anonymous`]). The store's shared `flock`
-    /// is turned exclusive without waiting, on the same descriptor (`flock(2)` drops
-    /// the shared lock first, and a refused attempt leaves none), and the
-    /// directory is checked under it: while another build holds it, nothing
+    /// is turned exclusive without waiting, on the same descriptor
+    /// (`flock(2)` drops the shared lock first, and a refused attempt
+    /// leaves none), and the directory is checked under it: while another build holds it, nothing
     /// is emptied, and none adds data meanwhile. It holds no data where
     /// `blobs/`, `layers/` and `caches/` hold nothing, its other names are
     /// those [`Store::prune_all`] takes (the store's, the sandbox's, probe

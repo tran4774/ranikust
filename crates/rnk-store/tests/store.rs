@@ -1370,7 +1370,8 @@ fn an_anonymous_store_empties_a_store_with_no_data_first() {
 
 /// The user namespace probe's directories share the anonymous prefix but
 /// are made before any store opens: one a killed set-up left, alone or
-/// beside a store with no data, is removed and tells no build cut short.
+/// beside a store with no data, is removed and tells no build cut short;
+/// beside a name an anonymous store made, that name still does.
 #[test]
 fn a_probe_directory_left_tells_no_build_cut_short() {
     let dir = tempfile::tempdir().unwrap();
@@ -1395,6 +1396,14 @@ fn a_probe_directory_left_tells_no_build_cut_short() {
             names(&state)
         );
     }
+    // Beside a name an anonymous store made: a build cut short still.
+    let state = dir.path().join("both");
+    fs::create_dir(&state).unwrap();
+    fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    fs::create_dir(state.join(&probe)).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous { .. })));
+    store.close().unwrap();
 }
 
 #[test]

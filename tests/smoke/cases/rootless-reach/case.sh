@@ -282,6 +282,9 @@ echo "left: $(ls -A /var/lib/ranikust | tr "\n" " ")"
     --allow proc.rbind 2>&1)"
   PODMAN_ARGS=()
   printf '%s\n' "$got" >"$o/sweep.log"
+  # A kill after kaniko mode's own store opened: ADR-0066's case, no store.
+  ! grep -Eq '^found: .*\.ranikust-building' <<<"$got" ||
+    fail "a kill landed after the fallback's kaniko-mode store opened, which takes the next build for one cut short (ADR-0066): shorten the sweep: $got"
   grep -qx 'status=0' <<<"$got" && grep -qx 'kaniko mode' <<<"$got" ||
     fail "kaniko mode on / after fallbacks killed: $got"
   ! grep -Eq '^left: .*\.ranikust-(state|pruning|building)' <<<"$got" ||
