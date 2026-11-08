@@ -64,10 +64,13 @@ writer) before `unshare`, the probes and the state directory's checks.
   step that did not run, a namespace `rootless::capabilities` found
   capable, or a refusal once the probe passed, never), for a path only
   root may change on a mount without `nosuid` of a local filesystem
-  (`no_userns::LOCAL`); a container. The path it weighs is the one the
-  binary started from (`rnk_sandbox::Sealing::binary_path`, through
-  `main.rs`'s `build` and `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
-  rbind works. With the rbind, `main.rs` then runs the peer scan, the check
+  (`no_userns::LOCAL`) and that holds ranikust itself
+  (`no_userns::holds_ranikust`: `/proc/self/exe` is the file `backing`
+  finds mapped at one of its functions, and the path's file has its
+  bytes); a container. The path it weighs is the one the binary started
+  from (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build`
+  and `rootless`); `--allow proc.rbind` where only the new `proc` fails and
+  the rbind works. With the rbind, `main.rs` then runs the peer scan, the check
   of the PID namespace from files with no ptrace check (ADR-0134) and the
   build-argument warnings, still outside the namespace, where it can open
   the other processes. `set_up`, inside the namespace: the store, the
@@ -493,8 +496,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   filesystem off the local list such as FUSE or NFS, each listed one
   passing, the list itself pinned), the walk on a temporary directory (no
   symlink followed; a relative path, `..`, a missing or removed file
-  refused, where it stopped named), on `/proc` (its type read, refused) and on system
-  binaries, against the standard library's view), `prune` (`--all` and
+  refused, where it stopped named), on `/proc` (its type read, refused)
+  and on system binaries, against the standard library's view), the file
+  behind an address read from `/proc/self/maps`' text, only the running
+  program's bytes holding ranikust (not a file of its size, another
+  program, a symlink or a missing file); its red team
+  (`red_team_no_link_up_level_or_nul_gets_the_profile`,
+  `red_team_special_files_get_no_profile_and_a_fifo_does_not_block`,
+  `red_team_an_acl_granting_write_shows_in_the_group_bits`), `prune`
+  (`--all` and
   `--state-dir` parsed, `--kaniko-dir`
   refused; without `--all` a usage error naming Phase 5; root refused
   before anything, a missing directory left missing, an empty one left as
@@ -632,8 +642,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `$HOME` is left empty in every `--mode`;
   `without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container`
   (the hook's advice: `sudo` before a container, and between them, where
-  the host's switch is 1, the profile after an install under
-  `/usr/local/bin`, naming the test binary's own path; else no profile).
+  the host's switch is 1 and the test runs unconfined in the host's user
+  namespace, the profile after an install under `/usr/local/bin`, naming
+  the test binary's own path; else no profile); their red team, with the
+  same gate: `red_team_the_advice_escapes_a_hostile_binary_path`,
+  `red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile`,
+  `red_team_no_profile_for_a_root_program_that_is_not_ranikust` (a forged
+  marker naming a root program, and ranikust run by the loader, get no
+  profile for that program's path); and
+  `red_team_nothing_is_written_before_the_refusal_whatever_the_state_dir`.
   `prune`: without `--all` exit 2
   naming Phase 5; `--all` as root exit 1 naming Phase 5, as a user a
   missing state directory, the default one included, left missing (exit

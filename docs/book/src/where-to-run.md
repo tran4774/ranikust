@@ -69,10 +69,10 @@ apparmor_parser -r /etc/apparmor.d/ranikust
   local filesystem that root mounted, without `nosuid` (not FUSE, NFS, SMB,
   nor a user's removable or fstab `user` mount, whose owners a user or a
   server sets). ranikust's refusal offers the profile only for such a
-  path, and otherwise names the part of the path that fails and says to
-  install the binary under `/usr/local/bin` first (or, where that
-  directory fails too, in one that passes). For another such path, change
-  the path in the profile.
+  path that holds ranikust itself, and otherwise names the part of the
+  path that fails and says to install the binary under `/usr/local/bin`
+  first (or, where that directory fails too, in one that passes). For
+  another such path, change the path in the profile.
 - The refusal offers it only where AppArmor may be what refused: where the
   user namespace was made and a later step failed, or where making it was
   refused with `EACCES`; and only to a ranikust that AppArmor leaves

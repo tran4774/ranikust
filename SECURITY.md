@@ -148,8 +148,9 @@ These are documented properties, not vulnerabilities:
   where AppArmor restricts user namespaces and may be what refused, the
   refusal offers ranikust's AppArmor profile
   ([`contrib/apparmor/ranikust`](contrib/apparmor/ranikust)) only for a
-  binary run on the host, unconfined, whose path root alone may change, on
-  a local filesystem that root mounted, and what a loaded profile grants is an accepted risk
+  binary run on the host, unconfined, whose path root alone may change,
+  on a local filesystem that root mounted, a path that holds ranikust
+  itself; what a loaded profile grants is an accepted risk
   ([ADR-0004](docs/adr/0004-support-every-privilege-level.md),
   [threat model section 6](docs/security/threat-model.md#6-accepted-risks)).
 - Vulnerabilities in base images, in the tools a Dockerfile runs, or in the

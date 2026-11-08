@@ -441,10 +441,11 @@ refusal's guidance line gives, in order
    `/usr/local/bin/ranikust` (as podman's profile is to podman), into
    `/etc/apparmor.d/ranikust` with `apparmor_parser -r`. A profile gives a
    user namespace to whatever is at its path, so it is offered for the
-   binary's own path only where root alone may change it: as shipped for
-   `/usr/local/bin/ranikust`; with the path changed for another such path
-   made only of letters, digits and `._+-/`, which AppArmor reads as no
-   pattern; otherwise after installing the binary, owned by root
+   binary's own path only where root alone may change it and it holds
+   ranikust itself: as shipped for `/usr/local/bin/ranikust`; with the
+   path changed for another such path made only of letters, digits and
+   `._+-/`, which AppArmor reads as no pattern; otherwise after installing
+   the binary, owned by root
    (`install -o root -g root -m 0755`), as `/usr/local/bin/ranikust`, or,
    where `/usr/local/bin` fails the same check, in a directory that passes,
    naming the first part of the path that failed and why.
@@ -456,10 +457,15 @@ the host's mount namespace, with no chroot; the sealed copy's marker
 carries it (`rnk_sandbox::Sealing::binary_path`). A chroot, or a mount or
 user namespace that maps every id as the host's does and that no container
 check finds, shows a tree root chose, which the check takes for the host's:
-only root can set one up. Root alone may
-change it when `/`, each directory below it and the file are owned by root
-and written by neither group nor others (an ACL that grants writing shows in
-the group bits), none is a symlink, each is on a mount without `nosuid`
+only root can set one up. Neither that path nor `/proc/self/exe` proves
+the file is ranikust (a marker may name any file, and under a loader
+`/proc/self/exe` is the loader), so the path holds ranikust itself only
+where `/proc/self/exe` is the file mapped at one of ranikust's functions in
+`/proc/self/maps` (same device and inode) and the path's file has its size
+and bytes. Root alone may change it when `/`, each directory below it and
+the file are owned by root and written by neither group nor others (an ACL
+that grants writing shows in the group bits), none is a symlink, each is
+on a mount without `nosuid`
 (udisks2 and fusermount always add it, an fstab `user` mount by default)
 of a local filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs,
 tmpfs, overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS,
