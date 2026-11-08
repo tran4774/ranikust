@@ -86,12 +86,12 @@ trap teardown EXIT
 # Ubuntu's /usr/local/bin is root's 0755: the profile the refusal offers
 # hangs on it.
 sudo chown root:root "$LOCAL_BIN" && sudo chmod 0755 "$LOCAL_BIN" || die "cannot make $LOCAL_BIN root's"
-# As ranikust checks it (smoke.sh's root_only_chain): no symlink, root's,
-# written by no one else, no nosuid, a local filesystem on its list.
+# As ranikust checks it (the list of no_userns.rs's LOCAL): no symlink,
+# root's, written by no one else, no nosuid, a local filesystem on its list.
 d="$LOCAL_BIN"
 while :; do
   opts="$(findmnt -no OPTIONS -T "$d")" || die "findmnt $d failed"
-  fs="$(stat -f -c %t "$d")"
+  fs="$(stat -f -c %t "$d")" || die "stat -f $d failed"
   [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] &&
     [[ ",$opts," != *,nosuid,* ]] ||
     die "$d is not root's alone: $(stat -c '%U %a' "$d"), mount options $opts"
