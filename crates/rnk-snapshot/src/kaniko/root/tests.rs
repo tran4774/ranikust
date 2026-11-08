@@ -2114,6 +2114,41 @@ fn a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_ch
     }
 }
 
+/// On `/` the owner check of pulled blobs skips the ignored paths only with
+/// the stages kept as tars; without them `prepare_source` unpacks a
+/// `COPY --from` image whole, so an owner the namespace lacks on an ignored
+/// path is refused before anything is unpacked (ADR-0144).
+#[test]
+fn on_slash_pulled_blobs_skip_the_ignored_paths_only_with_the_stages_kept_as_tars() {
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entries.
+    let one = format!("{} 0 1\n", uid.max(gid).wrapping_add(1));
+    let check = |f: &Fixture| {
+        let ns = UserNamespace::from_maps(&one, &one).unwrap();
+        f.kaniko.shared.userns.set(Some(ns)).unwrap();
+        let blob = f.layer("l1", &[("ranikust/b", b"kept")]);
+        let pulled = [(blob.diff_id().clone(), blob.blob().unwrap().to_owned())];
+        f.kaniko.check_owners(&pulled)
+    };
+
+    let f = Fixture::at(Some("/"));
+    let e = check(&f).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string().contains(&format!("uid {uid} (/ranikust/b)")),
+        "{e}"
+    );
+
+    let (f, _store) = Fixture::tars();
+    check(&f).unwrap();
+}
+
 /// A fixture on `/` in a namespace that maps one id, neither the test's
 /// uid nor its gid, which own the layers' entries; and the test's uid.
 fn red_team_in_one_id_namespace() -> (Fixture, Arc<Store>, u32) {

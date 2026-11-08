@@ -446,6 +446,16 @@ impl Shared {
         self.path == Path::new("/")
     }
 
+    /// Whether the owner check of pulled blobs skips the ignored paths: on
+    /// `/` with the stages kept as tars only, where a base layer is
+    /// extracted with the ignore list and a `COPY --from` image is checked
+    /// again whole before it is unpacked. Otherwise
+    /// [`Kaniko::prepare_source`] unpacks the blobs whole into a directory
+    /// with no check of its own, so every path is checked (ADR-0144).
+    fn pulled_owners_skip_ignored(&self) -> bool {
+        self.is_slash() && self.tars.get().is_some()
+    }
+
     fn views(&self) -> MutexGuard<'_, Vec<View>> {
         self.views.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -596,10 +606,8 @@ impl Snapshotter for Kaniko {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
-        // Off `/` every owner is checked, the ignored paths too
-        // (design/modes-and-detection.md#owners-the-user-namespace-does-not-map).
         let none = IgnoreList::new();
-        let keep = if self.shared.is_slash() {
+        let keep = if self.shared.pulled_owners_skip_ignored() {
             &self.shared.ignore
         } else {
             &none

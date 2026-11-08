@@ -153,24 +153,26 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   the namespace's maps (ADR-0104), in a space of its own by the tag
   (`KEY_DOMAIN`), and devices are left out with `DeviceNodes::Skip`
   (ADR-0106).
-- `check_owners` (`src/owners.rs`, ADR-0098): in a user namespace other
-  than the initial one, each blob is decompressed once more and its headers
-  read as its extraction reads them (`rnk_rootfs::scan_owners` for overlay,
-  `check_headers_and_owners` for kaniko mode, which on `/` skips the paths
-  the ignore list keeps as `extract_live` does), its diff ID verified, and
-  every owner the namespace's maps (`UserNamespace`'s `MappedIds`) lack is
+- `check_owners` (`src/owners.rs`, ADR-0098): in a user namespace other than
+  the initial one, each blob is decompressed once more and its headers read as
+  its extraction reads them (`rnk_rootfs::scan_owners` for overlay,
+  `check_headers_and_owners` for kaniko mode, which on `/` skips the paths the
+  ignore list keeps as `extract_live` does: for pulled blobs only with the
+  stages kept as tars, `pulled_owners_skip_ignored`, since without them
+  `prepare_source` unpacks a `COPY --from` image whole), its diff ID verified,
+  and every owner the namespace's maps (`UserNamespace`'s `MappedIds`) lack is
   named in one refusal; overlay skips a layer whose key is already in the
-  store. Off `/`, in a user namespace (`in_initial_user_namespace`, read
-  once per snapshotter), kaniko mode streams no base layer, so its layers
-  come as blobs and are all checked first, every path. On `/` a streamed
-  layer is not a blob: the spool pass (`Spooled::of`) notes its owners in
-  the same read as its headers, against the namespace each kaniko
-  snapshotter reads once (`UserNamespace::once`), and refuses
-  once the layer is verified, before it is extracted (ADR-0137). A `COPY
-  --from` image on `/` is unpacked with no ignore list: its spool, or its
-  kept blob, is checked again for the ignored paths before any directory is
-  made (`Shared::spool`). A `chown` that fails with `EINVAL` during
-  extraction is refused the same way (`rnk_rootfs::Error::Unmapped`).
+  store. Off `/`, in a user namespace (`in_initial_user_namespace`, read once
+  per snapshotter), kaniko mode streams no base layer, so its layers come as
+  blobs and are all checked first, every path. On `/` a streamed layer is not
+  a blob: the spool pass (`Spooled::of`) notes its owners in the same read as
+  its headers, against the namespace each kaniko snapshotter reads once
+  (`UserNamespace::once`), and refuses once the layer is verified, before it
+  is extracted (ADR-0137). A `COPY --from` image on `/` is unpacked with no
+  ignore list: its spool, or its kept blob, is checked again for the ignored
+  paths before any directory is made (`Shared::spool`). A `chown` that fails
+  with `EINVAL` during extraction is refused the same way
+  (`rnk_rootfs::Error::Unmapped`).
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
   from a scoped thread that does `unshare(CLONE_FS)` and `fchdir` into it
   (containerd's way, ADR-0032), and logs through its caller's `tracing`
@@ -295,7 +297,10 @@ that found a bug stay as its regression test.
   cached blob with an owner the namespace lacks is refused before the root
   changes, on `/` one only on an ignored path passing and off `/` refused
   (ADR-0144;
-  `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`).
+  `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`);
+  on `/` pulled blobs skip the ignored paths only with the stages kept as
+  tars
+  (`on_slash_pulled_blobs_skip_the_ignored_paths_only_with_the_stages_kept_as_tars`).
 - **T0, per-stage directories** (`src/kaniko/stages/tests.rs`, ADR-0059,
   ADR-0061, ADR-0062): a private directory per stage (`0700`, root `0755`),
   `FROM <stage>` copied with no inode shared, a parent with a layer open

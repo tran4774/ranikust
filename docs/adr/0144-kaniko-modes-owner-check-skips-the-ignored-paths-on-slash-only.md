@@ -50,8 +50,11 @@ option (a).
   (`Spooled::of`), `Snapshotter::check_owners` for pulled blobs, and the
   check before a cached blob is applied (`apply_layer`) all skip what the
   build's ignore list covers, matched on the same cleaned path the
-  extraction matches. An entry reached through a symlink is still noted
-  **[code]**.
+  extraction matches. An entry reached through a symlink is still noted.
+  `Snapshotter::check_owners` skips them only with the stages kept as tars
+  in the anonymous store, as the binary always keeps them on `/`: without
+  it a `COPY --from` image is unpacked whole from the pulled blobs, so they
+  are checked on every path **[code]**.
 - **`COPY --from=<image>` on `/`.** It is unpacked into a directory of the
   state directory with no ignore list, so its owners are checked on every
   path. A spool or pulled blob that an earlier check passed for a base is
@@ -87,7 +90,9 @@ option (a).
   (a base passes, a `COPY --from` image is refused, from its own spool, a
   base's or a pulled blob),
   `off_slash_the_owner_check_covers_the_ignored_paths`,
-  `off_slash_kaniko_s_owner_check_covers_the_ignored_paths`, and
+  `off_slash_kaniko_s_owner_check_covers_the_ignored_paths`,
+  `on_slash_pulled_blobs_skip_the_ignored_paths_only_with_the_stages_kept_as_tars`,
+  and
   `a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes`
   (both snapshotters).
 - No measurement: the cost of the second read of a spool is
