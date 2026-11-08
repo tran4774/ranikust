@@ -730,6 +730,16 @@ fn a_state_dir_others_may_write_is_refused() {
     assert!(refusal.reason.contains("writable"), "{refusal}");
 }
 
+/// Whether the test runs as root, where a [`set_up`] that took its state
+/// directory would mount outside any namespace of the build: skipped.
+fn as_root() -> bool {
+    let root = rustix::process::geteuid().is_root();
+    if root {
+        eprintln!("skipped: as root, a set-up that took the state directory would mount");
+    }
+    root
+}
+
 /// [`set_up`] for `state`, which a test expects refused before any probe.
 fn set_up_refusal(state: &Path) -> Refusal {
     match set_up(state, false, &Seccomp::Unset, &mut false, false, false) {
@@ -745,6 +755,9 @@ fn set_up_refusal(state: &Path) -> Refusal {
 /// and names.
 #[test]
 fn overlay_mode_refuses_its_state_directory_unchanged() {
+    if as_root() {
+        return;
+    }
     let tmp = private_tempdir();
     // Refused on overlayfs before the store's checks this test is about.
     if crate::statedir::on_overlayfs(tmp.path()) {
@@ -813,6 +826,9 @@ fn overlay_mode_refuses_its_state_directory_unchanged() {
 /// temporary directory is on overlayfs.
 #[test]
 fn overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade() {
+    if as_root() {
+        return;
+    }
     let tmp = private_tempdir();
     if !crate::statedir::on_overlayfs(tmp.path()) {
         eprintln!("skipped: the temporary directory is not on overlayfs");
