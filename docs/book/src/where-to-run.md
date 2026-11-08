@@ -35,7 +35,8 @@ and the
 [mode selection chapter](https://github.com/tran4774/ranikust/blob/main/docs/research/survey/06-overlay-and-parallelism.md).
 The Kubernetes rows are measured by ranikust's tests in a one-node k3s cluster
 (Kubernetes 1.37, containerd 2.3, an Ubuntu 24.04 node; the
-[k3s suite](https://github.com/tran4774/ranikust/blob/main/docs/testing.md#privilege-matrix-in-kubernetes));
+[k3s suite](https://github.com/tran4774/ranikust/blob/main/docs/testing.md#privilege-matrix-in-kubernetes),
+[experiment 18](https://github.com/tran4774/ranikust/blob/main/docs/research/experiments/18-kubernetes-pods-in-k3s.md));
 managed clusters are inferred from them.
 
 ## Cgroups of `RUN` commands

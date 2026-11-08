@@ -14,8 +14,9 @@
 # RANIKUST_LOG_T0, the caller's seconds since its start, puts the `[stage
 # +Ns]` lines on the caller's clock, so a run's log keeps one timeline.
 # RANIKUST_K3S_CACHE, a directory of the caller's (vm.sh: the VM image
-# cache), keeps the k3s download for the next run; without it the download
-# goes straight into the stage.
+# cache), keeps the k3s download for the next run, and this script deletes
+# there a failed download and every other k3s-* file (older pins); without
+# it the download goes straight into the stage.
 set -euo pipefail
 
 T0="${RANIKUST_LOG_T0:-0}"
@@ -27,7 +28,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 STAGE="$1"
 shift
 SUITES=("$@")
-# The caller makes it, and empties it: this script deletes nothing.
+# The caller makes it, and empties it: this script deletes nothing in it.
 case "$STAGE" in /*) ;; *) die "the stage directory must be an absolute path (got '$STAGE')" ;; esac
 [ -d "$STAGE" ] && [ ! -L "$STAGE" ] || die "$STAGE is not a directory"
 [ -z "$(ls -A "$STAGE")" ] || die "$STAGE is not empty"

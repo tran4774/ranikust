@@ -30,16 +30,21 @@ FAILED=()
 fail() { echo "FAIL: $*" >&2; FAILED+=("$*"); }
 
 restrict_was=
+started=
 teardown() {
   local rc=$?
   set +e
   [ -z "$restrict_was" ] || sudo sysctl -q -w "kernel.apparmor_restrict_unprivileged_userns=$restrict_was"
+  [ -n "$started" ] || return 0
+  # The journal too when k3s itself died; a hung API server never holds
+  # the suite (timeout).
+  if [ "$rc" != 0 ] || [ "${#FAILED[@]}" != 0 ]; then
+    timeout 60 sudo "$K3S" kubectl get events -A --sort-by=.lastTimestamp >"$OUT/events.txt" 2>&1
+    sudo journalctl -u rnk-k3s --no-pager >"$OUT/k3s.log" 2>&1
+  fi
   if systemctl is-active -q rnk-k3s 2>/dev/null; then
-    if [ "$rc" != 0 ] || [ "${#FAILED[@]}" != 0 ]; then
-      kc get events -A --sort-by=.lastTimestamp >"$OUT/events.txt" 2>&1
-      sudo journalctl -u rnk-k3s --no-pager >"$OUT/k3s.log" 2>&1
-    fi
-    kc delete namespace "$NS" "$NS_RESTRICTED" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
+    timeout 150 sudo "$K3S" kubectl delete namespace "$NS" "$NS_RESTRICTED" \
+      --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
     sudo systemctl stop rnk-k3s
   fi
 }
@@ -57,13 +62,14 @@ sudo systemd-run --unit=rnk-k3s --collect -p Delegate=yes -p LimitNOFILE=1048576
   "$K3S" server --node-name=rnk-k3s --write-kubeconfig-mode=0600 \
   --disable=traefik,servicelb,metrics-server,local-storage,coredns --disable-helm-controller \
   --pause-image="$K3S_PAUSE_IMAGE"
+started=1
 deadline=$((SECONDS + 300))
 until kc get node rnk-k3s >/dev/null 2>&1; do
-  [ "$SECONDS" -lt "$deadline" ] || { fail "k3s: no node after 300 s"; sudo journalctl -u rnk-k3s --no-pager >"$OUT/k3s.log" 2>&1; exit 1; }
+  [ "$SECONDS" -lt "$deadline" ] || { fail "k3s: no node after 300 s"; exit 1; }
   sleep 2
 done
 kc wait --for=condition=Ready node/rnk-k3s --timeout=240s >/dev/null ||
-  { fail "k3s: the node is not Ready"; sudo journalctl -u rnk-k3s --no-pager >"$OUT/k3s.log" 2>&1; exit 1; }
+  { fail "k3s: the node is not Ready"; exit 1; }
 {
   echo "kernel: $(uname -r)"
   echo "k3s: $("$K3S" --version | head -1)"
