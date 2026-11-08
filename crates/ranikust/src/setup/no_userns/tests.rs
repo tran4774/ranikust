@@ -471,3 +471,186 @@ fn the_check_agrees_on_system_binaries() {
         eprintln!("skipped: no system binary here is root's all the way up");
     }
 }
+
+/// Whether the advice for a stop AppArmor may cause binds the profile to
+/// `path` as it is: every form that does not names no install first.
+fn binds(path: Option<&Path>) -> bool {
+    let advice = guidance(path, Stop::InNamespace);
+    advice.contains(PROFILE) && !advice.contains(" first")
+}
+
+/// Red team (#81, invariant: the profile only for a path only root may
+/// change): a symlink at the leaf or above it, a loop, a link of `/proc`,
+/// `..` anywhere, a relative or empty path and a NUL are refused, with no
+/// link followed, and the advice binds none of them.
+#[test]
+fn red_team_no_link_up_level_or_nul_gets_the_profile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = std::fs::canonicalize(tmp.path()).unwrap();
+    let file = FileType::RegularFile;
+    // A target the rule passes on its own, where this host has one.
+    let target = ["/usr/bin/env", "/usr/bin/sh", "/bin/sh"]
+        .into_iter()
+        .map(Path::new)
+        .find(|p| only_root_changes(p, file).is_ok())
+        .unwrap_or(Path::new("/usr/bin/env"));
+    let leaf = tmp.join("leaf");
+    std::os::unix::fs::symlink(target, &leaf).unwrap();
+    let dir = tmp.join("dir");
+    std::os::unix::fs::symlink(target.parent().unwrap(), &dir).unwrap();
+    let (a, b, own) = (tmp.join("a"), tmp.join("b"), tmp.join("own"));
+    std::os::unix::fs::symlink(&b, &a).unwrap();
+    std::os::unix::fs::symlink(&a, &b).unwrap();
+    std::os::unix::fs::symlink(&own, &own).unwrap();
+    let below = target.strip_prefix("/").unwrap();
+    let refused = [
+        leaf.clone(),
+        dir.join(target.file_name().unwrap()),
+        a.clone(),
+        a.join("x"),
+        own.clone(),
+        PathBuf::from("/proc/self/exe"),
+        Path::new("/proc/self/root").join(below),
+        Path::new("/proc/1/root").join(below),
+        Path::new("/proc/self/cwd").join("x"),
+        PathBuf::from("/dev/fd/0"),
+    ];
+    for path in &refused {
+        assert!(only_root_changes(path, file).is_err(), "{}", path.display());
+        assert!(!binds(Some(path)), "{}", path.display());
+    }
+    // The symlink is the node read, never its target.
+    assert_eq!(
+        walk(&leaf).unwrap().last().unwrap().1.kind,
+        FileType::Symlink
+    );
+    for path in [
+        "/usr/bin/../bin/env",
+        "/../usr/bin/env",
+        "/usr/bin/env/..",
+        "usr/bin/env",
+        "./usr/bin/env",
+        "",
+    ] {
+        assert_eq!(walk(Path::new(path)).unwrap_err().1, Errno::INVAL, "{path}");
+        assert!(!binds(Some(Path::new(path))), "{path}");
+    }
+    let nul = PathBuf::from(std::ffi::OsString::from("/usr/bin/env\0/x".to_owned()));
+    assert!(only_root_changes(&nul, file).is_err());
+    assert!(!binds(Some(&nul)));
+    // A path ranikust could not read binds nothing either.
+    assert!(!binds(None));
+}
+
+/// Red team (#81): a FIFO, a socket, a directory and a device are never
+/// the binary a profile binds, and the walk does not block on a FIFO, which
+/// it reads `O_PATH` without opening for reading.
+#[test]
+fn red_team_special_files_get_no_profile_and_a_fifo_does_not_block() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = std::fs::canonicalize(tmp.path()).unwrap();
+    let fifo = tmp.join("fifo");
+    rustix::fs::mknodat(CWD, &fifo, FileType::Fifo, Mode::from_raw_mode(0o755), 0).unwrap();
+    let socket = tmp.join("socket");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // On a thread: a walk that opened the FIFO for reading would not return.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let at = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(walk(&at).map(|nodes| nodes.last().unwrap().1.kind));
+    });
+    let kind = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the walk blocked on a FIFO");
+    assert_eq!(kind, Ok(FileType::Fifo));
+    for (path, kind) in [
+        (fifo, FileType::Fifo),
+        (socket, FileType::Socket),
+        (tmp.clone(), FileType::Directory),
+        (PathBuf::from("/dev/null"), FileType::CharacterDevice),
+    ] {
+        assert_eq!(walk(&path).unwrap().last().unwrap().1.kind, kind);
+        assert!(
+            only_root_changes(&path, FileType::RegularFile).is_err(),
+            "{}",
+            path.display()
+        );
+        assert!(!binds(Some(&path)), "{}", path.display());
+    }
+}
+
+/// An access ACL as `system.posix_acl_access` holds it: the owner `rwx`,
+/// the user 65534 `rwx`, the owning group `r-x`, the mask `mask`, others
+/// `r-x`.
+fn acl_with_mask(mask: u16) -> Vec<u8> {
+    const ANY: u32 = u32::MAX;
+    let mut acl = 2u32.to_le_bytes().to_vec();
+    for (tag, perm, id) in [
+        (0x01u16, 7u16, ANY),
+        (0x02, 7, 65534),
+        (0x04, 5, ANY),
+        (0x10, mask, ANY),
+        (0x20, 5, ANY),
+    ] {
+        acl.extend(tag.to_le_bytes());
+        acl.extend(perm.to_le_bytes());
+        acl.extend(id.to_le_bytes());
+    }
+    acl
+}
+
+/// Red team (#81): an ACL that lets another user write a node shows as
+/// group write in the mode the walk reads, which the rule refuses; a mask
+/// without write takes the grant away, and the rule passes it.
+#[test]
+fn red_team_an_acl_granting_write_shows_in_the_group_bits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = std::fs::canonicalize(tmp.path()).unwrap();
+    let bin = tmp.join("ranikust");
+    std::fs::write(&bin, "x").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let set = |path: &Path, mask| {
+        rustix::fs::setxattr(
+            path,
+            "system.posix_acl_access",
+            &acl_with_mask(mask),
+            rustix::fs::XattrFlags::empty(),
+        )
+    };
+    match set(&bin, 7) {
+        Err(Errno::OPNOTSUPP) => {
+            eprintln!("skipped: no POSIX ACLs on {}", tmp.display());
+            return;
+        }
+        r => r.unwrap(),
+    }
+    let dir = tmp.join("dir");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set(&dir, 7).unwrap();
+    // The walk's own reading of each node, as if root owned it, on a local
+    // filesystem root mounted.
+    let as_root = |path: &Path| Node {
+        uid: 0,
+        fs_type: EXT4,
+        nosuid: false,
+        ..walk(path).unwrap().last().unwrap().1
+    };
+    let root = node(FileType::Directory, 0, 0o755);
+    let file = FileType::RegularFile;
+    assert_eq!(
+        verdict(&at(&[root, as_root(&bin)]), file),
+        Err("/a is writable by its group or others (mode 775)".to_owned())
+    );
+    assert_eq!(
+        verdict(&at(&[root, as_root(&dir)]), FileType::Directory),
+        Err("/a is writable by its group or others (mode 775)".to_owned())
+    );
+    set(&bin, 5).unwrap();
+    set(&dir, 5).unwrap();
+    assert_eq!(verdict(&at(&[root, as_root(&bin)]), file), Ok(()));
+    assert_eq!(
+        verdict(&at(&[root, as_root(&dir)]), FileType::Directory),
+        Ok(())
+    );
+}

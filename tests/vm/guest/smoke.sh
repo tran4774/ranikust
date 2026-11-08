@@ -532,6 +532,7 @@ apparmor_profile() {
     got="$(aa-exec -p ranikust -- unshare --user --map-root-user --mount true 2>&1)" ||
       { echo "error: user: aa-exec -p ranikust -- unshare -Urm refused at unprivileged_unconfined=0: $got" >&2; exit 1; }
     echo "user: at kernel.apparmor_restrict_unprivileged_unconfined=0, aa-exec -p ranikust gives an unconfined program of this user a user namespace, as the docs say"
+    red_team_profile_grant
   else
     echo "user: kernel.apparmor_restrict_unprivileged_unconfined=$unconfined: aa-exec not checked"
   fi
@@ -617,6 +618,202 @@ advice_without_the_switch() {
   echo "user: at $AA_SWITCH=0 (${before:-absent} here) the advice names no profile"
 }
 
+# Every node under $1: path, kind, size, mode, owner, inode, times, target.
+rt_tree() { find "$1" -printf '%p %y %s %m %U %i %T@ %C@ %l\n' | sort; }
+
+# Kills ranikust ($1, run in $2 with the arguments after $4) $4 times as soon
+# as the capability check's child shows: the parent or the child ($3). Fails
+# where a process of the run is left, where a killed parent made the state
+# directory, or where no child was caught.
+RT_KILL='import os, signal, subprocess, sys, time
+binary, work, what, tries, args = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5:]
+caught, left = 0, []
+for i in range(tries):
+    state = os.path.join(work, "kill-%s-%d" % (what, i))
+    p = subprocess.Popen([binary, *args, "--state-dir", state], cwd=work,
+                         env={"PATH": "/usr/bin:/bin", "HOME": work},
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, process_group=0)
+    kids, deadline = [], time.monotonic() + 10
+    while not kids and time.monotonic() < deadline and p.poll() is None:
+        try:
+            with open("/proc/%d/task/%d/children" % (p.pid, p.pid)) as f:
+                kids = f.read().split()
+        except OSError:
+            break
+    hit = False
+    if kids:
+        try:
+            os.killpg(p.pid, signal.SIGSTOP)
+            for pid in [p.pid] if what == "parent" else kids:
+                os.kill(int(pid), signal.SIGKILL)
+            hit = True
+        except ProcessLookupError:
+            pass
+        try:
+            os.killpg(p.pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+    p.wait()
+    time.sleep(0.5)
+    if hit:
+        caught += 1
+        if what == "parent" and os.path.exists(state):
+            sys.exit("a parent killed during the check made %s" % state)
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open("/proc/%s/stat" % pid) as f:
+                stat = f.read()
+        except OSError:
+            continue
+        if int(stat[stat.rindex(")") + 2:].split()[2]) == p.pid:
+            left.append((i, pid, stat))
+if left or not caught:
+    sys.exit("caught %d of %d, left: %r" % (caught, tries, left))
+print("%s killed in %d of %d runs, nothing left" % (what, caught, tries))'
+
+# Red team (#81): the real capability check refuses at the mount namespace
+# and writes nothing, whatever the state directory is or points to; a check
+# killed halfway, in the parent or the child, leaves no process, and a fork
+# refused by RLIMIT_NPROC leaves none either. Uses rl_args, ud and dir.
+red_team_no_userns() {
+  local r="$ud/red" form log rc before
+  mkdir -m 700 "$r"
+  mkdir -m 700 "$r/full" "$r/target" "$r/home" "$r/kill"
+  echo x >"$r/full/keep"
+  echo y >"$r/file"
+  ln -s "$r/target" "$r/to-dir"
+  ln -s "$r/absent" "$r/dangling"
+  before="$(rt_tree "$r")"
+  for form in full to-dir dangling a/b/c file default; do
+    rc=0
+    if [ "$form" = default ]; then
+      log="$(cd "$r" && env -u XDG_DATA_HOME HOME="$r/home" "$RNK" "${rl_args[@]}" 2>&1)" || rc=$?
+    else
+      log="$(cd "$r" && "$RNK" "${rl_args[@]}" --state-dir "$form" 2>&1)" || rc=$?
+    fi
+    printf '%s\n' "$log" >"$dir/red-team-state-${form//\//-}.log"
+    [ "$rc" = 1 ] && grep -q 'the user namespace probe stops at mount namespace' <<<"$log" &&
+      [ "$(rt_tree "$r")" = "$before" ] ||
+      { echo "error: red team: --state-dir $form: expected a refusal that writes nothing, got $rc:" >&2; echo "$log" >&2; diff <(echo "$before") <(rt_tree "$r") >&2 || true; exit 1; }
+  done
+  echo "red team: the real check refuses and writes nothing for a state directory full, a symlink to a directory, a dangling symlink, missing parents, a file, the default"
+  for form in parent child; do
+    python3 -I -c "$RT_KILL" "$RNK" "$r/kill" "$form" 20 "${rl_args[@]}" ||
+      { echo "error: red team: killing the check's $form" >&2; exit 1; }
+  done
+  rc=0
+  log="$(prlimit --nproc=1:1 "$RNK" "${rl_args[@]}" --state-dir "$r/nproc" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/red-team-nproc.log"
+  [ "$rc" = 1 ] && grep -q "fork the probe's child: Resource temporarily unavailable" <<<"$log" ||
+    { echo "error: red team: expected the probe's fork refused under RLIMIT_NPROC=1, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "red team: under RLIMIT_NPROC=1 the check cannot fork and the run stops"
+}
+
+# Writes an access ACL on $1 (as root): this user rwx, the mask $2 (octal).
+RT_ACL='import os, struct, sys
+path, uid, mask = sys.argv[1], int(sys.argv[2]), int(sys.argv[3], 8)
+undef = 0xFFFFFFFF
+entries = [(0x01, 7, undef), (0x02, 7, uid), (0x04, 5, undef), (0x10, mask, undef), (0x20, 5, undef)]
+os.setxattr(path, "system.posix_acl_access",
+            struct.pack("<I", 2) + b"".join(struct.pack("<HHI", t, p, i) for t, p, i in entries))'
+
+# Red team (#81): root's binary in a root-only directory outside
+# /usr/local/bin gets the profile with its path changed; an ACL that lets
+# this user write the directory or the file, or a sticky world-writable
+# directory, takes it away; an ACL whose mask keeps writing out does not;
+# this user's symlink to it names root's path; a hardlink in this user's
+# directory is refused by the kernel or gets no profile. Uses rl_args, ud
+# and dir.
+RT_DIR=/opt/rnk-red-team
+red_team_acl() {
+  local d="$RT_DIR" b="$RT_DIR/ranikust" c n=0 setup program expect log rc advice what at mask
+  local writable="is writable by its group or others"
+  [ ! -e "$d" ] || { echo "error: red team: $d is there already" >&2; exit 1; }
+  trap 'sudo rm -f "$MARKER"; sudo rm -rf "$RT_DIR"' EXIT
+  ln -s "$b" "$ud/red-link"
+  for c in "none|$b|changed to $b, and run" \
+    "acl $d 7|$b|$d $writable" \
+    "acl $b 7|$b|$b $writable" \
+    "acl $d 5|$b|changed to $b, and run" \
+    "sticky|$b|$d $writable" \
+    "none|$ud/red-link|changed to $b, and run"; do
+    IFS='|' read -r setup program expect <<<"$c"
+    sudo rm -rf "$d"
+    sudo mkdir -m 755 -p "$d"
+    sudo install -m 0755 -o root -g root "$RNK" "$b"
+    read -r what at mask <<<"$setup"
+    case "$what" in
+      acl) sudo python3 -I -c "$RT_ACL" "$at" "$(id -u)" "$mask" ;;
+      sticky) sudo chmod 1777 "$d" ;;
+    esac
+    n=$((n + 1)) rc=0
+    log="$("$program" "${rl_args[@]}" --state-dir "$ud/red-acl-$n" 2>&1)" || rc=$?
+    printf '%s\n' "$log" >"$dir/red-team-acl-$n.log"
+    advice="$(advice_of "$log")"
+    [ "$rc" = 1 ] && [ ! -e "$ud/red-acl-$n" ] && grep -qF -- "$expect" <<<"$advice" ||
+      { echo "error: red team: after '$setup', $program: expected '$expect', got $rc:" >&2; echo "$log" >&2; exit 1; }
+    echo "red team: $program after '$setup': $expect"
+  done
+  if ln "$b" "$ud/red-hard" 2>/dev/null; then
+    rc=0
+    log="$("$ud/red-hard" "${rl_args[@]}" --state-dir "$ud/red-hard-state" 2>&1)" || rc=$?
+    [ "$rc" = 1 ] && ! grep -q 'changed to' <<<"$(advice_of "$log")" ||
+      { echo "error: red team: a hardlink in this user's directory got the profile, $rc:" >&2; echo "$log" >&2; exit 1; }
+    echo "red team: a hardlink to root's binary in this user's directory gets no profile"
+  else
+    echo "red team: the kernel refuses this user a hardlink to root's binary"
+  fi
+  sudo rm -rf "$d"
+  rm -f "$ud/red-link" "$ud/red-hard"
+  trap 'sudo rm -f "$MARKER"' EXIT
+}
+
+# Red team (#81): an unconfined program of this user that enters ranikust's
+# profile (aa-exec, where kernel.apparmor_restrict_unprivileged_unconfined
+# is 0) gets a user namespace and nothing else it lacks: the same
+# capabilities; no command that fails without the profile works with it;
+# io_uring stays refused where AppArmor refuses it to the unconfined.
+RT_URING='import ctypes, sys
+params = ctypes.create_string_buffer(120)
+sys.exit(0 if ctypes.CDLL(None, use_errno=True).syscall(425, 1, params) >= 0 else 1)'
+red_team_profile_grant() {
+  local c caps under switch=kernel.apparmor_restrict_unprivileged_io_uring before
+  [ "$(aa-exec -p ranikust -- cat /proc/self/attr/current)" = 'ranikust (unconfined)' ] ||
+    { echo "error: red team: aa-exec -p ranikust did not enter the profile" >&2; exit 1; }
+  caps="$(grep '^Cap' /proc/self/status)"
+  under="$(aa-exec -p ranikust -- grep '^Cap' /proc/self/status)"
+  [ "$caps" = "$under" ] ||
+    { echo "error: red team: the profile changes the capabilities: $caps / $under" >&2; exit 1; }
+  for c in 'cat /etc/shadow' 'touch /etc/rnk-red-team' 'cat /proc/1/environ' \
+    'head -c1 /proc/1/mem' 'dmesg' 'ls /root' 'cat /sys/kernel/security/apparmor/profiles' \
+    'unshare --user --map-root-user cat /etc/shadow' \
+    'unshare --user --map-root-user touch /etc/rnk-red-team'; do
+    if ! sh -c "$c" >/dev/null 2>&1 && aa-exec -p ranikust -- sh -c "$c" >/dev/null 2>&1; then
+      sudo rm -f /etc/rnk-red-team
+      echo "error: red team: '$c' fails without the profile and works with it" >&2
+      exit 1
+    fi
+  done
+  echo "red team: the profile adds no capability, and no command that fails without it works with it"
+  if before="$(sudo sysctl -n "$switch" 2>/dev/null)"; then
+    trap 'sudo rm -f "$MARKER"; apparmor_undo; sudo sysctl -qw "'"$switch=$before"'"' EXIT
+    sudo sysctl -qw "$switch=1"
+    if python3 -I -c "$RT_URING"; then
+      echo "red team: io_uring works at $switch=1 (io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent)): not checked"
+    elif aa-exec -p ranikust -- python3 -I -c "$RT_URING"; then
+      sudo sysctl -qw "$switch=$before"
+      echo "error: red team: at $switch=1 the profile gives io_uring an unconfined program is refused" >&2
+      exit 1
+    else
+      echo "red team: at $switch=1 io_uring stays refused under the profile"
+    fi
+    sudo sysctl -qw "$switch=$before"
+    trap 'sudo rm -f "$MARKER"; apparmor_undo' EXIT
+  else
+    echo "red team: no $switch here: io_uring not checked"
+  fi
+}
+
 # #78: smoke-build as this regular user, in the build's user namespace
 # through newuidmap. Where AppArmor restricts unprivileged user namespaces
 # (Ubuntu 24.04) it is refused before anything runs; elsewhere (22.04) a
@@ -676,8 +873,10 @@ if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)"
       "$(realpath "$RNK") is not a path only root can change (" '; or run ranikust in a container' ||
     { echo "error: user: expected rootless overlay mode refused, with sudo, the profile after an install under /usr/local/bin, then a container, got $rc:" >&2; echo "$log" >&2; exit 1; }
   echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it; advice: sudo, the profile after an install under /usr/local/bin, a container"
+  red_team_no_userns
   apparmor_profile
   apparmor_mounts
+  red_team_acl
 else
   [ "$rc" = 0 ] &&
     grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||

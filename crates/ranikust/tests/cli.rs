@@ -1296,3 +1296,212 @@ fn prune_all_empties_a_cache_deeper_than_its_descriptor_limit() {
         other => panic!("{other:?}: {}", stderr(&out)),
     }
 }
+
+/// The guidance line of a refusal for want of a user namespace.
+fn userns_advice(err: &str) -> &str {
+    err.lines()
+        .find_map(|l| l.strip_prefix("  ").filter(|l| l.contains("with sudo")))
+        .unwrap_or_else(|| panic!("no advice: {err}"))
+}
+
+/// Whether AppArmor restricts user namespaces here, as the advice reads it.
+fn apparmor_restricts_userns() -> bool {
+    fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim_ascii() == b"1")
+}
+
+/// A link to (or else a copy of) the binary at `to`.
+fn place_binary(to: &Path) {
+    if fs::hard_link(env!("CARGO_BIN_EXE_ranikust"), to).is_err() {
+        fs::copy(env!("CARGO_BIN_EXE_ranikust"), to).expect("copy the binary");
+    }
+}
+
+/// Red team (#81): terminal controls in the binary's path, `argv[0]` or
+/// `PATH` reach no terminal.
+#[test]
+fn red_team_the_advice_escapes_a_hostile_binary_path() {
+    use std::os::unix::process::CommandExt as _;
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let hostile =
+        "x\x1b[2J\x1b]8;;https:e.example\x07\r\nranikust: note: trusted\u{202e}\u{2028}\u{9b}31m";
+    let dir = tmp.path().join(hostile);
+    fs::create_dir(&dir).expect("a hostile directory");
+    let binary = dir.join("ranikust");
+    place_binary(&binary);
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let path_var = format!("{}:/usr/bin:/bin", dir.display());
+    let out = Command::new(&binary)
+        .arg0(format!("{hostile}/ranikust"))
+        .args([
+            "--no-push",
+            "--context",
+            "ctx",
+            "--state-dir=state",
+            "--log-format=text",
+        ])
+        .current_dir(tmp.path())
+        .env_clear()
+        .env("RANIKUST_DEBUG_FAULT", "no-userns")
+        .env("PATH", &path_var)
+        .env("HOME", tmp.path())
+        .output()
+        .expect("run the hostile binary");
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "{err:?}");
+    assert!(err.contains(STOPS_AS_A_USER), "{err:?}");
+    for raw in ["\x1b", "\x07", "\r", "\u{202e}", "\u{2028}", "\u{9b}"] {
+        assert!(!err.contains(raw), "{raw:?} reached stderr: {err:?}");
+    }
+    assert!(
+        !err.lines().any(|l| l.starts_with("ranikust: note")),
+        "a forged line: {err:?}"
+    );
+    let advice = userns_advice(&err);
+    assert!(!advice.contains("changed to"), "{advice}");
+    if apparmor_restricts_userns() {
+        assert!(advice.contains("\\u{1b}[2J"), "{advice}");
+        assert!(advice.contains(" first"), "{advice}");
+    }
+    assert!(!tmp.path().join("state").exists());
+}
+
+/// Red team (#81): a binary no path names, or a sealed-copy marker set from
+/// outside, gets no profile.
+#[test]
+fn red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile() {
+    use std::os::fd::AsRawFd as _;
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let args = ["--no-push", "--context", "ctx", "--state-dir=state"];
+    let hex = |p: &str| -> String { p.bytes().map(|b| format!("{b:02x}")).collect() };
+    let run = |program: &Path, marker: Option<&str>| {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(tmp.path())
+            .env_clear()
+            .env("RANIKUST_DEBUG_FAULT", "no-userns")
+            .env("HOME", tmp.path());
+        if let Some(marker) = marker {
+            cmd.env("RANIKUST_SEALED_COPY", marker);
+        }
+        let out = cmd.output().expect("run ranikust");
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        userns_advice(&err).to_owned()
+    };
+    let restricted = apparmor_restricts_userns();
+
+    let gone = tmp.path().join("gone");
+    place_binary(&gone);
+    let held = fs::File::open(&gone).expect("open the binary");
+    fs::remove_file(&gone).expect("remove its name");
+    let advice = run(
+        Path::new(&format!("/proc/self/fd/{}", held.as_raw_fd())),
+        None,
+    );
+    assert!(!advice.contains("changed to"), "{advice}");
+    if restricted {
+        let named = " (deleted) is not a path only root can change";
+        assert!(advice.contains(named), "{advice}");
+    }
+
+    let binary = fs::canonicalize(env!("CARGO_BIN_EXE_ranikust")).expect("binary");
+    for marker in [
+        format!("memfd root {}", hex("/usr/local/bin/ranikust")),
+        format!("tmpfile root {}", hex("/usr/bin/env")),
+        format!("tmpfile root {}", hex("/proc/self/exe")),
+    ] {
+        let advice = run(&binary, Some(&marker));
+        assert!(!advice.contains("changed to"), "{marker}: {advice}");
+        assert!(!advice.contains("/usr/bin/env"), "{marker}: {advice}");
+        if restricted {
+            let named = format!("{} is not a path only root can change", binary.display());
+            assert!(advice.contains(&named), "{marker}: {advice}");
+        }
+    }
+    assert!(!tmp.path().join("state").exists());
+}
+
+/// Every node under `root`: kind, size, mode, owner, inode, change and
+/// modification times, link target.
+fn tree(root: &Path) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut seen = Vec::new();
+    let mut todo = vec![root.to_path_buf()];
+    while let Some(path) = todo.pop() {
+        let m = fs::symlink_metadata(&path).expect("lstat");
+        let link = fs::read_link(&path).ok();
+        seen.push(format!(
+            "{} {:?} {} {:o} {} {} {}.{} {}.{} {:?}",
+            path.display(),
+            m.file_type(),
+            m.len(),
+            m.mode(),
+            m.uid(),
+            m.ino(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec(),
+            link
+        ));
+        if m.is_dir() {
+            for e in fs::read_dir(&path).expect("ls") {
+                todo.push(e.expect("entry").path());
+            }
+        }
+    }
+    seen.sort();
+    seen
+}
+
+/// Red team (#81, T22): the refusal writes nothing, whatever the state
+/// directory is or points to.
+#[test]
+fn red_team_nothing_is_written_before_the_refusal_whatever_the_state_dir() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let t = tmp.path();
+    fs::create_dir(t.join("ctx")).expect("context dir");
+    fs::write(t.join("ctx/Dockerfile"), "FROM scratch\n").expect("Dockerfile");
+    fs::create_dir(t.join("full")).expect("a state dir with a file");
+    fs::write(t.join("full/keep"), b"x").expect("a file");
+    fs::create_dir(t.join("target")).expect("a link target");
+    std::os::unix::fs::symlink(t.join("target"), t.join("to-dir")).expect("symlink");
+    std::os::unix::fs::symlink(t.join("absent"), t.join("dangling")).expect("symlink");
+    fs::write(t.join("file"), b"y").expect("a file as the state dir");
+    fs::create_dir(t.join("home")).expect("home");
+    let home = t.join("home");
+    let home = home.to_str().expect("UTF-8 temp dir");
+    let before = tree(t);
+    let forms: [&[&str]; 7] = [
+        &["--state-dir=full"],
+        &["--state-dir=to-dir"],
+        &["--state-dir=dangling"],
+        &["--state-dir=a/b/c"],
+        &["--state-dir=file"],
+        &["--state-dir=ctx"],
+        &[],
+    ];
+    for form in forms {
+        for mode in ["--mode=auto", "--mode=overlay"] {
+            let mut args = vec!["--no-push", "--context", "ctx", mode];
+            args.extend(form);
+            let out = ranikust(t, &args, &[("HOME", home)]);
+            let err = stderr(&out);
+            assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
+            assert!(err.contains(STOPS_AS_A_USER), "{args:?}: {err}");
+            assert_eq!(tree(t), before, "{args:?}: {err}");
+        }
+    }
+}
