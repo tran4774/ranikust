@@ -285,6 +285,49 @@ fn without_root_the_set_up_never_makes_the_default_state_dir() {
     }
 }
 
+/// A user with no user namespace is told, in order: `sudo`; where AppArmor
+/// restricts user namespaces, the profile, after installing the binary
+/// under `/usr/local/bin`, as this one, built in the checkout, is the
+/// user's; a container. Elsewhere no profile is named.
+#[test]
+fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let state = tmp.path().join("state");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context", "ctx", "--state-dir=state"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    let advice = err
+        .lines()
+        .find_map(|l| l.strip_prefix("  "))
+        .unwrap_or_else(|| panic!("no advice: {err}"));
+    let at = |part: &str| advice.find(part);
+    let sudo = at("run ranikust as root, with sudo").expect(advice);
+    let container = at("; or run ranikust in a container").expect(advice);
+    assert!(sudo < container, "{advice}");
+    let restricted = fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim_ascii() == b"1");
+    if restricted {
+        let profile =
+            at("or, as root, install ranikust as /usr/local/bin/ranikust first").expect(advice);
+        assert!(sudo < profile && profile < container, "{advice}");
+        // Named as `/proc/self/exe` names it: no symlink on the way.
+        let binary = fs::canonicalize(env!("CARGO_BIN_EXE_ranikust")).expect("binary");
+        let named = format!("{} is not a path only root can change", binary.display());
+        assert!(advice.contains(&named), "{advice}");
+    } else {
+        assert!(!advice.contains("AppArmor"), "{advice}");
+    }
+    assert!(!state.exists());
+}
+
 #[test]
 fn kaniko_validation_is_a_usage_error() {
     let tmp = tempfile::tempdir().expect("tempdir");

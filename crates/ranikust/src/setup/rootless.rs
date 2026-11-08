@@ -5,6 +5,7 @@
 //! `--mode=auto` sets up in a child, to fall back to kaniko mode in the
 //! parent (ADR-0136).
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -70,13 +71,14 @@ const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), o
 
 /// The test hook's `no-userns` (`env`, the hook's variable): rootless
 /// overlay mode refused before its probe, the process unchanged, with the
-/// guidance for the effective uid `euid`.
-pub(crate) fn refused_by_hook(env: &str, euid: u32) -> NotHere {
+/// guidance for the effective uid `euid` where no user namespace is
+/// usable, `binary` as for [`plan`].
+pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> NotHere {
     NotHere {
         refusal: Refusal {
             kind: Kind::Other,
             reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
-            guidance: guidance("hook", false, euid).into(),
+            guidance: guidance("hook", false, euid, binary),
         },
         probed: false,
     }
@@ -88,14 +90,20 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32) -> NotHere {
 /// the overlay mount in a user namespace, in a directory made for them in
 /// the state directory, named as the leftovers an anonymous store removes,
 /// and removed after. Logs the probe's line, whose verdict counts an rbind
-/// of `/proc` only with `proc_rbind` (`--allow proc.rbind`, ADR-0126). Call
-/// while single-threaded.
+/// of `/proc` only with `proc_rbind` (`--allow proc.rbind`, ADR-0126).
+/// `binary` is the path ranikust started from, which the advice where no
+/// user namespace is usable weighs ([`super::no_userns`]). Call while
+/// single-threaded.
 ///
 /// # Errors
 ///
 /// [`NotHere`]: the step that failed and what to do instead, with the
 /// process unchanged.
-pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> {
+pub(crate) fn plan(
+    state_dir: &Path,
+    proc_rbind: bool,
+    binary: Option<&Path>,
+) -> Result<Plan, NotHere> {
     let euid = rustix::process::geteuid().as_raw();
     let unprobed = |refusal| NotHere {
         refusal,
@@ -143,13 +151,13 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         let rbind = matches!(report.proc, MountResult::Rbind { .. });
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
-            guidance(step, rbind, euid).into(),
+            guidance(step, rbind, euid, binary),
         ));
     }
     if let Some(e) = probed.overlay_error() {
         return Err(not_here(
             format!("an overlay mount in the user namespace: {e}"),
-            guidance("overlay", false, euid).into(),
+            guidance("overlay", false, euid, binary),
         ));
     }
     let bind_proc = proc_rbind && matches!(report.proc, MountResult::Rbind { .. });
@@ -188,19 +196,21 @@ fn state_dir_for_probe(state_dir: &Path, euid: u32) -> Result<rnk_store::StateDi
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`
-/// for its overlay mount, `hook` for the test hook's refusal before it)
-/// for the effective uid `euid`; `rbind` says an rbind of `/proc` worked
-/// there. A user namespace without capabilities (Ubuntu's AppArmor switch)
-/// stops a user other than root at the map, the `chown` or the mount
-/// namespace.
-fn guidance(step: &str, rbind: bool, euid: u32) -> &'static str {
+/// for its overlay mount, `hook` for the test hook's refusal before it, as
+/// where no user namespace is usable) for the effective uid `euid`; `rbind`
+/// says an rbind of `/proc` worked there; `binary` as for [`plan`]. A user
+/// namespace without capabilities (Ubuntu's AppArmor switch) stops a user
+/// other than root at the map, the `chown` or the mount namespace.
+fn guidance(step: &str, rbind: bool, euid: u32, binary: Option<&Path>) -> Cow<'static, str> {
     match step {
-        "proc" if rbind => PROC_RBIND,
+        "proc" if rbind => PROC_RBIND.into(),
         // Root gets here only where it may not mount: its own refusal, or
         // kaniko mode, says what to do.
-        _ if euid == 0 => "",
-        "unshare" | "map" | "chown" | "mount namespace" => super::NO_USER_NAMESPACE,
-        _ => UNUSABLE,
+        _ if euid == 0 => "".into(),
+        "unshare" | "map" | "chown" | "mount namespace" | "hook" => {
+            super::no_userns::guidance(binary).into()
+        }
+        _ => UNUSABLE.into(),
     }
 }
 
@@ -227,6 +237,8 @@ pub(crate) struct Then<'a> {
     /// The test hook's variable where its `rootless-broken` fails the
     /// set-up at its last step, once the sandbox started.
     pub(crate) broken_by: Option<&'static str>,
+    /// The path ranikust started from, as for [`plan`].
+    pub(crate) binary: Option<&'a Path>,
 }
 
 /// Enters the build's user namespace as `plan` says
@@ -259,8 +271,9 @@ pub(crate) fn set_up(
         held,
         ..
     } = plan;
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
-        .map_err(|e| super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into()))?;
+    let userns = rnk_sandbox::enter_build_user_namespace(subordinate).map_err(|e| {
+        super::userns_refusal(e, euid, super::no_userns::guidance(then.binary).into())
+    })?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let mut held = Some(held);
     let opened = match then.child {
@@ -375,16 +388,18 @@ mod tests {
     use super::*;
 
     /// A user other than root whose user namespace has no capabilities
-    /// (Ubuntu 24.04 stops it at the `chown`) is pointed at the AppArmor
-    /// switch, and a step past the namespace at running as root; root, whose
-    /// own refusal or kaniko mode says what to do, at nothing more; a
-    /// refused new `proc` with a working rbind, at `--allow proc.rbind`.
+    /// (Ubuntu 24.04 stops it at the `chown`), or who has none (the test
+    /// hook), gets the advice for no user namespace, and a step past the
+    /// namespace that to run as root; root, whose own refusal or kaniko
+    /// mode says what to do, nothing more; a refused new `proc` with a
+    /// working rbind, `--allow proc.rbind`.
     #[test]
     fn each_stop_of_the_probe_gets_its_guidance() {
-        for step in ["unshare", "map", "chown", "mount namespace"] {
+        let binary = Some(Path::new("/home/u/bin/ranikust"));
+        for step in ["unshare", "map", "chown", "mount namespace", "hook"] {
             assert_eq!(
-                guidance(step, false, 1000),
-                super::super::NO_USER_NAMESPACE,
+                guidance(step, false, 1000, binary),
+                super::super::no_userns::guidance(binary),
                 "{step}"
             );
         }
@@ -398,14 +413,13 @@ mod tests {
             "overlay",
             "hook",
         ] {
-            assert_eq!(guidance(step, false, 0), "", "{step}");
+            assert_eq!(guidance(step, false, 0, binary), "", "{step}");
         }
-        assert_eq!(guidance("proc", true, 1000), PROC_RBIND);
-        assert_eq!(guidance("proc", true, 0), PROC_RBIND);
-        for step in ["proc", "sysfs", "overlay", "hook"] {
-            assert_eq!(guidance(step, false, 1000), UNUSABLE, "{step}");
+        assert_eq!(guidance("proc", true, 1000, binary), PROC_RBIND);
+        assert_eq!(guidance("proc", true, 0, binary), PROC_RBIND);
+        for step in ["proc", "sysfs", "overlay"] {
+            assert_eq!(guidance(step, false, 1000, binary), UNUSABLE, "{step}");
         }
-        assert!(super::super::NO_USER_NAMESPACE.contains("apparmor_restrict_unprivileged_userns"));
         assert!(PROC_RBIND.contains("--allow proc.rbind"));
         assert!(PROC_RBIND.contains("not under ptrace's check"));
     }

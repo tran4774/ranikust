@@ -29,6 +29,7 @@ use rnk_store::{BuildPaths, Store};
 
 use crate::config::Seccomp;
 
+mod no_userns;
 pub(crate) mod rootless;
 
 /// The outcome the probes picked (ADR-0002, ADR-0004). Each library gets
@@ -224,13 +225,6 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
     rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))
 }
 
-/// Guidance where no user namespace with a map can be made for a user
-/// other than root.
-const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
-     its own with an id map: where kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu \
-     23.10 and later), only a program an AppArmor profile allows gets one; otherwise run \
-     ranikust as root";
-
 /// The build's user namespace, entered, and the store opened in it.
 #[cfg_attr(
     not(test),
@@ -267,7 +261,7 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
     prepare_state_dir(state_dir)?;
     // The user's, for the guidance: root of the namespace once in it.
     let euid = rustix::process::geteuid().as_raw();
-    let userns = enter_build_userns(NO_USER_NAMESPACE.into())?;
+    let userns = enter_build_userns(no_userns::guidance(None).into())?;
     let store = open_store(state_dir, state_dir, euid).map_err(inside_userns)?;
     Ok(UsernsSetup { userns, store })
 }
