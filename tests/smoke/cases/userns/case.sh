@@ -143,8 +143,9 @@ case_run() {
 # error; a directory of root's put in the store and a tmpfs mounted at
 # one of its entries stay, the prune names them and prints root's
 # commands, a build is refused, naming it, until it finishes; those
-# commands, run as root, leave the tmpfs and the marker, then, once it is
-# unmounted, all but the marker, which the prune then empties.
+# commands, run as root, change nothing while an entry's uid or gid is
+# neither root's nor the range's, leave the tmpfs and the marker, then,
+# once it is unmounted, all but the marker, which the prune then empties.
 pruned_as_the_range() {
   local log rc=0
   log="$(sudo "$RNK" prune --all --state-dir "$UW/state" 2>&1)" || rc=$?
@@ -221,6 +222,22 @@ pruned_as_the_range() {
   # all but the marker.
   way="( eval '${way#*"( eval '"}"
   way="${way%"; then run ranikust prune --all --userns --state-dir $UW/state again"}"
+  # An entry of an id neither root's nor the range's, by uid, then by gid
+  # alone: nothing changes.
+  local foreign listed
+  for foreign in "$((S - 1)):$G" "$S:$((G - 1))"; do
+    sudo install -m 644 -o "${foreign%:*}" -g "${foreign#*:}" /dev/null \
+      "$UW/state/builds/rnk-roots/foreign"
+    listed="$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)"
+    rc=0
+    log="$(sudo bash -c "$way" 2>&1)" || rc=$?
+    expect "$rc" 1 "the printed commands with an entry of $foreign"
+    grep -qF "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids $S-" <<<"$log" ||
+      fail "the printed commands with an entry of $foreign: $log"
+    expect "$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)" "$listed" \
+      "the state directory after the printed commands met an entry of $foreign"
+    sudo rm "$UW/state/builds/rnk-roots/foreign"
+  done
   rc=0
   sudo bash -c "$way" || rc=$?
   expect "$rc" 1 "the printed commands with a tmpfs mounted at an entry"

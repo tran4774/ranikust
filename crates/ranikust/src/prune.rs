@@ -243,16 +243,66 @@ const USER_SCRIPT: &str = gnu_find_first!(
 );
 
 /// Root's removal of what `prune --all --userns` left in `--userns`'s
-/// state directory, for [`in_dir`]: with GNU `find` only
-/// ([`gnu_find_first`]), and only where the regular `.ranikust-pruning`
-/// that prune left is, which it keeps, so that no build takes the
-/// directory meanwhile; then everything else, as [`ROOT_SCRIPT`] deletes
-/// (`-xdev`: nothing on another filesystem), and a check that only the
-/// marker is left. Of every owner, unlike [`root_script`]: ADR-0146.
-const USERNS_LEFT_SCRIPT: &str = gnu_find_first!(concat!(
-    r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
-    r#"find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || { echo "not emptied: what find names above is left, and the marker" >&2; exit 1; }"#
-));
+/// state directory, whose builds map `range`, for [`in_dir`]: with GNU
+/// `find` only ([`gnu_find_first`]), and only where the regular
+/// `.ranikust-pruning` that prune left is, which it keeps, so that no
+/// build takes the directory meanwhile (ADR-0146); then [`root_script`]'s
+/// owner check, of root's ids and the range's, uid and gid (`-xdev` does
+/// not see a bind mount of the same filesystem); then everything else of
+/// those ids (`-xdev`: nothing on another filesystem), and a check that
+/// only the marker is left.
+fn userns_left_script(range: SubordinateIds) -> String {
+    let (uids, gids) = (Bounds::of(range.uids), Bounds::of(range.gids));
+    let ours = format!(
+        r"\( \( -uid 0 -o \( -uid +{} -uid -{} \) \) \( -gid 0 -o \( -gid +{} -gid -{} \) \) \)",
+        uids.below(),
+        uids.past,
+        gids.below(),
+        gids.past
+    );
+    let ids = format!("uids {uids}, gids {gids}");
+    let mut script = String::from(gnu_find_first!(""));
+    script.push_str(
+        r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
+    );
+    script.push_str(&format!(
+        r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)" || {{ echo "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range ({ids}) are here, which this removal would leave in place, or find failed" >&2; exit 1; }}; "#
+    ));
+    script.push_str(&format!(
+        r#"{{ find . -xdev -mindepth 1 ! -path ./.ranikust-pruning {ours} -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || {{ echo "not emptied: what find names above is left, and the marker" >&2; exit 1; }}; }}"#
+    ));
+    script
+}
+
+/// A range of ids, in `u64` so that nothing overflows: its first id, and
+/// the one past its last, `find`'s strict upper bound.
+struct Bounds {
+    first: u64,
+    past: u64,
+}
+
+impl Bounds {
+    fn of(range: IdRange) -> Self {
+        let first = u64::from(range.start);
+        Self {
+            first,
+            past: first + u64::from(range.count),
+        }
+    }
+
+    /// The bound below the first id, for `-uid +n`: an id 0 is root's,
+    /// which the caller checks on its own.
+    fn below(&self) -> u64 {
+        self.first.saturating_sub(1)
+    }
+}
+
+/// The range's first and last ids, as `first-last`.
+impl std::fmt::Display for Bounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.first, self.past.saturating_sub(1))
+    }
+}
 
 /// How root empties the state directory `dir`, pinned as `pin`, which
 /// holds a marker, with ordinary tools, then removes it.
@@ -402,18 +452,21 @@ fn userns_way(dir: &Path) -> String {
 /// an entry in a sticky directory another id owns, where the namespace's
 /// root has no `CAP_FOWNER` over it), since no build opens the directory
 /// meanwhile. The range's `RUN`s can change that tree: root's commands
-/// ([`USERNS_LEFT_SCRIPT`] in [`in_dir`]) come after every `--userns`
+/// ([`userns_left_script`] in [`in_dir`]) come after every `--userns`
 /// build is stopped, and run only while none holds the directory.
-fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
+fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>, range: SubordinateIds) -> String {
     let d = shell_word(dir.as_os_str());
     let by_root = match pin {
         Ok(pin) => format!(
-            "then, as root, remove every entry of every owner but the .ranikust-pruning marker, \
-             which keeps builds out, with commands that refuse a PATH with a relative or empty \
-             entry, unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH and act only on \
-             the directory ranikust checked, while no build holds it; the removal \
+            "then, as root, remove every entry but the .ranikust-pruning marker, which keeps \
+             builds out, changing nothing where an entry belongs neither to root nor to the \
+             ranikust range (uids {}, gids {}), with commands that refuse a PATH with a relative \
+             or empty entry, unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH and act \
+             only on the directory ranikust checked, while no build holds it; the removal \
              {NEEDS_GNU_FIND}: {}",
-            in_dir(dir, pin, USERNS_LEFT_SCRIPT)
+            Bounds::of(range.uids),
+            Bounds::of(range.gids),
+            in_dir(dir, pin, &userns_left_script(range))
         ),
         Err(why) => no_commands(dir, &why, false),
     };
@@ -425,6 +478,30 @@ fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
          and unmount anything below {d}; {by_root}; then run ranikust prune --all --userns \
          --state-dir {d} again"
     )
+}
+
+/// The reason of the store error `e` from [`Store::prune_all`] under
+/// `--userns`: what is left names `prune --all --userns`, the one that
+/// empties that directory, not `prune --all`.
+fn userns_reason(e: &rnk_store::Error) -> String {
+    let text = e.to_string();
+    match unfinished_prune(e) {
+        Some((Unfinished::NotPruned, _)) => text
+            .strip_prefix("ranikust prune --all ")
+            .and_then(|t| {
+                t.strip_suffix("; no build uses it until ranikust prune --all empties it")
+            })
+            .map_or_else(
+                || text.clone(),
+                |middle| {
+                    format!(
+                        "ranikust prune --all --userns {middle}; no build uses it until ranikust \
+                         prune --all --userns empties it"
+                    )
+                },
+            ),
+        Some((Unfinished::CutShort, _)) | None => text,
+    }
 }
 
 /// The ways out of the state directory `dir`, pinned as `pin`, that
@@ -785,9 +862,9 @@ fn userns_with(
         Ok(false) => Ok(Pruned::Empty),
         Err(e) => Err(setup::inside_userns(Refusal {
             kind: Kind::Other,
-            reason: e.to_string(),
+            reason: userns_reason(&e),
             guidance: match unfinished_prune(&e) {
-                Some((Unfinished::NotPruned, _)) => userns_unfinished(state_dir, pin).into(),
+                Some((Unfinished::NotPruned, _)) => userns_unfinished(state_dir, pin, range).into(),
                 Some((Unfinished::CutShort, _)) | None => "".into(),
             },
         })),

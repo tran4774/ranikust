@@ -956,15 +956,16 @@ fn the_scripts_change_nothing_without_gnu_findutils() {
         fs::create_dir(&bin).unwrap();
         fs::write(bin.join("find"), shim).unwrap();
         fs::set_permissions(bin.join("find"), fs::Permissions::from_mode(0o755)).unwrap();
+        let userns_left = userns_left_script(own_range());
         for script in [
             ROOT_SCRIPT.to_owned(),
             root_script(&Owner::of(owner)),
             USER_SCRIPT.to_owned(),
-            USERNS_LEFT_SCRIPT.to_owned(),
+            userns_left.clone(),
         ] {
             marked_state(&state);
-            // The marker USERNS_LEFT_SCRIPT takes: only the find check stops it.
-            if script == USERNS_LEFT_SCRIPT {
+            // The marker the userns script takes: only the find check stops it.
+            if script == userns_left {
                 fs::write(state.join(rnk_store::PRUNING_MARKER), b"").unwrap();
             }
             let before = listing(tmp.path());
@@ -1842,6 +1843,22 @@ fn the_checks_outside_refuse_what_the_store_refuses() {
     }
 }
 
+/// This process's effective uid and gid as a range of one each: the
+/// `ranikust` range of root's printed commands run as this user, whose
+/// files are of those ids.
+fn own_range() -> SubordinateIds {
+    SubordinateIds {
+        uids: IdRange {
+            start: rustix::process::geteuid().as_raw(),
+            count: 1,
+        },
+        gids: IdRange {
+            start: rustix::process::getegid().as_raw(),
+            count: 1,
+        },
+    }
+}
+
 /// A range of `--userns` in these tests, from `uid` and `gid`.
 fn range_from(uid: u32, gid: u32) -> SubordinateIds {
     SubordinateIds {
@@ -2016,8 +2033,9 @@ fn prune_userns_and_roots_prune_never_send_root_to_each_other() {
 /// range's uid could not remove the entries its reason names; every
 /// `--userns` build stopped first; then root's commands, entering the
 /// directory once after the environment's check, pinned, while no build
-/// holds it, with no entry's name in them; then it again, naming the
-/// state directory. No command without a pin.
+/// holds it, with no entry's name in them, the range's bounds written in
+/// for its owner check; then it again, naming the state directory. No
+/// command without a pin.
 #[test]
 fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
     let dir = Path::new("/srv/rnk state");
@@ -2027,25 +2045,59 @@ fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
         uid: 100_000,
         mode: 0o700,
     };
-    let text = userns_unfinished(dir, Ok(pin));
+    let range = SubordinateIds {
+        uids: IdRange {
+            start: 100_000,
+            count: 65536,
+        },
+        gids: IdRange {
+            start: 300_000,
+            count: 1000,
+        },
+    };
+    let text = userns_unfinished(dir, Ok(pin), range);
+    let ours = r"\( \( -uid 0 -o \( -uid +99999 -uid -165536 \) \) \( -gid 0 -o \( -gid +299999 -gid -301000 \) \) \)";
+    let script = userns_left_script(range);
     for want in [
         "directories that still hold entries",
         "entries in a sticky directory",
         "the entries named above. Stop every --userns build first, and unmount anything below \
-         '/srv/rnk state'; then, as root, remove every entry of every owner but the \
-         .ranikust-pruning marker",
+         '/srv/rnk state'; then, as root, remove every entry but the .ranikust-pruning marker, \
+         which keeps builds out",
+        "changing nothing where an entry belongs neither to root nor to the ranikust range \
+         (uids 100000-165535, gids 300000-300999)",
         "the removal needs GNU findutils",
         &format!(
-            r#"{ENV_FIRST}CDPATH= cd -P -- '/srv/rnk state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:100000:700 && exec flock -xn . sh -c '{USERNS_LEFT_SCRIPT}' ); then run ranikust prune --all --userns --state-dir '/srv/rnk state' again"#
+            r#"{ENV_FIRST}CDPATH= cd -P -- '/srv/rnk state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:100000:700 && exec flock -xn . sh -c '{script}' ); then run ranikust prune --all --userns --state-dir '/srv/rnk state' again"#
         ),
     ] {
         assert!(text.contains(want), "{want}: {text}");
     }
+    for want in [
+        &format!(r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)""#),
+        &format!("find . -xdev -mindepth 1 ! -path ./.ranikust-pruning {ours} -delete"),
+        "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids \
+         100000-165535, gids 300000-300999) are here",
+    ] {
+        assert!(script.contains(want), "{want}: {script}");
+    }
+    // The marker's check comes before the owners', which comes before any
+    // deletion.
+    let at = |what: &str| {
+        script
+            .find(what)
+            .unwrap_or_else(|| panic!("{what}: {script}"))
+    };
+    assert!(
+        at("no regular .ranikust-pruning") < at("-print -quit"),
+        "{script}"
+    );
+    assert!(at("-print -quit") < at("-delete"), "{script}");
     assert!(
         text.ends_with("--state-dir '/srv/rnk state' again"),
         "{text}"
     );
-    let none = userns_unfinished(dir, Err(NoPin::Refused("why".to_owned())));
+    let none = userns_unfinished(dir, Err(NoPin::Refused("why".to_owned())), range);
     assert!(
         none.contains(
             "unmount anything below '/srv/rnk state'; ranikust gives no commands for \
@@ -2056,11 +2108,31 @@ fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
     assert!(!none.contains("cd -P"), "{none}");
 }
 
+/// What a `prune --all --userns` that left entries says first names
+/// `prune --all --userns`; any other store error reads as the store says.
+#[test]
+fn a_userns_prune_that_could_not_finish_names_itself() {
+    let e = rnk_store::Error::NotPruned {
+        path: PathBuf::from("/srv/state"),
+        left: "\"tmp\"".to_owned(),
+    };
+    assert_eq!(
+        userns_reason(&e),
+        "ranikust prune --all --userns could not empty the state directory /srv/state: it still \
+         holds \"tmp\"; no build uses it until ranikust prune --all --userns empties it"
+    );
+    let e = rnk_store::Error::PruneCutShort {
+        path: PathBuf::from("/srv/state"),
+    };
+    assert_eq!(userns_reason(&e), e.to_string());
+}
+
 /// Root's removal of what a `prune --all --userns` left, as printed, run
 /// by each shell present: every entry but the marker goes, whatever its
 /// name, a symlink out removed and not followed; it changes nothing
-/// without a regular `.ranikust-pruning` or at a `PATH` with a relative
-/// entry, where it runs no tool put there. Without GNU findutils:
+/// without a regular `.ranikust-pruning`, where an entry's uid or gid is
+/// neither root's nor the range's, or at a `PATH` with a relative entry,
+/// where it runs no tool put there. Without GNU findutils:
 /// `the_scripts_change_nothing_without_gnu_findutils`.
 #[test]
 fn a_userns_prunes_leftovers_go_but_the_marker() {
@@ -2098,8 +2170,10 @@ fn a_userns_prunes_leftovers_go_but_the_marker() {
         pin_of(&state)
     };
     let real = std::env::var_os("PATH").expect("PATH");
+    // This test's own ids stand for the range's.
+    let script = userns_left_script(own_range());
     for sh in shells() {
-        let command = in_dir(&state, fresh(rnk_store::PRUNING_MARKER), USERNS_LEFT_SCRIPT);
+        let command = in_dir(&state, fresh(rnk_store::PRUNING_MARKER), &script);
         let out = shell_with(&sh, &command, &cwd, &[("PATH", &real)]);
         assert!(out.status.success(), "{sh:?}: {out:?}");
         let left: Vec<_> = fs::read_dir(&state)
@@ -2124,7 +2198,7 @@ fn a_userns_prunes_leftovers_go_but_the_marker() {
         let before = listing(tmp.path());
         let out = shell_with(
             &["bash"],
-            &in_dir(&state, pin, USERNS_LEFT_SCRIPT),
+            &in_dir(&state, pin, &script),
             &cwd,
             &[("PATH", &real)],
         );
@@ -2134,6 +2208,52 @@ fn a_userns_prunes_leftovers_go_but_the_marker() {
             "{kind}: {out:?}"
         );
         assert_eq!(listing(tmp.path()), before, "{kind}");
+    }
+    // An entry neither root's nor the range's, by uid, then by gid alone:
+    // nothing changes. Root's own uid and gid pass whatever the range.
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    let mut foreign = Vec::new();
+    if uid != 0 {
+        foreign.push(SubordinateIds {
+            uids: IdRange {
+                start: uid + 1,
+                count: 10,
+            },
+            ..own_range()
+        });
+    }
+    if gid != 0 {
+        foreign.push(SubordinateIds {
+            gids: IdRange {
+                start: gid + 1,
+                count: 10,
+            },
+            ..own_range()
+        });
+    }
+    if foreign.is_empty() {
+        measured("a userns prune's owner check: root's ids, none foreign to test");
+    }
+    for range in foreign {
+        let pin = fresh(rnk_store::PRUNING_MARKER);
+        let before = listing(tmp.path());
+        let out = shell_with(
+            &["bash"],
+            &in_dir(&state, pin, &userns_left_script(range)),
+            &cwd,
+            &[("PATH", &real)],
+        );
+        assert!(!out.status.success(), "{range:?}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(
+                "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range"
+            ),
+            "{range:?}: {out:?}"
+        );
+        assert_eq!(listing(tmp.path()), before, "{range:?}");
     }
     // A relative `PATH` entry, tools put in the directory: none runs.
     let pin = fresh(rnk_store::PRUNING_MARKER);
@@ -2145,12 +2265,7 @@ fn a_userns_prunes_leftovers_go_but_the_marker() {
     path.push(&real);
     let before = listing(tmp.path());
     for sh in shells() {
-        let out = shell_with(
-            &sh,
-            &in_dir(&state, pin, USERNS_LEFT_SCRIPT),
-            &cwd,
-            &[("PATH", &path)],
-        );
+        let out = shell_with(&sh, &in_dir(&state, pin, &script), &cwd, &[("PATH", &path)]);
         assert!(!out.status.success(), "{sh:?}: {out:?}");
         assert_eq!(listing(tmp.path()), before, "{sh:?}");
     }
