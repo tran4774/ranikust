@@ -578,7 +578,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `each_stop_of_the_probe_gets_its_guidance`, `setup::no_userns`'s advice
   for a user stopped at `unshare`, the map, `chown` or the mount namespace
   or by the test hook, `--allow proc.rbind` for a refused new `proc` whose
-  rbind works, else running as root; the stop weighed on its own step's
+  rbind works, else running as root, and `USERNS_UNUSABLE` for every
+  `--userns` stop, never that advice;
+  `userns_failures_name_userns_and_guide_as_its_probe`: a refused entry
+  into the build's user namespace gets `USERNS_UNUSABLE` under `--userns`,
+  the advice for a user, nothing for root; the stop weighed on its own step's
   result (the capability check's through `Steps::checked`; the probe's
   report cannot be built in a test, so `Steps::probed` is not covered),
   none where the capability check showed capabilities (both its steps

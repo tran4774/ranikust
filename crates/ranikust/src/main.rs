@@ -916,16 +916,17 @@ fn rootless(
     {
         return Rootless::Built(Err(failure));
     }
+    let userns = matches!(via, Via::Userns(_));
     let plan = match span.in_scope(|| {
         if fault == Some("no-userns") {
             let euid = rustix::process::geteuid().as_raw();
             return Err(setup::rootless::refused_by_hook(
                 DEBUG_FAULT_ENV,
                 euid,
+                userns,
                 binary,
             ));
         }
-        let userns = matches!(via, Via::Userns(_));
         setup::rootless::plan(&config.state_dir, config.allow_proc_rbind, userns, binary)
     }) {
         Ok(plan) => plan,
@@ -2391,12 +2392,20 @@ mod tests {
 
     /// The test hook's refusal leaves the process unchanged and gives a
     /// user other than root the advice for no user namespace, root nothing
-    /// more.
+    /// more, root's `--userns` its own, named.
     #[test]
     fn the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe() {
-        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, None);
+        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, false, None);
         assert_eq!(as_root.refusal.guidance, "");
-        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000, None);
+        let userns = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, true, None).refusal;
+        assert!(
+            userns.reason.starts_with("--userns cannot run here"),
+            "{}",
+            userns.reason
+        );
+        assert!(userns.guidance.starts_with("--userns needs"));
+        assert!(!userns.guidance.contains("AppArmor"));
+        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000, false, None);
         assert!(!not_here.probed);
         assert_eq!(not_here.refusal.kind, setup::Kind::Other);
         assert!(

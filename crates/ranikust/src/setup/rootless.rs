@@ -83,14 +83,24 @@ const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), o
 /// The test hook's `no-userns` (`env`, the hook's variable): rootless
 /// overlay mode refused before its probe, the process unchanged, with the
 /// guidance for the effective uid `euid` where no user namespace is
-/// usable, `binary` as for [`plan`].
-pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> NotHere {
+/// usable, under `--userns` with `userns`, `binary` as for [`plan`].
+pub(crate) fn refused_by_hook(
+    env: &str,
+    euid: u32,
+    userns: bool,
+    binary: Option<&Path>,
+) -> NotHere {
+    let what = if userns {
+        "--userns"
+    } else {
+        "rootless overlay mode"
+    };
     NotHere {
         refusal: Refusal {
             kind: Kind::Other,
-            reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
+            reason: format!("{what} cannot run here: refused by {env}=no-userns"),
             // As a user namespace without capabilities stops.
-            guidance: guidance("hook", Stop::InNamespace, false, euid, false, binary),
+            guidance: guidance("hook", Stop::InNamespace, false, euid, userns, binary),
         },
         probed: false,
     }
