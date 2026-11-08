@@ -94,10 +94,76 @@ impl Stop {
 
 /// The advice for this host, for `binary`, the path ranikust started from
 /// (`None` where it could not be read), stopped by `stop`: the profile only
-/// where AppArmor restricts user namespaces and may be what refused, for
-/// that path only where root alone may change it.
+/// where [`Here::offers`] and AppArmor may be what refused, for that path
+/// only where root alone may change it.
 pub(crate) fn guidance(binary: Option<&Path>, stop: Stop) -> String {
-    if !(stop.offers_profile() && restricted()) {
+    advise(binary, stop, &Here::read())
+}
+
+/// Where ranikust runs, as the advice weighs it.
+#[derive(Clone, Copy, Debug)]
+struct Here {
+    /// `kernel.apparmor_restrict_unprivileged_userns` reads 1.
+    restricted: bool,
+    /// AppArmor's label of this process reads `unconfined`: the switch
+    /// applies to it, and a profile bound to its path attaches when it
+    /// starts.
+    unconfined: bool,
+    /// In the host's user namespace and no container ([`on_host`]): the
+    /// paths ranikust sees are the ones a profile loaded on the host
+    /// attaches to.
+    on_host: bool,
+}
+
+impl Here {
+    fn read() -> Self {
+        let label = match std::fs::read("/proc/self/attr/apparmor/current") {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::read("/proc/self/attr/current")
+            }
+            label => label,
+        };
+        let uid_map = std::fs::read_to_string("/proc/self/uid_map").ok();
+        Self {
+            restricted: restricted(),
+            unconfined: label.is_ok_and(|l| unconfined(&l)),
+            on_host: on_host(
+                uid_map.as_deref(),
+                crate::container::detect(&crate::container::Real),
+            ),
+        }
+    }
+
+    /// Whether a profile may be offered here at all.
+    fn offers(self) -> bool {
+        self.restricted && self.unconfined && self.on_host
+    }
+}
+
+/// Whether `label`, AppArmor's for this process, is `unconfined`: a label
+/// of another profile, or of a stack, is not.
+fn unconfined(label: &[u8]) -> bool {
+    label.trim_ascii() == b"unconfined"
+}
+
+/// Whether `uid_map` (`None`: unread) is the host's user namespace's, and
+/// `container` none: elsewhere the tree ranikust sees, and its owners, may
+/// be a container's or a user's own, not the one a profile on the host
+/// attaches to.
+fn on_host(uid_map: Option<&str>, container: Option<crate::container::Runtime>) -> bool {
+    let initial = uid_map.is_some_and(|map| {
+        let mut lines = map.lines();
+        lines
+            .next()
+            .is_some_and(|l| l.split_ascii_whitespace().eq(["0", "0", "4294967295"]))
+            && lines.next().is_none()
+    });
+    initial && container.is_none()
+}
+
+/// [`guidance`] for `here`.
+fn advise(binary: Option<&Path>, stop: Stop, here: &Here) -> String {
+    if !(stop.offers_profile() && here.offers()) {
         return advice(None);
     }
     let bound = match binary {

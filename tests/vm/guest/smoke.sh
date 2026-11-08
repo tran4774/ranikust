@@ -595,6 +595,31 @@ seccomp_user_advice() {
   echo "default-user: a user in a default docker run: refused at unshare (EPERM); advice: sudo, a container, no profile ($AA_SWITCH: $(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null || echo absent))"
 }
 
+# #81: where the switch is 1, a user other than root in a privileged
+# container (no seccomp filter, no AppArmor confinement, the host's id map)
+# is refused at the mount namespace and advised sudo then a container, with
+# no profile: a path checked in a container is not the one a profile on the
+# host attaches to.
+privileged_user_advice() {
+  local d="$W/privileged-user" rc=0 log advice
+  if [ "$(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null)" != 1 ]; then
+    echo "privileged-user: $AA_SWITCH is not 1: not checked"
+    return
+  fi
+  sudo mkdir -m 755 -p "$d/ctx"
+  printf 'FROM %s\nRUN true\n' "$E2E_BASE" | sudo tee "$d/ctx/Dockerfile" >/dev/null
+  log="$(sudo docker run --rm --privileged --user 1000:1000 -v "$RNK:/ranikust/bin/ranikust:ro" \
+    -v "$d/ctx:/ranikust/ctx:ro" "$IMAGE" /ranikust/bin/ranikust --context /ranikust/ctx \
+    --no-push --state-dir /tmp/rnk-state 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/build.log" >/dev/null
+  advice="$(advice_of "$log")"
+  [ "$rc" = 1 ] && grep -q 'the user namespace probe stops at mount namespace' <<<"$log" &&
+    in_order "$advice" 'run ranikust as root, with sudo; ' 'or run ranikust in a container' &&
+    ! grep -qi 'apparmor' <<<"$advice" ||
+    { echo "error: privileged-user: expected a refusal at the mount namespace, advising sudo then a container and no profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "privileged-user: a user in a privileged docker run: refused at the mount namespace; advice: sudo, a container, no profile"
+}
+
 # #81: where the switch is 0 (Ubuntu 22.04), or absent, the advice for no
 # user namespace (the test hook's) names no profile: sudo, then a container.
 # Where it is 1 it is set to 0 for the run, then back.
@@ -952,6 +977,7 @@ else
 fi
 advice_without_the_switch
 seccomp_user_advice
+privileged_user_advice
 echo "user: ok"
 
 echo "=== escape control: a plain chroot into the host variant's root"

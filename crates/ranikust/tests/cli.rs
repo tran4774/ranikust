@@ -286,9 +286,10 @@ fn without_root_the_set_up_never_makes_the_default_state_dir() {
 }
 
 /// A user with no user namespace is told, in order: `sudo`; where AppArmor
-/// restricts user namespaces, the profile, after installing the binary
-/// under `/usr/local/bin`, as this one, built in the checkout, is the
-/// user's; a container. Elsewhere no profile is named.
+/// restricts user namespaces and ranikust runs unconfined in the host's
+/// user namespace, the profile, after installing the binary under
+/// `/usr/local/bin`, as this one, built in the checkout, is the user's; a
+/// container. Elsewhere no profile is named.
 #[test]
 fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
     if skip_as_root() {
@@ -314,7 +315,16 @@ fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
     assert!(sudo < container, "{advice}");
     let restricted = fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
         .is_ok_and(|v| v.trim_ascii() == b"1");
-    if restricted {
+    let unconfined = fs::read("/proc/self/attr/apparmor/current")
+        .or_else(|_| fs::read("/proc/self/attr/current"))
+        .is_ok_and(|v| v.trim_ascii() == b"unconfined");
+    let host_userns = fs::read_to_string("/proc/self/uid_map")
+        .is_ok_and(|m| m.split_ascii_whitespace().eq(["0", "0", "4294967295"]));
+    // T0 runs on a host; in a container ranikust names no profile either.
+    let in_container = ["/.dockerenv", "/run/.containerenv"]
+        .iter()
+        .any(|p| Path::new(p).exists());
+    if restricted && unconfined && host_userns && !in_container {
         // As /usr/local/bin/ranikust, or elsewhere where /usr/local/bin is
         // not root's alone.
         let profile = at("or, as root, install ranikust ").expect(advice);

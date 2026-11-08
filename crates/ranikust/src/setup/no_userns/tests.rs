@@ -203,13 +203,83 @@ fn only_a_stop_apparmor_may_cause_offers_the_profile() {
         assert!(!got.offers_profile(), "{got:?}");
         assert_eq!(guidance(Some(shown), got), advice(None), "{got:?}");
     }
-    // The profile itself only where the switch reads 1 here.
+    // The profile itself only where this host offers one.
     let in_namespace = guidance(Some(shown), Stop::InNamespace);
     assert_eq!(
         in_namespace.contains(PROFILE),
-        restricted(),
+        Here::read().offers(),
         "{in_namespace}"
     );
+}
+
+/// A stop AppArmor may cause gets the profile only where the switch reads
+/// 1, ranikust runs unconfined (a confined program's own profile decides,
+/// and ranikust's would not attach), in the host's user namespace and in no
+/// container (a path checked there is not the one a profile on the host
+/// attaches to); elsewhere `sudo` then a container, with no path weighed.
+#[test]
+fn only_an_unconfined_program_on_the_host_gets_the_profile() {
+    let host = Here {
+        restricted: true,
+        unconfined: true,
+        on_host: true,
+    };
+    let elsewhere = [
+        Here {
+            restricted: false,
+            ..host
+        },
+        Here {
+            unconfined: false,
+            ..host
+        },
+        Here {
+            on_host: false,
+            ..host
+        },
+    ];
+    let shown = Some(Path::new("/usr/local/bin/ranikust"));
+    for stop in [Stop::InNamespace, Stop::Unshare(libc::EACCES)] {
+        assert!(advise(None, stop, &host).contains(PROFILE), "{stop:?}");
+        for here in elsewhere {
+            assert_eq!(advise(shown, stop, &here), advice(None), "{here:?}");
+            assert_eq!(advise(None, stop, &here), advice(None), "{here:?}");
+        }
+    }
+    assert!(unconfined(b"unconfined\n"));
+    assert!(unconfined(b"unconfined"));
+    for label in [
+        &b"ranikust (unconfined)\n"[..],
+        b"docker-default (enforce)\n",
+        b"unprivileged_userns (enforce)\n",
+        b"unconfined//&:ns:unconfined\n",
+        b"",
+    ] {
+        assert!(!unconfined(label), "{label:?}");
+    }
+}
+
+/// The host's user namespace maps every id to itself, in one line; a
+/// container runtime ranikust detects is not the host either.
+#[test]
+fn only_the_host_s_user_namespace_outside_a_container_is_the_host() {
+    use crate::container::Runtime;
+    let initial = "         0          0 4294967295\n";
+    assert!(on_host(Some(initial), None));
+    assert!(!on_host(Some(initial), Some(Runtime::Docker)));
+    assert!(!on_host(Some(initial), Some(Runtime::Podman)));
+    for map in [
+        "         0       1000          1\n",
+        "      1000       1000          1\n",
+        "         0     100000      65536\n",
+        "         0          0      65536\n",
+        "         0          0 4294967295\n         0          0          1\n",
+        "         1          0 4294967295\n",
+        "",
+    ] {
+        assert!(!on_host(Some(map), None), "{map:?}");
+    }
+    assert!(!on_host(None, None));
 }
 
 /// A profile names only a path of plain characters as it is: no glob,
