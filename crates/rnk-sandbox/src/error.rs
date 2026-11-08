@@ -109,10 +109,13 @@ pub enum Step {
     /// Making the command's cgroup namespace, rooted at its cgroup
     /// (ADR-0110).
     CgroupNamespace,
+    /// Clearing the dump flag the switch to the `RUN`'s user set
+    /// (`prctl(PR_SET_DUMPABLE)`).
+    Dumpable,
 }
 
 impl Step {
-    const ALL: [Step; 45] = [
+    const ALL: [Step; 46] = [
         Step::DeathSignal,
         Step::ParentGone,
         Step::PrivateMounts,
@@ -158,6 +161,7 @@ impl Step {
         Step::Init,
         Step::JoinCgroup,
         Step::CgroupNamespace,
+        Step::Dumpable,
     ];
 
     /// The wire code of the step: its position in [`Step::ALL`].
@@ -232,6 +236,7 @@ impl Step {
             Step::Init => "start the RUN's init",
             Step::JoinCgroup => "join the RUN's cgroup",
             Step::CgroupNamespace => "make the RUN's cgroup namespace",
+            Step::Dumpable => "make the process not dumpable",
         }
     }
 }

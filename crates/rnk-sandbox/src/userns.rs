@@ -687,7 +687,15 @@ pub(crate) struct OwnNamespace {
     pub(crate) setgroups: bool,
     /// gid 5 (`tty`), which `devpts` is mounted with, is mapped.
     pub(crate) tty_gid: bool,
+    /// A user namespace other than the initial one, told by the inode of
+    /// `/proc/self/ns/user`: only there can a user switch refused with
+    /// `EINVAL` mean an id the map lacks (ADR-0098).
+    pub(crate) user_ns: bool,
 }
+
+/// The inode of the initial user namespace on nsfs (`PROC_USER_INIT_INO`,
+/// fixed since Linux 3.8).
+const INIT_USER_NS_INO: u64 = 0xEFFF_FFFD;
 
 impl OwnNamespace {
     /// Reads this process's files.
@@ -697,10 +705,13 @@ impl OwnNamespace {
         Self::parse(
             read("/proc/self/setgroups").as_deref(),
             read("/proc/self/gid_map").as_deref(),
+            rustix::fs::stat("/proc/self/ns/user")
+                .ok()
+                .map(|st| st.st_ino),
         )
     }
 
-    fn parse(setgroups: Option<&str>, gid_map: Option<&str>) -> Self {
+    fn parse(setgroups: Option<&str>, gid_map: Option<&str>, ns_inode: Option<u64>) -> Self {
         const TTY: u32 = 5;
         let tty_gid = gid_map.and_then(map_lines).is_none_or(|lines| {
             lines
@@ -712,6 +723,7 @@ impl OwnNamespace {
         Self {
             setgroups: !(denied && one_gid),
             tty_gid,
+            user_ns: ns_inode.is_some_and(|ino| ino != INIT_USER_NS_INO),
         }
     }
 }

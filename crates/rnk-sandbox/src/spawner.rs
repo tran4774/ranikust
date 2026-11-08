@@ -333,6 +333,9 @@ pub(crate) struct Job {
     /// until the clone and closed right after, so that only the child holds
     /// them.
     fds: Vec<OwnedFd>,
+    /// This process runs in a user namespace other than the initial one
+    /// ([`OwnNamespace::user_ns`]).
+    user_ns: bool,
 }
 
 struct Request {
@@ -392,6 +395,7 @@ pub(crate) fn clone_child(job: Job, parent: ParentPid) -> Result<Spawned> {
         isolation,
         hold_network,
         fds: keep,
+        user_ns: _,
     } = job;
     let (failures, err_w) =
         rustix::pipe::pipe_with(PipeFlags::CLOEXEC).map_err(|e| sys_err("pipe2", e))?;
@@ -1310,6 +1314,7 @@ impl Runner {
             isolation: spec.isolation,
             hold_network,
             fds: keep,
+            user_ns: self.own_ns.user_ns,
         })
     }
 
@@ -1991,6 +1996,7 @@ fn execute(
         } else {
             Vec::new()
         },
+        user_ns: job.user_ns,
     };
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
@@ -2099,17 +2105,28 @@ struct RunUser {
     gid: Gid,
     /// The supplementary groups, when they are set.
     groups: Vec<Gid>,
+    /// The switch is made in a user namespace other than the initial one.
+    user_ns: bool,
 }
+
+/// The kernel's `NGROUPS_MAX` (`include/uapi/linux/limits.h`, 65536 since
+/// Linux 2.6.4): `setgroups` refuses a longer list with `EINVAL` too.
+const NGROUPS_MAX: usize = 65536;
 
 /// `e`, or, for a switch to `user` refused with `EINVAL`, which
 /// `setgroups`, `setresgid` and `setresuid` return for an id the user
 /// namespace does not map, [`Error::Unmapped`] naming the ids (ADR-0098).
+/// Only where no other cause is left: in the initial user namespace every
+/// id maps, and `setgroups` refuses more than [`NGROUPS_MAX`] groups with
+/// the same errno.
 fn unmapped_user(e: Error, user: &RunUser) -> Error {
     if let Error::Setup {
         step: step @ (Step::Groups | Step::Gid | Step::Uid),
         source,
     } = &e
         && source.raw_os_error() == Some(libc::EINVAL)
+        && user.user_ns
+        && user.groups.len() <= NGROUPS_MAX
     {
         let groups: Vec<u32> = user.groups.iter().map(|g| g.as_raw()).collect();
         return Error::Unmapped(rnk_rootfs::Unmapped::user(
@@ -2546,6 +2563,7 @@ mod tests {
             uid: Uid::from_raw(1000),
             gid: Gid::from_raw(1000),
             groups: vec![Gid::from_raw(27)],
+            user_ns: true,
         };
         let setup = |step, errno| Error::Setup {
             step,
@@ -2567,10 +2585,59 @@ mod tests {
             let e = unmapped_user(setup(step, libc::EINVAL), &user);
             assert!(matches!(e, Error::Unmapped(_)), "{step}");
         }
-        for (step, errno) in [(Step::Uid, libc::EPERM), (Step::Workdir, libc::EINVAL)] {
+        for (step, errno) in [
+            (Step::Uid, libc::EPERM),
+            (Step::Workdir, libc::EINVAL),
+            // The dump flag's `prctl` switches no id.
+            (Step::Dumpable, libc::EINVAL),
+        ] {
             let e = unmapped_user(setup(step, errno), &user);
             assert!(matches!(e, Error::Setup { .. }), "{step}");
         }
+    }
+
+    /// An `EINVAL` that an unmapped id does not explain stays the step's
+    /// error: in the initial user namespace every id but `-1` maps, and
+    /// `setgroups` refuses more groups than the kernel's `NGROUPS_MAX`
+    /// with it too.
+    #[test]
+    fn a_user_switch_refused_with_einval_for_another_cause_names_no_id() {
+        let setup = |step| Error::Setup {
+            step,
+            source: io::Error::from_raw_os_error(libc::EINVAL),
+        };
+        let initial = RunUser {
+            uid: Uid::from_raw(1000),
+            gid: Gid::from_raw(1000),
+            groups: vec![Gid::from_raw(27)],
+            user_ns: false,
+        };
+        for step in [Step::Groups, Step::Gid, Step::Uid] {
+            let e = unmapped_user(setup(step), &initial);
+            assert!(matches!(e, Error::Setup { .. }), "{step}");
+        }
+        let many = |n: u32| RunUser {
+            uid: Uid::from_raw(1000),
+            gid: Gid::from_raw(1000),
+            groups: (0..n).map(Gid::from_raw).collect(),
+            user_ns: true,
+        };
+        let limit = u32::try_from(NGROUPS_MAX).unwrap();
+        for step in [Step::Groups, Step::Gid, Step::Uid] {
+            let e = unmapped_user(setup(step), &many(limit + 1));
+            assert!(matches!(e, Error::Setup { .. }), "{step}");
+            // The control: at the kernel's limit, the ids are the cause.
+            let e = unmapped_user(setup(step), &many(limit));
+            assert!(matches!(e, Error::Unmapped(_)), "{step}");
+        }
+        // At most eight groups are named, the rest counted.
+        let e = unmapped_user(setup(Step::Groups), &many(limit));
+        assert!(
+            e.to_string().ends_with(
+                "groups 0 1 2 3 4 5 6 7 and 65528 more: an id this user namespace does not map"
+            ),
+            "{e}"
+        );
     }
 
     /// A `RUN`'s end: its status, or the child's record from before
