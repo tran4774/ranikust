@@ -86,7 +86,8 @@ class Classify(unittest.TestCase):
     def test_the_t2_harness_runs_t2_alone(self):
         for p in ["tests/vm/runner.sh", "tests/vm/guest/unit.sh", "tests/container/lane.sh",
                   "tests/smoke/cases/run/Dockerfile", "tests/vm/guest/k8s.sh",
-                  "tests/vm/guest/k8s/pin.env"]:
+                  "tests/vm/guest/k8s/pin.env", "tests/vm/guest/matrix-user.sh",
+                  "tests/smoke/cases/matrix-podman/case.sh"]:
             self.check([p], {"t2"})
 
     def test_the_apparmor_profile_runs_t2_and_the_book(self):
@@ -469,6 +470,8 @@ CONDITIONS = {
         "unit-c": f"{T2} && {FULL}",
         "smoke": f"{T2} && {FULL}",
         "k8s": f"{T2} && {FULL}",
+        "matrix-podman": f"{T2} && {FULL}",
+        "matrix-user": f"{T2} && {FULL}",
         "caches": PUSH_TO_MAIN,
         "result": "always()",
     },
@@ -571,6 +574,8 @@ class Workflows(unittest.TestCase):
         self.assertEqual(cache_name("unit-c", js["unit-c"]), "t2-tests")
         self.assertEqual(cache_name("smoke", js["smoke"]), "t2-smoke")
         self.assertEqual(cache_name("k8s", js["k8s"]), "t2-smoke")
+        self.assertEqual(cache_name("matrix-podman", js["matrix-podman"]), "t2-smoke")
+        self.assertEqual(cache_name("matrix-user", js["matrix-user"]), "t2-smoke")
 
     def test_both_workflows_have_the_same_triggers_and_label_rule(self):
         def picked(wf):

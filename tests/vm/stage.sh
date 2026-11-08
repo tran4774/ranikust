@@ -34,7 +34,10 @@ case "$STAGE" in /*) ;; *) die "the stage directory must be an absolute path (go
 [ -d "$STAGE" ] && [ ! -L "$STAGE" ] || die "$STAGE is not a directory"
 [ -z "$(ls -A "$STAGE")" ] || die "$STAGE is not empty"
 for s in ${SUITES[@]+"${SUITES[@]}"}; do
-  case "$s" in net | unit | smoke | quick | e2e | push | secrets | ultra | k8s | el9) ;; *) die "unknown suite '$s'" ;; esac
+  case "$s" in
+    net | unit | smoke | quick | e2e | push | secrets | ultra | k8s | el9 | matrix-podman | matrix-user) ;;
+    *) die "unknown suite '$s'" ;;
+  esac
 done
 wants() { local s; for s in ${SUITES[@]+"${SUITES[@]}"}; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
@@ -83,7 +86,8 @@ if wants unit; then
     jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable' |
     while read -r exe; do cp "$exe" "$STAGE/bin/tests/"; done
 fi
-if wants net || wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets || wants k8s || wants el9; then
+if wants net || wants smoke || wants quick || wants e2e || wants ultra || wants push || wants secrets ||
+  wants k8s || wants el9 || wants matrix-podman || wants matrix-user; then
   log "building the smoke-build example and the ranikust binary"
   (cd "$REPO" && zigbuild zigbuild --release -p ranikust --example smoke-build --bin ranikust)
   cp "$TARGET/$MUSL/release/examples/smoke-build" "$TARGET/$MUSL/release/ranikust" "$STAGE/bin/"
