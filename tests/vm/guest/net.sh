@@ -164,6 +164,9 @@ raw() {
 # The egress NIC (passt); controls through the same socket: a SYN to the
 # registry, a DNS query.
 dns="$(awk '$1 == "nameserver" { print $2; exit }' /run/systemd/resolve/resolv.conf 2>/dev/null || true)"
+# Without systemd-resolved (RANIKUST_VM_RELEASE=alma9) /etc/resolv.conf holds
+# the one DHCP gave.
+[ -n "$dns" ] || dns="$(awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf)"
 raw "raw frames, egress" --iface "$egress_if" --gateway "$gw" --dns "$dns" --registry "$REG"
 # The harness NIC (QEMU's user network with restrict=on), whose only
 # control is a forward to nothing on the host.
