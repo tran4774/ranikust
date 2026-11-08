@@ -413,8 +413,9 @@ mod tests {
     }
 
     /// The set-up's `userns` flag picks `--userns`'s ways out for rootless
-    /// overlay mode's namespace; the T2 `userns` case covers the rest of
-    /// the mapping from `setup::Outcome`, which no T0 test can build.
+    /// overlay mode's namespace; the T2 `userns` case covers
+    /// `overlay_built`'s `--userns` arm, from a `setup::Outcome` no T0 test
+    /// can build.
     #[test]
     fn the_set_up_s_userns_flag_picks_userns_s_ways_out() {
         assert_eq!(MadeBy::rootless(true), MadeBy::Userns);
