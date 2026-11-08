@@ -285,6 +285,49 @@ fn without_root_the_set_up_never_makes_the_default_state_dir() {
     }
 }
 
+/// A user with no user namespace is told, in order: `sudo`; where AppArmor
+/// restricts user namespaces and ranikust runs unconfined in the host's
+/// user namespace and in no container, the profile, after installing the
+/// binary under `/usr/local/bin`, as this one, built in the checkout, is
+/// the user's; a container. Elsewhere no profile is named.
+#[test]
+fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let state = tmp.path().join("state");
+    let out = ranikust(
+        tmp.path(),
+        &["--no-push", "--context", "ctx", "--state-dir=state"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let err = stderr(&out);
+    let advice = err
+        .lines()
+        .find_map(|l| l.strip_prefix("  ").filter(|l| l.contains("with sudo")))
+        .unwrap_or_else(|| panic!("no advice: {err}"));
+    let at = |part: &str| advice.find(part);
+    let sudo = at("run ranikust as root, with sudo").expect(advice);
+    let container = at("; or run ranikust in a container").expect(advice);
+    assert!(sudo < container, "{advice}");
+    if offers_a_profile_here() {
+        // As /usr/local/bin/ranikust, or elsewhere where /usr/local/bin is
+        // not root's alone.
+        let profile = at("or, as root, install ranikust ").expect(advice);
+        assert!(sudo < profile && profile < container, "{advice}");
+        // Named as `/proc/self/exe` names it: no symlink on the way.
+        let binary = fs::canonicalize(env!("CARGO_BIN_EXE_ranikust")).expect("binary");
+        let named = format!("{} is not a path only root can change (", binary.display());
+        assert!(advice.contains(&named), "{advice}");
+    } else {
+        assert!(!advice.contains("AppArmor"), "{advice}");
+    }
+    assert!(!state.exists());
+}
+
 #[test]
 fn kaniko_validation_is_a_usage_error() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1250,5 +1293,354 @@ fn prune_all_empties_a_cache_deeper_than_its_descriptor_limit() {
             assert!(err.contains("no user namespace for the build: "), "{err}");
         }
         other => panic!("{other:?}: {}", stderr(&out)),
+    }
+}
+
+/// The guidance line of a refusal for want of a user namespace.
+fn userns_advice(err: &str) -> &str {
+    err.lines()
+        .find_map(|l| l.strip_prefix("  ").filter(|l| l.contains("with sudo")))
+        .unwrap_or_else(|| panic!("no advice: {err}"))
+}
+
+/// Whether the advice may offer a profile here, decided as ranikust's
+/// `no_userns::Here` and `container::detect` decide it: the switch at 1,
+/// this process unconfined, in the host's user namespace and in no
+/// container.
+fn offers_a_profile_here() -> bool {
+    use std::io::ErrorKind::NotFound;
+    let read = |p: &str| {
+        String::from_utf8_lossy(&fs::read(p).unwrap_or_default())
+            .trim()
+            .to_owned()
+    };
+    // As Go's `!os.IsNotExist(err)`, which the container check follows.
+    let exists = |p: &str| fs::metadata(p).map_or_else(|e| e.kind() != NotFound, |_| true);
+    let restricted = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").trim() == "1";
+    let label = match fs::read("/proc/self/attr/apparmor/current") {
+        Err(e) if e.kind() == NotFound => fs::read("/proc/self/attr/current"),
+        label => label,
+    };
+    let unconfined = label.is_ok_and(|v| v.trim_ascii() == b"unconfined");
+    let host_userns =
+        read("/proc/self/uid_map")
+            .split_ascii_whitespace()
+            .eq(["0", "0", "4294967295"]);
+    // `container::Runtime::ALL`'s names.
+    let runtimes = [
+        "docker",
+        "rkt",
+        "systemd-nspawn",
+        "lxc",
+        "lxc-libvirt",
+        "openvz",
+        "kube",
+        "garden",
+        "podman",
+        "gvisor",
+        "firejail",
+        "wsl",
+    ];
+    let names = |text: &str| !text.trim().is_empty() && runtimes.iter().any(|r| text.contains(r));
+    let mounts = read("/proc/mounts");
+    let mut root = mounts.lines().next().unwrap_or("").split(' ');
+    let overlay_root = matches!(
+        (root.next(), root.next(), root.next()),
+        (Some(device), Some("/"), Some(fs)) if !device.is_empty() && fs.starts_with("overlay")
+    );
+    let in_container = [
+        "/run/.containerenv",
+        "/.dockerenv",
+        "/var/run/secrets/kubernetes.io/serviceaccount",
+        "/__runsc_containers__",
+    ]
+    .iter()
+    .any(|p| exists(p))
+        || names(&read("/proc/self/cgroup"))
+        || (exists("/proc/vz") && !exists("/proc/bc"))
+        || names(&read("/proc/1/cmdline"))
+        || read("/proc/version_signature").starts_with("Microsoft")
+        || std::env::var("container").is_ok_and(|v| names(&v))
+        || names(&read("/run/systemd/container"))
+        || overlay_root;
+    restricted && unconfined && host_userns && !in_container
+}
+
+/// Red team (#81): the profile is offered only for a path that holds
+/// ranikust itself, not for a root-owned program a forged marker names. The
+/// loader case is `no_userns`' unit test: a run through the loader needs
+/// `seal-none`, which replaces the `no-userns` fault and so would make a
+/// user namespace.
+#[test]
+fn red_team_no_profile_for_a_root_program_that_is_not_ranikust() {
+    use std::os::fd::AsRawFd as _;
+    if skip_as_root() || !offers_a_profile_here() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let args = ["--no-push", "--context", "ctx", "--state-dir=state"];
+    let interpreter = ["/usr/bin/env", "/usr/bin/perl", "/usr/bin/python3"]
+        .iter()
+        .find_map(|p| fs::canonicalize(p).ok())
+        .expect("an interpreter");
+    let copy = tmp.path().join("copy");
+    fs::copy(env!("CARGO_BIN_EXE_ranikust"), &copy).expect("copy");
+    let held = fs::File::open(&copy).expect("open the copy");
+    fs::remove_file(&copy).expect("remove the copy");
+    let hex: String = interpreter
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let out = output_of_a_copy(
+        Command::new(format!("/proc/self/fd/{}", held.as_raw_fd()))
+            .args(args)
+            .current_dir(tmp.path())
+            .env_clear()
+            .envs(container_var())
+            .env("RANIKUST_DEBUG_FAULT", "no-userns")
+            .env("RANIKUST_SEALED_COPY", format!("tmpfile root {hex}")),
+    );
+    let advice = userns_advice(&stderr(&out)).to_owned();
+    assert!(
+        !advice.contains(&format!("changed to {}", interpreter.display())),
+        "{advice}"
+    );
+    // Where the interpreter's path fails the root-only check first, the
+    // bytes are never weighed.
+    if advice.contains("is not a path only root can change") {
+        eprintln!(
+            "skipped: {} fails the root-only check",
+            interpreter.display()
+        );
+        return;
+    }
+    assert!(advice.contains("does not hold ranikust itself"), "{advice}");
+}
+
+/// `cmd`'s output, tried again while another test's child, forked before
+/// a copy of the binary was closed, still holds it open for writing.
+fn output_of_a_copy(cmd: &mut Command) -> Output {
+    for _ in 0..100 {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::TXTBSY.raw_os_error()) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            out => return out.expect("run the copy"),
+        }
+    }
+    panic!("the copy stayed busy");
+}
+
+/// The variable `container`, which ranikust's container check reads, kept
+/// where a test clears the rest, so [`offers_a_profile_here`] holds there.
+fn container_var() -> Option<(&'static str, std::ffi::OsString)> {
+    std::env::var_os("container").map(|v| ("container", v))
+}
+
+/// Whether `advice` binds the profile to a path of its own: the install
+/// where `/usr/local/bin` is not root's alone says "changed to the
+/// binary's", never a path.
+fn binds_a_path(advice: &str) -> bool {
+    advice.contains("changed to /")
+}
+
+/// A link to (or else a copy of) the binary at `to`.
+fn place_binary(to: &Path) {
+    if fs::hard_link(env!("CARGO_BIN_EXE_ranikust"), to).is_err() {
+        fs::copy(env!("CARGO_BIN_EXE_ranikust"), to).expect("copy the binary");
+    }
+}
+
+/// Red team (#81): terminal controls in the binary's path, `argv[0]` or
+/// `PATH` reach no terminal.
+#[test]
+fn red_team_the_advice_escapes_a_hostile_binary_path() {
+    use std::os::unix::process::CommandExt as _;
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    let hostile =
+        "x\x1b[2J\x1b]8;;https:e.example\x07\r\nranikust: note: trusted\u{202e}\u{2028}\u{9b}31m";
+    let dir = tmp.path().join(hostile);
+    fs::create_dir(&dir).expect("a hostile directory");
+    let binary = dir.join("ranikust");
+    place_binary(&binary);
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let path_var = format!("{}:/usr/bin:/bin", dir.display());
+    let out = Command::new(&binary)
+        .arg0(format!("{hostile}/ranikust"))
+        .args([
+            "--no-push",
+            "--context",
+            "ctx",
+            "--state-dir=state",
+            "--log-format=text",
+        ])
+        .current_dir(tmp.path())
+        .env_clear()
+        .envs(container_var())
+        .env("RANIKUST_DEBUG_FAULT", "no-userns")
+        .env("PATH", &path_var)
+        .env("HOME", tmp.path())
+        .output()
+        .expect("run the hostile binary");
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "{err:?}");
+    assert!(err.contains(STOPS_AS_A_USER), "{err:?}");
+    for raw in ["\x1b", "\x07", "\r", "\u{202e}", "\u{2028}", "\u{9b}"] {
+        assert!(!err.contains(raw), "{raw:?} reached stderr: {err:?}");
+    }
+    assert!(
+        !err.lines().any(|l| l.starts_with("ranikust: note")),
+        "a forged line: {err:?}"
+    );
+    let advice = userns_advice(&err);
+    assert!(!binds_a_path(advice), "{advice}");
+    if offers_a_profile_here() {
+        assert!(advice.contains("\\u{1b}[2J"), "{advice}");
+        assert!(advice.contains(" first"), "{advice}");
+    }
+    assert!(!tmp.path().join("state").exists());
+}
+
+/// Red team (#81): a binary no path names, or a sealed-copy marker set from
+/// outside, gets no profile.
+#[test]
+fn red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile() {
+    use std::os::fd::AsRawFd as _;
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tempdir");
+    fs::create_dir(tmp.path().join("ctx")).expect("context dir");
+    let args = ["--no-push", "--context", "ctx", "--state-dir=state"];
+    let hex = |p: &str| -> String { p.bytes().map(|b| format!("{b:02x}")).collect() };
+    let run = |program: &Path, marker: Option<&str>| {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .current_dir(tmp.path())
+            .env_clear()
+            .envs(container_var())
+            .env("RANIKUST_DEBUG_FAULT", "no-userns")
+            .env("HOME", tmp.path());
+        if let Some(marker) = marker {
+            cmd.env("RANIKUST_SEALED_COPY", marker);
+        }
+        let out = cmd.output().expect("run ranikust");
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        assert!(err.contains(STOPS_AS_A_USER), "{err}");
+        userns_advice(&err).to_owned()
+    };
+    let restricted = offers_a_profile_here();
+
+    let gone = tmp.path().join("gone");
+    place_binary(&gone);
+    let held = fs::File::open(&gone).expect("open the binary");
+    fs::remove_file(&gone).expect("remove its name");
+    let advice = run(
+        Path::new(&format!("/proc/self/fd/{}", held.as_raw_fd())),
+        None,
+    );
+    assert!(!binds_a_path(&advice), "{advice}");
+    if restricted {
+        let named = " (deleted) is not a path only root can change";
+        assert!(advice.contains(named), "{advice}");
+    }
+
+    let binary = fs::canonicalize(env!("CARGO_BIN_EXE_ranikust")).expect("binary");
+    for marker in [
+        format!("memfd root {}", hex("/usr/local/bin/ranikust")),
+        format!("tmpfile root {}", hex("/usr/bin/env")),
+        format!("tmpfile root {}", hex("/proc/self/exe")),
+    ] {
+        let advice = run(&binary, Some(&marker));
+        assert!(!binds_a_path(&advice), "{marker}: {advice}");
+        assert!(!advice.contains("/usr/bin/env"), "{marker}: {advice}");
+        if restricted {
+            let named = format!("{} is not a path only root can change", binary.display());
+            assert!(advice.contains(&named), "{marker}: {advice}");
+        }
+    }
+    assert!(!tmp.path().join("state").exists());
+}
+
+/// Every node under `root`: kind, size, mode, owner, inode, change and
+/// modification times, link target.
+fn tree(root: &Path) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut seen = Vec::new();
+    let mut todo = vec![root.to_path_buf()];
+    while let Some(path) = todo.pop() {
+        let m = fs::symlink_metadata(&path).expect("lstat");
+        let link = fs::read_link(&path).ok();
+        seen.push(format!(
+            "{} {:?} {} {:o} {} {} {}.{} {}.{} {:?}",
+            path.display(),
+            m.file_type(),
+            m.len(),
+            m.mode(),
+            m.uid(),
+            m.ino(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec(),
+            link
+        ));
+        if m.is_dir() {
+            for e in fs::read_dir(&path).expect("ls") {
+                todo.push(e.expect("entry").path());
+            }
+        }
+    }
+    seen.sort();
+    seen
+}
+
+/// Red team (#81, T22): the refusal writes nothing, whatever the state
+/// directory is or points to.
+#[test]
+fn red_team_nothing_is_written_before_the_refusal_whatever_the_state_dir() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let t = tmp.path();
+    fs::create_dir(t.join("ctx")).expect("context dir");
+    fs::write(t.join("ctx/Dockerfile"), "FROM scratch\n").expect("Dockerfile");
+    fs::create_dir(t.join("full")).expect("a state dir with a file");
+    fs::write(t.join("full/keep"), b"x").expect("a file");
+    fs::create_dir(t.join("target")).expect("a link target");
+    std::os::unix::fs::symlink(t.join("target"), t.join("to-dir")).expect("symlink");
+    std::os::unix::fs::symlink(t.join("absent"), t.join("dangling")).expect("symlink");
+    fs::write(t.join("file"), b"y").expect("a file as the state dir");
+    fs::create_dir(t.join("home")).expect("home");
+    let home = t.join("home");
+    let home = home.to_str().expect("UTF-8 temp dir");
+    let before = tree(t);
+    let forms: [&[&str]; 7] = [
+        &["--state-dir=full"],
+        &["--state-dir=to-dir"],
+        &["--state-dir=dangling"],
+        &["--state-dir=a/b/c"],
+        &["--state-dir=file"],
+        &["--state-dir=ctx"],
+        &[],
+    ];
+    for form in forms {
+        for mode in ["--mode=auto", "--mode=overlay"] {
+            let mut args = vec!["--no-push", "--context", "ctx", mode];
+            args.extend(form);
+            let out = ranikust(t, &args, &[("HOME", home)]);
+            let err = stderr(&out);
+            assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
+            assert!(err.contains(STOPS_AS_A_USER), "{args:?}: {err}");
+            assert_eq!(tree(t), before, "{args:?}: {err}");
+        }
     }
 }

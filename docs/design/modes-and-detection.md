@@ -37,9 +37,12 @@ user namespace, which the process enters after the probe has routed
 [rnk-sandbox](../agents/crates/rnk-sandbox.md#owns),
 [ranikust](../agents/crates/ranikust.md#owns)). Root's builds that may mount
 keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko mode is
-set up by `set_up_kaniko`. **Planned, Phase 3** (tracking issue
-[#41](https://github.com/tran4774/ranikust/issues/41)): `--userns` and the
-AppArmor advice, under [Refusal and guidance](#refusal-and-guidance).
+set up by `set_up_kaniko`. The refusal of an image with an owner the
+namespace does not map and the AppArmor advice for a user with no usable
+user namespace ([#81](https://github.com/tran4774/ranikust/issues/81)) are
+built, under [Refusal and guidance](#refusal-and-guidance). **Planned,
+Phase 3** (tracking issue
+[#41](https://github.com/tran4774/ranikust/issues/41)): `--userns`.
 
 ## Where environments land
 
@@ -56,7 +59,8 @@ table per CI system in §6) and
 | Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (several owners only with `newuidmap` and ranges in `/etc/subuid` and `/etc/subgid`; else such an image is refused, [below](#owners-the-user-namespace-does-not-map)) |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Kubernetes pod with `hostUsers: false` and `procMount: Unmasked`, AppArmor confined or not | refuse: `/proc/sys` writable ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) case (ii), which ranikust (`rootless_kept_off`) also applies to an unconfined pod, where ADR-0100 row 7b expected overlay, rootless: [experiment 18](../research/experiments/18-kubernetes-pods-in-k3s.md)) [open: #201] |
-| Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
+| Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse, with `sudo`, the AppArmor profile after installing the binary under `/usr/local/bin`, or a container |
+| Unprivileged user on Ubuntu ≥ 24.04, binary at `/usr/local/bin/ranikust` with `contrib/apparmor/ranikust` loaded | overlay, rootless (as on 22.04) |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
 
 Most locked-down CI pods land in kaniko mode. Overlay is available only
@@ -366,8 +370,9 @@ Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
   mount's, with the advice to use kaniko mode (`NEEDS_KANIKO_MODE`), and
   rootless overlay mode's.
 - A process that is not root builds in rootless overlay mode or is refused
-  with the step it stopped at and the way out: the AppArmor switch, or root,
-  where `unshare` or the map failed (`NO_USER_NAMESPACE`); `--allow
+  with the step it stopped at and the way out: where no user namespace is
+  usable (`unshare`, the map, `chown` or the mount namespace failed), the
+  advice [below](#no-usable-user-namespace) (`setup/no_userns.rs`); `--allow
   proc.rbind`, what it exposes and the other ways, where only an rbind of
   `/proc` would do (`PROC_RBIND`); a volume at the state directory where it
   is on overlayfs; root or a container otherwise.
@@ -393,18 +398,94 @@ to bind-mount the chroot directory onto itself first. Where the kernel does
 not report whether `/` is a mount root (`STATX_ATTR_MOUNT_ROOT` missing from
 the mask), it neither refuses on that ground nor falls back to `MS_MOVE`.
 
-Planned, Phase 3: where no user namespace is usable, offer in place of
-`NO_USER_NAMESPACE`'s one line, in order:
+### No usable user namespace
 
-1. Run with `sudo`.
-2. Install the AppArmor profile, when
-   `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is `1`: a
-   three-line profile granting `userns,` with `flags=(unconfined)`, bound to
-   the binary's absolute path. The binary must live in a root-owned path such
-   as `/usr/local/bin/ranikust` (or come from a package that ships the
-   profile, like podman); a profile for a user-writable path lets anyone swap
-   the binary.
-3. Run ranikust inside a container.
+Where a user other than root gets no usable user namespace, ranikust refuses
+before it writes anything, the state directory included: before the probe, a
+forked child makes a user namespace and, with no id map, a mount namespace in
+it, which needs `CAP_SYS_ADMIN` there
+(`rnk_sandbox::probe_user_namespace_capabilities`). Either refused (`unshare`
+under a seccomp filter, the mount namespace in a namespace without
+capabilities, as the AppArmor switch gives) stops the build at that step;
+otherwise, and where the check cannot tell (a child cut short), the probe
+then runs, and its stops come after the state directory is made. The
+refusal's guidance line gives, in order
+([#81](https://github.com/tran4774/ranikust/issues/81)):
+
+1. Run ranikust as root, with `sudo`.
+2. Only where `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads
+   `1`, where ranikust runs unconfined (AppArmor's label `unconfined`), in
+   the host's user namespace (`/proc/self/uid_map` reads `0 0 4294967295`)
+   and in no container `container::detect` finds (`no_userns::Here`), and
+   where AppArmor may be what refused (`no_userns::Stop`): the user
+   namespace was made and a later step failed (the map, `chown`, the mount
+   namespace), or `unshare` failed with `EACCES`, AppArmor's errno. A
+   confined program's own profile decides its user namespaces, and
+   ranikust's would not attach to it; in a container or a user's own user
+   namespace the tree ranikust sees, and the owners it reads, are not the
+   host's, so no path checked there is the one a profile loaded on the host
+   attaches to. Another errno of `unshare` (`EPERM` from a seccomp filter or
+   `kernel.unprivileged_userns_clone`, `ENOSPC` from
+   `user.max_user_namespaces`), none, a step that did not run, any stop
+   where the capability check found the namespace's capabilities, or a
+   refusal once the probe passed gets items 1 and 3 alone. Have root load
+   ranikust's AppArmor profile,
+   [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three
+   lines granting `userns,` with `flags=(unconfined)`, bound to
+   `/usr/local/bin/ranikust` (as podman's profile is to podman), into
+   `/etc/apparmor.d/ranikust` with `apparmor_parser -r`. A profile gives a
+   user namespace to whatever is at its path, so it is offered for the
+   binary's own path only where root alone may change it and it holds
+   ranikust itself: as shipped for `/usr/local/bin/ranikust`; with the
+   path changed for another such path made only of letters, digits and
+   `._+-/`, which AppArmor reads as no pattern; otherwise after installing
+   the binary, owned by root
+   (`install -o root -g root -m 0755`), as `/usr/local/bin/ranikust`, or,
+   where `/usr/local/bin` fails the same check, in a directory that passes,
+   naming the first part of the path that failed and why.
+3. Run ranikust in a container.
+
+The path is the one `/proc/self/exe` named before the sealed copy ran
+(ADR-0101), the one AppArmor attaches a profile to where ranikust runs in
+the host's mount namespace, with no chroot; the sealed copy's marker
+carries it (`rnk_sandbox::Sealing::binary_path`). A chroot, or a mount
+namespace that no container check finds in a user namespace that maps
+every id as the host's does, shows a tree root chose, which the check
+takes for the host's: only root can set one up. A setuid sandbox a user
+can start (bubblewrap, Apptainer) mounts what it shows `nosuid`, which the
+check refuses (below) **[external]** (bubblewrap 1fb0aa2
+`bind-mount.c:511,532`, `bubblewrap.c:980,1354,3284`; Apptainer 330fb19
+`internal/pkg/runtime/engine/apptainer/container_linux.go:117,152-158`,
+which drops `nosuid` only for root with "allow setuid"). Neither that path nor
+`/proc/self/exe` proves the file is ranikust (a marker may name any file,
+and under a loader `/proc/self/exe` is the loader), so the path holds
+ranikust itself only where `/proc/self/exe` is the file mapped at one of
+ranikust's functions in `/proc/self/maps` (same device and inode) and the
+path's file has its size and bytes. Where the maps name that file
+otherwise than `fstat` (btrfs, overlayfs before Linux 6.8) and ranikust
+runs from no memfd copy, no path holds it, and the advice falls back to
+the install. Root alone may change the path when
+`/`, each directory below it and the file are owned by root and written
+by neither group nor others (an ACL that grants writing shows in the
+group bits), none is a symlink, each is on a mount without `nosuid`
+(udisks2 and fusermount always add it, an fstab `user` mount by default)
+of a local filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs,
+tmpfs, overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS,
+shows owners and modes a user or a server sets), and the file is a regular
+one: each component is opened `O_PATH` from the one above without
+following a symlink. A sticky directory such as `/tmp` fails, since any
+user may take the name once it is gone; so does any error, a removed
+binary (`(deleted)`) included. Any value of the switch but `1`, or none
+(Ubuntu 22.04, other distributions), offers no profile. With the profile
+loaded the binary keeps it through the sealed copy's `execveat`, which no
+other profile attaches to, and so does a `RUN` (T2 smoke). Where
+`kernel.apparmor_restrict_unprivileged_unconfined` is 0, 24.04's default,
+any user's unconfined program may also enter the profile with
+`aa-exec -p ranikust` (measured, T2 smoke), as it may any profile that
+allows `userns`. What else a loaded profile reaches is in the
+[threat model, section 6](../security/threat-model.md#6-accepted-risks).
+The test hook `RANIKUST_DEBUG_FAULT=no-userns` gives the advice of a stop
+in the user namespace.
 
 ### Owners the user namespace does not map
 

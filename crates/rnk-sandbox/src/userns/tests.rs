@@ -134,6 +134,30 @@ fn root_tries_its_ranges_then_one_id_and_a_user_newuidmap_then_one_id() {
 }
 
 #[test]
+fn the_capability_check_names_the_step_refused_and_never_a_child_cut_short() {
+    let found = capabilities_of(&[(UNSHARE, EPERM), (DONE, 0)], None);
+    assert_eq!(found.stop(), Some("unshare"));
+    assert_eq!(
+        found.to_string(),
+        "unshare(CLONE_NEWUSER): EPERM; unshare(CLONE_NEWNS): not run (no user namespace)"
+    );
+    let found = capabilities_of(&[(UNSHARE, 0), (NEWNS, EPERM), (DONE, 0)], None);
+    assert_eq!(found.stop(), Some("mount namespace"));
+    assert_eq!(
+        found.to_string(),
+        "unshare(CLONE_NEWUSER): ok; unshare(CLONE_NEWNS): EPERM"
+    );
+    let found = capabilities_of(&[(UNSHARE, 0), (NEWNS, 0), (DONE, 0)], None);
+    assert_eq!(found.stop(), None);
+    let died = "the probe's child died of signal 9".to_owned();
+    for records in [&[][..], &[(UNSHARE, 0)][..]] {
+        let found = capabilities_of(records, Some(died.clone()));
+        assert_eq!(found.stop(), None, "{found}");
+        assert!(found.to_string().ends_with(&format!("; {died}")), "{found}");
+    }
+}
+
+#[test]
 fn a_refused_unshare_leaves_every_later_step_not_run() {
     let a = assemble(&one_id(1000), &[(CHDIR, 0), (UNSHARE, EPERM)], None, None);
     assert_eq!(a.unshare, failed("unshare(CLONE_NEWUSER)", EPERM));
@@ -665,7 +689,7 @@ fn a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent() {
         return;
     }
     let run = supervise(
-        &ranges(),
+        Some(&ranges()),
         false,
         None,
         -1,
@@ -736,7 +760,7 @@ fn a_probes_child_holds_only_stdio_and_its_own_descriptors() {
     let file = rustix::fs::open(c"/dev/null", OFlags::RDONLY, Mode::empty()).unwrap();
     let extra = file.as_raw_fd();
     let run = supervise(
-        &ranges(),
+        Some(&ranges()),
         false,
         None,
         -1,
@@ -776,11 +800,18 @@ fn a_failure_making_the_probes_files_removes_what_it_made() {
 #[test]
 fn a_map_the_parent_cannot_write_ends_the_waiting_child() {
     let started = Instant::now();
-    let run = supervise(&ranges(), false, None, -1, Duration::from_secs(5), |args| {
-        // SAFETY: the report pipe's write end, open in this child.
-        let report = unsafe { BorrowedFd::borrow_raw(args.report) };
-        map_in_child(args, report);
-    })
+    let run = supervise(
+        Some(&ranges()),
+        false,
+        None,
+        -1,
+        Duration::from_secs(5),
+        |args| {
+            // SAFETY: the report pipe's write end, open in this child.
+            let report = unsafe { BorrowedFd::borrow_raw(args.report) };
+            map_in_child(args, report);
+        },
+    )
     .unwrap();
     assert!(!run.records.timed_out, "the child waited for the deadline");
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -825,6 +856,24 @@ fn is_eperm(r: &StepResult) -> bool {
             ..
         })
     )
+}
+
+/// As root: the capability check, which needs no directory, passes on a
+/// host; under Docker's defaults `unshare` is refused.
+#[test]
+#[ignore = "T2c: default: unshare(CLONE_NEWUSER) as root; Docker's defaults refuse it"]
+fn the_capability_check_as_root_passes_on_a_host_and_stops_at_unshare_in_docker() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let found = capabilities().unwrap();
+    measured(&format!("user namespace capabilities as root: {found}"));
+    assert_eq!(found.cut_short, None);
+    if seccomp_without_sys_admin() {
+        assert_eq!(found.stop(), Some("unshare"), "{found}");
+        assert!(is_eperm(&found.unshare), "{found}");
+    } else {
+        assert_eq!(found.stop(), None, "{found}");
+        assert_eq!(found.mount_ns, StepResult::Ok);
+    }
 }
 
 /// As root: on a host every step a `RUN` needs passes with this process's

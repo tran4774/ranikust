@@ -5,12 +5,17 @@
 //! `--mode=auto` sets up in a child, to fall back to kaniko mode in the
 //! parent (ADR-0136).
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
-use rnk_sandbox::{Fallbacks, KernelFs, MountResult, Sandbox, SubordinateIds};
+use rnk_sandbox::{
+    Fallbacks, KernelFs, MountResult, Sandbox, StepResult, SubordinateIds, UsernsCapabilities,
+    UsernsReport,
+};
 use rnk_store::{BuildPaths, Store};
 
+use super::no_userns::Stop;
 use super::{Kind, Outcome, Refusal, Setup};
 use crate::config::Seccomp;
 
@@ -70,33 +75,45 @@ const UNUSABLE: &str = "run ranikust as root (with sudo on a host or in a VM), o
 
 /// The test hook's `no-userns` (`env`, the hook's variable): rootless
 /// overlay mode refused before its probe, the process unchanged, with the
-/// guidance for the effective uid `euid`.
-pub(crate) fn refused_by_hook(env: &str, euid: u32) -> NotHere {
+/// guidance for the effective uid `euid` where no user namespace is
+/// usable, `binary` as for [`plan`].
+pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> NotHere {
     NotHere {
         refusal: Refusal {
             kind: Kind::Other,
             reason: format!("rootless overlay mode cannot run here: refused by {env}=no-userns"),
-            guidance: guidance("hook", false, euid).into(),
+            // As a user namespace without capabilities stops.
+            guidance: guidance("hook", Stop::InNamespace, false, euid, binary),
         },
         probed: false,
     }
 }
 
 /// The user namespace probe for rootless overlay mode, before the build's
-/// user namespace: the state directory's check ([`state_dir_for_probe`]),
-/// the subordinate ids of this user ([`crate::subids`]), then the steps and
-/// the overlay mount in a user namespace, in a directory made for them in
-/// the state directory, named as the leftovers an anonymous store removes,
-/// and removed after. Logs the probe's line, whose verdict counts an rbind
-/// of `/proc` only with `proc_rbind` (`--allow proc.rbind`, ADR-0126). Call
-/// while single-threaded.
+/// user namespace: for a user other than root, whether it gets one with
+/// capabilities, with nothing written ([`capabilities`]); the state
+/// directory's check ([`state_dir_for_probe`]), the subordinate ids of this
+/// user ([`crate::subids`]), then the steps and the overlay mount in a user
+/// namespace, in a directory made for them in the state directory, named
+/// as the leftovers an anonymous store removes, and removed after. Logs
+/// the probe's line, whose verdict counts an rbind of `/proc` only with
+/// `proc_rbind` (`--allow proc.rbind`, ADR-0126).
+/// `binary` is the path ranikust started from, which the advice where no
+/// user namespace is usable weighs ([`super::no_userns`]). Call while
+/// single-threaded.
 ///
 /// # Errors
 ///
 /// [`NotHere`]: the step that failed and what to do instead, with the
 /// process unchanged.
-pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> {
+pub(crate) fn plan(
+    state_dir: &Path,
+    proc_rbind: bool,
+    binary: Option<&Path>,
+) -> Result<Plan, NotHere> {
     let euid = rustix::process::geteuid().as_raw();
+    // With capabilities, AppArmor's switch is not what stops any step.
+    let capable = euid != 0 && capabilities(euid, binary)?;
     let unprobed = |refusal| NotHere {
         refusal,
         probed: false,
@@ -141,15 +158,16 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
     };
     if let Some(step) = report.stop(allowed) {
         let rbind = matches!(report.proc, MountResult::Rbind { .. });
+        let stop = stop_for(step, capable, &Steps::probed(report));
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
-            guidance(step, rbind, euid).into(),
+            guidance(step, stop, rbind, euid, binary),
         ));
     }
     if let Some(e) = probed.overlay_error() {
         return Err(not_here(
             format!("an overlay mount in the user namespace: {e}"),
-            guidance("overlay", false, euid).into(),
+            guidance("overlay", Stop::Unknown, false, euid, binary),
         ));
     }
     let bind_proc = proc_rbind && matches!(report.proc, MountResult::Rbind { .. });
@@ -163,6 +181,104 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool) -> Result<Plan, NotHere> 
         fallbacks,
         proc_rbind: bind_proc,
         held,
+    })
+}
+
+/// Whether a user other than root (`euid`) gets a user namespace with
+/// capabilities, checked before the state directory is made or anything
+/// else written (#81): `Ok(true)` where it does, `Ok(false)` where the
+/// check cannot tell, and the probe decides; `binary` as for [`plan`].
+///
+/// # Errors
+///
+/// The refusal where it gets none, logged as the probe's line.
+fn capabilities(euid: u32, binary: Option<&Path>) -> Result<bool, NotHere> {
+    let found = match rnk_sandbox::probe_user_namespace_capabilities() {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::debug!("ranikust: user namespace capability check: {e}");
+            return Ok(false);
+        }
+    };
+    let Some(step) = found.stop() else {
+        return Ok(shown_capable(&found));
+    };
+    tracing::info!(
+        "ranikust: user namespace probe: stops at {step}, nothing written; {found}; \
+         kernel.apparmor_restrict_unprivileged_userns: {}",
+        super::apparmor_switch()
+    );
+    Err(NotHere {
+        refusal: Refusal {
+            kind: Kind::Other,
+            reason: format!(
+                "rootless overlay mode cannot run here: the user namespace probe stops at {step}"
+            ),
+            guidance: guidance(
+                step,
+                stop_for(step, false, &Steps::checked(&found)),
+                false,
+                euid,
+                binary,
+            ),
+        },
+        probed: true,
+    })
+}
+
+/// Whether the capability check shows a user namespace with capabilities:
+/// both its steps ran and worked.
+fn shown_capable(found: &UsernsCapabilities) -> bool {
+    found.unshare == StepResult::Ok && found.mount_ns == StepResult::Ok
+}
+
+/// The results of the steps the advice weighs, from the probe or the
+/// capability check; `None`: the step is not reported.
+struct Steps<'a> {
+    unshare: &'a StepResult,
+    /// The last map tried.
+    map: Option<&'a StepResult>,
+    chown: Option<&'a StepResult>,
+    mount_ns: &'a StepResult,
+}
+
+impl<'a> Steps<'a> {
+    fn probed(report: &'a UsernsReport) -> Self {
+        Self {
+            unshare: &report.unshare,
+            map: report.maps.last().map(|(_, result)| result),
+            chown: Some(&report.chown),
+            mount_ns: &report.mount_ns,
+        }
+    }
+
+    fn checked(found: &'a UsernsCapabilities) -> Self {
+        Self {
+            unshare: &found.unshare,
+            map: None,
+            chown: None,
+            mount_ns: &found.mount_ns,
+        }
+    }
+}
+
+/// What stopped the probe at `step`, as the advice weighs it: [`Stop::at`]
+/// on that step's own result; `Unknown` for a step not reported, and for
+/// any step where the capability check found the namespace's capabilities
+/// (`capable`), as AppArmor's switch is then not what refused.
+fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
+    if capable {
+        return Stop::Unknown;
+    }
+    let result = match step {
+        "unshare" => Some(steps.unshare),
+        "map" => steps.map,
+        "chown" => steps.chown,
+        "mount namespace" => Some(steps.mount_ns),
+        _ => None,
+    };
+    result.map_or(Stop::Unknown, |result| {
+        Stop::at(step, steps.unshare, result)
     })
 }
 
@@ -188,19 +304,29 @@ fn state_dir_for_probe(state_dir: &Path, euid: u32) -> Result<rnk_store::StateDi
 }
 
 /// What to do where the user namespace probe stops at `step` (`overlay`
-/// for its overlay mount, `hook` for the test hook's refusal before it)
-/// for the effective uid `euid`; `rbind` says an rbind of `/proc` worked
-/// there. A user namespace without capabilities (Ubuntu's AppArmor switch)
-/// stops a user other than root at the map, the `chown` or the mount
-/// namespace.
-fn guidance(step: &str, rbind: bool, euid: u32) -> &'static str {
+/// for its overlay mount, `hook` for the test hook's refusal before it, as
+/// where no user namespace is usable) for the effective uid `euid`; `stop`
+/// is what stopped it there, as the advice where no user namespace is
+/// usable weighs it ([`Stop::at`]); `rbind` says an rbind of `/proc` worked
+/// there; `binary` as for [`plan`]. A user namespace without capabilities
+/// (Ubuntu's AppArmor switch) stops a user other than root at the map, the
+/// `chown` or the mount namespace.
+fn guidance(
+    step: &str,
+    stop: Stop,
+    rbind: bool,
+    euid: u32,
+    binary: Option<&Path>,
+) -> Cow<'static, str> {
     match step {
-        "proc" if rbind => PROC_RBIND,
+        "proc" if rbind => PROC_RBIND.into(),
         // Root gets here only where it may not mount: its own refusal, or
         // kaniko mode, says what to do.
-        _ if euid == 0 => "",
-        "unshare" | "map" | "chown" | "mount namespace" => super::NO_USER_NAMESPACE,
-        _ => UNUSABLE,
+        _ if euid == 0 => "".into(),
+        "unshare" | "map" | "chown" | "mount namespace" | "hook" => {
+            super::no_userns::guidance(binary, stop).into()
+        }
+        _ => UNUSABLE.into(),
     }
 }
 
@@ -227,6 +353,8 @@ pub(crate) struct Then<'a> {
     /// The test hook's variable where its `rootless-broken` fails the
     /// set-up at its last step, once the sandbox started.
     pub(crate) broken_by: Option<&'static str>,
+    /// The path ranikust started from, as for [`plan`].
+    pub(crate) binary: Option<&'a Path>,
 }
 
 /// Enters the build's user namespace as `plan` says
@@ -259,8 +387,11 @@ pub(crate) fn set_up(
         held,
         ..
     } = plan;
-    let userns = rnk_sandbox::enter_build_user_namespace(subordinate)
-        .map_err(|e| super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into()))?;
+    // `plan`'s probe passed: what refuses now is not known.
+    let userns = rnk_sandbox::enter_build_user_namespace(subordinate).map_err(|e| {
+        let no_userns = super::no_userns::guidance(then.binary, Stop::Unknown);
+        super::userns_refusal(e, euid, no_userns.into())
+    })?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let mut held = Some(held);
     let opened = match then.child {
@@ -372,21 +503,33 @@ fn broken(reason: String) -> Refusal {
 
 #[cfg(test)]
 mod tests {
+    use rnk_sandbox::StepFailure;
+
     use super::*;
 
     /// A user other than root whose user namespace has no capabilities
-    /// (Ubuntu 24.04 stops it at the `chown`) is pointed at the AppArmor
-    /// switch, and a step past the namespace at running as root; root, whose
-    /// own refusal or kaniko mode says what to do, at nothing more; a
-    /// refused new `proc` with a working rbind, at `--allow proc.rbind`.
+    /// (Ubuntu 24.04 stops it at the mount namespace), or who has none (the
+    /// test hook), gets the advice for no user namespace, for what stopped
+    /// it, and a step past the namespace the advice to run as root; root,
+    /// whose own refusal or kaniko mode says what to do, nothing more; a
+    /// refused new `proc` with a working rbind, `--allow proc.rbind`.
     #[test]
     fn each_stop_of_the_probe_gets_its_guidance() {
-        for step in ["unshare", "map", "chown", "mount namespace"] {
-            assert_eq!(
-                guidance(step, false, 1000),
-                super::super::NO_USER_NAMESPACE,
-                "{step}"
-            );
+        let binary = Some(Path::new("/home/u/bin/ranikust"));
+        let stops = [
+            Stop::InNamespace,
+            Stop::Unshare(libc::EPERM),
+            Stop::Unshare(libc::EACCES),
+            Stop::Unknown,
+        ];
+        for step in ["unshare", "map", "chown", "mount namespace", "hook"] {
+            for stop in stops {
+                assert_eq!(
+                    guidance(step, stop, false, 1000, binary),
+                    super::super::no_userns::guidance(binary, stop),
+                    "{step}, {stop:?}"
+                );
+            }
         }
         for step in [
             "unshare",
@@ -398,16 +541,127 @@ mod tests {
             "overlay",
             "hook",
         ] {
-            assert_eq!(guidance(step, false, 0), "", "{step}");
+            for stop in stops {
+                assert_eq!(guidance(step, stop, false, 0, binary), "", "{step}");
+            }
         }
-        assert_eq!(guidance("proc", true, 1000), PROC_RBIND);
-        assert_eq!(guidance("proc", true, 0), PROC_RBIND);
-        for step in ["proc", "sysfs", "overlay", "hook"] {
-            assert_eq!(guidance(step, false, 1000), UNUSABLE, "{step}");
+        assert_eq!(
+            guidance("proc", Stop::Unknown, true, 1000, binary),
+            PROC_RBIND
+        );
+        assert_eq!(guidance("proc", Stop::Unknown, true, 0, binary), PROC_RBIND);
+        for step in ["proc", "sysfs", "overlay"] {
+            for stop in stops {
+                assert_eq!(
+                    guidance(step, stop, false, 1000, binary),
+                    UNUSABLE,
+                    "{step}"
+                );
+            }
         }
-        assert!(super::super::NO_USER_NAMESPACE.contains("apparmor_restrict_unprivileged_userns"));
         assert!(PROC_RBIND.contains("--allow proc.rbind"));
         assert!(PROC_RBIND.contains("not under ptrace's check"));
+    }
+
+    /// The advice weighs the result of the step that stopped the probe
+    /// alone, and no step where the capability check found the namespace's
+    /// capabilities.
+    #[test]
+    fn a_stop_is_weighed_on_its_own_step() {
+        let failed = |op, errno| {
+            StepResult::Failed(StepFailure {
+                op,
+                errno: Some(errno),
+                detail: None,
+            })
+        };
+        let ok = StepResult::Ok;
+        let not_run = StepResult::NotRun("the probe's child stopped before it");
+        let refused = failed("write uid_map", libc::EPERM);
+        let eacces = failed("unshare(CLONE_NEWUSER)", libc::EACCES);
+        let all = |r| Steps {
+            unshare: &ok,
+            map: Some(r),
+            chown: Some(r),
+            mount_ns: r,
+        };
+        for step in ["map", "chown", "mount namespace"] {
+            assert_eq!(stop_for(step, false, &all(&refused)), Stop::InNamespace);
+            assert_eq!(stop_for(step, true, &all(&refused)), Stop::Unknown);
+            assert_eq!(stop_for(step, false, &all(&not_run)), Stop::Unknown);
+        }
+        let map_only = Steps {
+            map: Some(&refused),
+            ..all(&not_run)
+        };
+        assert_eq!(stop_for("map", false, &map_only), Stop::InNamespace);
+        assert_eq!(stop_for("chown", false, &map_only), Stop::Unknown);
+        assert_eq!(stop_for("mount namespace", false, &map_only), Stop::Unknown);
+        let unreported = Steps {
+            map: None,
+            chown: None,
+            ..all(&refused)
+        };
+        assert_eq!(stop_for("map", false, &unreported), Stop::Unknown);
+        assert_eq!(stop_for("chown", false, &unreported), Stop::Unknown);
+        let at_unshare = Steps {
+            unshare: &eacces,
+            ..all(&not_run)
+        };
+        assert_eq!(
+            stop_for("unshare", false, &at_unshare),
+            Stop::Unshare(libc::EACCES)
+        );
+        assert_eq!(stop_for("unshare", true, &at_unshare), Stop::Unknown);
+        for step in ["proc", "sysfs", "overlay", "hook"] {
+            assert_eq!(stop_for(step, false, &all(&refused)), Stop::Unknown);
+        }
+    }
+
+    /// Only a check whose two steps both worked shows capabilities.
+    #[test]
+    fn only_both_steps_working_show_capabilities() {
+        let caps = |unshare, mount_ns, cut_short: Option<&str>| UsernsCapabilities {
+            unshare,
+            mount_ns,
+            cut_short: cut_short.map(String::from),
+        };
+        let not_run = || StepResult::NotRun("the probe's child stopped before it");
+        assert!(shown_capable(&caps(StepResult::Ok, StepResult::Ok, None)));
+        assert!(!shown_capable(&caps(
+            StepResult::Ok,
+            not_run(),
+            Some("killed by signal 9")
+        )));
+        assert!(!shown_capable(&caps(not_run(), not_run(), Some("killed"))));
+    }
+
+    /// The capability check's stop is weighed on its own step's result, as
+    /// the probe's is.
+    #[test]
+    fn the_check_s_stop_is_weighed_on_its_own_step() {
+        let failed = |op, errno| {
+            StepResult::Failed(StepFailure {
+                op,
+                errno: Some(errno),
+                detail: None,
+            })
+        };
+        let weighed = |found: &UsernsCapabilities| {
+            stop_for(found.stop().unwrap(), false, &Steps::checked(found))
+        };
+        let in_namespace = UsernsCapabilities {
+            unshare: StepResult::Ok,
+            mount_ns: failed("unshare(CLONE_NEWNS)", libc::EPERM),
+            cut_short: None,
+        };
+        assert_eq!(weighed(&in_namespace), Stop::InNamespace);
+        let at_unshare = UsernsCapabilities {
+            unshare: failed("unshare(CLONE_NEWUSER)", libc::EACCES),
+            mount_ns: StepResult::NotRun("no user namespace"),
+            cut_short: None,
+        };
+        assert_eq!(weighed(&at_unshare), Stop::Unshare(libc::EACCES));
     }
 
     /// The probe writes nothing in a directory the store would refuse, and

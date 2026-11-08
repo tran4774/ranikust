@@ -62,7 +62,10 @@ namespace through `rnk-store` (ADR-0105), until Phase 5 adds removal by size
 and age; `push` (an OCI layout, ADR-0052) has no phase yet, and there is no
 `login` (ADR-0049). Runs the set-up and the probes while single-threaded,
 picks the mode and the root (rootless overlay mode's probe runs before the
-build's user namespace is entered, its set-up inside it), runs `rnk-sched`
+build's user namespace is entered, its set-up inside it; a user with no
+usable one is refused with `sudo`, the AppArmor profile
+[`contrib/apparmor/ranikust`](contrib/apparmor/ranikust) where AppArmor may
+be what refused, and a container, in that order), runs `rnk-sched`
 with its own `StageRunner` (which drives `rnk-builder`, one thread per stage)
 and writes the outputs. **Must not** hold the rule of a single concern
 (Dockerfile semantics,

@@ -261,8 +261,10 @@ show 7d
 [[ "$(pod_line uid)" == "1000 gid 1000" ]] || fail "7d: not uid 1000: $(pod_line uid)"
 [ "$(pod_line seccomp)" = "2 no_new_privs 1 CapEff 0000000000000000" ] || fail "7d: seccomp, no_new_privs or capabilities: $(pod_line seccomp)"
 expect_rc 7d 1
-expect 7d "user namespace probe: stops at unshare; unshare(CLONE_NEWUSER): EPERM"
+expect 7d "user namespace probe: stops at unshare, nothing written; unshare(CLONE_NEWUSER): EPERM"
 expect 7d "ranikust: error: rootless overlay mode cannot run here: the user namespace probe stops at unshare"
+# #81: a seccomp refusal gets no AppArmor profile, though the node's switch reads 1.
+expect 7d "which this user cannot get here: run ranikust as root, with sudo; or run ranikust in a container"
 
 # --- Measured: the user namespace probe in a pod of its own users ---------------
 

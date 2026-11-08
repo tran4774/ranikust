@@ -188,6 +188,9 @@ pub enum Sealing {
         /// The mount of the binary ranikust started from, as the run
         /// before the copy found it.
         binary: BinaryMount,
+        /// The path of the binary ranikust started from, as the run before
+        /// the copy read it.
+        path: Option<PathBuf>,
     },
     /// This process runs from the binary as installed, or from something
     /// that is not the copy its marker names.
@@ -196,6 +199,8 @@ pub enum Sealing {
         why: String,
         /// The mount of the binary this process runs from.
         binary: BinaryMount,
+        /// The path of the binary this process runs from.
+        path: Option<PathBuf>,
     },
 }
 
@@ -205,6 +210,17 @@ impl Sealing {
     pub fn binary(&self) -> BinaryMount {
         match self {
             Self::Sealed { binary, .. } | Self::Unsealed { binary, .. } => *binary,
+        }
+    }
+
+    /// The path of the binary ranikust started from, as `/proc/self/exe`
+    /// named it before the copy ran: the path an AppArmor profile attaches
+    /// to. `None` where it could not be read. A name only: the file there
+    /// may have changed since.
+    #[must_use]
+    pub fn binary_path(&self) -> Option<&Path> {
+        match self {
+            Self::Sealed { path, .. } | Self::Unsealed { path, .. } => path.as_deref(),
         }
     }
 }
@@ -224,7 +240,8 @@ impl Sealing {
 /// runs from. `walk` is whether the build may be kaniko mode on a
 /// container's `/`, the only one that reads whether a writable mount
 /// reaches the binary: otherwise the mount points are not looked up, and a
-/// binary that needs them is [`BinaryMount::NotWeighed`].
+/// binary that needs them is [`BinaryMount::NotWeighed`]. The binary's path
+/// ([`Sealing::binary_path`]) goes to the copy in the variable too.
 ///
 /// # Errors
 ///
@@ -240,12 +257,16 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Resu
             return Ok(Sealing::Unsealed {
                 why: format!("open /proc/self/exe: {e}"),
                 binary: BinaryMount::Unknown(errno_of(&e)),
+                path: None,
             });
         }
     };
     let binary = mount_of(exe.as_fd(), walk);
+    // Only the advice where no user namespace is usable weighs it, and says
+    // so where it is unknown.
+    let path = path_of(exe.as_fd()).ok();
     let run = |way, copy: OwnedFd, failed: &[(SealedCopy, io::Error)]| {
-        execute(&copy, &marker(way, binary, failed))
+        execute(&copy, &marker(way, binary, path.as_deref(), failed))
     };
     let make = |way| make_copy(way, &exe);
     let failed = match try_in_order(ways, make, run, core_limit_to_zero) {
@@ -258,7 +279,15 @@ pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Resu
     } else {
         passed_over(&failed)
     };
-    Ok(Sealing::Unsealed { why, binary })
+    Ok(Sealing::Unsealed { why, binary, path })
+}
+
+/// The path the kernel gives the open file `fd`, as `/proc/self/exe` gives
+/// it for the binary.
+fn path_of(fd: BorrowedFd<'_>) -> Result<PathBuf, Errno> {
+    let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    let path = rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?;
+    Ok(PathBuf::from(OsString::from_vec(path.into_bytes())))
 }
 
 /// `statx` of `path` at `fd`, with the mount id, the link count and the
@@ -308,10 +337,7 @@ fn mount_of(exe: BorrowedFd<'_>, walk: bool) -> BinaryMount {
         let reach = || -> Result<Option<bool>, Errno> {
             // The path `/proc/self/exe` gives, named through the descriptor
             // measured above.
-            let link = format!("/proc/self/fd/{}", exe.as_raw_fd());
-            let path = PathBuf::from(OsString::from_vec(
-                rustix::fs::readlinkat(rustix::fs::CWD, link.as_str(), Vec::new())?.into_bytes(),
-            ));
+            let path = path_of(exe)?;
             let Some(binary) = FileId::of(&st) else {
                 return Ok(None);
             };
@@ -669,10 +695,22 @@ fn passed_over(failed: &[(SealedCopy, io::Error)]) -> String {
     why.join("; ")
 }
 
-/// The marker's value for a copy made `way`: its name and the binary's
-/// mount, then why the ways before it failed, for the copy to log.
-fn marker(way: SealedCopy, binary: BinaryMount, failed: &[(SealedCopy, io::Error)]) -> String {
-    let head = format!("{way} {}", binary.token());
+/// The marker's value for a copy made `way`: its name, the binary's mount
+/// and, when known, its path in hexadecimal (a path may hold any byte but
+/// NUL), then why the ways before it failed, for the copy to log.
+fn marker(
+    way: SealedCopy,
+    binary: BinaryMount,
+    path: Option<&Path>,
+    failed: &[(SealedCopy, io::Error)],
+) -> String {
+    let mut head = format!("{way} {}", binary.token());
+    if let Some(path) = path {
+        head.push(' ');
+        for byte in path.as_os_str().as_bytes() {
+            head.push_str(&format!("{byte:02x}"));
+        }
+    }
     if failed.is_empty() {
         head
     } else {
@@ -680,16 +718,54 @@ fn marker(way: SealedCopy, binary: BinaryMount, failed: &[(SealedCopy, io::Error
     }
 }
 
-/// The way and the binary's mount a marker names, and why the ways before
-/// it failed.
-fn parse_marker(value: &str) -> Option<(SealedCopy, BinaryMount, &str)> {
+/// What a marker names.
+#[derive(Debug, PartialEq, Eq)]
+struct Marker<'a> {
+    way: SealedCopy,
+    binary: BinaryMount,
+    path: Option<PathBuf>,
+    /// Why the ways before it failed.
+    passed_over: &'a str,
+}
+
+/// What the marker `value` names: the way and the binary's mount, which
+/// must be there, then the binary's path, if any.
+fn parse_marker(value: &str) -> Option<Marker<'_>> {
     let (head, passed_over) = value.split_once(';').unwrap_or((value, ""));
-    let (name, binary) = head.split_once(' ')?;
-    Some((
-        SealedCopy::from_name(name)?,
-        BinaryMount::from_token(binary)?,
-        passed_over.trim_start(),
-    ))
+    let mut fields = head.split(' ');
+    let way = SealedCopy::from_name(fields.next()?)?;
+    let binary = BinaryMount::from_token(fields.next()?)?;
+    let path = match fields.next() {
+        Some(hex) => Some(PathBuf::from(OsString::from_vec(unhex(hex)?))),
+        None => None,
+    };
+    if fields.next().is_some() {
+        return None;
+    }
+    Some(Marker {
+        way,
+        binary,
+        path,
+        passed_over: passed_over.trim_start(),
+    })
+}
+
+/// The bytes `hex` spells, two lowercase digits each; `None` for an empty
+/// or malformed spelling.
+fn unhex(hex: &str) -> Option<Vec<u8>> {
+    let (pairs, odd) = hex.as_bytes().as_chunks::<2>();
+    if pairs.is_empty() || !odd.is_empty() {
+        return None;
+    }
+    let digit = |d: u8| match d {
+        b'0'..=b'9' => Some(d - b'0'),
+        b'a'..=b'f' => Some(d - b'a' + 10),
+        _ => None,
+    };
+    pairs
+        .iter()
+        .map(|&[high, low]| Some(digit(high)? << 4 | digit(low)?))
+        .collect()
 }
 
 /// The copy's run: checks the copy, never makes another.
@@ -703,6 +779,7 @@ fn copy_run(value: &OsStr, walk: bool) -> Sealing {
             return Sealing::Unsealed {
                 why: format!("{MARKER} is set, but /proc/self/exe does not open: {e}"),
                 binary: BinaryMount::Unknown(errno_of(&e)),
+                path: None,
             };
         }
     };
@@ -711,8 +788,16 @@ fn copy_run(value: &OsStr, walk: bool) -> Sealing {
     let unsealed = |why| Sealing::Unsealed {
         why,
         binary: mount_of(exe.as_fd(), walk),
+        // As above: unknown, the advice says so.
+        path: path_of(exe.as_fd()).ok(),
     };
-    let Some((way, binary, passed_over)) = value.to_str().and_then(parse_marker) else {
+    let Some(Marker {
+        way,
+        binary,
+        path,
+        passed_over,
+    }) = value.to_str().and_then(parse_marker)
+    else {
         return unsealed(format!(
             "{MARKER}={value:?} names no way to seal the binary"
         ));
@@ -722,6 +807,7 @@ fn copy_run(value: &OsStr, walk: bool) -> Sealing {
             way,
             passed_over: passed_over.to_owned(),
             binary,
+            path,
         },
         Err(e) => unsealed(format!(
             "{MARKER}={way}, but /proc/self/exe is no such copy: {e}"
