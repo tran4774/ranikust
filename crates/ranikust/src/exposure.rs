@@ -167,8 +167,8 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
 /// Warns about each process listed in `/proc` but ranikust ([`own_entry`])
 /// whose `/proc/<pid>/environ` ranikust can read and which sets one of
 /// `variables` ([`secret_variables`]) to a non-empty value
-/// ([`credential_warning`]);
-/// nothing is said when `/proc` cannot be listed. The caller runs it after
+/// ([`credential_warning`]); nothing is said when `/proc` cannot be listed,
+/// nor about the entries past an error in its listing. The caller runs it after
 /// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust reads with
 /// the capabilities a root `RUN` keeps (ADR-0078).
 pub(crate) fn warn_credential_holders(variables: &[String]) {
@@ -225,10 +225,10 @@ fn other_pids(
         .filter(move |pid| Some(pid.as_str()) != me)
 }
 
-/// ranikust's entry in `/proc`, as `/proc/self` names it; none when `/proc`
-/// shows no entry for it, or `/proc/self` cannot be read, which only means
-/// that no entry is taken for ranikust's. Not `getpid()`, its pid in its
-/// own PID namespace, which may not be the one `/proc` shows.
+/// ranikust's entry in `/proc`, as `/proc/self` names it: not `getpid()`,
+/// its pid in its own PID namespace, which may not be the one `/proc`
+/// shows. None when `/proc/self` cannot be read (`/proc` shows no entry
+/// for ranikust) or is not UTF-8; a caller then leaves nothing out.
 fn own_entry() -> Option<String> {
     fs::read_link("/proc/self")
         .ok()?
@@ -345,8 +345,8 @@ pub(crate) enum PeerScan {
 /// the processes ranikust can open as it starts. ranikust's own entry,
 /// which `getpid()` may not name ([`own_entry`]), is probed as any other,
 /// and passes: ranikust enters a mount namespace of its own only while
-/// single-threaded, so each of its threads is in one of the two counted as
-/// its own.
+/// single-threaded, so each of its threads is in the mount namespace it
+/// started in or the one it is in now.
 ///
 /// `started_in` is ranikust's mount namespace as it started
 /// ([`mount_namespace`], opened before the set-up may enter one of its own
@@ -948,9 +948,13 @@ mod tests {
             PEER_SCAN_LIMIT,
             |pid, left| probe([now, now], pid, left),
         );
+        // Opened and walked thread by thread: this process, not one out of
+        // reach, which passes as one thread.
+        let (peer, threads) = probe([now, now], &entry, PEER_SCAN_LIMIT);
         drop(stop);
         second.join().unwrap().unwrap_err();
         assert_eq!(found, PeerScan::None);
+        assert!(peer == Peer::Passed && threads >= 2, "{peer:?} {threads}");
     }
 
     #[test]
@@ -1551,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn the_credential_warning_leaves_out_ranikusts_own_entry_as_proc_names_it() {
+    fn other_pids_leave_out_the_entry_given_and_nothing_without_one() {
         // In a `/proc` of an enclosing PID namespace, ranikust's own entry
         // has another number, and the one its pid names is another process.
         let pid = std::process::id().to_string();
@@ -1562,8 +1566,17 @@ mod tests {
         // Where `/proc` shows no entry for ranikust, none is left out.
         let left: Vec<String> = other_pids(list(), None).collect();
         assert_eq!(left, [me.clone(), pid.clone()]);
+        // The real listing: ranikust's own entry is in it, a pid, and left
+        // out.
         let own = own_entry().expect("/proc shows this process");
-        assert!(own.bytes().all(|b| b.is_ascii_digit()), "{own}");
+        let listed = || {
+            fs::read_dir("/proc")
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+        };
+        assert!(listed().any(|n| n == own.as_str()), "{own}");
+        assert_eq!(pid_of(OsString::from(&own)), Some(own.clone()));
+        assert!(other_pids(listed(), own_entry().as_deref()).all(|p| p != own));
     }
 
     #[test]

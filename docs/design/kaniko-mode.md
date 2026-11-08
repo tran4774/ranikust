@@ -167,10 +167,11 @@ the scheduler runs one stage at a time) or a private directory per stage
     before the set-up and held open until the scan ends, and the one it is
     in when it looks (a set-up that failed after its `unshare` left it in
     a copy of its own). Every pid entry of `/proc` is probed, ranikust's
-    own too, which passes: `getpid()` names ranikust in its own PID
-    namespace, which may not be the one `/proc` shows. A `--pid=host`
-    container is refused by the same rule when a process of the host or
-    of another container is in reach.
+    own too, since `getpid()` names ranikust in its own PID namespace,
+    which may not be the one `/proc` shows; that entry passes, as ranikust
+    enters a mount namespace of its own only while single-threaded. A
+    `--pid=host` container is refused by the same rule when a process of
+    the host or of another container is in reach.
     It counts only the processes it can open as it starts, a residual risk
     accepted in ADR-0101; its mitigation is a PID namespace of the build
     container's own.
