@@ -42,6 +42,7 @@
 //!   `rnk-rootfs`: entries hold untrusted image content.
 
 mod anon;
+mod canary;
 mod error;
 mod fence;
 mod key;
@@ -58,4 +59,4 @@ pub use store::{
     PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, StateDirHold, Store, TmpEntry,
     USERNS_PROBE_PREFIX,
 };
-pub use userns::user_namespace_proc;
+pub use userns::{IdMaps, user_namespace_proc};

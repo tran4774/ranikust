@@ -20,10 +20,12 @@ use sha2::{Digest as _, Sha256};
 use tracing::field::Empty;
 
 use crate::anon::{self, AnonFiles};
+use crate::canary;
 use crate::error::{Error, Result};
 use crate::fence::{Fence, NamedGuard, RunGuard};
 use crate::key::EntryKey;
 use crate::lock;
+use crate::userns::IdMaps;
 
 /// The marker file of a state directory: a regular file at its top. Its
 /// own name, never the old `.ranikust-root` of a kaniko-mode workdir, so a
@@ -346,6 +348,13 @@ pub struct Store {
     /// The cache directories held by this store's threads.
     cache_holds: Arc<CacheHolds>,
     next_tmp: AtomicU64,
+    /// The maps of the user namespace a persistent store was opened in,
+    /// when not the initial one: what extracted layers are keyed by and
+    /// their canary guards (ADR-0128).
+    id_maps: Option<IdMaps>,
+    /// Set once the canary of [`Store::id_maps`] is known to be there and
+    /// to match.
+    canary_seen: OnceLock<()>,
 }
 
 impl Store {
@@ -377,8 +386,12 @@ impl Store {
     /// kaniko-mode build on `/` used it and did not end cleanly, and its
     /// `RUN` may have written there what this store would reuse without
     /// hashing it again (ADR-0077). So is one holding [`PRUNING_MARKER`],
-    /// whose entries a `prune --all` may have emptied part-way. These
-    /// checks come before anything is written.
+    /// whose entries a `prune --all` may have emptied part-way. In a user
+    /// namespace other than the initial one, the store reads its maps
+    /// ([`Store::id_maps`]) and checks their canary (ADR-0128): entries
+    /// owned by the first and the last id of each extent, made before the
+    /// first layer under these maps was published; one whose owners differ
+    /// now is refused. These checks come before anything is written.
     ///
     /// # Errors
     ///
@@ -386,10 +399,12 @@ impl Store {
     /// directory that is not one, [`Error::Busy`] while an anonymous store
     /// holds it, [`Error::UsedOnSlash`] for the
     /// marker of a kaniko-mode build on `/`, [`Error::PruneCutShort`] for
-    /// [`PRUNING_MARKER`], [`Error::NoFlock`] when its
+    /// [`PRUNING_MARKER`], [`Error::IdMapChanged`] for a canary that is not
+    /// as the maps give it, [`Error::NoFlock`] when its
     /// filesystem has no `flock`, [`Error::Io`] or [`Error::Rootfs`] when
     /// it cannot be created or opened (including
-    /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8).
+    /// [`rnk_rootfs::Error::Unsupported`] before Linux 5.8), or the user
+    /// namespace and its maps cannot be read in `/proc/self`.
     pub fn open(paths: &BuildPaths) -> Result<Self> {
         Self::open_with(paths, None::<fn()>, |_| {}, |_| Ok(()))
     }
@@ -447,6 +462,13 @@ impl Store {
         let unmarked = needs_marker(&state, &state_path)?;
         marker_checked(&state);
         check_dirs(&state, &state_path)?;
+        let id_maps = namespace_maps()?;
+        let canary_seen = OnceLock::new();
+        if let Some(maps) = &id_maps
+            && canary::check(&state, &state_path, maps)? == canary::Found::Matches
+        {
+            let _ = canary_seen.set(());
+        }
         if unmarked {
             mark(&state, &state_path)?;
         }
@@ -483,6 +505,8 @@ impl Store {
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
+            id_maps,
+            canary_seen,
         };
         if let Err(e) = store.cleanup() {
             if let Some(undoing) = undoing {
@@ -500,8 +524,11 @@ impl Store {
     /// existing directory `state` as a state directory now: it takes its
     /// shared `flock`, and it holds [`STATE_MARKER`] or only directories of
     /// the user namespace probe ([`USERNS_PROBE_PREFIX`]), neither
-    /// [`BUILDING_MARKER`] nor [`PRUNING_MARKER`], and no store directory
-    /// that is not a directory. For a step that writes there before the
+    /// [`BUILDING_MARKER`] nor [`PRUNING_MARKER`], no store directory
+    /// that is not a directory, and, in a user namespace other than the
+    /// initial one, no canary of its maps that differs from them: this
+    /// process's own, which a store opened in a namespace made later does
+    /// not share. For a step that writes there before the
     /// store opens (Q-111, (a)): the lock stays held by the
     /// [`StateDirHold`] returned, which the caller drops once
     /// [`Store::open`] has returned, so that nothing that takes the
@@ -510,9 +537,10 @@ impl Store {
     /// # Errors
     ///
     /// [`Error::Busy`], [`Error::NoFlock`], [`Error::NotAStateDir`],
-    /// [`Error::UsedOnSlash`] and [`Error::PruneCutShort`] as
-    /// [`Store::open`], [`Error::Io`] when `state` cannot be resolved or
-    /// read, [`Error::Rootfs`] when it cannot be opened.
+    /// [`Error::UsedOnSlash`], [`Error::PruneCutShort`] and
+    /// [`Error::IdMapChanged`] as [`Store::open`], [`Error::Io`] when
+    /// `state` or the namespace's maps cannot be resolved or read,
+    /// [`Error::Rootfs`] when it cannot be opened.
     pub fn check_state_dir(state: &Path) -> Result<StateDirHold> {
         let state_path = fs::canonicalize(state).map_err(|source| Error::Io {
             op: "resolve",
@@ -535,6 +563,9 @@ impl Store {
         refuse_cut_short_prune(&root, &state_path)?;
         needs_marker(&root, &state_path)?;
         check_dirs(&root, &state_path)?;
+        if let Some(maps) = namespace_maps()? {
+            canary::check(&root, &state_path, &maps)?;
+        }
         Ok(StateDirHold { _lock: state_lock })
     }
 
@@ -707,6 +738,8 @@ impl Store {
             held: lock::InProcess::default(),
             cache_holds: Arc::default(),
             next_tmp: AtomicU64::new(0),
+            id_maps: None,
+            canary_seen: OnceLock::new(),
         })
     }
 
@@ -965,19 +998,34 @@ impl Store {
         &self.build_dir
     }
 
+    /// The maps of the user namespace this persistent store was opened in,
+    /// read then, or `None` in the initial one and for an anonymous store:
+    /// what the layers extracted for this store are keyed by
+    /// (`rnk-snapshot`, ADR-0104) and their canary guards (ADR-0128).
+    #[must_use]
+    pub fn id_maps(&self) -> Option<&IdMaps> {
+        self.id_maps.as_ref()
+    }
+
     /// The published entry `key`, if any. Published entries are complete
     /// and never change, so no lock is needed to read them.
     ///
     /// # Errors
     ///
     /// [`Error::BadEntry`] when something else than the entry sits under
-    /// its name (a symlink, the wrong type, a mount); [`Error::Rootfs`]
-    /// when it cannot be looked up.
+    /// its name (a symlink, the wrong type, a mount); [`Error::IdMapChanged`]
+    /// for a layer in a user namespace whose maps have no canary, or one
+    /// that differs from them; [`Error::Rootfs`] when it cannot be looked
+    /// up.
     pub fn get(&self, key: &EntryKey) -> Result<Option<PathBuf>> {
         if let Some(anon) = &self.anon {
             return Ok(anon.entry(key).map(|(path, _)| path));
         }
-        Ok(self.published(key)?.map(|_| self.host(&key.path())))
+        if self.published(key)?.is_none() {
+            return Ok(None);
+        }
+        self.canary_before(key, CanaryUse::Reuse)?;
+        Ok(Some(self.host(&key.path())))
     }
 
     /// Publishes the entry `key`, filled by `f`, unless it is published
@@ -989,14 +1037,18 @@ impl Store {
     /// returns the number of bytes it wrote; it must return `Ok` only for a
     /// verified entry (a blob whose digest matched, a layer extracted
     /// completely). A blob is then `fsync`ed (an extracted layer is not; ADR-0032) and the entry
-    /// renamed into place.
+    /// renamed into place. In a user namespace other than the initial one,
+    /// a layer is published only once the canary of [`Store::id_maps`] is
+    /// there, made by the first layer under them (ADR-0128), and a layer
+    /// found published is used only with that canary there.
     ///
     /// # Errors
     ///
     /// [`Error::Fill`] when `f` fails, after its temporary entry is removed;
-    /// nothing is published. [`Error::BadEntry`] as [`Store::get`].
-    /// [`Error::Rootfs`] or [`Error::Io`] when the store cannot lock,
-    /// create or rename.
+    /// nothing is published. [`Error::BadEntry`] and
+    /// [`Error::IdMapChanged`] as [`Store::get`]. [`Error::Rootfs`] or
+    /// [`Error::Io`] when the store cannot lock, create or rename, or make
+    /// the canary.
     pub fn fill<F, E>(&self, key: &EntryKey, f: F) -> Result<PathBuf>
     where
         F: FnOnce(&TmpEntry) -> std::result::Result<u64, E>,
@@ -1012,19 +1064,22 @@ impl Store {
         if let Some(anon) = &self.anon {
             return self.fill_anonymous(anon, key, f, &span);
         }
-        let _lock = self.lock(key)?;
+        let _lock = self.lock(&key.lock_path())?;
         let rel = key.path();
         if let Some(size) = self.published(key)? {
+            self.canary_before(key, CanaryUse::Reuse)?;
             record_reused(&span, size);
             return Ok(self.host(&rel));
         }
         self.state.create_dir_all(key.parent(), DIR_MODE)?;
-        let n = self.next_tmp.fetch_add(1, Ordering::Relaxed);
-        let tmp = PathBuf::from("tmp").join(&self.id).join(n.to_string());
+        let tmp = self.tmp_name();
         let entry = self.create_tmp(key, &tmp)?;
         let filled = f(&entry);
         let published = match filled {
-            Ok(bytes) => self.publish(entry, &tmp, &rel).map(|()| bytes),
+            Ok(bytes) => self
+                .canary_before(key, CanaryUse::Publish)
+                .and_then(|()| self.publish(entry, &tmp, &rel))
+                .map(|()| bytes),
             Err(e) => {
                 drop(entry);
                 self.discard(&tmp);
@@ -1625,23 +1680,68 @@ impl Store {
         remove_build(&self.state, id)
     }
 
-    /// Takes the per-digest lock of `key`, waiting for it: first among this
-    /// store's threads, then with `flock` among processes.
-    fn lock(&self, key: &EntryKey) -> Result<(lock::Held<'_>, OwnedFd)> {
+    /// Takes the lock file `rel` (an entry's [`EntryKey::lock_path`], or a
+    /// canary's), waiting for it: first among this store's threads, then
+    /// with `flock` among processes.
+    fn lock(&self, rel: &Path) -> Result<(lock::Held<'_>, OwnedFd)> {
         let span = tracing::info_span!("rnk_store.lock", contended = Empty);
         let _entered = span.enter();
-        let rel = key.lock_path();
-        let (held, waited) = self.held.acquire(&rel);
+        let (held, waited) = self.held.acquire(rel);
         if let Some(parent) = rel.parent() {
             self.state.create_dir_all(parent, DIR_MODE)?;
         }
-        let fd = lock::open(&self.state, &rel)?;
-        let free = lock::try_lock(&fd).map_err(|e| self.io_err("lock", &rel, e))?;
+        let fd = lock::open(&self.state, rel)?;
+        let free = lock::try_lock(&fd).map_err(|e| self.io_err("lock", rel, e))?;
         if !free {
-            lock::lock(&fd).map_err(|e| self.io_err("lock", &rel, e))?;
+            lock::lock(&fd).map_err(|e| self.io_err("lock", rel, e))?;
         }
         span.record("contended", waited || !free);
         Ok((held, fd))
+    }
+
+    /// A new name for a temporary entry: `tmp/<build-id>/<n>`.
+    fn tmp_name(&self) -> PathBuf {
+        let n = self.next_tmp.fetch_add(1, Ordering::Relaxed);
+        PathBuf::from("tmp").join(&self.id).join(n.to_string())
+    }
+
+    /// Before the layer `key` is reused or published in a user namespace
+    /// other than the initial one, the canary of [`Store::id_maps`]
+    /// (ADR-0128), once per store: checked again under its lock, where
+    /// [`Store::open`] found none, since another build may have made it
+    /// since. Where there is still none, a reuse is refused (a layer under
+    /// these maps without the canary made before it) and a publication
+    /// makes it. Nothing for a blob, or outside a user namespace.
+    fn canary_before(&self, key: &EntryKey, then: CanaryUse) -> Result<()> {
+        let (EntryKey::Layer(_), Some(maps)) = (key, &self.id_maps) else {
+            return Ok(());
+        };
+        if self.canary_seen.get().is_some() {
+            return Ok(());
+        }
+        let rel = canary::path(maps);
+        let _lock = self.lock(&Path::new("locks").join(&rel))?;
+        match (canary::check(&self.state, &self.state_path, maps)?, then) {
+            (canary::Found::Matches, _) => {}
+            (canary::Found::Absent, CanaryUse::Reuse) => {
+                return Err(Error::IdMapChanged {
+                    path: self.state_path.clone(),
+                    why: format!(
+                        "{} is missing, yet {key} is there under these maps",
+                        rel.display()
+                    ),
+                });
+            }
+            (canary::Found::Absent, CanaryUse::Publish) => {
+                let tmp = self.tmp_name();
+                if let Err(e) = canary::create(&self.state, maps, &tmp, DIR_MODE) {
+                    self.discard(&tmp);
+                    return Err(e);
+                }
+            }
+        }
+        let _ = self.canary_seen.set(());
+        Ok(())
     }
 
     /// The size of the published entry `key` (0 for a layer), or `None`.
@@ -1717,6 +1817,25 @@ impl Store {
             source,
         }
     }
+}
+
+/// What [`Store::canary_before`] precedes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanaryUse {
+    /// A layer found published.
+    Reuse,
+    /// A layer about to be published.
+    Publish,
+}
+
+/// The maps of the user namespace this process runs in, as a store reads
+/// them ([`IdMaps::current`]); a test may give others.
+fn namespace_maps() -> Result<Option<IdMaps>> {
+    #[cfg(test)]
+    if let Some(maps) = tests::id_maps() {
+        return Ok(maps);
+    }
+    IdMaps::current()
 }
 
 /// `builds/<id>.lock`, held by the build `id` while it runs.

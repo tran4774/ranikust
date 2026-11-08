@@ -21,6 +21,15 @@ thread_local! {
     /// Whether the next probe directory `remove_probe_dir` has seen on
     /// this thread is removed before it opens it, as by its probe.
     static PROBE_DIR_GOES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The maps a store opened on this thread reads, where a test gave
+    /// them: `Some(None)` for the initial user namespace.
+    static ID_MAPS: std::cell::RefCell<Option<Option<IdMaps>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The hook in `namespace_maps`: the maps this thread's test gave.
+pub(super) fn id_maps() -> Option<Option<IdMaps>> {
+    ID_MAPS.with(|m| m.borrow().clone())
 }
 
 /// The hook in `remove_probe_dir`, between its `statx` and its `open`.
@@ -636,3 +645,5 @@ fn each_store_directory_holds_data_or_a_builds_own_files() {
     }
     assert_eq!(DIRS.len(), DATA_DIRS.len() + own.len());
 }
+
+mod canaries;

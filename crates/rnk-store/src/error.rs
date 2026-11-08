@@ -192,6 +192,26 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// The canary of this user namespace's id maps is not as they give it
+    /// (ADR-0128): the layers extracted under maps equal to these, which a
+    /// build here would reuse, may show other owners than their tars give,
+    /// since the maps above the parent namespace (an enclosing container's
+    /// subordinate ids) or the owners of files in the state directory
+    /// changed. Also a layer published under these maps with no canary.
+    #[error(
+        "the state directory {} holds layers extracted under other ids than this user namespace \
+         gives: {why}; the subordinate ids of an enclosing container, or the owners of files in \
+         the state directory, changed since, and those layers would give the image other \
+         owners (ADR-0128); empty it with ranikust prune --all, or pass another --state-dir",
+        path.display()
+    )]
+    IdMapChanged {
+        /// The state directory.
+        path: PathBuf,
+        /// Which entry of the canary differs, and how.
+        why: String,
+    },
+
     /// A host path operation on the state directory itself failed.
     #[error("{op} {}: {source}", path.display())]
     Io {

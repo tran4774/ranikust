@@ -362,6 +362,7 @@ pub(crate) fn unfinished_prune(e: &rnk_store::Error) -> Option<(Unfinished, &Pat
         Error::NotPruned { path, .. } => Some((Unfinished::NotPruned, path)),
         Error::PruneCutShort { path } => Some((Unfinished::CutShort, path)),
         Error::NotAStateDir { .. }
+        | Error::IdMapChanged { .. }
         | Error::NoFlock { .. }
         | Error::Busy { .. }
         | Error::InUse { .. }

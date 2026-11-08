@@ -488,6 +488,7 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
         | Error::NotPruned { .. }
         | Error::NotAbandoned { .. }
         | Error::PruneCutShort { .. }
+        | Error::IdMapChanged { .. }
         | Error::StateNotEmpty { .. }
         | Error::NotEmptied { .. }
         | Error::Unmarked { .. }
