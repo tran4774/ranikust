@@ -172,7 +172,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `src/extract/tests.rs`: what each extraction form would `chown`, read to
   the end, the header check's errors; a `chown`'s `EINVAL` in `src/meta.rs`
   as `Error::Unmapped`; an owner of `u32::MAX`, from PAX or base-256, left
-  the process's by every extraction and no owner to the scans, #212); their
+  unchanged (`chown`'s -1) by every extraction, the process's on a new
+  entry, and no owner to the scans, #212); their
   red team (`tests/red_team_owners.rs`:
   hostile headers, PAX, global PAX, GNU long names, base-256, duplicates,
   whiteouts, hardlinks, special files, framing and entries past the end,

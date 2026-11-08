@@ -828,7 +828,7 @@ fn a_new_cache_gets_its_owner_and_mode_once() {
 }
 
 /// An owner id of `u32::MAX`, which `chown` reads as "unchanged", leaves
-/// the new cache the process's id, with the mode asked for.
+/// that id as a new directory gets it, with the mode asked for.
 #[test]
 fn a_new_cache_owned_by_u32_max_keeps_the_processs_id() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};

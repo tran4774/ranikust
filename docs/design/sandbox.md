@@ -419,8 +419,9 @@ The steps, in order:
         mount namespace. A secret with `env=` is a variable of that `RUN`
         instead.
       - A `uid=` or `gid=` of `4294967295`, on a new cache directory or a
-        secret, is `chown`'s "unchanged": that id stays root's, as BuildKit
-        passes it on
+        secret, is `chown`'s "unchanged": that id stays as the new directory
+        or file gets it (root's, or the group of a setgid parent), as
+        BuildKit passes it on
         (`buildkit@cd8ee244 vendor/github.com/tonistiigi/fsutil/copy/mkdir_unix.go:44`,
         `solver/llbsolver/mounts/secretmount_unix.go:76`;
         [#212](https://github.com/tran4774/ranikust/issues/212)).

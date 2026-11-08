@@ -79,11 +79,11 @@ anything, then applies, in this order:
    (`buildkit@cd8ee244 vendor/github.com/containerd/containerd/v2/pkg/archive/tar.go:409-417`)
    pass it ([#212](https://github.com/tran4774/ranikust/issues/212); the
    [owner scans](modes-and-detection.md#owners-the-user-namespace-does-not-map)
-   agree). A new entry keeps the extracting process's id, and a directory
-   merged into an existing one keeps that one's, as in kaniko: only kaniko
-   mode, which extracts every layer into one live root, meets the second
-   case; overlay mode extracts each layer into a directory of its own, as
-   BuildKit does.
+   agree). A new entry keeps the extracting process's id. A directory that
+   an earlier layer made keeps that layer's id in kaniko mode, which
+   extracts every layer into one root as kaniko does, and gets the
+   process's id in overlay mode, which extracts each layer into a directory
+   of its own as BuildKit's overlayfs snapshotter does.
 2. **Xattrs**, before the mode, because setting `user.*` needs write
    permission that the final mode may remove. An empty ACL value removes the
    ACL (`system.posix_acl_access` or `_default`, with `removexattr`, no

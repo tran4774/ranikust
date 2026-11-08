@@ -433,8 +433,8 @@ mod tests {
         assert!(!m.read_only);
         let m = full("TYPE=CACHE,target=/c,ro").unwrap();
         assert!(m.read_only && m.kind == MountType::Cache);
-        // BuildKit's `ParseUint(v, 10, 32)` takes it; `chown` reads it as
-        // "unchanged".
+        // `buildkit@cd8ee244 frontend/dockerfile/instructions/commands_runmount.go:247,253`
+        // takes it; `chown` reads it as "unchanged".
         let m = full("type=secret,id=t,uid=4294967295,gid=4294967295").unwrap();
         assert_eq!((m.uid, m.gid), (Some(u32::MAX), Some(u32::MAX)));
     }
@@ -452,7 +452,10 @@ mod tests {
             ("type=bind,sharing=shared", "invalid cache sharing"),
             ("type=cache,required", "unexpected key 'required'"),
             ("type=cache,uid=-1", "invalid value -1 for uid"),
-            ("type=cache,gid=4294967296", "4294967296 for gid"),
+            (
+                "type=cache,gid=4294967296",
+                "invalid value 4294967296 for gid",
+            ),
             ("type=cache,mode=9", "invalid value 9 for mode"),
             ("type=cache,ro=maybe", "invalid value for ro"),
             ("type=cache,bogus", "must be a key=value pair"),
