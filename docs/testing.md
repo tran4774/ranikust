@@ -106,7 +106,9 @@ The plan comes from the verification plan of
   and rootless, and run `just smoke`'s in-sandbox checks; every other suite
   (the `RUN` sandbox's real-root checks, kaniko mode, Docker or Podman
   variants, `--allow proc.rbind`) runs on Ubuntu only, and Fedora or another
-  policy than `targeted` nowhere.
+  policy than `targeted` nowhere. A base layer carrying a `security.selinux`
+  xattr is built under SELinux by no suite (the `unit` suite's case for it
+  skips where SELinux runs, and the `el9` image runs no `unit`).
 - A `--network=none` `RUN` under the rbind of `/sys` below a cgroup v1
   hierarchy (`net_cls,net_prio`) or a configfs mounted in the outer `/sys`:
   only Podman's cgroup2 mount is checked covered (`rootless-reach`, T1),
@@ -145,13 +147,13 @@ run goes through these steps:
 3. **Provision** the base image once, from the verified cloud image booted
    with `tests/vm/cloud-init/provision`: it installs the packages (Docker
    from the Ubuntu archive, `zstd`, `pigz`, `busybox-static`, and `uidmap`
-   for the regular user's `newuidmap`), disables the apt timers,
-   removes what is per machine (SSH host keys, machine ID; no user, key or
-   password is created) and powers off. For `alma9`,
+   for the regular user's `newuidmap`), disables the apt timers, removes
+   what is per machine (SSH host keys, machine ID; no user, key or password
+   is created) and powers off. For `alma9`,
    `tests/vm/cloud-init/provision-el9` installs Podman with `podman-docker`
-   (the `docker` command the network check uses) and `audit`, enables
-   `auditd`, disables the dnf timer and checks that SELinux is enforcing.
-   The disk becomes one read-only
+   (the `docker` command the network check uses), `audit` and `tar`,
+   enables `auditd`, disables the dnf timer and checks that SELinux is
+   enforcing. The disk becomes one read-only
    qcow2, `base-<release>-<key>.qcow2`, with its SHA-256 beside it, checked
    before every use. `<key>` hashes the release, the cloud image's SHA-256,
    the package list and the provisioning seed, so a change builds a new
@@ -249,7 +251,7 @@ run goes through these steps:
 | `ultra` | The ultra benchmark: the same on `nextjs-kaniko`'s W1–W3, with its npm proxy; tens of minutes per round. Only when the maintainer asks for performance numbers or an acceptance run. Not part of the default `just test-vm` |
 | `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path`: a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP [test registry](#test-registries) as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
 | `secrets` | ADR-0051: kaniko mode on the `/` of default Docker containers (`ubuntu:24.04`, no `--privileged`) with `RUN` steps that attack ranikust (`tests/vm/guest/secrets/attack.sh`; vectors V1–V13 in the header of `secrets.sh`): the state directory, `/proc/*/fd`, ranikust's `environ`, `mem` and `cmdline`, the `RUN`'s own environment, processes left alive, the same from `unshare -Ur`, another process's `environ`, the sealed copy of the binary through every thread's `exe`, `ptrace` and `process_vm_writev` (V13, with the VM's Yama `ptrace_scope` at 0 for the suite). Three scenarios (ranikust as PID 1, the same with `--cap-add SYS_PTRACE`, and started from `sh -c`); every vector must be blocked but the two ranikust only warns about (a `--build-arg` value in `cmdline`; the shell's `environ`), whose warnings must appear. The state directory may hold only the store's marker of a build in progress, `.ranikust-building` (the PID namespace and boot id). It also records whether the container's overlayfs takes `O_TMPFILE` and how ranikust made its state files, then runs `stopsig` (ADR-0077) and `memlimit` (ADR-0056: a 512 MiB layer built under `--memory 256m --memory-swap 256m` must succeed, its state on disk, never in `memfd`). Not part of the default `just test-vm` |
-| `el9` | Row 9e of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)'s privilege matrix, the only suite of `RANIKUST_VM_RELEASE=alma9` and its default (AlmaLinux 9, kernel 5.14, SELinux enforcing, which it checks first, with `auditd` running and the user's subordinate ranges). Two legs build with `--mode=auto` in their default state directories: root must get overlay mode as root, and the VM's regular user, through `newuidmap`, rootless overlay mode with a new `proc`; each build's mode line and user-namespace probe line must be the ones measured there, step by step: the probe passes, every step `ok` up to a new `proc`, a sysfs of its own and `mknod` refused with `EPERM`, overlay mounted with `fsconfig(lowerdir+)`, which the kernel has as a backport. Each leg builds a `RUN` per in-sandbox check of `just smoke` (`tests/smoke/lib.bash`; a last `RUN` prints its SELinux context), the `rootless` case's `content` stage, whose `--reproducible` digest must be the same for both legs (no SELinux label reaches a layer), and `tests/smoke/e2e`, no stub or secret in a blob; Podman runs the images. The audit log must hold no SELinux denial from while the legs built, and must hold the one a container gets reading a home directory bound without relabelling (the control). Runs only in the local VM |
+| `el9` | Row 9e of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)'s privilege matrix, the only suite of `RANIKUST_VM_RELEASE=alma9` and its default (AlmaLinux 9, kernel 5.14, SELinux enforcing, which it checks first, with `auditd` running and the user's subordinate ranges). Two legs build with `--mode=auto` in their default state directories: root must get overlay mode as root, and the VM's regular user, through `newuidmap`, rootless overlay mode with a new `proc`; each build's mode line and user-namespace probe line must be the ones measured there, step by step with each errno ([modes-and-detection](design/modes-and-detection.md#where-environments-land) has what was measured). Each leg builds a `RUN` per in-sandbox check of `just smoke` (`tests/smoke/lib.bash`) and one whose SELinux context must be the caller's, the `rootless` case's `content` stage, whose `--reproducible` digest must be the same for both legs (no SELinux label reaches a layer), and `tests/smoke/e2e`, no stub or secret in a blob or a log; Podman runs the images. The default state directories must have the types measured. The audit log, rotated files included, must hold no SELinux denial from while the legs built, and must hold the one a container gets reading a home directory bound without relabelling (the control). Runs only in the local VM |
 
 ### Test registries
 

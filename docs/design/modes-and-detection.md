@@ -71,15 +71,18 @@ Built: the T1 `rootless` smoke case (rootless Podman with a volume, row 5)
 and the T1 kaniko leg's cases (row 5b, in part); the runner, VM and k3s legs
 are planned ([testing](../testing.md#quick-smoke-cases)), but for row 9e: the
 T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
-AlmaLinux 9.8 (kernel 5.14, SELinux enforcing, policy `targeted`), where
-root gets overlay mode as root and a regular user with ranges rootless
-overlay mode through `newuidmap`, as expected (measured). There SELinux
-denies nothing in either leg; a `RUN` runs in the SELinux context of the
-process that started ranikust (`unconfined_t` from a login shell), since
-ranikust sets none; the default state directories are labelled `var_lib_t`
-(root's) and `data_home_t` (the user's); and no label reaches a layer, the two
-legs' `--reproducible` digests being one. The kernel, a 5.14 with backports,
-takes overlay's `lowerdir+` ([step 4](#probe-order---modeauto)).
+AlmaLinux 9.8 (kernel 5.14, SELinux enforcing, policy `targeted`). Measured
+there, as expected: root gets overlay mode as root and a regular user with
+ranges rootless overlay mode, with a new `proc` and a read-only rbind of
+`/sys`. In both the user-namespace probe passes (map `multi-range` as root,
+`newuidmap` as the user), with a `sysfs` of its own and `mknod` refused
+with `EPERM`, and overlay mounts with `fsconfig(lowerdir+)`: the kernel, a
+5.14 with backports, has it ([step 4](#probe-order---modeauto)). The audit
+log records no SELinux denial in either leg. A `RUN` runs in the SELinux
+context of the process that started ranikust (`unconfined_t` from a login
+shell), since ranikust sets none. The default state directories are labelled
+`var_lib_t` (root's) and `data_home_t` (the user's), and no label reaches a
+layer: the two legs' `--reproducible` digests are one.
 
 ## Probe order (`--mode=auto`)
 

@@ -500,10 +500,9 @@ before 1.0:
 - real Kubernetes (containerd's AppArmor profile, `procMount`,
   `hostUsers: false`, Pod Security Standards);
 - SELinux beyond `just test-vm`'s `el9` suite (AlmaLinux 9, enforcing), whose
-  two overlay-mode builds, as root and rootless, pass `just smoke`'s
-  in-sandbox checks (T7, T17, T19, T18's mount flags) with no denial; the
-  real-root checks above, kaniko mode and the container variants run on
-  Ubuntu only;
+  overlay-mode builds pass `just smoke`'s in-sandbox checks (T7, T17, T19,
+  T18's mount flags) with no denial logged
+  ([what else is not covered](../testing.md#not-covered-yet));
 - what a `RUN` reaches through an rbind of `/proc` (section 6,
   [ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)):
   measured outside ranikust on Linux 5.15 and 6.8; ranikust's T1 tests
