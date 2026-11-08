@@ -709,7 +709,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of its own `oom_score_adj`, or of that of a process outside the build of
   its kernel uid, fails with `EROFS`, one through `/dev/stderr` works
   (without the read-only flag, both writes succeed); `USER _apt` gets
-  42:65534 through `setgroups`; `--network=none` has `lo` up in a network
+  42:65534 through `setgroups`; a secret's id of 4294967295 is left the
+  `RUN`'s own (#212); `--network=none` has `lo` up in a network
   namespace of its own, and its `/sys` shows no network device or
   address, and no mount below it lists anything (Podman's cgroup2 at
   `/sys/fs/cgroup`, which the shared network's `RUN` sees, is an empty

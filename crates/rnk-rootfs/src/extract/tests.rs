@@ -2014,14 +2014,17 @@ fn a_scan_of_owners_notes_what_the_extraction_would_chown() {
 
 /// An owner of `u32::MAX`, which `chown` reads as "unchanged", leaves a
 /// directory, a file and a symlink the extracting process's own in every
-/// extraction, whether a PAX record or the header's base-256 field gives
-/// it, as the uid or the gid; and the scans, which take it as no owner,
-/// agree: nothing for a map that holds the process's ids.
+/// extraction, whether a PAX record (over a header naming another owner)
+/// or the header's base-256 field gives it, as the uid or the gid; and the
+/// scans, which take it as no owner, agree: nothing for a map that holds
+/// the process's ids.
 #[test]
 fn an_owner_of_u32_max_leaves_the_processs_own_and_the_scans_agree() {
     let f = Fixture::new();
     let (uid, gid) = f.ids();
     let max = u32::MAX.to_string();
+    // Not the process's own: a PAX record ignored would show.
+    let other = |id: u32| u64::from(id ^ 1);
     let entries = |t: &mut Tar, pax: Option<(&str, &[u8])>| {
         let record = |t: &mut Tar| {
             if let Some(record) = pax {
@@ -2038,6 +2041,11 @@ fn an_owner_of_u32_max_leaves_the_processs_own_and_the_scans_agree() {
     let mut cases = Vec::new();
     for key in ["uid", "gid"] {
         let mut t = Tar::new(&f);
+        if key == "uid" {
+            t.uid = other(uid);
+        } else {
+            t.gid = other(gid);
+        }
         entries(&mut t, Some((key, max.as_bytes())));
         cases.push((format!("PAX {key}"), t.bytes()));
     }

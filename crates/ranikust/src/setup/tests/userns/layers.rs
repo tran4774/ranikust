@@ -120,9 +120,10 @@ impl Tar {
     }
 }
 
-/// The bottom layer: a `0555` root of root's, owners other than root, a
-/// user's symlink, a hardlink, setuid, setgid and sticky modes, `user.*`
-/// and `security.capability` xattrs, a FIFO and two device nodes. Also the
+/// The bottom layer: a `0555` root of root's, owners other than root, ids
+/// of 4294967295 (`chown`'s "unchanged", #212), a user's symlink, a
+/// hardlink, setuid, setgid and sticky modes, `user.*` and
+/// `security.capability` xattrs, a FIFO and two device nodes. Also the
 /// length of its part up to `etc/owned`, which ends at an entry.
 fn bottom() -> (Vec<u8>, Digest, usize) {
     let mut t = Tar::default();
@@ -155,6 +156,10 @@ fn bottom() -> (Vec<u8>, Digest, usize) {
     .node("run/fifo", EntryType::Fifo, ROOT, 0o600, (0, 0))
     .dir("srv/", (0, 5), 0o2775)
     .dir("tmp/", ROOT, 0o1777)
+    // Below `etc/`, of gid 0, which a gid left unchanged gets either way,
+    // from the process or, were `etc/` setgid, from it.
+    .dir("etc/gid-unchanged/", (2, u32::MAX), 0o750)
+    .file("etc/uid-unchanged", (u32::MAX, 3), 0o640, b"uid")
     .file("gone", ROOT, 0o644, b"gone");
     let (tar, id) = t.finish();
     (tar, id, cut)
@@ -187,7 +192,9 @@ fn bottom_dump() -> String {
         "bin/wall f 0:5 2755 \"wall\"".to_owned(),
         "dev d 0:0 755".to_owned(),
         "etc d 0:0 755".to_owned(),
+        "etc/gid-unchanged d 2:0 750".to_owned(),
         "etc/owned f 2:3 640 \"owned\"".to_owned(),
+        "etc/uid-unchanged f 0:3 640 \"uid\"".to_owned(),
         "gone f 0:0 644 \"gone\"".to_owned(),
         "home d 0:0 755".to_owned(),
         "home/u d 1000:1000 700".to_owned(),
