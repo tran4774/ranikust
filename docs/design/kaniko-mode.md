@@ -439,7 +439,12 @@ component, as Go's `filepath.Match` (`/var/cache/*` ignores what is in
 below it (kaniko's `PrefixMatchOnly`). The parents of an ignored path get no
 special treatment: kaniko writes a parent directory only when it changed
 itself or holds an added file (`pkg/snapshot/snapshot.go:340-445`), and the
-walk does the same.
+walk does the same. A walk (the snapshot walk, a stage's copy, its
+hand-over, deletion, live extraction's whiteouts) asks about each entry by
+the path it built from the names it read, which holds no `..`:
+`IgnoreList::covers_walked` then reads only as many leading names as the
+longest entry has, never cleans the whole path, so asking costs no more for
+a deep entry than for a shallow one.
 
 **Extraction of base layers into the live root** (`rnk_rootfs::extract_live`)
 checks each entry at its name and at its physical path, so a symlink in the

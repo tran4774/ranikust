@@ -124,8 +124,11 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   changed and is never written. `meta.dev`/`ino`/`nlink` group hard links.
   Content is read again by the exporter through `RootPath`.
 - The walk skips an entry, with everything below it, when
-  `IgnoreList::covers` matches it (a literal entry, an `--ignore-path` glob,
-  or kaniko's below-only entries); `contains` is an exact match only. The
+  `IgnoreList::covers_walked` matches it (a literal entry, an `--ignore-path`
+  glob, or kaniko's below-only entries); `contains` is an exact match only.
+  A stage's copy and its hand-over filter by the same call: each path is
+  built from the names read, with no `..`
+  ([ignore list](../../design/kaniko-mode.md#ignore-list)). The
   walk keeps the previous one as a path arena (`kaniko/tree.rs`); a path
   beyond `u32` offsets is `Error::WalkTooLarge`. A vanished or swapped entry
   is `Error::Changed`. Detail:
@@ -284,7 +287,11 @@ that found a bug stay as its regression test.
   the same layer digest, falls back to a copy when it moved nothing or a
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
   bases cannot reach outside `rootfs/`; in a user namespace no base layer is
-  streamed into a stage directory (ADR-0098).
+  streamed into a stage directory (ADR-0098). In a binary of its own
+  (`tests/deep_chain.rs`, the soft `RLIMIT_NOFILE` raised to the hard one):
+  a chain of up to 100,000 levels (as many as the copy holds descriptors
+  for; skipped below 30,000) copied and handed over in time linear in its
+  depth.
 - **T0, a cache hit** (`tests/apply.rs`, both roots, the shared one also as
   `/`): the next diff is empty, or only the next step's; whiteouts and opaque
   directories remove lower entries once; a root built by running a step and

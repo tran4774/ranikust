@@ -1523,8 +1523,9 @@ impl Extractor<'_> {
         let mut counts = Counts::default();
         let start = delete::open_dir_checked(pfd, name, st, path)?;
         let keep = self.live.as_ref().map(|l| l.keep);
+        // `path` is cleaned or physical, and the walk adds the names it reads.
         let mut decide = |p: &Path, _: FileType| match keep {
-            Some(keep) if keep.covers(p) => Keep::Whole,
+            Some(keep) if keep.covers_walked(p) => Keep::Whole,
             Some(_) | None => Keep::Remove,
         };
         let all = delete::remove_below(self.root, start, path, &mut decide, &mut counts)?;
@@ -1740,12 +1741,13 @@ impl Extractor<'_> {
             None => (dir, None),
         };
         let created = &self.created;
+        // `dir` is cleaned or physical, and the walk adds the names it reads.
         let mut decide = |p: &Path, t: FileType| {
             if let Some(keep) = keep {
-                if keep.covers(p) {
+                if keep.covers_walked(p) {
                     return Keep::Whole;
                 }
-                if keep.has_below(p) {
+                if keep.has_below_walked(p) {
                     return Keep::Descend;
                 }
             }
