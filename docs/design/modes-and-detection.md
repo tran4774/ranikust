@@ -568,10 +568,14 @@ nothing is checked.
   in, or root's copy of its map (a single uid or gid where it maps no more,
   or where its ranges could not be mapped), widen its ranges (rootless
   Podman: its user's, then `podman system migrate`), or run as root on a
-  host or in a rootful container. Each range asked for comes with the rule that
+  host or in a rootful container; under root's `--userns`, widen the
+  `ranikust` range of `/etc/subuid` or `/etc/subgid` to the count named
+  (id N is its N+1-th), or build without `--userns`
+  ([sandbox](sandbox.md#--userns)). Each range asked for comes with the rule that
   it must not overlap another user's range or a real account's ids. Past 65536
   ids, `useradd`'s default count, no wider range is asked for: the ways
-  out name the ids and say to run as root or in a container.
+  out name the ids and say to run as root or in a container, or, under
+  `--userns`, to build without it.
 
 ## Failure handling
 

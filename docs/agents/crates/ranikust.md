@@ -129,7 +129,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`make_probe_dir_again`). `set_up` enters the namespace with the same ids;
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names
   `--userns`. Its messages name `--userns`, its guidance
-  `USERNS_UNUSABLE`. `config.rs` refuses it with `--mode=kaniko` (exit 2).
+  `USERNS_UNUSABLE`; an owner or user the range lacks gets the `ranikust`
+  range's ways out (`overlay_built` passes `owners::MadeBy::Userns`, #208).
+  `config.rs` refuses it with `--mode=kaniko` (exit 2).
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; then a path ending in
   `..`, before anything is opened; then `statedir::check`
@@ -447,7 +449,8 @@ Each step before the next; design in
   failed with `EINVAL`);
   `build::Failed` carries it out of the build, found among the error's
   sources (`owners::find`), and `owners::guidance` gives the ways out by who
-  made the namespace and its maps (`rnk_snapshot::UserNamespace`, which
+  made the namespace (`owners::MadeBy`, from the set-up's `Outcome`) and its
+  maps (`rnk_snapshot::UserNamespace`, which
   reads them; the binary reads no map itself), naming
   only the ids they lack: a user's one id (`Namespace::UserOneId`), install
   `uidmap` and add a first range of at least the highest id named, run as
@@ -455,11 +458,16 @@ Each step before the next; design in
   one to that count; root's with a single uid or gid (`RootOneId`: the
   namespace ranikust was started in maps no more, or its ranges could not
   be mapped), root's copy of a container's ranges, or a namespace ranikust
-  was started in (`made` false: kaniko mode, root's overlay mode;
-  `Container`), widen its ranges. A range asked for comes with
+  was started in (`MadeBy::Other`: kaniko mode, root's overlay mode;
+  `Container`), widen its ranges; root's `--userns` (`MadeBy::Userns`,
+  `Userns`, whatever the maps read: its map is the `ranikust` range's
+  alone), widen the `ranikust` line of `/etc/subuid` or `/etc/subgid` to
+  the highest id named + 1 (`counts_text`), or build without `--userns`
+  (`userns_ways_out`). A range asked for comes with
   `NO_OVERLAP` (it must not overlap another user's range or a real
   account); past `RANGE_MAX` (65536, `useradd`'s default count) no range
-  is asked for: the ids are named, and root or a container is the way out.
+  is asked for: the ids are named, and root or a container is the way out
+  (under `--userns`, a build without it, the count needed named too).
   No flag lets it pass.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read

@@ -9,6 +9,19 @@ use std::error::Error;
 use rnk_rootfs::{MappedIds, Unmapped};
 use rnk_snapshot::UserNamespace;
 
+/// Who made the user namespace a build ran in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MadeBy {
+    /// Not ranikust: the one it was started in, if any (kaniko mode,
+    /// root's overlay mode).
+    Other,
+    /// ranikust, for rootless overlay mode.
+    Rootless,
+    /// ranikust, for root's `--userns`, with the `ranikust` range alone
+    /// (ADR-0104).
+    Userns,
+}
+
 /// The user namespace the build runs in, as the ways out tell it apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Namespace {
@@ -24,6 +37,9 @@ enum Namespace {
     /// Root's own ranges in a container, or a namespace ranikust was
     /// started in (a rootless container's), or one that cannot be read.
     Container,
+    /// ranikust made it for root's `--userns`: its `ranikust` range of
+    /// `/etc/subuid` and `/etc/subgid` from id 0 on, nothing else.
+    Userns,
 }
 
 /// The [`Unmapped`] among `e` and its sources, if any.
@@ -38,9 +54,9 @@ pub(crate) fn find<'a>(e: &'a (dyn Error + 'static)) -> Option<&'a Unmapped> {
     None
 }
 
-/// The ways out of `found`, in the user namespace this process runs in;
-/// `made` when ranikust made it (rootless overlay mode).
-pub(crate) fn guidance(found: &Unmapped, made: bool) -> String {
+/// The ways out of `found`, in the user namespace this process runs in,
+/// which `made` made.
+pub(crate) fn guidance(found: &Unmapped, made: MadeBy) -> String {
     let ns = match UserNamespace::current() {
         Ok(ns) => ns,
         Err(e) => {
@@ -54,9 +70,15 @@ pub(crate) fn guidance(found: &Unmapped, made: bool) -> String {
 }
 
 /// Who made the namespace whose maps give `ids` and how: by the uid its
-/// root has outside, `root_outside`, a user's own unless 0.
-fn namespace(made: bool, root_outside: Option<u32>, ids: Option<&MappedIds>) -> Namespace {
-    let Some(ids) = ids.filter(|_| made) else {
+/// root has outside, `root_outside`, a user's own unless 0. `--userns`
+/// never writes a map other than its range's, so `ids` cannot change it.
+fn namespace(made: MadeBy, root_outside: Option<u32>, ids: Option<&MappedIds>) -> Namespace {
+    let ids = match made {
+        MadeBy::Userns => return Namespace::Userns,
+        MadeBy::Other => None,
+        MadeBy::Rootless => ids,
+    };
+    let Some(ids) = ids else {
         return Namespace::Container;
     };
     match (root_outside, ids.is_one_id()) {
@@ -108,6 +130,50 @@ const RANGE_MAX: u32 = 65536;
 /// What every way out that names a range says of it.
 const NO_OVERLAP: &str =
     "a range must not overlap another user's range or the ids of a real account";
+
+/// The counts the `ranikust` range needs in each file to map `uid` and
+/// `gid`: `--userns` maps it from id 0 on, so id N is its N+1-th.
+fn counts_text(uid: Option<u32>, gid: Option<u32>) -> String {
+    let count = |id: u32| u64::from(id) + 1;
+    match (uid, gid) {
+        (Some(u), Some(g)) => format!(
+            "{} uids in /etc/subuid and {} gids in /etc/subgid",
+            count(u),
+            count(g)
+        ),
+        (Some(u), None) => format!("{} uids in /etc/subuid", count(u)),
+        (None, Some(g)) => format!("{} gids in /etc/subgid", count(g)),
+        (None, None) => "as many ids as the image uses".to_owned(),
+    }
+}
+
+/// The ways out under root's `--userns`, for the highest ids `uid` and
+/// `gid` its range lacks: widen that range, unless a count would pass
+/// [`RANGE_MAX`], or build without `--userns`.
+fn userns_ways_out(uid: Option<u32>, gid: Option<u32>) -> String {
+    // Id 0 is the range's first: a refused call names it with the others.
+    let (uid, gid) = (uid.filter(|&u| u > 0), gid.filter(|&g| g > 0));
+    let maps = format!(
+        "the build's user namespace maps root's ranikust range of /etc/subuid and /etc/subgid \
+         from id 0 on (--userns), not {}",
+        ids_text(uid, gid)
+    );
+    let counts = counts_text(uid, gid);
+    let far = |id: Option<u32>| id.filter(|&id| u64::from(id) + 1 > u64::from(RANGE_MAX));
+    if far(uid).is_none() && far(gid).is_none() {
+        format!(
+            "{maps}: widen that range to at least {counts} ({NO_OVERLAP}, nor ids another \
+             allocator such as an NSS subid module, the kubelet or systemd hands out), or build \
+             without --userns"
+        )
+    } else {
+        format!(
+            "{maps}, which would take at least {counts}; a range usually gives {RANGE_MAX} ids, \
+             too few for {}, and {NO_OVERLAP}: build without --userns",
+            ids_text(far(uid), far(gid))
+        )
+    }
+}
 
 fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String {
     let (uid, gid) = highest(found, ids);
@@ -169,6 +235,7 @@ fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String 
             "the user namespace ranikust was started in does not map {named}; {too_few}: run \
              ranikust as root on a host or in a rootful container"
         ),
+        (Namespace::Userns, _) => userns_ways_out(uid, gid),
     }
 }
 
@@ -195,26 +262,47 @@ mod tests {
         // makes in a container whose gid map gives one id.
         let root_mixed = ids("0 0 65536\n", "0 0 1\n");
         let user = Some(1000);
-        assert_eq!(namespace(true, user, Some(&one)), Namespace::UserOneId);
-        assert_eq!(namespace(true, user, Some(&ranges)), Namespace::UserRanges);
-        assert_eq!(namespace(true, Some(0), Some(&root)), Namespace::Container);
         assert_eq!(
-            namespace(true, Some(0), Some(&root_one)),
-            Namespace::RootOneId
+            namespace(MadeBy::Rootless, user, Some(&one)),
+            Namespace::UserOneId
         );
         assert_eq!(
-            namespace(true, Some(0), Some(&root_mixed)),
-            Namespace::RootOneId
+            namespace(MadeBy::Rootless, user, Some(&ranges)),
+            Namespace::UserRanges
         );
         assert_eq!(
-            namespace(false, Some(0), Some(&root_one)),
+            namespace(MadeBy::Rootless, Some(0), Some(&root)),
             Namespace::Container
         );
-        assert_eq!(namespace(false, user, Some(&one)), Namespace::Container);
-        assert_eq!(namespace(false, user, Some(&ranges)), Namespace::Container);
+        assert_eq!(
+            namespace(MadeBy::Rootless, Some(0), Some(&root_one)),
+            Namespace::RootOneId
+        );
+        assert_eq!(
+            namespace(MadeBy::Rootless, Some(0), Some(&root_mixed)),
+            Namespace::RootOneId
+        );
+        assert_eq!(
+            namespace(MadeBy::Other, Some(0), Some(&root_one)),
+            Namespace::Container
+        );
+        assert_eq!(
+            namespace(MadeBy::Other, user, Some(&one)),
+            Namespace::Container
+        );
+        assert_eq!(
+            namespace(MadeBy::Other, user, Some(&ranges)),
+            Namespace::Container
+        );
         // Maps that cannot be read, or that leave root unmapped.
-        assert_eq!(namespace(true, user, None), Namespace::Container);
-        assert_eq!(namespace(true, None, Some(&one)), Namespace::Container);
+        assert_eq!(
+            namespace(MadeBy::Rootless, user, None),
+            Namespace::Container
+        );
+        assert_eq!(
+            namespace(MadeBy::Rootless, None, Some(&one)),
+            Namespace::Container
+        );
 
         let chown = Unmapped::chown(Path::new("/app"), Some(1000), Some(1000));
         let one_id = ways_out(&chown, Namespace::UserOneId, Some(&one));
@@ -309,6 +397,127 @@ mod tests {
         let unchanged = Unmapped::chown(Path::new("a"), Some(u32::MAX), Some(42));
         let text = ways_out(&unchanged, Namespace::UserOneId, None);
         assert!(text.contains("of at least 42 subordinate gids ("), "{text}");
+        assert!(!text.contains("4294967295"), "{text}");
+    }
+
+    /// Root's `--userns` maps its `ranikust` range from id 0 on, whatever
+    /// the maps read: the ways out name that range and the count each file
+    /// needs, id N being its N+1-th, or a build without `--userns`; never a
+    /// user's range, root or a container.
+    #[test]
+    fn userns_ways_out_name_the_ranikust_range_and_the_count_it_needs() {
+        let shifted = ids("0 100000 1000\n", "0 200000 42\n");
+        assert_eq!(
+            namespace(MadeBy::Userns, Some(100_000), Some(&shifted)),
+            Namespace::Userns
+        );
+        assert_eq!(namespace(MadeBy::Userns, None, None), Namespace::Userns);
+        assert_eq!(
+            namespace(MadeBy::Rootless, Some(100_000), Some(&shifted)),
+            Namespace::UserRanges
+        );
+        assert_eq!(
+            namespace(MadeBy::Other, Some(100_000), Some(&shifted)),
+            Namespace::Container
+        );
+
+        // An image's owners, scanned against the range's map.
+        let mut tar = tar::Builder::new(Vec::new());
+        for (name, uid, gid) in [
+            ("etc/shadow", 0, 42),
+            ("home/app/", 1000, 1000),
+            ("ok", 999, 41),
+        ] {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(if name.ends_with('/') {
+                tar::EntryType::Directory
+            } else {
+                tar::EntryType::Regular
+            });
+            h.set_mode(0o755);
+            h.set_uid(uid);
+            h.set_gid(gid);
+            h.set_size(0);
+            tar.append_data(&mut h, name, std::io::empty()).unwrap();
+        }
+        let mut found = Unmapped::owners(shifted.clone());
+        rnk_rootfs::scan_owners(tar.into_inner().unwrap().as_slice(), &mut found).unwrap();
+        let text = ways_out(&found, Namespace::Userns, Some(&shifted));
+        assert_eq!(
+            text,
+            "the build's user namespace maps root's ranikust range of /etc/subuid and \
+             /etc/subgid from id 0 on (--userns), not uid 1000 and gid 1000: widen that range \
+             to at least 1001 uids in /etc/subuid and 1001 gids in /etc/subgid (a range must \
+             not overlap another user's range or the ids of a real account, nor ids another \
+             allocator such as an NSS subid module, the kubelet or systemd hands out), or \
+             build without --userns"
+        );
+        // A refused call: only the ids the map lacks count.
+        let chown = Unmapped::chown(Path::new("/app"), Some(5), Some(42));
+        let gid = ways_out(&chown, Namespace::Userns, Some(&shifted));
+        assert!(
+            gid.contains("not gid 42: widen that range to at least 43 gids in /etc/subgid ("),
+            "{gid}"
+        );
+        let user = Unmapped::user("set the user id", 4999, 0, &[]);
+        let uid = ways_out(&user, Namespace::Userns, None);
+        assert!(
+            uid.contains("to at least 5000 uids in /etc/subuid ("),
+            "{uid}"
+        );
+        for text in [&text, &gid, &uid] {
+            assert!(text.contains(NO_OVERLAP), "{text}");
+            for wrong in [
+                "this user",
+                "subordinate",
+                "run ranikust as root",
+                "container",
+                "uidmap",
+            ] {
+                assert!(!text.contains(wrong), "{wrong}: {text}");
+            }
+            // The one flag named is the one to drop.
+            assert_eq!(
+                text.replace("--userns", "").matches("--").count(),
+                0,
+                "{text}"
+            );
+        }
+    }
+
+    /// Under `--userns`, an id whose count passes what a range usually
+    /// gives is named with the count it needs, but no such range is asked
+    /// for: a build without `--userns` is the way out.
+    #[test]
+    fn userns_past_a_usual_range_asks_for_a_build_without_userns() {
+        let edge = Unmapped::chown(Path::new("edge"), Some(65535), None);
+        let text = ways_out(&edge, Namespace::Userns, None);
+        assert!(
+            text.contains("widen that range to at least 65536 uids in /etc/subuid ("),
+            "{text}"
+        );
+        let past = Unmapped::chown(Path::new("past"), Some(65536), Some(42));
+        let text = ways_out(&past, Namespace::Userns, None);
+        assert!(
+            text.contains(
+                "not uid 65536 and gid 42, which would take at least 65537 uids in /etc/subuid \
+                 and 43 gids in /etc/subgid; a range usually gives 65536 ids, too few for uid \
+                 65536, and a range must not overlap"
+            ),
+            "{text}"
+        );
+        assert!(text.ends_with(": build without --userns"), "{text}");
+        assert!(!text.contains("widen"), "{text}");
+        let far = Unmapped::chown(Path::new("far"), Some(4_294_967_294), None);
+        let text = ways_out(&far, Namespace::Userns, None);
+        assert!(text.contains("at least 4294967295 uids"), "{text}");
+        // `-1:42` asks for gid 42 alone.
+        let unchanged = Unmapped::chown(Path::new("a"), Some(u32::MAX), Some(42));
+        let text = ways_out(&unchanged, Namespace::Userns, None);
+        assert!(
+            text.contains("not gid 42: widen that range to at least 43 gids in /etc/subgid ("),
+            "{text}"
+        );
         assert!(!text.contains("4294967295"), "{text}");
     }
 
