@@ -235,7 +235,7 @@ run goes through these steps:
 | `ultra` | The ultra benchmark: the same on `nextjs-kaniko`'s W1–W3, with its npm proxy; tens of minutes per round. Only when the maintainer asks for performance numbers or an acceptance run. Not part of the default `just test-vm` |
 | `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path`: a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP [test registry](#test-registries) as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
 | `secrets` | ADR-0051: kaniko mode on the `/` of default Docker containers (`ubuntu:24.04`, no `--privileged`) with `RUN` steps that attack ranikust (`tests/vm/guest/secrets/attack.sh`; vectors V1–V13 in the header of `secrets.sh`): the state directory, `/proc/*/fd`, ranikust's `environ`, `mem` and `cmdline`, the `RUN`'s own environment, processes left alive, the same from `unshare -Ur`, another process's `environ`, the sealed copy of the binary through every thread's `exe`, `ptrace` and `process_vm_writev` (V13, with the VM's Yama `ptrace_scope` at 0 for the suite). Three scenarios (ranikust as PID 1, the same with `--cap-add SYS_PTRACE`, and started from `sh -c`); every vector must be blocked but the two ranikust only warns about (a `--build-arg` value in `cmdline`; the shell's `environ`), whose warnings must appear. The state directory may hold only the store's marker of a build in progress, `.ranikust-building` (the PID namespace and boot id). It also records whether the container's overlayfs takes `O_TMPFILE` and how ranikust made its state files, then runs `stopsig` (ADR-0077) and `memlimit` (ADR-0056: a 512 MiB layer built under `--memory 256m --memory-swap 256m` must succeed, its state on disk, never in `memfd`). Not part of the default `just test-vm` |
-| `k8s` | The Kubernetes rows of the privilege matrix (ADR-0100 rows 7a to 7d) as pods of a one-node k3s cluster, each asserting the mode `ranikust` picks or its refusal, with step and errno ([below](#privilege-matrix-in-kubernetes)). Run it alone or last: k3s's network set-up stays until the VM goes. Not part of the default `just test-vm` |
+| `k8s` | The Kubernetes rows of the privilege matrix (ADR-0100 rows 7a to 7d) as pods of a one-node k3s cluster, each asserting the mode `ranikust` picks or its refusal, with step and errno ([below](#privilege-matrix-in-kubernetes)). It runs after the other suites but `push`. Not part of the default `just test-vm` |
 
 ### Test registries
 
@@ -439,11 +439,14 @@ the step and errno it prints. Under a minute in the VM after its boot.
   `/usr/local/bin/k3s` and runs it as the transient systemd unit `rnk-k3s`,
   without Traefik, ServiceLB, the metrics server, local-path storage, CoreDNS
   or the Helm controller. The one image the cluster pulls is the pause
-  image, from `registry.k8s.io` by digest (k3s's default is on Docker Hub);
-  the pods' image (the VM's static `busybox`, `ranikust`, `guest/k8s/pod.sh`,
+  image, from `registry.k8s.io` by digest at each run (k3s's default is on
+  Docker Hub; `RANIKUST_VM_IMAGE_REGISTRY` mirrors Docker Hub only, and the
+  VM cache does not keep it), with containerd's retries; a failed pull shows
+  in the pods' `describe` files. The pods' image (the VM's static `busybox`, `ranikust`, `guest/k8s/pod.sh`,
   the context) is made with `docker import` and imported into k3s's
   containerd. k3s is stopped at the end, but its network set-up (interfaces,
-  iptables rules) stays until the VM goes: run `k8s` alone or last.
+  iptables rules) stays until the VM goes, so `vm.sh` runs `k8s` after the
+  other suites but `push`, whatever the order given.
 - **Controls.** Each pod first prints what it got (`pod.sh`): its uid, its
   AppArmor label, its `uid_map`, its seccomp mode, `no_new_privs` and
   effective capabilities, and the mount `/proc/sys` is on; the suite checks
@@ -458,22 +461,20 @@ the step and errno it prints. Under a minute in the VM after its boot.
 | 7d | A namespace enforcing the `restricted` Pod Security Standard: uid 1000, no capability, `RuntimeDefault` seccomp, `no_new_privs`; the state directory on the pod's `/dev/shm`, a sticky tmpfs, since an `emptyDir` is writable by others (ADR-0050) | refused | Refused: the user namespace probe stops at `unshare` (`unshare(CLONE_NEWUSER): EPERM`) |
 
 - **Row 7b** differs from ADR-0100, which expected rootless overlay mode with
-  a fresh `proc`. ADR-0107, decided after it, keeps rootless overlay mode off
-  and kaniko mode on `/` refused wherever `/proc/sys` is writable, AppArmor
-  confined or not, until a measurement shows writes to `/proc/sys` refused
-  in such a pod and an ADR takes its option (d). The suite asserts that
-  refusal.
-- **Measured, not asserted** (the `measured:` lines of `k8s.log`): a write
-  of `kernel/core_pattern`'s own value fails with `EACCES` in the 7b and 7c
-  pods. In a `hostUsers: false` pod with AppArmor unconfined and the default,
-  masked `/proc`, where root's `--mode=auto` tries rootless overlay mode, the
-  user namespace probe stops at `chown` (`EPERM`) under Ubuntu's
-  `kernel.apparmor_restrict_unprivileged_userns=1`, and with the switch at 0
-  (set for that pod, then restored) at `proc` alone (`mount proc: EPERM`,
-  the masked `/proc`); both builds then run in kaniko mode on `/`. Row 7b's
-  expectation would need ADR-0107's option (d) and a node where the pod's
-  own user namespaces get capabilities (that switch at 0, or a distribution
-  without the restriction) **[inferred]**.
+  a fresh `proc`: ranikust's routing (`rootless_kept_off`, #194) keeps
+  rootless overlay mode off wherever `/proc/sys` is writable, which applies
+  ADR-0107's case (ii), written for the default AppArmor profile, to an
+  unconfined pod too, and kaniko mode on `/` refuses the writable
+  `/proc/sys` (ADR-0054). The suite asserts that refusal. Rootless overlay
+  mode there would need an ADR taking ADR-0107's option (d), and a node
+  where the pod's own user namespaces get capabilities **[inferred]**.
+- **Measured, not asserted** (the `measured:` lines of `k8s.log`; recorded in
+  [experiment 18](research/experiments/18-kubernetes-pods-in-k3s.md)): a write of `kernel/core_pattern`'s own value
+  fails with `EACCES` in the 7b and 7c pods, and the user namespace probe in
+  a `hostUsers: false` pod with AppArmor unconfined and the default, masked
+  `/proc` stops at `chown` (`EPERM`) under Ubuntu's
+  `kernel.apparmor_restrict_unprivileged_userns=1`, at `proc` alone with the
+  switch at 0 (set for that pod, then restored).
 - **Results** in `out/k8s/` (in the VM's results, and in a failed runner
   job's artifact): `env.txt` (kernel, k3s, Kubernetes, containerd, runc, the
   AppArmor switch, the pause image), each pod's log and `kubectl describe`,
@@ -707,7 +708,7 @@ own runner, in parallel:
   `lane.sh` then runs on the runner's rootful Docker: ADR-0063's profiles and
   control checks as on the VPS.
 - The runner gets what the VM's base image adds (`busybox-static`, `zstd`,
-  `pigz`, `uidmap`) and, for the smoke job, Docker with containerd's image
+  `pigz`, `uidmap`; the k8s job only `busybox-static`) and, for the smoke job, Docker with containerd's image
   store, as in the VM, whose `docker load` reads the OCI layout
   `smoke-build` writes.
   Images the guest scripts name come from `mirror.gcr.io`

@@ -275,8 +275,8 @@ jobs:
         with:
           tool: cargo-zigbuild@0.24.0
       # The pods' image holds the static busybox.
-      - name: Install the VM's packages
-        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static zstd pigz uidmap
+      - name: Install busybox-static
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends busybox-static
       - name: T2 k8s
         env:
           RANIKUST_T2_ON_RUNNER: "1"

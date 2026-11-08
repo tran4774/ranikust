@@ -57,6 +57,7 @@ method, results and limitations.
 | 15 | [Java, Next.js and concurrency](experiments/15-java-next-concurrency.md) | Java OOM under memory limits, JDK toolchains, Next 16/Turbopack, concurrent fake /proc |
 | 16 | [cgroup v1 and cpuset](experiments/16-cgroup-v1-cpuset.md) | JVM container awareness per JDK, Node tools, W3 under v1, cpuset, final fake /proc sets |
 | 17 | [ranikust on Apple Silicon](experiments/17-apple-silicon-rosetta.md) | Why the x86_64 binary refuses under Rosetta, and an aarch64 build in an arm64 OrbStack container |
+| 18 | [Kubernetes pods in k3s](experiments/18-kubernetes-pods-in-k3s.md) | Privilege-matrix rows 7a to 7d, a `core_pattern` write in `hostUsers: false` pods, the user namespace probe in a pod |
 
 ## Workloads
 

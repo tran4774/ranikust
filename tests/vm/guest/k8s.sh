@@ -1,50 +1,18 @@
 #!/usr/bin/env bash
 # Runs in the T2 VM, and as root on a GitHub-hosted runner
 # (tests/vm/runner.sh, ADR-0090): the Kubernetes rows of the privilege matrix
-# (ADR-0100 rows 7a-7d, #86) in a one-node k3s cluster on this machine. k3s
-# is the release of guest/k8s/pin.env, which tests/vm/stage.sh downloaded
-# and checked; it runs as the systemd unit rnk-k3s, with nothing but what a
-# pod needs (no Traefik, ServiceLB, metrics server, local-path storage,
-# CoreDNS or Helm controller), and is stopped at the end.
-#
-# Each row is a pod running the ranikust binary from an image made here (the
-# VM's static busybox, ranikust and a context: FROM scratch, COPY, RUN),
-# with `--mode=auto`; it asserts the mode ranikust picks or its refusal,
-# with the step and errno ranikust prints:
-#
-#   7a  a default pod: AppArmor's cri-containerd.apparmor.d profile, a
-#       masked /proc with /proc/sys read-only, no seccomp filter (k3s's
-#       default): kaniko mode on /, which builds; root may not make a mount
-#       namespace, and the user namespace probe, reported only, stops at
-#       proc with EACCES (the profile denies mount)
-#   7b  hostUsers: false, procMount: Unmasked, AppArmor unconfined, a volume
-#       at the state directory: refused, rootless overlay mode not tried for
-#       the writable /proc/sys (ADR-0107), kaniko mode on / refused for it
-#       (ADR-0054). ADR-0100 expected overlay, rootless, a fresh proc
-#       (docs/testing.md#privilege-matrix-in-kubernetes says why it is not)
-#   7c  hostUsers: false, procMount: Unmasked, the default AppArmor profile:
-#       refused the same way (ADR-0054, ADR-0107)
-#   7d  a namespace enforcing the restricted Pod Security Standard (not
-#       root, no capability, RuntimeDefault seccomp, no privilege
-#       escalation): refused, the user namespace probe stopping at unshare
-#       with EPERM; the state directory on the pod's /dev/shm (a sticky
-#       tmpfs), so that the probe, not the state directory, decides
-#
-# Controls: each pod first prints what it got (guest/k8s/pod.sh: its
-# AppArmor label, uid map, seccomp mode, the mount /proc/sys is on), which
-# must be its row's environment; a root pod in the restricted namespace
-# must be refused by admission. Measured, not asserted: a write of
-# /proc/sys/kernel/core_pattern's own value from the 7b and 7c pods (what
-# ADR-0107 waits for), and where the user namespace probe stops in a
-# hostUsers: false pod with AppArmor unconfined and a masked /proc (where
-# root's --mode=auto tries rootless overlay mode), with
-# kernel.apparmor_restrict_unprivileged_userns as found and, where it is 1,
-# at 0 (restored after).
+# (ADR-0100 rows 7a-7d, #86) as pods of a one-node k3s cluster, the release
+# of guest/k8s/pin.env, run as the systemd unit rnk-k3s and stopped at the
+# end. Each pod runs the ranikust binary with --mode=auto after
+# guest/k8s/pod.sh prints its environment, which must be its row's; the
+# suite asserts the mode or the refusal with step and errno, and prints as
+# `measured:` what it does not assert. The rows, their outcomes and why 7b
+# is not ADR-0100's expectation: docs/testing.md#privilege-matrix-in-kubernetes.
 #
 # Writes out/k8s/: env.txt (the versions), <pod>.log, <pod>.describe.txt,
-# and k3s.log (its journal) when a row fails.
+# and, when the suite fails, events.txt and k3s.log (k3s's journal).
 set -euo pipefail
-# `pod_yaml ... | run_pod ...`: run_pod sets LOG, RC and FAILED in this shell.
+# `pod_yaml ... | run_pod ...`: run_pod sets LOG and RC in this shell.
 shopt -s lastpipe
 cd "$HOME/rnk"
 # shellcheck source=k8s/pin.env
@@ -63,24 +31,26 @@ fail() { echo "FAIL: $*" >&2; FAILED+=("$*"); }
 
 restrict_was=
 teardown() {
+  local rc=$?
   set +e
   [ -z "$restrict_was" ] || sudo sysctl -q -w "kernel.apparmor_restrict_unprivileged_userns=$restrict_was"
   if systemctl is-active -q rnk-k3s 2>/dev/null; then
-    [ "${#FAILED[@]}" = 0 ] || {
+    if [ "$rc" != 0 ] || [ "${#FAILED[@]}" != 0 ]; then
       kc get events -A --sort-by=.lastTimestamp >"$OUT/events.txt" 2>&1
       sudo journalctl -u rnk-k3s --no-pager >"$OUT/k3s.log" 2>&1
-    }
+    fi
     kc delete namespace "$NS" "$NS_RESTRICTED" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
     sudo systemctl stop rnk-k3s
   fi
 }
-trap teardown EXIT
 
 # --- k3s ---------------------------------------------------------------------
 
 [ "$(sha256sum bin/k3s | cut -d' ' -f1)" = "$K3S_SHA256" ] ||
   { echo "error: bin/k3s is not k3s $K3S_VERSION ($K3S_SHA256)" >&2; exit 1; }
 ! systemctl is-active -q rnk-k3s 2>/dev/null || { echo "error: rnk-k3s is already running" >&2; exit 1; }
+# Only now: the teardown stops rnk-k3s, which until here is not this run's.
+trap teardown EXIT
 sudo install -m 0755 bin/k3s "$K3S"
 echo "== k3s $K3S_VERSION"
 sudo systemd-run --unit=rnk-k3s --collect -p Delegate=yes -p LimitNOFILE=1048576 -p TasksMax=infinity \

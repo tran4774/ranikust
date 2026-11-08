@@ -27,7 +27,7 @@ just test-vm e2e          # light e2e: W0 by every builder, a few minutes
 just test-vm ultra        # ultra benchmark (W1-W3): only when the maintainer asks
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
 just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker (ADR-0051)
-just test-vm k8s          # k3s pods for privilege-matrix rows 7a-7d (ADR-0100); alone or last
+just test-vm k8s          # k3s pods for privilege-matrix rows 7a-7d (ADR-0100)
 ```
 
 - **Smoke test or proof of concept as real root: `quick`**, the small

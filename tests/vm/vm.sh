@@ -15,8 +15,9 @@
 # attacker `RUN`s that try to read ranikust's state and credentials
 # (ADR-0051). `k8s` installs k3s (the release of guest/k8s/pin.env, its
 # download kept in the cache) and runs the Kubernetes rows of the privilege
-# matrix in pods (ADR-0100 rows 7a-7d); run it alone or last: k3s's network
-# set-up (its interfaces and iptables rules) stays until the VM goes.
+# matrix in pods (ADR-0100 rows 7a-7d); it runs after the other suites but
+# push, whatever the order given: k3s's network set-up (its interfaces and
+# iptables rules) stays until the VM goes.
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
@@ -964,7 +965,8 @@ guest_step() {
   done
 }
 
-# Every suite but push, in the order given, after the network check; then
+# Every suite but push, in the order given (k8s moved last), after the
+# network check; then
 # push, in a step of its own, the only time the registry gate is open
 # (ADR-0086). The gate's state is vm.sh's own and moves one way; it opens
 # once the guest reports the other suites finished, which root in the VM
@@ -972,7 +974,8 @@ guest_step() {
 # push step reports its end, or at about PUSH_DEADLINE whatever the guest
 # says.
 OTHERS=()
-for s in "${SUITES[@]}"; do [ "$s" = push ] || OTHERS+=("$s"); done
+for s in "${SUITES[@]}"; do case "$s" in push | k8s) ;; *) OTHERS+=("$s") ;; esac; done
+! wants k8s || OTHERS+=(k8s)
 guest_step suite 0 ${OTHERS[@]+"${OTHERS[@]}"}
 status=$STEP_RC
 if wants push; then

@@ -94,9 +94,11 @@ if wants k8s; then
     if [ ! -f "$cached" ] || [ "$(sha "$cached")" != "$K3S_SHA256" ]; then
       log "downloading k3s $K3S_VERSION into $RANIKUST_K3S_CACHE"
       mkdir -p "$RANIKUST_K3S_CACHE"
-      curl -fsSL --retry 3 -o "$cached.part" "$url"
-      [ "$(sha "$cached.part")" = "$K3S_SHA256" ] || die "SHA-256 mismatch for k3s $K3S_VERSION ($cached.part)"
+      curl -fsSL --retry 3 -o "$cached.part" "$url" || { rm -f "$cached.part"; die "downloading k3s $K3S_VERSION failed"; }
+      [ "$(sha "$cached.part")" = "$K3S_SHA256" ] || { rm -f "$cached.part"; die "SHA-256 mismatch for k3s $K3S_VERSION"; }
       mv "$cached.part" "$cached"
+      # One release kept: the pins before this one are not used again.
+      find "$RANIKUST_K3S_CACHE" -maxdepth 1 -type f -name 'k3s-*' ! -name "k3s-$K3S_VERSION" -delete
     fi
     cp "$cached" "$STAGE/bin/k3s"
   else
