@@ -540,7 +540,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   reach; a denied `ns/mnt` gone only with its `ns`; the handle on a
   namespace, an open `O_PATH`, close-on-exec descriptor of its nsfs file;
   a zombie passed over as gone, its roots opening for no one; escaped
-  names, a process named by its pid alone; the credential warning's text; the
+  names, a process named by its pid alone; the credential warning's text,
+  ranikust's own entry, as `/proc/self` names it, left out of it; the
   build-argument warning's text for each `Reach`,
   `a_build_arg_warning_names_how_a_run_reads_the_command_line`;
   `check_pid_namespace`'s decision on fixture `mountinfo` and `stat` text,
