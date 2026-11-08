@@ -72,9 +72,9 @@ const USERNS_NEEDS_ROOT: &str = "--userns needs root: ranikust prune --all --use
 /// build would refuse; root's `prune --all` sends root back here only for
 /// one it accepts ([`userns_takes`]).
 const USERNS_ONLY: &str = "ranikust prune --all --userns empties only a state directory a \
-     --userns build accepts: for one the first uid of the ranikust range owns, fix what is \
-     named above and run it again; for another, drop --userns: root's ranikust prune --all then \
-     says what root may do with it";
+     --userns build accepts, named with the --state-dir those builds use: for one the first uid \
+     of the ranikust range owns, fix what is named above and run it again; for another, drop \
+     --userns: root's ranikust prune --all then says what root may do with it";
 
 /// Why neither root's commands nor a user's `prune --all` take a path
 /// that ends in `..` ([`ends_in_dotdot`]).
@@ -279,7 +279,7 @@ fn root_commands(dir: &Path) -> String {
 /// directory it refuses.
 fn userns_takes(dir: &Path, uid: u32, range: SubordinateIds) -> bool {
     let owner = statedir::Owner::Mapped {
-        uid,
+        uid: range.uids.start,
         gid: range.gids.start,
     };
     uid == range.uids.start && matches!(statedir::check_for(dir, owner), Ok(Found::Entries(_)))
@@ -387,16 +387,16 @@ fn userns_way(dir: &Path) -> String {
 /// ([`rnk_store::Error::NotPruned`]): what the range's uid cannot remove
 /// goes first, by hand, since no build opens the directory meanwhile: a
 /// directory of an id the range does not map that holds entries, or such
-/// an entry in a sticky directory, where the namespace's root has no
-/// `CAP_FOWNER` over it.
+/// an entry in a sticky directory another id owns, where the namespace's
+/// root has no `CAP_FOWNER` over it.
 fn userns_unfinished(dir: &Path) -> String {
     let d = shell_word(dir.as_os_str());
     format!(
         "ranikust prune --all --userns leaves what is on another mount, and, of a uid or gid the \
          ranikust range does not map (root's, or past a range shrunk since the build), \
-         directories that still hold entries and entries in a sticky directory, which its uid \
-         cannot remove: unmount anything below {d} and remove such entries by hand, as root, \
-         then run ranikust prune --all --userns --state-dir {d} again"
+         directories that still hold entries and entries in a sticky directory another id owns, \
+         which its uid cannot remove: unmount anything below {d} and remove such entries by \
+         hand, as root, then run ranikust prune --all --userns --state-dir {d} again"
     )
 }
 
@@ -705,7 +705,7 @@ fn prune_userns(state_dir: &Path) -> Result<Pruned, Refusal> {
 /// `..` refused before anything is read; then the range, refused where
 /// [`crate::subids::root_range`] refuses it; then the checks of
 /// `--userns`'s build, outside, which change nothing
-/// ([`statedir::check_for`] with [`statedir::Owner::Mapped`]: owned by
+/// ([`statedir::check_for_prune`] with [`statedir::Owner::Mapped`]: owned by
 /// that uid, below directories only root owns and writes and that it may
 /// search, not at, below or above root's default); nothing more when it
 /// does not exist or is empty; else the namespace
