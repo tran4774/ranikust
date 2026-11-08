@@ -461,11 +461,13 @@ usr_local_bin_root_only() {
 }
 
 # #81: root's copy of the binary at /usr/local/bin/ranikust is refused as
-# this user with the profile as shipped (or, where /usr/local/bin is not
-# root's alone, with the install there first); with ranikust's profile
-# loaded, it builds the rootless case in rootless overlay mode, with a fresh
-# proc and root's --reproducible digest, and a RUN keeps the profile. Uses
-# rl_args, root_digest, ud and dir from the user section.
+# this user at the mount namespace, writing no state directory, with the
+# profile as shipped (or, where /usr/local/bin is not root's alone, with the
+# install in a directory that is first); with ranikust's profile loaded, it
+# builds the rootless case in rootless overlay mode, with a fresh proc and
+# root's --reproducible digest, and a RUN keeps the profile; where
+# kernel.apparmor_restrict_unprivileged_unconfined is 0, aa-exec enters the
+# profile. Uses rl_args, root_digest, ud and dir from the user section.
 apparmor_profile() {
   local log rc=0 got aa="$ud/aa"
   command -v apparmor_parser >/dev/null ||
@@ -478,8 +480,8 @@ apparmor_profile() {
   # A state directory not made yet: the refusal writes nothing.
   log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/new" 2>&1)" || rc=$?
   printf '%s\n' "$log" >"$dir/apparmor-before.log"
-  [ ! -e "$aa/new" ] ||
-    { echo "error: user: the refusal made the state directory $aa/new:" >&2; echo "$log" >&2; exit 1; }
+  [ ! -e "$aa/new" ] && grep -q 'the user namespace probe stops at mount namespace' <<<"$log" ||
+    { echo "error: user: expected a refusal at the mount namespace, writing nothing:" >&2; echo "$log" >&2; exit 1; }
   local advice
   advice="$(advice_of "$log")"
   if usr_local_bin_root_only; then
@@ -524,7 +526,7 @@ apparmor_profile() {
     command -v aa-exec >/dev/null || { echo "error: user: no aa-exec where AppArmor restricts user namespaces" >&2; exit 1; }
     got="$(aa-exec -p ranikust -- unshare --user --map-root-user --mount true 2>&1)" ||
       { echo "error: user: aa-exec -p ranikust -- unshare -Urm refused at unprivileged_unconfined=0: $got" >&2; exit 1; }
-    echo "user: at kernel.apparmor_restrict_unprivileged_unconfined=0, aa-exec -p ranikust gives this user's shell a user namespace, as the docs say"
+    echo "user: at kernel.apparmor_restrict_unprivileged_unconfined=0, aa-exec -p ranikust gives an unconfined program of this user a user namespace, as the docs say"
   else
     echo "user: kernel.apparmor_restrict_unprivileged_unconfined=$unconfined: aa-exec not checked"
   fi
@@ -608,7 +610,7 @@ log="$("$RNK" "${rl_args[@]}" --state-dir "$ud/w" 2>&1)" || rc=$?
 printf '%s\n' "$log" >"$dir/rootless.log"
 grep -E 'user namespace probe|rootless' <<<"$log" || true
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
-  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
+  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at mount namespace' <<<"$log" &&
     in_order "$(advice_of "$log")" 'where kernel.apparmor_restrict_unprivileged_userns is 1, as here' \
       'run ranikust as root, with sudo; ' 'or, as root, install ranikust ' \
       "$(realpath "$RNK") is not a path only root can change (" '; or run ranikust in a container' ||

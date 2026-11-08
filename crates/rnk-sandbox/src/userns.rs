@@ -892,7 +892,7 @@ struct ChildArgs<'a> {
     /// whose write needs its `/proc` files to be the user's.
     user: bool,
     /// The map the child writes itself (one id), else `None`: this process
-    /// writes it.
+    /// writes the plan's, or, with no plan, none.
     own_map: Option<(&'a [u8], &'a [u8])>,
     /// The `chown` target, and the ids to give it.
     chown: Option<(RawFd, u32, u32)>,
@@ -932,9 +932,9 @@ struct Supervised {
 
 /// Forks a child that runs `child`, writes `plan`'s map when it asks
 /// ([`READY`]; with no plan, the child gets none and stops), reads its
-/// report until it closes it or `deadline` passes,
-/// kills it then, and reaps it ([`reap`]); [`Error::ProbeChildLeft`] when
-/// it is still there after that.
+/// report until it closes it or `deadline` passes, kills it then, and
+/// reaps it ([`reap`]); [`Error::ProbeChildLeft`] when it is still there
+/// after that.
 ///
 /// `child` runs in the forked process, which ends with `_exit` when it
 /// returns; it may allocate only when this process is single-threaded. It
@@ -990,9 +990,12 @@ fn supervise(
     let mut parent_map = None;
     let read = read_records(&report_r, Instant::now() + deadline, |op| {
         if op == READY
-            && let Some(plan) = plan
             && let Some(go) = go.take()
         {
+            // With no plan, `go` closes unwritten and the child stops.
+            let Some(plan) = plan else {
+                return;
+            };
             let r = write_map(plan, pid);
             if r.is_ok() {
                 // A child gone reads nothing; its report says so.
