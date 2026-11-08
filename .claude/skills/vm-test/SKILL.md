@@ -9,8 +9,8 @@ Real root never runs on the host. `just test-vm` boots a fresh VM as the
 user, runs the suites as root inside it and deletes it again; the full
 description is in `docs/testing.md#the-vm-harness-tier-t2`.
 
-On a pull request, CI also runs `unit`, `smoke`, `quick`, `secrets` and the
-T2c `unit-c` as root on GitHub-hosted runners (`.github/workflows/t2.yml`,
+On a pull request, CI also runs `unit`, `smoke`, `quick`, `secrets`, `k8s` and
+the T2c `unit-c` as root on GitHub-hosted runners (`.github/workflows/t2.yml`,
 ADR-0090): read them with `gh pr checks` and `gh run view --log-failed`.
 They do not replace the VM for `e2e`, `ultra`, `push`, kernel 5.15 or an
 acceptance run, and `tests/vm/runner.sh` never runs outside CI.
@@ -27,6 +27,7 @@ just test-vm e2e          # light e2e: W0 by every builder, a few minutes
 just test-vm ultra        # ultra benchmark (W1-W3): only when the maintainer asks
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
 just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker (ADR-0051)
+just test-vm k8s          # k3s pods for privilege-matrix rows 7a-7d (ADR-0100); alone or last
 ```
 
 - **Smoke test or proof of concept as real root: `quick`**, the small
@@ -37,9 +38,10 @@ just test-vm secrets      # attacker RUNs vs kaniko mode on / in default Docker 
   only when the maintainer asks for performance numbers or an acceptance run
   (`RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`), never on an
   agent's own initiative (docs/testing.md#which-test-for-what).
-- `secrets`, `push`, `e2e` and `ultra` run only when named. A change to
+- `secrets`, `k8s`, `push`, `e2e` and `ultra` run only when named. A change to
   kaniko mode on `/`, the store's anonymous mode or `Isolation::Direct`
-  reruns `secrets`. `push` needs the host's test registries
+  reruns `secrets`; a change to the probe's routing or its messages reruns
+  `k8s`, whose assertions quote them. `push` needs the host's test registries
   (`just registry-up`, which the VM reaches as `10.0.2.2`). `e2e` copies in
   only the reference images from the host's podman; `ultra` also reads the
   `nextjs-kaniko` checkout next to the main checkout (2.8 GB copied in;

@@ -551,7 +551,7 @@ What runs, by event:
 | `docs (rustdoc, mdBook)` | rustdoc when `rust`, mdBook when `book` | the same |
 | `docs-lint` | always | always |
 | `static release build (x86_64 musl)`, `test (aarch64 musl, native)` | no | when `rust` |
-| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets` | no | when `t2` |
+| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets`, `T2 k8s` | no | when `t2` |
 
 - **A full run** is a pull request that is ready for review (marking a draft
   ready starts one), a draft labelled `ci:full`, a manual run ("Run
@@ -607,18 +607,19 @@ What runs, by event:
 
 On a full CI run ([above](#ci-lanes)) that touches the Rust code or the T2
 harness, `.github/workflows/t2.yml` runs the T2 suites `unit`, `smoke`,
-`quick` and `secrets` and the T2c lane `unit-c` as root directly on
+`quick`, `secrets` and `k8s` and the T2c lane `unit-c` as root directly on
 GitHub-hosted `ubuntu-24.04` runners
 ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)): a
 runner is a fresh VM GitHub makes for one job and deletes after it, with
-passwordless `sudo`, so it takes the VM's place there. Three jobs, each its
-own runner, about five minutes of wall time together:
+passwordless `sudo`, so it takes the VM's place there. Four jobs, each its
+own runner, in parallel:
 
 | Check | Suites |
 |---|---|
 | `T2 unit (root on the runner)` | `unit` |
 | `T2 smoke, quick, secrets (root on the runner)` | `smoke`, `quick`, `secrets` |
 | `T2c unit-c (rootful Docker on the runner)` | `unit-c` |
+| `T2 k8s (k3s on the runner)` | `k8s` ([below](#privilege-matrix-in-kubernetes)) |
 
 - `tests/vm/runner.sh <suite>...` is the entry point (its header has the
   details). Before anything else it refuses (exit 2) unless GitHub Actions
@@ -654,7 +655,7 @@ own runner, about five minutes of wall time together:
 - The Rust caches of these jobs follow the rules of
   [CI lanes](#ci-lanes) and share the repository's 10 GB cache limit with
   `ci.yml`; `unit` and `unit-c` build the same test binaries and share one
-  entry (`t2-tests`).
+  entry (`t2-tests`), as `smoke` and `k8s` do (`t2-smoke`).
 - The runner is not the VM (another kernel and Docker, AppArmor's
   `apparmor_restrict_unprivileged_userns=1`, an image GitHub updates
   weekly). The local VM stays the reference: `e2e`, `ultra`, `push`, kernel
