@@ -899,29 +899,32 @@ with another map:
 
 - **The range.** `ranikust` reads root's range from the first well-formed
   `ranikust` line of `/etc/subuid` and of `/etc/subgid` (start and count in
-  decimal: shadow's tools read a leading 0 as octal), by that name only, on
-  the host and before anything is written. Where either is missing, or
-  starts at 0, the build is refused, naming the line to add to both files,
+  decimal: shadow's tools read a leading 0 as octal), by that name only, on the
+  host and before anything is written. Where either is missing, or starts at 0,
+  the build is refused, naming the line to add to both files,
   `ranikust:<start>:65536`, `<start>` left to the admin. It is refused too
-  where an account is named `ranikust`, which `newuidmap` and `newgidmap`
-  would let map the range: a line of `/etc/passwd` (`+ranikust`, NIS
-  compat's, included) or a systemd userdb record, `ranikust.user` in
-  `/etc/userdb`, `/run/userdb` or `/usr/lib/userdb`, of any type. It is
-  refused too where the range shares an id with another line of the same
-  file, or the uid range with a uid of `/etc/passwd`, or the gid range with
-  a gid of `/etc/group` or a primary gid of `/etc/passwd`, naming that line
-  or account: the build's ids would be theirs. Another line counts as every range a version of shadow's tools may
-  read it as: its first three fields where it has more, its numbers as
-  `strtoul` reads them in base 0 (hex after `0x`, both the octal and the
-  decimal reading after a leading 0), a count past 32 bits whole. A line of
-  three fields or more whose start or count is not such a number (`0b`,
-  binary to glibc 2.38 and later, included), or with a NUL byte, is
-  refused, naming it; one ending in `\r` is counted without it.
-  `/etc/passwd` and `/etc/group` ids are read in base 10, as glibc and musl
-  read them; musl wraps one past 32 bits, and so does the check. Only these local files are read: not accounts or ids that NSS takes
-  from elsewhere (LDAP, SSSD, systemd's `DynamicUser` and userdb), and not
-  the ranges other allocators hand out, so choose a `<start>` outside each
-  of them in use on the host:
+  where an account is named `ranikust`, which `newuidmap` and `newgidmap` would
+  let map the range: a line of `/etc/passwd` (`+ranikust`, NIS compat's,
+  included) or a file named like a systemd userdb drop-in record,
+  `ranikust.user`, of any type, in `/etc/userdb`, `/run/userdb`,
+  `/run/host/userdb`, `/usr/local/lib/userdb`, `/usr/lib/userdb` or
+  `/lib/userdb`. It is refused too where the range shares an id with another
+  line of the same file, or the uid range with a uid of `/etc/passwd`, or the
+  gid range with a gid of `/etc/group` or a primary gid of `/etc/passwd`,
+  naming that line or account: the build's ids would be theirs. Another line
+  counts as every range a version of shadow's tools may read it as: its first
+  three fields where it has more, its numbers as `strtoul` reads them in base 0
+  (hex after `0x`, both the octal and the decimal reading after a leading 0), a
+  count past 32 bits whole. A line of three fields or more whose start or count
+  is not such a number (`0b`, binary to glibc 2.38 and later, included), or
+  with a NUL byte, is refused, naming it; one ending in `\r` is counted without
+  it. `/etc/passwd` and `/etc/group` ids are read in base 10, as glibc and musl
+  read them; musl wraps one past 32 bits, and so does the check. Only these
+  local files and the names of userdb's drop-in records are read: not accounts
+  or ids that NSS takes from elsewhere (LDAP, SSSD, the ids of userdb records,
+  `systemd-homed` and `DynamicUser` accounts), and not the ranges other
+  allocators hand out, so choose a `<start>` outside each of them in use on the
+  host:
   - an NSS `subid:` module (libsubid, as SSSD or FreeIPA provide), which
     `newuidmap` then reads instead of `/etc/subuid` and `/etc/subgid`;
     ranikust warns where the first `subid:` line of `/etc/nsswitch.conf`

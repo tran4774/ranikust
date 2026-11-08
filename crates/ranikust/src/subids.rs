@@ -67,23 +67,24 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
      kubelet, systemd) uses, and no account named ranikust (ADR-0104)";
 
 /// Root's range for `--userns` (ADR-0104): in each of `/etc/subuid` and
-/// `/etc/subgid`, the first well-formed range whose owner is
-/// [`ROOT_ENTRY`], by that name only, never a uid, sharing no id with the
-/// host's accounts or other ranges (ADR-0139): no account named
-/// [`ROOT_ENTRY`] in `/etc/passwd` or as a userdb record, which `newuidmap`
-/// and `newgidmap` would let map the range; the uid range none of `/etc/passwd`'s uids, the gid
-/// range none of `/etc/group`'s gids or of `/etc/passwd`'s primary gids;
-/// and neither any range another line of its file may give, as
-/// [`ranges_shadow_may_read`] counts them. Those local files only: a static
-/// binary has no NSS, so an account or id only NSS knows (LDAP, SSSD,
-/// systemd's `DynamicUser` and userdb) is not seen, nor are the ranges
-/// another allocator hands out (an NSS `subid:` module, which `newuidmap`
-/// then reads instead of the files and of which a warning is logged; the
-/// kubelet's for pods; systemd's `DynamicUser` and `systemd-nspawn
-/// --private-users=pick`). Lines end at
-/// `\n` alone, as shadow's own parser reads them: a `ranikust` line ending
-/// in `\r` is not well-formed, so not found, unlike [`lookup`], which takes
-/// `\r\n` as a line end too. Read on the host before anything is written.
+/// `/etc/subgid`, the first well-formed range whose owner is [`ROOT_ENTRY`],
+/// by that name only, never a uid, sharing no id with the host's accounts or
+/// other ranges (ADR-0139): no account named [`ROOT_ENTRY`] in `/etc/passwd`
+/// or as a userdb record, which `newuidmap` and `newgidmap` would let map the
+/// range; the uid range none of `/etc/passwd`'s uids, the gid range none of
+/// `/etc/group`'s gids or of `/etc/passwd`'s primary gids; and neither any
+/// range another line of its file may give, as [`ranges_shadow_may_read`]
+/// counts them. Those local files only, and the names of userdb's drop-in
+/// records: a static binary has no NSS, so an account or id only NSS knows
+/// (LDAP, SSSD, systemd's userdb records' ids, `systemd-homed` and
+/// `DynamicUser` accounts) is not seen, nor are the ranges another allocator
+/// hands out (an NSS `subid:` module, which `newuidmap` then reads instead of
+/// the files and of which a warning is logged; the kubelet's for pods;
+/// systemd's `DynamicUser` and `systemd-nspawn --private-users=pick`). Lines
+/// end at `\n` alone, as shadow's own parser reads them: a `ranikust` line
+/// ending in `\r` is not well-formed, so not found, unlike [`lookup`], which
+/// takes `\r\n` as a line end too. Read on the host before anything is
+/// written.
 ///
 /// # Errors
 ///
@@ -91,15 +92,17 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// exist has none), one whose range starts at 0, which would map the
 /// host's root, an account named [`ROOT_ENTRY`], one that holds an
 /// account's id, overlaps another line or sits beside a line whose numbers
-/// cannot be read as shadow's tools may read them, naming it, or a file
-/// that cannot be read. [`ROOT_RANGE_GUIDANCE`] says what to do.
+/// cannot be read as shadow's tools may read them, naming it, a file that
+/// cannot be read, or a userdb record of which it cannot tell whether it
+/// exists. [`ROOT_RANGE_GUIDANCE`] says what to do.
 pub(crate) fn root_range() -> Result<SubordinateIds, String> {
     let etc = std::path::Path::new("/etc");
     let userdb = USERDB_DIRS.map(std::path::Path::new);
     if let Some(record) = userdb_record(&userdb)? {
         return Err(format!(
-            "{} is a systemd userdb record of an account named {ROOT_ENTRY}, to which \
-             newuidmap and newgidmap would give root's {ROOT_ENTRY} range",
+            "{} is a file named like a systemd userdb record of an account named \
+             {ROOT_ENTRY}, to which newuidmap and newgidmap would give root's {ROOT_ENTRY} \
+             range",
             record.display()
         ));
     }
@@ -127,9 +130,17 @@ pub(crate) fn root_range() -> Result<SubordinateIds, String> {
 /// The NSS configuration, whose `subid:` line libsubid reads.
 const NSSWITCH: &str = "nsswitch.conf";
 
-/// Where systemd's userdb looks for an account's record, `<name>.user`
-/// (`nss-systemd`, ADR-0139).
-const USERDB_DIRS: [&str; 3] = ["/etc/userdb", "/run/userdb", "/usr/lib/userdb"];
+/// Where systemd's userdb looks for an account's drop-in record,
+/// `<name>.user` (`nss-systemd`, ADR-0139), in its order, with `/lib/userdb`
+/// of a split `/usr`.
+const USERDB_DIRS: [&str; 6] = [
+    "/etc/userdb",
+    "/run/userdb",
+    "/run/host/userdb",
+    "/usr/local/lib/userdb",
+    "/usr/lib/userdb",
+    "/lib/userdb",
+];
 
 /// The first of `dirs` to hold a userdb record named for [`ROOT_ENTRY`],
 /// of any type: through `nss-systemd`, `newuidmap` would find that account.
@@ -242,10 +253,13 @@ fn root_range_in(etc: &std::path::Path) -> Result<SubordinateIds, String> {
             }
         }
         if let Some(h) = held.iter().find(|h| (start..end).contains(&h.id.into())) {
+            let id = match &h.written {
+                Some(written) => format!("{written} ({} as musl reads it)", h.id),
+                None => h.id.to_string(),
+            };
             return Err(format!(
-                "{ours} holds {} {} of {} in {}: the build's ids would be that account's",
+                "{ours} holds {} {id} of {} in {}: the build's ids would be that account's",
                 h.kind,
-                h.id,
                 shown(h.name.as_bytes()),
                 h.file
             ));
@@ -264,6 +278,8 @@ struct Held {
     /// `uid` or `gid`.
     kind: &'static str,
     id: u32,
+    /// The field as written, where musl wraps it into `id`.
+    written: Option<String>,
     name: String,
     file: String,
 }
@@ -290,10 +306,12 @@ fn ids_of<'a>(
     bytes.split(|b| *b == b'\n').filter_map(move |line| {
         let mut f = line.split(|b| *b == b':');
         let name = f.next()?;
-        let id = loose(f.nth(field - 1)?)?;
+        let written = f.nth(field - 1)?;
+        let (id, wrapped) = loose(written)?;
         Some(Held {
             kind,
             id,
+            written: wrapped.then(|| shown(without_c_space(written))),
             name: String::from_utf8_lossy(name).into_owned(),
             file: file.to_owned(),
         })
@@ -376,7 +394,7 @@ fn readings(field: &[u8]) -> Result<Vec<u128>, &'static str> {
         return Err(NOT);
     }
     if let Some(hex) = s.strip_prefix(b"0x").or_else(|| s.strip_prefix(b"0X")) {
-        // `strtoul` reads `0x` with no hex digit after it as 0 and the rest as junk.
+        // `strtoul` reads a bare `0x` as 0 followed by junk.
         return if hex.is_empty() {
             Err(NOT)
         } else {
@@ -405,18 +423,23 @@ fn without_c_space(bytes: &[u8]) -> &[u8] {
 
 /// A `/etc/passwd` or `/etc/group` id in base 10, as glibc and musl read
 /// one: the whole field the number, C white space and a `+` before it
-/// allowed (glibc), and past 32 bits wrapped, as musl reads it (glibc makes
-/// it `u32::MAX`, which is never in root's range). None for a `-`, which
-/// glibc makes `u32::MAX` (`-0` aside, which is 0).
-fn loose(field: &[u8]) -> Option<u32> {
+/// allowed (glibc), and past 32 bits wrapped, as musl reads it (64-bit
+/// glibc makes it `u32::MAX`, which is never in root's range), with whether
+/// it was. None for a `-`, which 64-bit glibc makes `u32::MAX` (`-0` aside,
+/// which is 0).
+fn loose(field: &[u8]) -> Option<(u32, bool)> {
     let s = without_c_space(field);
     let s = s.strip_prefix(b"+").unwrap_or(s);
     if s.is_empty() || !s.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    Some(s.iter().fold(0u32, |x, b| {
-        x.wrapping_mul(10).wrapping_add(u32::from(b - b'0'))
-    }))
+    let (mut id, mut wrapped) = (0u32, false);
+    for b in s {
+        let (times, o1) = id.overflowing_mul(10);
+        let (sum, o2) = times.overflowing_add(u32::from(b - b'0'));
+        (id, wrapped) = (sum, wrapped || o1 || o2);
+    }
+    Some((id, wrapped))
 }
 
 /// The lines of `bytes` that are UTF-8: a line that is not is no

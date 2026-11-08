@@ -398,9 +398,9 @@ ranikust runs `RUN` as root, mounts filesystems and empties build roots.
   directory. The state directory is owned by the user running ranikust, not
   writable by others, made `0700`, below directories only root or that user
   may write, checked by descriptor before anything is created (ADR-0050);
-  under root's `--userns` (ADR-0139), by the first ids of its range instead, below
-  directories only root may write, never root's own nor at, below or above
-  its default ([sandbox](docs/design/sandbox.md#--userns)).
+  under root's `--userns` (ADR-0139), by the first ids of its range instead,
+  below directories only root may write, never root's own nor at, below or
+  above its default ([sandbox](docs/design/sandbox.md#--userns)).
 - In kaniko mode on `/` the state directory is on the ignore list: never
   walked, snapshotted or deleted.
 - `RUN` enters its root with `pivot_root` (or `MS_MOVE`), never a bare `chroot`

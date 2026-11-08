@@ -419,14 +419,21 @@ fn ids_past_32_bits_count_wrapped() {
         "root:x:0:0::/:/bin/sh\nsvc:x:4295567296:0::/:/bin/sh\n",
     );
     let why = root_range_in(etc.path()).unwrap_err();
-    assert!(why.contains("holds uid 600000 of svc"), "{why}");
+    assert!(
+        why.contains("holds uid 4295567296 (600000 as musl reads it) of svc"),
+        "{why}"
+    );
     write(PASSWD, "root:x:0:0::/:/bin/sh\n");
     write(GROUP, "root:x:0:\nsvc:x:4295767296:\n");
     let why = root_range_in(etc.path()).unwrap_err();
-    assert!(why.contains("holds gid 800000 of svc"), "{why}");
+    assert!(
+        why.contains("holds gid 4295767296 (800000 as musl reads it) of svc"),
+        "{why}"
+    );
     write(GROUP, "root:x:0:\nsvc:x:-600000:\nother:x:4294967295:\n");
     assert!(root_range_in(etc.path()).is_ok());
-    assert_eq!(loose(b" +4295567296"), Some(600_000));
+    assert_eq!(loose(b" +4295567296"), Some((600_000, true)));
+    assert_eq!(loose(b"0600000"), Some((600_000, false)));
     assert_eq!(loose(b"-5"), None);
     assert_eq!(loose(b""), None);
 }
@@ -507,7 +514,11 @@ fn every_reading_of_a_line_s_numbers_counts() {
     assert!(with("ranikust:100000:65536", b"u:0100000:1").is_err());
     assert!(with("ranikust:32768:1000", b"u:0100000:1").is_err());
     assert!(with("ranikust:40000:1000", b"u:0100000:1").is_ok());
-    // The message shows what is not printable escaped, in a line or a name.
+    // The message shows what is not printable escaped, in a line or a name,
+    // and cuts a long line before it escapes it, so an escape is whole.
+    let line = format!("u:600001:1:{}\x1bzz", "a".repeat(68));
+    let why = with(ours, line.as_bytes()).unwrap_err();
+    assert!(why.contains(r"a\u{1b}..."), "{why:?}");
     let why = with(ours, "u:600001:1\u{202e}".as_bytes()).unwrap_err();
     assert!(
         why.contains(r"\u{202e}") && !why.contains('\u{202e}'),

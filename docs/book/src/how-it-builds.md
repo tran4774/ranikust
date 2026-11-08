@@ -145,8 +145,8 @@ overlay mount options.
   owners, the files that have them and the ways out: install `uidmap`
   (Ubuntu does not by default) and give the user a first range in
   `/etc/subuid` and `/etc/subgid`, in decimal with no leading 0 (such a line
-  is passed over), that reaches them, widen the one it has,
-  run as root, or run in a container (whose ranges must reach them too). A
+  is passed over), that reaches them, widen the one it has, run as root, or
+  run in a container (whose ranges must reach them too). A
   range must not overlap another user's range or a real account's ids, so
   for an owner past 65536 (`useradd`'s default count) ranikust asks for no
   wider range and names root or a container instead. A `COPY --chown` or a
@@ -177,20 +177,24 @@ the build is refused before anything is written, and so it is where:
   `newuidmap` may read that line, or with an account of `/etc/passwd` or
   `/etc/group`;
 - a line of those files has a start or count that versions of `newuidmap`
-  read differently or not at all: a `-` sign, an empty field, anything after
-  the number (such as an 8 or 9 after a leading 0) or a value past 64 bits;
-  white space, a `+` or `0x` before the number are read as `newuidmap`
-  reads them;
+  read differently or not at all: a `-` sign, an empty field, anything else
+  in the field (letters, `0b`, an 8 or 9 after a leading 0) or a value past
+  64 bits; white space, a `+` or `0x` before the number are read as
+  `newuidmap` reads them;
 - a line of those files has a NUL byte;
-- an account is named `ranikust` in `/etc/passwd` (`+ranikust` too) or a
-  systemd userdb record: `newuidmap` would give it the range.
+- an account is named `ranikust` in `/etc/passwd` (`+ranikust` too), or a
+  file is named like a systemd userdb record of one (`ranikust.user` in
+  `/etc/userdb` and the other drop-in directories): `newuidmap` would give
+  it the range.
 
-Only these files are checked: not accounts from LDAP, SSSD or systemd
-(`DynamicUser`, userdb), and not the ranges other tools hand out, so keep
-`<start>` outside those in use on the host: an NSS `subid:` module such as
+Only these files and the names of userdb records are checked: not accounts from
+LDAP or SSSD, the ids of userdb records, nor `systemd-homed` and `DynamicUser`
+accounts, so do not name a `DynamicUser=` unit `ranikust` (it gets an account
+by that name that only NSS knows). Nor are the ranges other tools hand out, so
+keep `<start>` outside those in use on the host: an NSS `subid:` module such as
 SSSD's or FreeIPA's (`newuidmap` then reads it instead of the files, and
-ranikust warns of it); the kubelet's pod user namespaces, which take every
-id above 65535 unless an account named `kubelet` exists and `getsubids` is
+ranikust warns of it); the kubelet's pod user namespaces, which take every id
+above 65535 unless an account named `kubelet` exists and `getsubids` is
 installed, so with them on, create that account and give it lines in those
 files, which the check counts; systemd's `DynamicUser` (61184–65519); and
 `systemd-nspawn --private-users=pick` (524288–1879048191). Every `--userns`

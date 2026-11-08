@@ -802,8 +802,9 @@ fn a_regular_user_s_killed_extraction_publishes_nothing() {
     }
 }
 
-/// Root's `ranikust` range for [`a_shifted_range_s_layers_are_keyed_by_its_map`]:
-/// its first ids, and `count` ids from each.
+/// Root's `ranikust` range for
+/// [`a_shifted_range_s_layers_are_keyed_by_its_map`]: its first ids, and
+/// `count` ids from each.
 fn shifted_range(count: u32) -> rnk_sandbox::SubordinateIds {
     rnk_sandbox::SubordinateIds {
         uids: rnk_sandbox::IdRange {

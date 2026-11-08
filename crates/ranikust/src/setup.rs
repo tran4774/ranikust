@@ -926,8 +926,8 @@ fn removed_once_made(e: &rnk_rootfs::Error) -> bool {
 /// had not yet given away when its build was killed: the store, in the
 /// build's user namespace under `--userns`, cannot open it. Only an empty
 /// directory of this user's, mode `0700` (with the setgid bit a setgid
-/// `parent` gives it before [`own_group`] clears it), on `parent`'s mount and no
-/// mount point, that no probe holds (its `flock`), told through its
+/// `parent` gives it before [`own_group`] clears it), on `parent`'s mount and
+/// no mount point, that no probe holds (its `flock`), told through its
 /// descriptor; then its name alone is removed, which fails where it is no
 /// longer empty. Nothing inside a directory is ever deleted. A failure is
 /// logged: it must not stop the build.

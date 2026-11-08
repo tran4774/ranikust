@@ -81,9 +81,9 @@ them for both.
   supplementary group and takes uid and gid 0 of the namespace, the
   range's first ids on the host, then makes the process not dumpable and
   arms its parent-death signal again, which the change of credentials
-  resets. Another user is refused such a range before any change. The map and `setgroups` reported are
-  read back once inside: any map that gives one id, root's mirrored one
-  too, is one uid. Dumpable only while its map is written
+  resets. Another user is refused such a range before any change. The map and
+  `setgroups` reported are read back once inside: any map that gives one id,
+  root's mirrored one too, is one uid. Dumpable only while its map is written
   (ADR-0051). Nothing passing leaves the process as it was
   (`Error::NoUserNamespace`); a step failing once inside is
   `Error::UserNamespaceBroken`, after which the process must end.
@@ -501,8 +501,8 @@ What a change here must keep, with where it lives:
   `/usr/bin` and `/bin` only, run with an empty environment. A child of a
   user other than root is dumpable only around its map write, which the
   kernel's owner check of `/proc/<pid>/uid_map` needs: made dumpable after
-  `unshare`, not dumpable again right after the map, before `chown`. `ranikust` probes as root, whose children never
-  change it.
+  `unshare`, not dumpable again right after the map, before `chown`. `ranikust`
+  probes as root, whose children never change it.
 
 ## Refs
 
@@ -683,9 +683,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   helper reports a refused map and ends, and ends without writing when
   cancelled; refused beside other threads; the namespace is told as read
   back (a map giving one id is one uid, a parent's `deny` stands); a
-  shifted range refused to a user other than root before any change. Its red team
-  (`red_team_the_build_user_namespace_is_whole_or_not_entered`, as any user,
-  with and without this user's ranges): the process either has the whole
+  shifted range refused to a user other than root before any change. Its red
+  team (`red_team_the_build_user_namespace_is_whole_or_not_entered`, as any
+  user, with and without this user's ranges): the process either has the whole
   namespace (uid and gid maps, `setgroups`, euid 0, new user and mount
   namespaces, not dumpable) or kept its own, unchanged.
 - **T1** (`just smoke`, rootless podman): the whole sequence in a user

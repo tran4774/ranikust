@@ -883,7 +883,7 @@ fn rootless(
     fault: Option<&str>,
 ) -> Rootless {
     let how = via.flag();
-    // `--userns` has no other mode to try: a usage error comes before any write.
+    // `--userns` has no other mode to try: its usage error precedes any write.
     if let Via::Userns(args) = via
         && let Err(failure) = overlay_flags(args)
     {
