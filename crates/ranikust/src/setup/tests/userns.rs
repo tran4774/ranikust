@@ -35,7 +35,7 @@ fn alone(name: &str) -> bool {
 
 /// [`alone`] for the test `name` of the module `module`, its
 /// `module_path!()`.
-fn alone_in(module: &str, name: &str) -> bool {
+pub(crate) fn alone_in(module: &str, name: &str) -> bool {
     if std::env::var_os(ALONE).is_some() {
         return true;
     }

@@ -874,6 +874,11 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   binds and `devpts` is `nodev`.
 - `/dev/null` and the other nodes are read-only binds: `chmod` and `chown` on
   them fail with `EROFS`.
+- A `RUN` gets no SELinux label or AppArmor profile of its own: it keeps the
+  context of the process that started ranikust, where a container runtime
+  gives a container `container_t` with its own MCS pair on an SELinux host
+  ([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md);
+  labelling is revisited in Phase 6, [#89](https://github.com/tran4774/ranikust/issues/89)).
 - A `RUN` gets no resource limits, so a fork bomb is bounded only by the
   environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)). Where a
   delegated tree exists it gets cgroups of its own, limited only in how many

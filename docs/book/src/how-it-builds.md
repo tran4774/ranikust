@@ -48,7 +48,10 @@ Where none of that works a regular user is refused (see
   [Where to run it](where-to-run.md#cgroups-of-run-commands)), the stage's
   root as its `/`, and the capabilities and the seccomp profile Docker gives a
   container by default: about the isolation of `docker build` ([ADR-0003];
-  `--seccomp` changes the profile, [ADR-0109]).
+  `--seccomp` changes the profile, [ADR-0109]). It gets no SELinux label of
+  its own: it keeps the context of the process that started ranikust, so on a
+  host with SELinux enforcing the sandbox holds it, not policy as for a
+  container ([ADR-0140]).
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]). ranikust itself runs from a copy of its
@@ -417,3 +420,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md
 [ADR-0134]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md
 [ADR-0137]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md
+[ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md
