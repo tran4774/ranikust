@@ -461,11 +461,11 @@ the step and errno it prints. Under a minute in the VM after its boot.
 | 7d | A namespace enforcing the `restricted` Pod Security Standard: uid 1000, no capability, `RuntimeDefault` seccomp, `no_new_privs`; the state directory on the pod's `/dev/shm`, a sticky tmpfs, since an `emptyDir` is writable by others (ADR-0050) | refused | Refused: the user namespace probe stops at `unshare` (`unshare(CLONE_NEWUSER): EPERM`) |
 
 - **Row 7b** differs from ADR-0100, which expected rootless overlay mode with
-  a fresh `proc`: the suite asserts today's routing, which refuses it; why,
-  and what the `measured:` lines of `k8s.log` show (a `core_pattern` write
-  in the 7b and 7c pods, the user namespace probe in a `hostUsers: false`
-  pod with a masked `/proc`, at Ubuntu's AppArmor switch and at 0), is in
-  [experiment 18](research/experiments/18-kubernetes-pods-in-k3s.md).
+  a fresh `proc`: the suite asserts today's routing, which refuses it
+  [open: #201]; why, and what the `measured:` lines of `k8s.log` show (a
+  `core_pattern` write in the 7b and 7c pods, the user namespace probe in a
+  `hostUsers: false` pod with a masked `/proc`, at Ubuntu's AppArmor switch
+  and at 0), is in [experiment 18](research/experiments/18-kubernetes-pods-in-k3s.md).
 - **Results** in `out/k8s/` (in the VM's results, and in a failed runner
   job's artifact): `env.txt` (kernel, k3s, Kubernetes, containerd, runc, the
   AppArmor switch, the pause image), each pod's log and `kubectl describe`,

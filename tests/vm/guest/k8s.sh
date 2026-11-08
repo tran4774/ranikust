@@ -25,7 +25,9 @@ NS_RESTRICTED=rnk-k8s-restricted
 K3S=/usr/local/bin/k3s
 mkdir -p "$OUT"
 
-kc() { sudo "$K3S" kubectl "$@"; }
+# A hung API server must not hold the suite: 300 s is over the longest
+# --timeout given (240 s).
+kc() { timeout 300 sudo "$K3S" kubectl "$@"; }
 FAILED=()
 fail() { echo "FAIL: $*" >&2; FAILED+=("$*"); }
 

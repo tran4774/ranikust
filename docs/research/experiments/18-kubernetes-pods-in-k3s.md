@@ -98,7 +98,7 @@ A root pod in the `restricted` namespace is refused at admission
 
 - The suite asserts today's routing for row 7b; whether ADR-0107 takes its
   option (d), and whether root in such a pod then tries rootless overlay
-  mode, needs a decision (an ADR).
+  mode, needs a decision (an ADR) [open: #201].
 - Row 7b as ADR-0100 expected it would need that decision and a node where
   the pod's own user namespaces get capabilities (the switch at 0, or a
   distribution without the restriction) **[inferred]**.
@@ -113,7 +113,7 @@ A root pod in the `restricted` namespace is refused at admission
   Bottlerocket, OpenShift), SELinux nodes and a kubelet with
   `seccompDefault` were not run.
 - The 7d refusal's hint names AppArmor's switch, while there the seccomp
-  profile blocks `unshare`: a defect of the hint.
+  profile blocks `unshare`: a defect of the hint (#202).
 
 ## Reproduction
 
