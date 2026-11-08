@@ -3,7 +3,8 @@
 # never on the host (docs/testing.md#the-vm-harness-tier-t2).
 #
 #   tests/vm/vm.sh [suite]...     suites: unit, smoke, quick, e2e, push,
-#                                 secrets, ultra, k8s; default unit smoke
+#                                 secrets, ultra, k8s; default unit smoke;
+#                                 with RANIKUST_VM_RELEASE=alma9, el9 only
 #
 # `quick` (the small Dockerfiles of tests/smoke/cases, a minute or two) is
 # for smoke tests and proofs of concept that need real root; `e2e` (the
@@ -17,19 +18,24 @@
 # download kept in the cache) and runs the Kubernetes rows of the privilege
 # matrix in pods (ADR-0100 rows 7a-7d); it runs after the other suites,
 # whatever the order given, and never with push: k3s's network set-up (its
-# interfaces and iptables rules) stays until the VM goes.
+# interfaces and iptables rules) stays until the VM goes. `el9` is row 9e of
+# ADR-0100's privilege matrix: root and a regular user on AlmaLinux 9 with
+# SELinux enforcing.
 #
 # Runs as the invoking user: QEMU needs read-write access to /dev/kvm (its
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
 # of a provisioned base image (the verified Ubuntu cloud image with Docker
-# installed, built once and cached: cloud-init/provision), copies in static
-# musl binaries and the guest scripts, runs the suites over SSH, copies the
-# results out to target/vm/results/<release>/ and deletes the VM, its disk
-# and its key whatever the outcome.
+# installed, or AlmaLinux's with Podman, built once and cached:
+# cloud-init/provision, provision-el9), copies in static musl binaries and
+# the guest scripts, runs the suites over SSH, copies the results out to
+# target/vm/results/<release>/ and deletes the VM, its disk and its key
+# whatever the outcome.
 #
 # Environment:
 #   RANIKUST_VM_RELEASE  Ubuntu release: noble (24.04, kernel 6.8, default)
-#                        or jammy (22.04, kernel 5.15)
+#                        or jammy (22.04, kernel 5.15); or alma9 (AlmaLinux
+#                        9.8, kernel 5.14, SELinux enforcing, Podman instead
+#                        of Docker), which runs the el9 suite only
 #   RANIKUST_VM_CACHE    verified image cache (cloud images, provisioned base
 #                        images, e2e reference images, the k3s binary), default
 #                        tests/e2e/_vm-image of the main checkout, shared by
@@ -86,17 +92,34 @@ VM_USER=rnk
 # What cloud-init installs: into the base image once (cloud-init/provision),
 # or at every boot with RANIKUST_VM_GOLDEN=0. Part of the base image's key.
 PACKAGES=(docker.io zstd pigz busybox-static uidmap)
+PROVISION="$HERE/cloud-init/provision" USER_DATA="$HERE/cloud-init/user-data"
 
 # Seconds since the start on every line, for the timings of a run.
 log() { printf '[vm +%ss] %s\n' "$SECONDS" "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+case "$RELEASE" in noble | jammy | alma9) ;; *) die "RANIKUST_VM_RELEASE must be noble, jammy or alma9" ;; esac
+if [ "$RELEASE" = alma9 ]; then
+  # dnf's packages: Podman, with the `docker` command guest/net.sh and the
+  # results' copy use; audit, whose auditd logs SELinux's denials; tar, for
+  # the copy of the scripts and results. newuidmap is in shadow-utils, there
+  # already.
+  PACKAGES=(podman podman-docker audit tar)
+  PROVISION="$HERE/cloud-init/provision-el9" USER_DATA="$HERE/cloud-init/user-data-el9"
+fi
 SUITES=("$@")
-[ ${#SUITES[@]} -gt 0 ] || SUITES=(unit smoke)
+if [ ${#SUITES[@]} = 0 ]; then
+  if [ "$RELEASE" = alma9 ]; then SUITES=(el9); else SUITES=(unit smoke); fi
+fi
 for s in "${SUITES[@]}"; do
-  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra | k8s) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra, k8s)" ;; esac
+  case "$s" in unit | smoke | quick | e2e | push | secrets | ultra | k8s | el9) ;; *) die "unknown suite '$s' (unit, smoke, quick, e2e, push, secrets, ultra, k8s, el9)" ;; esac
+  # The other suites need Ubuntu's Docker and packages.
+  case "$RELEASE:$s" in
+    alma9:el9) ;;
+    *:el9) die "the el9 suite runs only with RANIKUST_VM_RELEASE=alma9" ;;
+    alma9:*) die "the $s suite needs Ubuntu's Docker: RANIKUST_VM_RELEASE=alma9 runs el9 only" ;;
+  esac
 done
-case "$RELEASE" in noble | jammy) ;; *) die "RANIKUST_VM_RELEASE must be noble or jammy" ;; esac
 case "$GOLDEN_ON" in 0 | 1) ;; *) die "RANIKUST_VM_GOLDEN must be 0 or 1" ;; esac
 # QEMU splits -drive options on commas.
 for v in TARGET CACHE; do
@@ -114,6 +137,9 @@ done
 for tool in qemu-system-x86_64 qemu-img xorriso ssh ssh-keygen curl sha256sum jq python3 cargo-zigbuild; do
   command -v "$tool" >/dev/null || die "missing $tool"
 done
+if [ "$RELEASE" = alma9 ]; then
+  for tool in gpg gpgv; do command -v "$tool" >/dev/null || die "missing $tool (AlmaLinux's checksums are signed)"; done
+fi
 
 wants() { local s; for s in "${SUITES[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 # push runs last, and would run on k3s's leftover network set-up.
@@ -380,22 +406,76 @@ fi
 # VM's size goes into the results' env.txt.
 printf 'export RANIKUST_VM_IMAGE_REGISTRY=%q\nexport RANIKUST_VM_SIZE=%q\n' "$IMAGE_REGISTRY" "$VM_SIZE" >"$STAGE/vm.env"
 
-# --- Image: fetch and verify against SHA256SUMS ------------------------------
+# --- Image: fetch and verify against the vendor's checksums -----------------
 
-IMG_NAME="$RELEASE-server-cloudimg-amd64.img"
-IMG_URL="https://cloud-images.ubuntu.com/$RELEASE/current"
-IMG="$CACHE/$IMG_NAME"
 mkdir -p "$CACHE"
-curl -fsSL "$IMG_URL/SHA256SUMS" -o "$CACHE/$RELEASE-SHA256SUMS"
-want="$(awk -v f="*$IMG_NAME" '$2 == f { print $1 }' "$CACHE/$RELEASE-SHA256SUMS")"
-[ -n "$want" ] || die "$IMG_NAME is not in $IMG_URL/SHA256SUMS"
+if [ "$RELEASE" = alma9 ]; then
+  # AlmaLinux 9's GenericCloud image, pinned. Its SHA-256 comes from
+  # AlmaLinux's CHECKSUM file, whose detached signature gpgv checks with
+  # AlmaLinux 9's key (keys/RPM-GPG-KEY-AlmaLinux-9), pinned by the
+  # fingerprint https://almalinux.org/security/ lists. The image is on the
+  # repository while 9.8 is AlmaLinux 9's current release, then in the
+  # vault: the first place whose signed CHECKSUM lists it is used.
+  IMG_NAME=AlmaLinux-9-GenericCloud-9.8-20261102.x86_64.qcow2
+  ALMA_PLACES=(https://repo.almalinux.org/almalinux/9.8/cloud/x86_64/images https://vault.almalinux.org/9.8/cloud/x86_64/images)
+  ALMA_KEY_FPR=BF18AC2876178908D6E71267D36CB86CB86B3716
+  SUMS="$CACHE/$RELEASE-CHECKSUM"
+  # A keyring of that one key, for gpgv, in a directory of its own that
+  # is gone before the image is fetched.
+  keydir="$CACHE/.$RELEASE-key"
+  rm -rf "$keydir" && mkdir -m 0700 "$keydir"
+  gpg --batch --quiet --homedir "$keydir" --dearmor <"$HERE/keys/RPM-GPG-KEY-AlmaLinux-9" >"$keydir/key.gpg"
+  IMG_URL= want= checked=()
+  for place in "${ALMA_PLACES[@]}"; do
+    rm -f "$SUMS" "$SUMS.asc"
+    if ! curl -fsSL "$place/CHECKSUM" -o "$SUMS" || ! curl -fsSL "$place/CHECKSUM.asc" -o "$SUMS.asc"; then
+      log "no CHECKSUM and signature at $place"
+      continue
+    fi
+    sig="$(gpgv --keyring "$keydir/key.gpg" --status-fd 1 "$SUMS.asc" "$SUMS" 2>"$keydir/gpgv.err")" || sig=
+    # VALIDSIG ends with the fingerprint of the signing key's primary key. A
+    # bad signature stops the run: no other place is tried.
+    if ! grep -Eq "^\[GNUPG:\] VALIDSIG [0-9A-F]{40} .* $ALMA_KEY_FPR\$" <<<"$sig"; then
+      err="$(tr '\n' ' ' <"$keydir/gpgv.err")"
+      rm -rf "$keydir" && rm -f "$SUMS" "$SUMS.asc"
+      die "$place/CHECKSUM has no good signature by AlmaLinux 9's key ($ALMA_KEY_FPR): gpgv: $err"
+    fi
+    checked+=("$place")
+    want="$(awk -v f="$IMG_NAME" '$2 == f { print $1 }' "$SUMS")"
+    if [[ "$want" =~ ^[0-9a-f]{64}$ ]]; then
+      IMG_URL=$place
+      break
+    fi
+    log "$IMG_NAME is not in $place/CHECKSUM once, with a SHA-256"
+    want=
+  done
+  rm -rf "$keydir"
+  [ ${#checked[@]} -gt 0 ] || die "could not fetch CHECKSUM and CHECKSUM.asc from ${ALMA_PLACES[*]}"
+  [ -n "$IMG_URL" ] || die "no CHECKSUM signed by AlmaLinux 9's key lists $IMG_NAME (checked: ${checked[*]})"
+else
+  IMG_NAME="$RELEASE-server-cloudimg-amd64.img"
+  IMG_URL="https://cloud-images.ubuntu.com/$RELEASE/current"
+  curl -fsSL "$IMG_URL/SHA256SUMS" -o "$CACHE/$RELEASE-SHA256SUMS"
+  want="$(awk -v f="*$IMG_NAME" '$2 == f { print $1 }' "$CACHE/$RELEASE-SHA256SUMS")"
+  [ -n "$want" ] || die "$IMG_NAME is not in $IMG_URL/SHA256SUMS"
+fi
+IMG="$CACHE/$IMG_NAME"
 if [ ! -f "$IMG" ] || [ "$(sha256sum "$IMG" | cut -d' ' -f1)" != "$want" ]; then
   log "downloading $IMG_URL/$IMG_NAME"
   curl -fL --progress-bar "$IMG_URL/$IMG_NAME" -o "$IMG.part"
   [ "$(sha256sum "$IMG.part" | cut -d' ' -f1)" = "$want" ] || { rm -f "$IMG.part"; die "SHA-256 mismatch for $IMG_NAME"; }
   mv "$IMG.part" "$IMG"
 fi
+# A pinned AlmaLinux image replaces the one pinned before: the base image
+# built from it no longer needs it (flattened), and no other run is up.
+[ "$RELEASE" != alma9 ] ||
+  find "$CACHE" -maxdepth 1 -type f -name 'AlmaLinux-9-GenericCloud-*.qcow2*' ! -name "$IMG_NAME" -delete
 log "image $IMG_NAME sha256 $want (verified)"
+# A qcow2 can name other files QEMU would open (a backing file, an external
+# data file): the vendor's image must be self-contained too.
+qemu-img info --output=json -U "$IMG" |
+  jq -e '.format == "qcow2" and (has("backing-filename") | not) and (."format-specific".data["data-file"] == null)' >/dev/null ||
+  die "$IMG is not a self-contained qcow2 (format, backing file or data file)"
 
 # --- Run directory, torn down on every exit path -----------------------------
 
@@ -748,17 +828,18 @@ check_free_gib() { # <dir> <GiB>
 #
 # Booting the plain cloud image costs every run cloud-init's package
 # installation (and snapd's first-boot seeding). The provisioned base image
-# is that boot done once: cloud-init/provision installs the packages, removes
-# what is per machine (SSH host keys, machine ID) and powers the VM off;
-# the disk is then flattened into one qcow2 in the cache, read-only, with its
-# SHA-256 beside it. Its name holds a hash of what it is made from (release,
-# the cloud image's SHA-256, the package list, the provisioning seed), so a
-# new cloud image or a changed seed builds a new one, and the old one of the
-# release is deleted. Each run boots a throwaway overlay on it with its own
-# seed (new instance ID: new host keys, user rnk with the run's own key).
+# is that boot done once: cloud-init/provision (provision-el9 for alma9)
+# installs the packages, removes what is per machine (SSH host keys, machine
+# ID) and powers the VM off; the disk is then flattened into one qcow2 in
+# the cache, read-only, with its SHA-256 beside it. Its name holds a hash of
+# what it is made from (release, the cloud image's SHA-256, the package
+# list, the provisioning seed), so a new cloud image or a changed seed
+# builds a new one, and the old one of the release is deleted. Each run
+# boots a throwaway overlay on it with its own seed (new instance ID: new
+# host keys, user rnk with the run's own key).
 BASE_IMG=$IMG
 if [ "$GOLDEN_ON" = 1 ]; then
-  gkey="$({ echo base-image-v1 "$RELEASE" "$want" "${PACKAGES[*]}"; cat "$HERE/cloud-init/provision"; } | sha256sum | cut -c1-16)"
+  gkey="$({ echo base-image-v1 "$RELEASE" "$want" "${PACKAGES[*]}"; cat "$PROVISION"; } | sha256sum | cut -c1-16)"
   GOLDEN="$CACHE/base-$RELEASE-$gkey.qcow2"
   build_golden() {
     local g="$RUN/golden" t0=$SECONDS
@@ -769,7 +850,7 @@ if [ "$GOLDEN_ON" = 1 ]; then
     check_free_gib "$RUN" 4
     mkdir -p "$g/seed"
     packages_yaml >"$g/packages.yaml"
-    render "$HERE/cloud-init/provision" "$g/packages.yaml" >"$g/seed/user-data"
+    render "$PROVISION" "$g/packages.yaml" >"$g/seed/user-data"
     printf 'instance-id: ranikust-base-%s\nlocal-hostname: ranikust-base\n' "$gkey" >"$g/seed/meta-data"
     xorriso -as mkisofs -quiet -output "$g/seed.iso" -volid cidata -joliet -rock "$g/seed/user-data" "$g/seed/meta-data"
     qemu-img create -q -f qcow2 -F qcow2 -b "$IMG" "$g/disk.qcow2" "${GOLDEN_GIB}G"
@@ -823,7 +904,7 @@ mkdir "$RUN/seed"
 # The guest's Docker pulls docker.io images through the same mirror.
 if [ "$IMAGE_REGISTRY" = docker.io ]; then MIRRORS='[]'; else MIRRORS="[\"https://$IMAGE_REGISTRY\"]"; fi
 if [ "$GOLDEN_ON" = 1 ]; then : >"$RUN/packages.yaml"; else packages_yaml >"$RUN/packages.yaml"; fi
-render "$HERE/cloud-init/user-data" "$RUN/packages.yaml" "$RUN/key.pub" "$MIRRORS" >"$RUN/seed/user-data"
+render "$USER_DATA" "$RUN/packages.yaml" "$RUN/key.pub" "$MIRRORS" >"$RUN/seed/user-data"
 printf 'instance-id: ranikust-vm-%s\nlocal-hostname: ranikust-vm\n' "$(basename "$RUN")" >"$RUN/seed/meta-data"
 # The two NICs (ADR-0086), told apart by MAC: egress takes passt's DHCP (its
 # default route, GUEST_DNS); the harness NIC has a fixed address and no

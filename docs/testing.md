@@ -88,7 +88,7 @@ The plan comes from the verification plan of
 | Property and fuzz tests | Parser, ignore matcher, tar write/read round trips, cache-key determinism | proptest in several crates (each [crate card](agents/README.md)'s `## Tests`); `cargo fuzz` on `extract` is planned (Phase 6) |
 | Image content vs kaniko | Each image flattened to `(path, type, mode, uid, gid, size, sha256, link target, xattrs)` plus its config, compared with kaniko's | T2, done: `e2e` and `ultra` |
 | Mode equivalence | Overlay and kaniko mode give the same flattened content, apart from the accepted differences of [ADR-0012](adr/0012-accept-divergence-between-modes.md); `--jobs 1` and the default give identical digests | T1/T2, done: `e2e`, `ultra`, the `reproducible` and `par-stages` cases |
-| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags` and `userns-probe` cases) and the VM's regular user T2 (the `smoke` suite's user leg); Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned. Gaps: [below](#not-covered-yet) |
+| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags` and `userns-probe` cases) and the VM's regular user T2 (the `smoke` suite's user leg). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`). Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned. Gaps: [below](#not-covered-yet) |
 | Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; a `--state-dir` at `/`, below `/home/<user>` and in a directory others may write. After each case: the host is unchanged, and no mount or process is left | T2, partly: the red-team cases of `quick`, the `secrets` suite and the `rnk-sandbox` and `rnk-rootfs` attack tests |
 
 ## Not covered yet
@@ -106,6 +106,13 @@ The plan comes from the verification plan of
   profile (`seccompDefault`); an SELinux node.
 - Kernels before 5.11 (an older `..` walk; Debian 11 has 5.10) and an aarch64
   guest.
+- SELinux beyond the `el9` suite: its two legs build in overlay mode, as root
+  and rootless, and run `just smoke`'s in-sandbox checks; every other suite
+  (the `RUN` sandbox's real-root checks, kaniko mode, Docker or Podman
+  variants, `--allow proc.rbind`) runs on Ubuntu only, and Fedora or another
+  policy than `targeted` nowhere. A base layer carrying a `security.selinux`
+  xattr is built under SELinux by no suite (the `unit` suite's case for it
+  skips where SELinux runs, and `RANIKUST_VM_RELEASE=alma9` runs no `unit`).
 - A `--network=none` `RUN` under the rbind of `/sys` below a cgroup v1
   hierarchy (`net_cls,net_prio`) or a configfs mounted in the outer `/sys`:
   only Podman's cgroup2 mount is checked covered (`rootless-reach`, T1),
@@ -129,7 +136,13 @@ run goes through these steps:
    `ranikust` before any suite (step 5).
 2. **Fetch** the Ubuntu cloud image of `RANIKUST_VM_RELEASE` (`noble`,
    kernel 6.8, by default; `jammy`, kernel 5.15) and check its SHA-256
-   against the published `SHA256SUMS`. The verified image is cached in
+   against the published `SHA256SUMS`. `alma9` fetches AlmaLinux 9.8's
+   GenericCloud image instead (kernel 5.14, SELinux enforcing), pinned by
+   name in `vm.sh`: its SHA-256 comes from AlmaLinux's `CHECKSUM` file, which
+   `gpgv` must find signed by AlmaLinux 9's key (`tests/vm/keys/`, pinned by
+   its fingerprint), from the repository or, once 9.8 is no longer current,
+   the vault; a new pin deletes the old image from the cache. Every cloud
+   image must be a self-contained qcow2. The verified image is cached in
    `tests/e2e/_vm-image/` of the main checkout (gitignored,
    `RANIKUST_VM_CACHE`), which every git worktree of it shares. Only one VM
    runs at a time on the machine: a run holds `flock` on
@@ -138,9 +151,13 @@ run goes through these steps:
 3. **Provision** the base image once, from the verified cloud image booted
    with `tests/vm/cloud-init/provision`: it installs the packages (Docker
    from the Ubuntu archive, `zstd`, `pigz`, `busybox-static`, and `uidmap`
-   for the regular user's `newuidmap`), disables the apt timers,
-   removes what is per machine (SSH host keys, machine ID; no user, key or
-   password is created) and powers off. The disk becomes one read-only
+   for the regular user's `newuidmap`), disables the apt timers, removes
+   what is per machine (SSH host keys, machine ID; no user, key or password
+   is created) and powers off. For `alma9`,
+   `tests/vm/cloud-init/provision-el9` installs Podman with `podman-docker`
+   (the `docker` command the network check uses), `audit` and `tar`,
+   enables `auditd`, disables the dnf timer and checks that SELinux is
+   enforcing. The disk becomes one read-only
    qcow2, `base-<release>-<key>.qcow2`, with its SHA-256 beside it, checked
    before every use. `<key>` hashes the release, the cloud image's SHA-256,
    the package list and the provisioning seed, so a change builds a new
@@ -158,7 +175,9 @@ run goes through these steps:
    mirror, no pull rate limit): the guest's Docker uses it as a
    `registry-mirrors` entry, and the suites pull `python:3.13-alpine` and
    `alpine:3.20` from it by name. `docker.io` pulls from Docker Hub itself,
-   which allows anonymous clients only a few pulls per hour.
+   which allows anonymous clients only a few pulls per hour. `alma9`'s seed
+   is `tests/vm/cloud-init/user-data-el9`, with no mirror entry: its suite
+   names every image through the variable.
 5. **Boot** QEMU as the invoking user, SSH forwarded to a free port on
    `127.0.0.1` only, one SSH connection shared by every command. The network
    reaches nothing on the host's loopback but what a suite needs
@@ -175,8 +194,8 @@ run goes through these steps:
      fails the run.
    - Before any suite, `tests/vm/guest/net.sh` probes a token `vm.sh` serves
      on the host's loopback, over TCP and UDP, from four vantages: root in
-     the VM, a default `docker run`, a `--privileged` `docker run` and a
-     ranikust `RUN`. Every address that could name the host must go
+     the VM, a default `docker run`, a `--privileged` `docker run` (Podman's
+     on `alma9`) and a ranikust `RUN`. Every address that could name the host must go
      unanswered, the registry ports must be shut, and each vantage must get
      out with the same tool. `tests/vm/guest/rawprobe.py` also writes raw
      frames, as root, straight to each NIC's backend (loopback, unspecified
@@ -209,8 +228,9 @@ run goes through these steps:
    (`guest/run.sh`) detached in the guest while the host follows their log
    over SSH every 5 s, reconnecting for up to 15 minutes (a VM that stalls
    while the host swaps loses neither the run nor its results), and **copy
-   out** `target/vm/results/<release>/` (retried): `env.txt` (kernel, Docker,
-   cgroup, CPUs, memory, the VM's size, and what must be the run's own: its
+   out** `target/vm/results/<release>/` (retried): `env.txt` (kernel, Docker
+   or Podman, cgroup, SELinux where it is, CPUs, memory, the VM's size, and
+   what must be the run's own: its
    one user with one key, the SSH host key made at this boot, its machine
    ID), one log per suite, `summary.txt`, `suite-times.txt`, `timings.txt`
    (boot started, SSH up, cloud-init done, suites done, total, in seconds)
@@ -236,6 +256,7 @@ run goes through these steps:
 | `push` | One `ranikust build` as real root pushing to three registries and writing `--tar-path` and `--oci-layout-path`: a `registry:2` on the VM's loopback (plain HTTP, anonymous, unasked), the host's HTTP [test registry](#test-registries) as `10.0.2.2:5000` with `--insecure-registry`, and the host's HTTPS one as `10.0.2.2:5443` with `--registry-certificate` and credentials from a `config.json`. Each manifest read back must hash to the printed digest, the HTTPS one must refuse an anonymous read, Docker pulls and runs the loopback image and loads and runs the tarball and the layout, and every layout blob must hash to its name. Needs `just registry-up`; not part of the default `just test-vm` |
 | `secrets` | ADR-0051: kaniko mode on the `/` of default Docker containers (`ubuntu:24.04`, no `--privileged`) with `RUN` steps that attack ranikust (`tests/vm/guest/secrets/attack.sh`; vectors V1–V13 in the header of `secrets.sh`): the state directory, `/proc/*/fd`, ranikust's `environ`, `mem` and `cmdline`, the `RUN`'s own environment, processes left alive, the same from `unshare -Ur`, another process's `environ`, the sealed copy of the binary through every thread's `exe`, `ptrace` and `process_vm_writev` (V13, with the VM's Yama `ptrace_scope` at 0 for the suite). Three scenarios (ranikust as PID 1, the same with `--cap-add SYS_PTRACE`, and started from `sh -c`); every vector must be blocked but the two ranikust only warns about (a `--build-arg` value in `cmdline`; the shell's `environ`), whose warnings must appear. The state directory may hold only the store's marker of a build in progress, `.ranikust-building` (the PID namespace and boot id). It also records whether the container's overlayfs takes `O_TMPFILE` and how ranikust made its state files, then runs `stopsig` (ADR-0077) and `memlimit` (ADR-0056: a 512 MiB layer built under `--memory 256m --memory-swap 256m` must succeed, its state on disk, never in `memfd`). Not part of the default `just test-vm` |
 | `k8s` | The Kubernetes rows of the privilege matrix (ADR-0100 rows 7a to 7d) as pods of a one-node k3s cluster, each asserting the mode `ranikust` picks or its refusal, with step and errno ([below](#privilege-matrix-in-kubernetes)). It runs after the other suites, never with `push`. Not part of the default `just test-vm` |
+| `el9` | Row 9e of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)'s privilege matrix, the only suite of `RANIKUST_VM_RELEASE=alma9` and its default (AlmaLinux 9, kernel 5.14, SELinux enforcing, which it checks first, with `auditd` running and the user's subordinate ranges). Two legs build with `--mode=auto` in their default state directories: root must get overlay mode as root, and the VM's regular user, through `newuidmap`, rootless overlay mode with a new `proc`; each build's mode line and user-namespace probe line must be the ones measured there, step by step with each errno ([modes-and-detection](design/modes-and-detection.md#where-environments-land) has what was measured). Each leg builds a `RUN` per in-sandbox check of `just smoke` (`tests/smoke/lib.bash`) and one whose SELinux context must be the caller's, the `rootless` case's `content` stage, whose `--reproducible` digest must be the same for both legs (no SELinux label reaches a layer), and `tests/smoke/e2e`, no stub or secret in a blob or a log; Podman runs the images. The default state directories must have the types measured. The audit log, rotated files included, must hold no SELinux denial from while the legs built, and must hold the one a container gets reading a home directory bound without relabelling (the control). Runs only in the local VM |
 
 ### Test registries
 
@@ -717,7 +738,8 @@ own runner, in parallel:
 - The runner is not the VM (another kernel and Docker, AppArmor's
   `apparmor_restrict_unprivileged_userns=1`, an image GitHub updates
   weekly). The local VM stays the reference: `e2e`, `ultra`, `push`, kernel
-  5.15 (`RANIKUST_VM_RELEASE=jammy`) and acceptance runs are local only.
+  5.15 (`RANIKUST_VM_RELEASE=jammy`), AlmaLinux 9 (`el9`) and acceptance
+  runs are local only.
 - No secrets, a read-only token, never `pull_request_target`: a fork's pull
   request runs its code as root on GitHub's machine, which is what the
   runner is for. Never a self-hosted runner while the repository is public.

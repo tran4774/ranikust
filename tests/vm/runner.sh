@@ -64,6 +64,7 @@ for s in "$@"; do
   case "$s" in
     unit | unit-c | smoke | quick | secrets | k8s) ;;
     e2e | ultra | push) die "the $s suite runs only in the local VM (\`just test-vm $s\`, ADR-0090)" ;;
+    el9) die "the el9 suite runs only in the local VM's AlmaLinux image (\`RANIKUST_VM_RELEASE=alma9 just test-vm\`)" ;;
     *) die "unknown suite '$s' (unit, unit-c, smoke, quick, secrets, k8s)" ;;
   esac
 done
