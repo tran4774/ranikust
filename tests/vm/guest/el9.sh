@@ -9,11 +9,12 @@
 #     new proc, the probe passing through newuidmap.
 # Each builds one RUN per in-sandbox check of `just smoke`, the rootless
 # case's `content` stage (one --reproducible digest for both legs: no
-# SELinux label reaches a layer) and tests/smoke/e2e; Podman runs what they
-# built. The checks build's last RUN must keep the SELinux context of the
-# process that started ranikust. SELinux denials (AVC) logged while they build are printed, and
-# none may be; Podman's bind of a home directory, which SELinux denies, is
-# the control that the audit log shows them.
+# SELinux label reaches a layer) and tests/smoke/e2e; Podman runs the user
+# leg's content image and both legs' e2e images. The last RUN of the checks
+# build must keep the SELinux context of the process that started ranikust.
+# SELinux denials (AVC) logged while they build are printed, and none may
+# be; Podman's bind of a home directory, which SELinux denies, is the
+# control that the audit log shows them.
 set -euo pipefail
 cd "$HOME/rnk"
 # shellcheck disable=SC1091
@@ -205,8 +206,13 @@ echo "control: the audit log shows SELinux's denial"
 echo "=== the VM after the legs"
 ! grep -qE " ($W|$ROOT_STATE|$USER_STATE)" /proc/self/mountinfo || fail "mounts left by a build"
 # The sandbox's processes carry its spawner thread's name until they exec or
-# rename themselves.
-! pgrep -x 'ranikust|ranikust-init|rnk-sandbox-spa' >/dev/null || fail "ranikust processes left"
+# rename themselves: rnk-sandbox-spawner (crates/rnk-sandbox/src/spawner.rs),
+# cut to the 15 bytes of a process name.
+for p in ranikust ranikust-init rnk-sandbox-spa; do
+  rc=0
+  pgrep -x "$p" >/dev/null || rc=$?
+  [ "$rc" = 1 ] || fail "$p processes left, or pgrep failed ($rc)"
+done
 sudo rm -rf --one-file-system "$W"
 rm -rf "$U"
 echo "el9: ok"
