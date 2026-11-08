@@ -802,4 +802,90 @@ fn a_regular_user_s_killed_extraction_publishes_nothing() {
     }
 }
 
+/// Root's `ranikust` range for [`a_shifted_range_s_layers_are_keyed_by_its_map`]:
+/// its first ids, and `count` ids from each.
+fn shifted_range(count: u32) -> rnk_sandbox::SubordinateIds {
+    rnk_sandbox::SubordinateIds {
+        uids: rnk_sandbox::IdRange {
+            start: SHIFTED.0,
+            count,
+        },
+        gids: rnk_sandbox::IdRange {
+            start: SHIFTED.1,
+            count,
+        },
+    }
+}
+
+/// The first uid and gid of [`shifted_range`]: the build's root outside.
+const SHIFTED: (u32, u32) = (300_000, 400_000);
+
+/// [`extract_in_namespace`] as root under `--userns`: the build's user
+/// namespace of `sub` ([`rnk_sandbox::BuildIds::Shifted`]), then the store
+/// in `state`, which the range's first ids own.
+fn extract_shifted(state: &Path, sub: rnk_sandbox::SubordinateIds, skip_selinux: bool) -> String {
+    in_child(None, || {
+        match rnk_sandbox::enter_build_user_namespace(rnk_sandbox::BuildIds::Shifted(sub)) {
+            Ok(userns) => match Store::open(&BuildPaths::new(state, state)) {
+                Ok(store) => format!("{}\n{}", userns.map, extract_layers(store, skip_selinux)),
+                Err(e) => format!("refused\tthe store: {e}"),
+            },
+            Err(e) => format!("refused\t{e}"),
+        }
+    })
+}
+
+/// T2, as real root under `--userns` (#83, ADR-0104): the base layers come
+/// out as in any build's user namespace, owned outside by the range's ids
+/// from its first on; a second map with the same first ids, in the same
+/// state directory, extracts copies of its own, never the first map's,
+/// and the first map finds its own again.
+#[test]
+#[ignore = "T2: real root extracts layers in the build's user namespaces of two shifted ranges"]
+fn a_shifted_range_s_layers_are_keyed_by_its_map() {
+    if !alone_in(
+        module_path!(),
+        "a_shifted_range_s_layers_are_keyed_by_its_map",
+    ) {
+        return;
+    }
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let skip_selinux = selinux_case_skipped();
+    let tmp = private_tempdir();
+    // The range's first ids search it; the state directory is theirs.
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    chown(&state, Some(SHIFTED.0), Some(SHIFTED.1)).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let first = extract_shifted(&state, shifted_range(65_536), skip_selinux);
+    let (map, report, [lower, upper]) = split(&first);
+    assert_eq!(map, "shifted range", "{first}");
+    assert_eq!(report, expected(true, skip_selinux));
+    let host = |ns: u32| SHIFTED.0 + ns;
+    assert_eq!(fs::metadata(&lower).unwrap().uid(), host(ROOT.0));
+    assert_eq!(fs::metadata(&lower).unwrap().gid(), SHIFTED.1);
+    assert_eq!(fs::metadata(&upper).unwrap().uid(), host(USER.0));
+    assert_eq!(
+        fs::metadata(lower.join("etc/owned")).unwrap().uid(),
+        host(2)
+    );
+
+    // The same layers, published beside the first map's.
+    let second = extract_shifted(&state, shifted_range(70_000), skip_selinux);
+    let (map, report, [lower2, upper2]) = split(&second);
+    assert_eq!(map, "shifted range", "{second}");
+    let both = |report: String| report.replace("\npublished 2\n", "\npublished 4\n");
+    assert_eq!(report, both(expected(true, skip_selinux)));
+    assert_ne!(lower2, lower);
+    assert_ne!(upper2, upper);
+
+    // The first map's own again: nothing new published.
+    let again = extract_shifted(&state, shifted_range(65_536), skip_selinux);
+    let (_, report, paths) = split(&again);
+    assert_eq!(report, both(expected(true, skip_selinux)));
+    assert_eq!(paths, [lower, upper]);
+}
+
 mod hostile;
