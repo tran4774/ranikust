@@ -161,8 +161,11 @@ never called.
   `/` changes ([cache hit](kaniko-mode.md#a-cache-hit), ADR-0123). In a user
   namespace it calls `check_headers_and_owners`, which also notes each owner
   the extraction would set that a `MappedIds` lacks, skipping the paths the
-  ignore list it is given keeps, as the extraction does; `scan_owners` does
-  the same as the overlay form reads a tar (devices left out). Both fill one
+  ignore list it is given keeps, as the extraction does (kaniko mode gives
+  it one only on `/`,
+  [ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md));
+  `scan_owners` does the same as the overlay form reads a tar (devices left
+  out). Both fill one
   `Unmapped`, the refusal `Error::Unmapped` carries, as a `chown` that fails
   with `EINVAL` does
   ([owners](modes-and-detection.md#owners-the-user-namespace-does-not-map),

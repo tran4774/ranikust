@@ -161,7 +161,10 @@ overlay mount options.
   a directory per stage the layers are downloaded whole and all checked
   first; on `/`, in a rootless container, where they are streamed, each is
   checked just before it is extracted, so the layers before the refused one
-  may already be there ([ADR-0137]).
+  may already be there ([ADR-0137]). There an owner only on a path kaniko
+  mode never writes (`/proc`, `/sys`, `/dev`, `--ignore-path`) is not
+  refused; a `COPY --from=<image>`, unpacked whole, and a build with a
+  directory per stage still check every path ([ADR-0144]).
 
 ### `--userns`
 
@@ -504,3 +507,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md
 [ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md
 [ADR-0141]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0141-an-owner-of-4294967295-over-an-earlier-layers-directory-is-an-accepted-difference-between-the-modes.md
+[ADR-0144]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md

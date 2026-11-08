@@ -532,7 +532,10 @@ nothing is checked.
   ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md));
   a `COPY --from=<image>` spools and checks all its layers, the ignored
   paths too, before any is unpacked: a spool or kept blob checked for a
-  base is read again for it.
+  base is read again for it. Off `/` every path is checked, the ignored
+  ones too; a cached layer is checked as a base layer is, before
+  `apply_layer` extracts it
+  ([ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md)).
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
   entry, `COPY --chown`, a cache mount's owner, a secret file's) refuses at
   once, naming the file (a mount by its target). So does a `RUN`'s switch to

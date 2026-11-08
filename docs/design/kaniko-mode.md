@@ -803,9 +803,10 @@ layer is.
   per stage a layer is extracted as it arrives (ADR-0055). In a user
   namespace the same pass, base layers' and cached ones' alike, refuses an
   owner the namespace does not map, on a path the ignore list does not
-  skip, once the layer is verified, just before
-  that layer is extracted
-  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)).
+  skip, once the layer is verified, just before that layer is extracted
+  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md),
+  [ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-only-where-the-extraction-skips-them-on-slash.md));
+  a cached blob's owners are read the same way before it is applied.
   Per stage, in a user namespace, no layer, base or cached, is streamed:
   the blobs are pulled and every owner of every layer is checked before any
   is extracted
