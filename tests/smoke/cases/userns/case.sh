@@ -75,7 +75,8 @@ case_run() {
   rc=0
   log="$(urun flagged --target content --state-dir "$UW/flagged" --ignore-path /srv 2>&1)" || rc=$?
   expect "$rc" 2 "--userns with a flag of kaniko mode alone"
-  grep -qF -- '--ignore-path takes effect in kaniko mode only' <<<"$log" ||
+  grep -qF -- '--ignore-path takes effect in kaniko mode only' <<<"$log" &&
+    grep -qF -- 'drop it: --userns builds in overlay mode only' <<<"$log" ||
     fail "--userns with a flag of kaniko mode alone: $log"
   ! sudo test -e "$UW/flagged" || fail "--userns made a state directory before its usage error"
 
@@ -84,7 +85,7 @@ case_run() {
   rc=0
   log="$(urun default --target content 2>&1)" || rc=$?
   expect "$rc" 1 "--userns with root's default state directory"
-  grep -qF "/var/lib/ranikust is root's default" <<<"$log" ||
+  grep -qF "/var/lib/ranikust is root's default, /var/lib/ranikust, or below it" <<<"$log" ||
     fail "--userns with root's default state directory: $log"
   expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
     "root's default state directory after --userns was refused"
@@ -139,6 +140,8 @@ seen_from_the_host() {
   ids="$(awk '/^(Uid|Gid):/ { print $2, $3, $4, $5 }' "/proc/$pid/status" | paste -sd ' ')"
   ctl="$(control_reach $((S + 1234)) $((G + 1234)))"
   echo "  $CASE: measured (ADR-0074): a host account 1234:1234 reaches:$own; one $((S + 1234)):$((G + 1234)) reaches:$far (its own process:$ctl); the RUN's ids $ids, its /proc files owned by $owner" >&2
+  # Dumpable, so that only the user namespace can refuse the account.
+  expect "$owner" "$((S + 1234)):$((G + 1234))" "the USER 1234 RUN is dumpable"
   expect "$ctl" " environ root" "what a host account reaches of a process of its own (the control)"
   expect "$own" " nothing" "what a host account with the RUN's own ids reaches"
   expect "$far" " nothing" "what a host account with the ids the RUN's map to reaches"
@@ -177,7 +180,7 @@ reach() {
 # refused, not that setpriv failed.
 control_reach() {
   local pid r i=0
-  sudo setpriv --reuid="$1" --regid="$2" --clear-groups -- sleep 1234.5 &
+  sudo timeout 30 setpriv --reuid="$1" --regid="$2" --clear-groups -- sleep 1234.5 &
   while [ "$i" -lt 50 ]; do
     pid="$(pgrep -o -x -f 'sleep 1234.5' || true)"
     [ -n "$pid" ] && [ "$(awk '/^Uid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null)" = "$1" ] &&

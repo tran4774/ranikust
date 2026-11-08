@@ -283,7 +283,8 @@ Each step before the next; design in
    `refuse_reachable_peers` (`Reach::ProcRbind`, ADR-0129),
    `exposure::check_pid_namespace` through `refuse_shared_pid_namespace`
    (ADR-0134) and `exposure::warn_build_args` → `overlay_flags` (`--mode=auto`;
-   `--mode=overlay` checked them first) → `setup::rootless::set_up`:
+   `--mode=overlay` checked them first, `--userns` before `plan`, so that its
+   usage error comes before any write) → `setup::rootless::set_up`:
    `rnk_sandbox::enter_build_user_namespace` → `Store::open` →
    `rnk_sandbox::probe_with_fallbacks` → `rnk_snapshot::probe` in
    `builds/<id>/overlay-probe` → `Sandbox::start` → the mode line.

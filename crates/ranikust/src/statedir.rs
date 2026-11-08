@@ -113,13 +113,11 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused> {
-    // Made for the mapped ids, root's default would refuse root's own builds.
-    if matches!(owner, Owner::Mapped { .. })
-        && state_dir == Path::new(crate::config::DEFAULT_STATE_DIR)
-    {
+    if matches!(owner, Owner::Mapped { .. }) && in_roots_default(state_dir) {
         return Err(Refused(format!(
-            "the state directory {} is root's default: {}",
+            "the state directory {} is root's default, {}, or below it: {}",
             state_dir.display(),
+            crate::config::DEFAULT_STATE_DIR,
             owner.advice()
         )));
     }
@@ -152,6 +150,14 @@ pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused>
             state_dir.join("builds").display()
         ))),
     }
+}
+
+/// Whether `state_dir`, absolute, is root's default state directory or
+/// below it, however its path is spelt: made for the mapped ids, either
+/// would refuse root's own builds there. `..` is taken as written, since
+/// the walk refuses symlinks on the way.
+fn in_roots_default(state_dir: &Path) -> bool {
+    crate::config::clean(state_dir).starts_with(crate::config::DEFAULT_STATE_DIR)
 }
 
 /// What [`check`] found at the state directory's path.

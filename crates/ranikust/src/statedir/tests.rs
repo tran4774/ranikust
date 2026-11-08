@@ -47,20 +47,28 @@ const MAPPED: Owner = Owner::Mapped {
     gid: 200_000,
 };
 
-/// `--userns` never makes or takes root's default state directory, under
-/// any spelling of its path, and refuses it before reaching the
-/// filesystem.
+/// `--userns` never makes or takes root's default state directory or a
+/// directory below it, however the path is spelt; a sibling is fine.
 #[test]
 fn a_userns_build_is_refused_root_s_default_state_directory() {
     for dir in [
         crate::config::DEFAULT_STATE_DIR,
         "/var/lib/ranikust/",
         "/var//lib/./ranikust",
+        "/var/lib/../lib/ranikust",
+        "/var/lib/ranikust/userns",
     ] {
-        let why = prepare_for(Path::new(dir), MAPPED).unwrap_err().0;
-        assert!(why.contains("is root's default"), "{dir}: {why}");
-        assert!(why.contains("/var/lib/ranikust-userns"), "{dir}: {why}");
+        assert!(in_roots_default(Path::new(dir)), "{dir}");
     }
+    for dir in [
+        "/var/lib/ranikust-userns",
+        "/var/lib/ranikustx",
+        "/var/lib",
+        "/srv/ranikust",
+    ] {
+        assert!(!in_roots_default(Path::new(dir)), "{dir}");
+    }
+    assert!(MAPPED.advice().contains("/var/lib/ranikust-userns"));
 }
 
 /// `--userns` (ADR-0104): the state directory is the mapped root's; every

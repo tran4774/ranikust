@@ -852,8 +852,9 @@ fn rootless_kept_off() -> Option<String> {
 /// files with no ptrace check (ADR-0134), and the warnings for what the
 /// rbind exposes, all before the build's user namespace, where ranikust
 /// could no longer open the other processes; then overlay mode's flags, where
-/// `flags` gives them (`--mode=auto`; `--mode=overlay` checked them
-/// first); then the set-up in the namespace and the build. Where `via`
+/// `via` gives them (`--mode=auto`; `--mode=overlay` checked them first,
+/// and `--userns` before the probe, so that its usage error comes before
+/// any write); then the set-up in the namespace and the build. Where `via`
 /// falls back ([`Via::falls_back`]), a child enters the namespace, sets up
 /// and builds, and this process waits outside it
 /// ([`rnk_sandbox::fork_to_wait`]): it returns only where the child's

@@ -154,8 +154,8 @@ before anything is written.
 - **State directory.** The range's first uid owns it: pass a `--state-dir` of
   its own, below directories only root owns and may write, each searchable by
   that uid, such as `/var/lib/ranikust-userns` (ranikust makes a missing one).
-  Root's own state directory, and its default `/var/lib/ranikust` whether it
-  exists or not, are refused, never given away.
+  Root's own state directory is refused, never given away, and so is anything
+  at or below root's default, `/var/lib/ranikust`, whether it exists or not.
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the

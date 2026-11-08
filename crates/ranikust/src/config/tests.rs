@@ -424,6 +424,16 @@ fn an_ignore_path_of_the_whole_root_or_a_bad_glob_is_refused_early() {
 fn overlay_mode_refuses_kaniko_flags_that_change_the_image() {
     let err = overlay_mode_flags(&args(&["--no-push", "--ignore-path=/x"])).expect_err("ignore");
     assert!(err.0.contains("kaniko mode only"), "{}", err.0);
+    assert!(err.0.contains("use --mode=kaniko"), "{}", err.0);
+    // `--userns` has no kaniko mode to point at.
+    let err = overlay_mode_flags(&args(&["--no-push", "--userns", "--ignore-path=/x"]))
+        .expect_err("ignore");
+    assert!(
+        err.0
+            .ends_with("drop it: --userns builds in overlay mode only"),
+        "{}",
+        err.0
+    );
     let warnings = overlay_mode_flags(&args(&[
         "--no-push",
         "--snapshot-mode=redo",

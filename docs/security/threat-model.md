@@ -422,7 +422,7 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   as root is reachable only by host root, who is trusted; in kaniko mode on
   `/` the `RUN` is an ordinary process of the container, and the container
   runtime's boundary applies (section 3). With `--userns` no host account
-  reaches a `RUN`: for a dumpable `USER 1234:1234` `RUN`, neither an account
+  but root reaches a `RUN`: for a dumpable `USER 1234:1234` `RUN`, neither an account
   `1234:1234` nor one with the ids they map to on the host reads its
   `/proc/<pid>/environ` or its root, though the latter reads both of a
   process of its own **[measured]** (2026-11-08, kernel 6.8, the `userns`

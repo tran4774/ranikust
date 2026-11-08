@@ -897,10 +897,11 @@ with another map:
   group or others even where sticky (that uid could rename what it owns
   there), each searchable by that uid and gid by its mode bits (an ACL is not
   read). A missing one is made for it, `0700`, the missing directories above
-  it root's with mode `0711`; an existing one of root's is refused, never given
-  away, and so is root's default, `/var/lib/ranikust`, missing or not: root's
-  own builds keep layers extracted with real ids, setuid-root files among
-  them. Every refusal comes before anything is written, with
+  it root's with mode `0711`. An existing one of root's is refused, never given
+  away: root's own builds keep layers extracted with real ids, setuid-root
+  files among them. Root's default, `/var/lib/ranikust`, and anything below it
+  are refused too, missing or not: made for the range, they would refuse
+  root's own builds there. Every refusal comes before anything is written, with
   guidance. Extracted layers are keyed by the namespace's id map, as in every
   user namespace ([cache-and-store](cache-and-store.md)).
 - **Never another mode.** `--userns` is refused with `--mode=kaniko`; where a
@@ -920,10 +921,9 @@ with another map:
 Measured in the T2 VM (`userns` quick case, Ubuntu 24.04): a `RUN`'s
 `uid_map` read from the host is `0 <start> 65536`, its ids there are the
 range's first, a file it makes is owned there by them, and the image's
-`--reproducible` digest equals the build's without `--userns`. No host account
-reaches a non-root `RUN`'s `/proc/<pid>/environ` or root, neither one with its
-ids nor one with the ids they map to, which [ADR-0074](../adr/0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)'s
-residual lets in without `--userns`
+`--reproducible` digest equals the build's without `--userns`, and
+[ADR-0074](../adr/0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)'s
+residual is closed for host accounts other than root
 ([threat model](../security/threat-model.md#6-accepted-risks)).
 
 *Planned, Phase 3:* a `RUN`'s command runs where the init's uid is unmapped,

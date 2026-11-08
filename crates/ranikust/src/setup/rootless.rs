@@ -303,20 +303,17 @@ pub(crate) fn set_up(
         held,
         ..
     } = plan;
-    let shifted = matches!(ids, BuildIds::Shifted(_));
+    let shifted = match ids {
+        BuildIds::Own(_) => false,
+        BuildIds::Shifted(_) => true,
+    };
     let what = if shifted {
         "--userns"
     } else {
         "rootless overlay mode"
     };
-    let userns = rnk_sandbox::enter_build_user_namespace(ids).map_err(|e| {
-        let no_map = matches!(e, rnk_sandbox::Error::NoUserNamespace { .. });
-        let mut refusal = super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into());
-        if shifted && no_map {
-            refusal.guidance = USERNS_UNUSABLE.into();
-        }
-        refusal
-    })?;
+    let userns = rnk_sandbox::enter_build_user_namespace(ids)
+        .map_err(|e| entry_refusal(e, euid, shifted))?;
     tracing::info!("ranikust: the build's user namespace: {userns}");
     let mut held = Some(held);
     let opened = match then.child {
@@ -360,20 +357,20 @@ fn in_store(
     then: &Then<'_>,
     what: &str,
 ) -> Result<(Outcome, Sandbox), Refusal> {
-    let broken = |reason: String| broken(what, &reason);
+    let fail = |reason: String| broken(what, &reason);
     let sandbox_dir = state_dir.join(rnk_store::SANDBOX_DIR);
     let (caps, overlay) = {
         let span = tracing::debug_span!("ranikust.probe", steps = 0_u64);
         let _entered = span.enter();
         let caps = rnk_sandbox::probe_with_fallbacks(&sandbox_dir, fallbacks)
-            .map_err(|e| broken(format!("the RUN sandbox cannot run here: {e}")))?;
+            .map_err(|e| fail(format!("the RUN sandbox cannot run here: {e}")))?;
         span.record("steps", 1_u64);
         if caps.proc() == KernelFs::Rbind && !scanned {
-            return Err(broken(
+            return Err(fail(
                 "the RUN sandbox would bind /proc, yet no peer scan ran".to_owned(),
             ));
         }
-        let overlay = super::probe_overlay(store.build_dir(), 0).map_err(|r| broken(r.reason))?;
+        let overlay = super::probe_overlay(store.build_dir(), 0).map_err(|r| fail(r.reason))?;
         span.record("steps", 2_u64);
         (caps, overlay)
     };
@@ -381,13 +378,13 @@ fn in_store(
         sandbox: caps,
         overlay,
     };
-    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| broken(e.to_string()))?;
+    let mut sandbox = Sandbox::start(caps, &sandbox_dir).map_err(|e| fail(e.to_string()))?;
     if then.userns_network {
         sandbox.allow_userns_network();
     }
     seccomp.apply(&mut sandbox);
     if let Some(env) = then.broken_by {
-        return Err(broken(format!("refused by {env}=rootless-broken")));
+        return Err(fail(format!("refused by {env}=rootless-broken")));
     }
     // Once nothing is left to fail, so that a fallback logs one mode.
     tracing::info!("ranikust: {outcome}");
@@ -418,6 +415,18 @@ fn abandon(store: rnk_store::Store) {
     }
 }
 
+/// Why the build's user namespace was not entered, for the effective uid
+/// `euid`: with `--userns` (`shifted`), a namespace no map of its range
+/// passed in is guided as its probe's stop is.
+fn entry_refusal(e: rnk_sandbox::Error, euid: u32, shifted: bool) -> Refusal {
+    let no_map = matches!(e, rnk_sandbox::Error::NoUserNamespace { .. });
+    let mut refusal = super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into());
+    if shifted && no_map {
+        refusal.guidance = USERNS_UNUSABLE.into();
+    }
+    refusal
+}
+
 /// A failure in the build's user namespace, `what` naming the mode: no
 /// other mode may follow in this process.
 fn broken(what: &str, reason: &str) -> Refusal {
@@ -431,6 +440,28 @@ fn broken(what: &str, reason: &str) -> Refusal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A map refused at entry: `--userns` gets its own guidance, a user
+    /// other than root the AppArmor switch, root nothing more; failures
+    /// once inside name the mode they stop.
+    #[test]
+    fn userns_failures_name_userns_and_guide_as_its_probe() {
+        let none = || rnk_sandbox::Error::NoUserNamespace { tried: Vec::new() };
+        let r = entry_refusal(none(), 0, true);
+        assert_eq!(
+            (r.kind, r.guidance.as_ref()),
+            (Kind::Other, USERNS_UNUSABLE)
+        );
+        let r = entry_refusal(none(), 0, false);
+        assert_eq!(r.guidance, "");
+        let r = entry_refusal(none(), 1000, false);
+        assert_eq!(r.guidance, super::super::NO_USER_NAMESPACE);
+        let r = broken("--userns", "the RUN sandbox cannot run here: x");
+        assert_eq!(r.kind, Kind::Broken);
+        assert_eq!(r.reason, "--userns: the RUN sandbox cannot run here: x");
+        let r = broken("rootless overlay mode", "x");
+        assert_eq!(r.reason, "rootless overlay mode: x");
+    }
 
     /// A user other than root whose user namespace has no capabilities
     /// (Ubuntu 24.04 stops it at the `chown`) is pointed at the AppArmor

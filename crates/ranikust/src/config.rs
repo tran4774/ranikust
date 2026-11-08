@@ -687,9 +687,15 @@ pub(crate) fn kaniko_only_flag(args: &BuildArgs) -> Option<&'static str> {
 /// other refused kaniko flags, before the arguments are parsed, ADR-0065.)
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
     if let Some(flag) = kaniko_only_flag(args) {
+        // `--userns` with `--mode=kaniko` is itself a usage error.
+        let way_out = if args.userns {
+            "drop it: --userns builds in overlay mode only"
+        } else {
+            "drop it, or use --mode=kaniko outside a container"
+        };
         return Err(Invalid(format!(
             "{flag} takes effect in kaniko mode only (ADR-0049); overlay mode would build a \
-             different image: drop it, or use --mode=kaniko outside a container"
+             different image: {way_out}"
         )));
     }
     let mut warnings = Vec::new();

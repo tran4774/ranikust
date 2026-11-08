@@ -127,7 +127,6 @@ pub struct SubordinateIds {
 
 /// Which ids a user namespace of the probe or the build maps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum BuildIds {
     /// This process's own ids as 0: root's every id, each to itself, else
     /// one id; another user's own ids as 0 and these subordinate ids from
