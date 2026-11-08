@@ -467,11 +467,12 @@ impl KanikoStage {
     /// [`Error::State`], with nothing changed, while a layer is open, when
     /// the root was handed over, or when an earlier layer broke it. In a
     /// user namespace, [`Error::Rootfs`] wrapping `Unmapped` for an owner
-    /// it does not map, found before the root changes (ADR-0098). A
-    /// failure to open the layer leaves the root as it was. Any later
-    /// failure (a digest or diff ID found wrong at the end, an entry
-    /// refused) breaks the root: no layer, view or child stage goes on from
-    /// it; [`StageRootfs::release`] still deletes it.
+    /// it does not map (ADR-0098); there maps that cannot be read, or a
+    /// cached blob's tar headers or diff ID found wrong, also fail before
+    /// the root changes. A failure to open the layer leaves the root as it
+    /// was. Any later failure (a digest or diff ID found wrong at the end,
+    /// an entry refused) breaks the root: no layer, view or child stage
+    /// goes on from it; [`StageRootfs::release`] still deletes it.
     pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
         if self.open {
             return Err(Error::State("a layer is open"));

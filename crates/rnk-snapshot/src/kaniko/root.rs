@@ -1208,12 +1208,13 @@ impl Spooled {
         let span = tracing::debug_span!(
             "rnk_snapshot.check_owners",
             layers = 1_u64,
-            layers_scanned = 1_u64,
+            layers_scanned = tracing::field::Empty,
         );
         let _entered = span.enter();
         let mut found = Unmapped::owners(ids.clone());
         let mut tar = rnk_layer::Decoder::new(self.reader()?)?;
         rnk_rootfs::check_headers_and_owners(&mut tar, keep, &mut found)?;
+        span.record("layers_scanned", 1_u64);
         if found.is_empty() {
             return Ok(());
         }
@@ -1641,7 +1642,8 @@ impl KanikoRoot {
     /// [`Error::State`], with nothing changed, while a layer is open, when
     /// the stage no longer holds the root, or when an earlier layer broke
     /// it. A failure before any entry can reach the root (the source
-    /// refused; in a user namespace, an owner it does not map; on `/`, a
+    /// refused; in a user namespace, an owner it does not map, maps that
+    /// cannot be read, or a cached blob's tar headers or diff ID; on `/`, a
     /// streamed layer's digest, diff ID or tar headers) leaves the root as
     /// it was. Any later failure breaks the root: until
     /// it is emptied, no layer, view, keep or child stage goes on from it.
@@ -1658,7 +1660,7 @@ impl KanikoRoot {
         let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
         let none = IgnoreList::new();
-        // Checked with what the extraction skips, on `/` only (ADR-0144).
+        // The ignored paths are skipped on `/` only (ADR-0144).
         let keep = if shared.is_slash() {
             &shared.ignore
         } else {

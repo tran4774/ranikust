@@ -2096,7 +2096,16 @@ fn a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_ch
 
         let ignored = f.layer("ignored", &[("ranikust/b", b"skipped")]);
         let applied = root.apply_layer(&ignored);
-        assert_eq!(applied.is_ok(), on_slash, "{applied:?}");
+        if on_slash {
+            applied.unwrap();
+        } else {
+            let e = applied.unwrap_err();
+            assert!(
+                matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+                "{e:?}"
+            );
+            assert!(e.to_string().contains("(/ranikust/b)"), "{e}");
+        }
         assert!(!f.host.join("ranikust/b").exists());
         root.release().unwrap();
     }
