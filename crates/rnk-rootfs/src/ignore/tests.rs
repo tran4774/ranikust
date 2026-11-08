@@ -211,10 +211,11 @@ proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
     /// `covers` and `has_below` answer as the references do on any path,
     /// `..` included, and the walk's forms answer the same on every path
-    /// without `..`: random lists (literal, below-only and glob entries,
-    /// shallower and deeper than the paths, empty too) over a small
-    /// alphabet, paths with and without a leading `/`, `.`, doubled and
-    /// trailing slashes.
+    /// without `..`, and on one with a `..` among the names they read or
+    /// right after them: random lists (literal, below-only and glob
+    /// entries, shallower and deeper than the paths, empty too) over a
+    /// small alphabet, paths with and without a leading `/`, `.`, doubled
+    /// and trailing slashes.
     #[test]
     fn the_walks_forms_answer_as_cleaning_the_whole_path_does(
         lit in proptest::collection::vec("(/?(a|b|ab|\\.|\\.\\.)){1,5}/?", 0..4),
@@ -236,7 +237,32 @@ proptest::proptest! {
             proptest::prop_assert_eq!(l.covers(p), covers, "covers {}", p.display());
             let below = has_below_by_every_entry(&l, p);
             proptest::prop_assert_eq!(l.has_below_walked(p), below, "has_below_walked {}", p.display());
+            // A `..` after each count of names the walk's forms read.
+            let names: Vec<&OsStr> = p.iter().filter(|n| *n != "/" && *n != ".").collect();
+            let reach = l.max_parts.max(l.glob_parts);
+            for at in 0..=reach.min(names.len()) {
+                let mut q: PathBuf = names[..at].iter().collect();
+                q.push("..");
+                q.extend(&names[at..]);
+                proptest::prop_assert_eq!(l.covers_walked(&q), l.covers(&q), "covers_walked {}", q.display());
+                proptest::prop_assert_eq!(l.has_below_walked(&q), l.has_below(&q), "has_below_walked {}", q.display());
+            }
         }
+    }
+}
+
+/// A `..` past the names the walk's forms read breaks their precondition:
+/// a debug build panics rather than answer, past `PATH_MAX` too when it is
+/// the last name.
+#[test]
+#[cfg(debug_assertions)]
+fn a_walked_path_with_a_parent_past_the_names_read_panics_in_a_debug_build() {
+    let l = list(&["a/b"], &["c"], &["d*/e"]);
+    let deep: String = (0..1000).map(|i| format!("/d{i}")).collect();
+    for p in ["x/y/z/../../../a/b", "a/b/c/..", &format!("{deep}/..")] {
+        let covers = std::panic::catch_unwind(|| l.covers_walked(p));
+        let below = std::panic::catch_unwind(|| l.has_below_walked(p));
+        assert!(covers.is_err() && below.is_err(), "{p}");
     }
 }
 

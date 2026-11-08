@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::path;
@@ -137,24 +137,27 @@ impl IgnoreList {
             .unwrap_or(false)
     }
 
-    /// [`IgnoreList::covers`] for a path a walk built from the names it
-    /// read: no `..` in it (`.`, a leading `/` and doubled or trailing
-    /// slashes are read as `covers` reads them).
+    /// [`IgnoreList::covers`] for a path a walk built: its start, with no
+    /// `..`, and the names it listed, none of them `.` or `..` (a leading
+    /// `/`, `.` and doubled or trailing slashes are read as `covers` reads
+    /// them).
     ///
     /// It reads only as many leading names as the longest entry has, and
     /// one more, so a walk asking about each entry takes time linear in its
     /// entries however deep they lie, where cleaning each whole path would
     /// take the square of the depth. A `..` among those names, or right
-    /// after them, is cleaned as `covers` cleans it; one further on is not
-    /// seen, and the answer may then let a caller remove or copy what the
-    /// list holds: give any path that may hold one to `covers`.
+    /// after them, is cleaned as `covers` cleans it. One further on breaks
+    /// the precondition: a debug build panics (each name checked in a path
+    /// within `PATH_MAX`, the last one past it); a release build does not
+    /// see it, and its answer may let a caller remove or copy what the list
+    /// holds. Give any other path to `covers`.
     #[must_use]
     pub fn covers_walked(&self, p: impl AsRef<Path>) -> bool {
         if self.is_empty() {
             return false;
         }
         let p = p.as_ref();
-        match self.lead(p) {
+        match self.walked_lead(p) {
             Some(lead) => self.covers_lead(&lead),
             None => self.covers(p),
         }
@@ -172,14 +175,14 @@ impl IgnoreList {
             .unwrap_or(false)
     }
 
-    /// [`IgnoreList::has_below`] for a path a walk built, read as
-    /// [`IgnoreList::covers_walked`] reads it.
+    /// [`IgnoreList::has_below`] for a path a walk built, under the
+    /// precondition of [`IgnoreList::covers_walked`], read as it reads it.
     pub(crate) fn has_below_walked(&self, p: impl AsRef<Path>) -> bool {
         if self.is_empty() {
             return false;
         }
         let p = p.as_ref();
-        match self.lead(p) {
+        match self.walked_lead(p) {
             Some(lead) => self.has_below_lead(&lead),
             None => self.has_below(p),
         }
@@ -189,9 +192,28 @@ impl IgnoreList {
     /// the longest entry has; `None` when a `..` is among those names or
     /// the one after them, which only cleaning the whole path resolves.
     fn lead<'p>(&self, p: &'p Path) -> Option<Lead<'p>> {
+        self.lead_of(&mut p.components())
+    }
+
+    /// [`IgnoreList::lead`] of a walk's path `p`, whose names past those
+    /// read a debug build checks for a `..` ([`no_parent_in`]).
+    fn walked_lead<'p>(&self, p: &'p Path) -> Option<Lead<'p>> {
+        let mut rest = p.components();
+        let lead = self.lead_of(&mut rest)?;
+        debug_assert!(
+            no_parent_in(p, rest),
+            "a walk's path holds a `..` past the names read: {}",
+            p.display()
+        );
+        Some(lead)
+    }
+
+    /// [`IgnoreList::lead`] from `components`, left past the names read
+    /// and the one after them.
+    fn lead_of<'p>(&self, components: &mut Components<'p>) -> Option<Lead<'p>> {
         let reach = self.max_parts.max(self.glob_parts);
         let mut names = Vec::new();
-        for c in p.components() {
+        for c in components.by_ref() {
             let name = match c {
                 Component::RootDir | Component::CurDir => continue,
                 Component::ParentDir => return None,
@@ -269,6 +291,17 @@ struct Lead<'p> {
     names: Vec<&'p OsStr>,
     /// The path has more names than `names` holds.
     more: bool,
+}
+
+/// Whether `rest`, the components of `p` past those a walk's form read,
+/// holds no `..`: each of them where `p` fits in [`path::PATH_MAX`], else
+/// the last, so that the check keeps a deep walk linear in a debug build.
+fn no_parent_in(p: &Path, mut rest: Components<'_>) -> bool {
+    if p.as_os_str().len() <= path::PATH_MAX {
+        rest.all(|c| c != Component::ParentDir)
+    } else {
+        rest.next_back() != Some(Component::ParentDir)
+    }
 }
 
 /// An entry with glob characters: one pattern per component.
