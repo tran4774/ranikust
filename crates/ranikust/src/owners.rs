@@ -147,16 +147,14 @@ const NO_OVERLAP: &str =
 fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String {
     let (uid, gid) = highest(found, ids);
     let named = ids_text(uid, gid);
-    let too_few = [uid, gid]
-        .into_iter()
-        .flatten()
-        .any(|id| id > RANGE_MAX)
-        .then(|| {
-            format!(
-                "a range in /etc/subuid and /etc/subgid usually gives {RANGE_MAX} ids, too few \
-                 for {named}, and {NO_OVERLAP}"
-            )
-        });
+    let far = |id: Option<u32>| id.filter(|&id| id > RANGE_MAX);
+    let too_few = (far(uid).is_some() || far(gid).is_some()).then(|| {
+        format!(
+            "a range in /etc/subuid and /etc/subgid usually gives {RANGE_MAX} ids, too few for \
+             {}, and {NO_OVERLAP}",
+            ids_text(far(uid), far(gid))
+        )
+    });
     match (ns, too_few) {
         (Namespace::UserOneId, None) => format!(
             "the build's user namespace maps one uid and one gid, as for a user without \
@@ -321,8 +319,9 @@ mod tests {
         ] {
             let text = ways_out(&far, ns, None);
             assert!(text.contains("uid 3000000000"), "{ns:?}: {text}");
+            // Gid 42 fits a range: only the uid is too far for one.
             assert!(
-                text.contains("usually gives 65536 ids, too few for uid 3000000000 and gid 42"),
+                text.contains("usually gives 65536 ids, too few for uid 3000000000, and"),
                 "{ns:?}: {text}"
             );
             assert!(!text.contains("subordinate uids"), "{ns:?}: {text}");
@@ -330,14 +329,10 @@ mod tests {
             assert!(!text.contains("install uidmap"), "{ns:?}: {text}");
             assert!(text.contains("run ranikust as root"), "{ns:?}: {text}");
             assert!(text.contains(NO_OVERLAP), "{ns:?}: {text}");
-            assert!(
-                !ways_out(&edge, ns, None).contains("too few"),
-                "{ns:?}: {text}"
-            );
-            assert!(
-                ways_out(&past, ns, None).contains("too few for uid 65537"),
-                "{ns:?}: {text}"
-            );
+            let edge = ways_out(&edge, ns, None);
+            assert!(!edge.contains("too few"), "{ns:?}: {edge}");
+            let past = ways_out(&past, ns, None);
+            assert!(past.contains("too few for uid 65537"), "{ns:?}: {past}");
         }
         assert!(
             ways_out(&edge, Namespace::UserRanges, None)

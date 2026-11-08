@@ -294,7 +294,7 @@ impl std::io::Read for FailingReader {
 
 /// Whether this test runs in the initial user namespace, by the inode
 /// `/proc/self/ns/user` names.
-fn in_initial_user_namespace() -> bool {
+fn test_runs_in_initial_user_namespace() -> bool {
     fs::read_link("/proc/self/ns/user").unwrap() == Path::new("user:[4026531837]")
 }
 
@@ -314,7 +314,10 @@ fn in_a_user_namespace_only_slash_takes_a_streamed_base_layer() {
             opens: std::sync::atomic::AtomicUsize::new(0),
         }) as Arc<dyn LayerOpen>
     };
-    assert_eq!(off.kaniko.shared.initial_ns, in_initial_user_namespace());
+    assert_eq!(
+        off.kaniko.shared.initial_ns,
+        test_runs_in_initial_user_namespace()
+    );
     let streams = |f: &Fixture| f.kaniko.streamed_layer(kept.diff_id(), open()).is_some();
     let in_userns = |mut f: Fixture| {
         Arc::get_mut(&mut f.kaniko.shared).unwrap().initial_ns = false;

@@ -705,6 +705,7 @@ impl OwnNamespace {
         Self::parse(
             read("/proc/self/setgroups").as_deref(),
             read("/proc/self/gid_map").as_deref(),
+            // Unknown: the initial namespace's, so the step's own error stays.
             rustix::fs::stat("/proc/self/ns/user")
                 .ok()
                 .map(|st| st.st_ino),

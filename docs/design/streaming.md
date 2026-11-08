@@ -2,7 +2,8 @@
 
 **TL;DR:** ranikust's own memory and disk stay small and independent of the
 image's size. A base layer that nothing but its extraction needs is extracted
-while it downloads and never kept. A built layer goes to its registry
+while it downloads and never kept (in kaniko mode off `/` in a user namespace
+it is downloaded first, so its owners are checked). A built layer goes to its registry
 destinations as soon as it is exported, while the build goes on, and its bytes
 are released once every destination has it. Every pipeline works through
 fixed-size buffers. Decided in
@@ -95,7 +96,7 @@ layers uploading or waiting to is bounded by twice `--jobs`.
 
 | Part | Overlay mode | Kaniko mode |
 |---|---|---|
-| Base layer extracted while downloading | no: downloaded to the store, then extracted | yes, into the root, no blob kept |
+| Base layer extracted while downloading | no: downloaded to the store, then extracted | yes, into the root, no blob kept; off `/` in a user namespace no (ADR-0098) |
 | Base layer pushed from its source registry | no: the store has the blob | yes (mount, else streamed) |
 | Built layer pushed while the build runs | yes | yes |
 | Built layer released after its upload | yes | yes |

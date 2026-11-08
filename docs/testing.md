@@ -55,6 +55,9 @@ from that.
   throwaway container, with `--state-dir` under a fresh temporary
   directory.
 - A bug fix comes with a test that fails without it.
+- T0 runs in the initial user namespace: in another (a toolbox, a
+  rootless container) kaniko mode off `/` streams no base layer, so
+  `rnk-snapshot`'s streamed-layer tests fail there (ADR-0098).
 - The sealed copy's T0 tests (`rnk-sandbox`'s `seal` module and the binary's
   `a_build_runs_from_a_sealed_copy_made_once`) expect a memfd copy:
   `vm.memfd_noexec` below 2 and a `TMPDIR` that allows `O_TMPFILE`, not on FUSE

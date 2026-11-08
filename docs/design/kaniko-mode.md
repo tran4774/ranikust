@@ -795,8 +795,9 @@ layer is.
   owner the namespace does not map once the layer is verified, just before
   that layer is extracted
   ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)).
-  Per stage, in a user namespace, no base layer is streamed: the blobs are
-  pulled and every owner of every layer is checked before any is extracted
+  Per stage, in a user namespace, no layer, base or cached, is streamed:
+  the blobs are pulled and every owner of every layer is checked before any
+  is extracted
   ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
   [modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
 - **The walk catches up lazily.** Applying a layer marks the walk's record

@@ -165,13 +165,15 @@ impl Unmapped {
     }
 
     /// A `chown` of `path` (in the root) to `uid` and `gid` refused with
-    /// `EINVAL`: one of them is not mapped.
+    /// `EINVAL`: one of them is not mapped. `u32::MAX`, which `chown` reads
+    /// as "unchanged", is left out.
     #[must_use]
     pub fn chown(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Self {
+        let id = |id: Option<u32>| id.filter(|&id| id != u32::MAX);
         Self(Box::new(Found::Chown {
             path: path.to_owned(),
-            uid,
-            gid,
+            uid: id(uid),
+            gid: id(gid),
         }))
     }
 
@@ -468,6 +470,10 @@ mod tests {
         // `chown` reads `u32::MAX` as "unchanged": no id a map must reach.
         let c = Unmapped::chown(Path::new("a"), Some(u32::MAX), Some(42));
         assert_eq!((c.highest_uid(None), c.highest_gid(None)), (None, Some(42)));
+        assert_eq!(
+            c.to_string(),
+            "chown a to gid 42: an id this user namespace does not map"
+        );
         // Eight groups are named, the rest counted, all of them weighed.
         let many: Vec<u32> = (100..111).collect();
         let u = Unmapped::user("set supplementary groups", 1000, 1000, &many);

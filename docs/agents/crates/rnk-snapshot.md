@@ -280,7 +280,8 @@ that found a bug stay as its regression test.
   never walked; the hand-over of the only reader gives what a copy gives and
   the same layer digest, falls back to a copy when it moved nothing or a
   hardlink leaves the root, and keeps no xattr a copy leaves out; hostile
-  bases cannot reach outside `rootfs/`.
+  bases cannot reach outside `rootfs/`; in a user namespace no base layer is
+  streamed into a stage directory (ADR-0098).
 - **T0, a cache hit** (`tests/apply.rs`, both roots, the shared one also as
   `/`): the next diff is empty, or only the next step's; whiteouts and opaque
   directories remove lower entries once; a root built by running a step and
@@ -317,8 +318,10 @@ that found a bug stay as its regression test.
   headers are read is made again and the layer applied; in
   `src/kaniko/root/tests.rs`, a base or `COPY --from` image layer with a bad
   header is refused before any of it is written or any directory made, and
-  keeps no spool. `tests/spans.rs`: on `/` a streamed layer is decoded once
-  before its extraction, a refused one once and never extracted (ADR-0123).
+  keeps no spool; in a user namespace only `/` takes a streamed base layer
+  (ADR-0098, ADR-0137). `tests/spans.rs`: on `/` a streamed layer is decoded
+  once before its extraction, a refused one once and never extracted
+  (ADR-0123).
 - **T1** (user namespace): a layer per instruction; `EINVAL` on a reused
   `volatile` work dir; `/` stays 555; 500 lowers; long option strings. The
   `kaniko-flags` case's kaniko leg: `probe` passes in the user namespace
