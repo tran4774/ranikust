@@ -847,12 +847,22 @@ fn a_new_cache_owned_by_u32_max_keeps_the_processs_id() {
             gid: owner_gid,
             mode: 0o750,
         };
+        // A new directory's group: the egid, or its parent's where that is
+        // setgid or the mount is `grpid`.
+        let made_gid = fs::metadata(store.state_dir().join("caches"))
+            .unwrap()
+            .gid();
         let a = store
             .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
             .unwrap_or_else(|e| panic!("{n}: {owner:?}: {e}"));
         assert!(a.created());
         let meta = fs::metadata(a.path()).unwrap();
-        assert_eq!((meta.uid(), meta.gid()), (uid, gid), "{owner:?}");
+        let want_gid = if owner_gid == u32::MAX {
+            made_gid
+        } else {
+            owner_gid
+        };
+        assert_eq!((meta.uid(), meta.gid()), (uid, want_gid), "{owner:?}");
         assert_eq!(meta.permissions().mode() & 0o7777, 0o750, "{owner:?}");
     }
 }

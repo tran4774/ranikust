@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::meta::chown_id;
+
 /// How many ids of each kind [`Unmapped`] names, and how many of a `RUN`'s
 /// supplementary groups; entries or groups past them are counted.
 const NAMED: usize = 8;
@@ -169,7 +171,7 @@ impl Unmapped {
     /// as "unchanged", is left out.
     #[must_use]
     pub fn chown(path: &Path, uid: Option<u32>, gid: Option<u32>) -> Self {
-        let id = |id: Option<u32>| id.filter(|&id| id != u32::MAX);
+        let id = |id: Option<u32>| id.and_then(chown_id);
         Self(Box::new(Found::Chown {
             path: path.to_owned(),
             uid: id(uid),
@@ -206,7 +208,7 @@ impl Unmapped {
     /// `u32::MAX`, which `chown` reads as "unchanged", is none.
     #[must_use]
     pub fn highest_uid(&self, map: Option<&MappedIds>) -> Option<u32> {
-        let unmapped = |id: &u32| *id != u32::MAX && map.is_none_or(|m| !m.maps_uid(*id));
+        let unmapped = |id: &u32| chown_id(*id).is_some() && map.is_none_or(|m| !m.maps_uid(*id));
         match &*self.0 {
             Found::Owners { highest, .. } => highest[0],
             Found::Chown { uid, .. } => uid.filter(unmapped),
@@ -218,7 +220,7 @@ impl Unmapped {
     /// [`Unmapped::highest_uid`].
     #[must_use]
     pub fn highest_gid(&self, map: Option<&MappedIds>) -> Option<u32> {
-        let unmapped = |id: &u32| *id != u32::MAX && map.is_none_or(|m| !m.maps_gid(*id));
+        let unmapped = |id: &u32| chown_id(*id).is_some() && map.is_none_or(|m| !m.maps_gid(*id));
         match &*self.0 {
             Found::Owners { highest, .. } => highest[1],
             Found::Chown { gid, .. } => gid.filter(unmapped),
@@ -261,7 +263,7 @@ impl Unmapped {
         ];
         let mut unnamed = false;
         for ((id, named, maps), top) in ids.into_iter().zip(highest.iter_mut()) {
-            let Some(id) = id.filter(|&id| id != u32::MAX && !maps(map, id)) else {
+            let Some(id) = id.and_then(chown_id).filter(|&id| !maps(map, id)) else {
                 continue;
             };
             *top = Some(top.map_or(id, |t| t.max(id)));

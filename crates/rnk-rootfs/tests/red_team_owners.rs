@@ -266,8 +266,6 @@ struct Case {
     lower: Option<Vec<u8>>,
     overlay: Expect,
     live: Expect,
-    /// Extracted too, not only scanned.
-    extract: bool,
 }
 
 fn case(what: &'static str, t: &Tar, overlay: Expect, live: Expect) -> Case {
@@ -277,16 +275,6 @@ fn case(what: &'static str, t: &Tar, overlay: Expect, live: Expect) -> Case {
         lower: None,
         overlay,
         live,
-        extract: true,
-    }
-}
-
-/// Scanned only: a debug build's `Uid::from_raw` and `Gid::from_raw`
-/// assert on -1, which the extraction hands `chown` as "unchanged".
-fn scan_only(c: Case) -> Case {
-    Case {
-        extract: false,
-        ..c
     }
 }
 
@@ -348,11 +336,11 @@ fn cases() -> Vec<Case> {
                 .file("f", o),
             Expect::Owners("uid 3000000000 (/f)"),
         ),
-        scan_only(both(
+        both(
             "a PAX uid of u32::MAX, which chown leaves unchanged",
             Tar::new().pax(&[("uid", b"4294967295")]).file("f", o),
             Expect::Pass,
-        )),
+        ),
         both(
             "a PAX uid of u32::MAX - 1",
             Tar::new().pax(&[("uid", b"4294967294")]).file("f", o),
@@ -382,11 +370,11 @@ fn cases() -> Vec<Case> {
             Tar::new().raw_uid("f", [0xff; 8]),
             Expect::Refused("is out of range"),
         ),
-        scan_only(both(
+        both(
             "a base-256 uid of u32::MAX",
             Tar::new().raw_uid("f", [0x80, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]),
             Expect::Pass,
-        )),
+        ),
         both(
             "an octal uid that is not a number",
             Tar::new().raw_uid("f", *b"12x4567\0"),
@@ -575,7 +563,6 @@ fn cases() -> Vec<Case> {
         lower: Some(lower.bytes()),
         overlay: Expect::Pass,
         live: Expect::Refused("is neither in this layer nor in the root"),
-        extract: true,
     });
     v
 }
@@ -608,7 +595,7 @@ fn red_team_hostile_headers_never_pass_the_owner_scan_where_the_extraction_chown
                     c.what
                 ));
             }
-            if !unprivileged || !c.extract {
+            if !unprivileged {
                 continue;
             }
             let lower = c.lower.as_deref().filter(|_| form == Form::Overlay);

@@ -421,8 +421,8 @@ The steps, in order:
       - A `uid=` or `gid=` of `4294967295`, on a new cache directory or a
         secret, is `chown`'s "unchanged": that id stays root's, as BuildKit
         passes it on
-        (`buildkit@cd8ee244 frontend/dockerfile/dockerfile2llb/convert_runmount.go:48-62`,
-        `convert_secrets.go:73-87`;
+        (`buildkit@cd8ee244 vendor/github.com/tonistiigi/fsutil/copy/mkdir_unix.go:44`,
+        `solver/llbsolver/mounts/secretmount_unix.go:76`;
         [#212](https://github.com/tran4774/ranikust/issues/212)).
       - Every bind is remounted `nodev` (ADR-0032) through the new mount
         itself: made detached with `open_tree(OPEN_TREE_CLONE)`, attached with

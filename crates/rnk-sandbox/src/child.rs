@@ -94,6 +94,7 @@ pub(crate) struct ChildSecret {
     pub(crate) data: std::sync::Arc<[u8]>,
     /// `None`: left unchanged, as `chown` reads an id of `u32::MAX`.
     pub(crate) uid: Option<Uid>,
+    /// As `uid`.
     pub(crate) gid: Option<Gid>,
     pub(crate) mode: Mode,
     pub(crate) targets: Vec<CString>,

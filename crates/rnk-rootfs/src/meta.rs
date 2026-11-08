@@ -656,6 +656,13 @@ fn chown_err(e: Errno, path: &Path, m: &Meta) -> Error {
     }
 }
 
+/// `id` as `chown` takes it: `None` for `u32::MAX`, `chown`'s `-1`, which
+/// leaves that id unchanged. The extraction and the owner scans read it
+/// through this alone, so that they agree.
+pub(crate) fn chown_id(id: u32) -> Option<u32> {
+    (id != u32::MAX).then_some(id)
+}
+
 fn apply_with(
     h: &Handle<'_>,
     m: &Meta,
@@ -663,10 +670,9 @@ fn apply_with(
     skipped: Option<&SkippedXattrs>,
 ) -> Result<()> {
     let owner_changes = m.uid.is_some() || m.gid.is_some();
-    // `None` is the same `-1` to `chown` ("unchanged"), which a rustix id
-    // must not hold.
-    let uid = m.uid.filter(|&id| id != u32::MAX).map(Uid::from_raw);
-    let gid = m.gid.filter(|&id| id != u32::MAX).map(Gid::from_raw);
+    // `None` is the same `-1` to `chown`, which a rustix id must not hold.
+    let uid = m.uid.and_then(chown_id).map(Uid::from_raw);
+    let gid = m.gid.and_then(chown_id).map(Gid::from_raw);
     let mode = m
         .mode
         .map(|bits| Mode::from_raw_mode(bits & PERMISSION_BITS));
