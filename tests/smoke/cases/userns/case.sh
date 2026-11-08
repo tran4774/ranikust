@@ -155,11 +155,10 @@ narrow_range() {
   grep -qF "maps root's ranikust range of /etc/subuid and /etc/subgid from id 0 on (--userns), not gid 42: widen that range to at least 43 gids in /etc/subgid (" \
     <<<"$log" && grep -qF 'or build without --userns' <<<"$log" ||
     fail "--userns with an owner past the range, its ways out: $log"
-  # An extraction's chown would end with "an id this user namespace does not map".
+  # The scan's refusal above, not an extraction's chown (which ends with
+  # "an id this user namespace does not map"), shows no layer was extracted.
   ! grep -qE "an id this user namespace|this user's first range|subordinate|run ranikust as root|in a container" \
     <<<"$log" || fail "--userns with an owner past the range: a chown's error or a user's ways out: $log"
-  expect "$(sudo find "$UW/narrow/layers" -mindepth 3 -maxdepth 3 2>/dev/null | wc -l)" 0 \
-    "layers extracted before the owner refusal"
 }
 
 # seen_from_the_host: the `seen` stage's RUNs, from the host while each

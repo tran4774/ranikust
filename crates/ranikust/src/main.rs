@@ -129,8 +129,8 @@ impl Failure {
         Self::error(refusal.reason).with_guidance(refusal.guidance)
     }
 
-    /// The build failed: with the ways out when an id its user namespace,
-    /// which `made` made, does not map is why (ADR-0098).
+    /// The build failed: with the ways out, by who made its user namespace
+    /// (`made`), when an id that namespace does not map is why (ADR-0098).
     fn built(failed: build::Failed, made: owners::MadeBy) -> Self {
         let guidance = failed
             .unmapped
@@ -1079,15 +1079,8 @@ fn overlay_built(
     let (overlay, made) = match setup.outcome {
         setup::Outcome::OverlayRoot { overlay, .. } => (overlay, owners::MadeBy::Other),
         setup::Outcome::OverlayRootless {
-            overlay,
-            userns: false,
-            ..
-        } => (overlay, owners::MadeBy::Rootless),
-        setup::Outcome::OverlayRootless {
-            overlay,
-            userns: true,
-            ..
-        } => (overlay, owners::MadeBy::Userns),
+            overlay, userns, ..
+        } => (overlay, owners::MadeBy::rootless(userns)),
     };
     let built = build::run(
         config,
@@ -1917,7 +1910,7 @@ mod tests {
     /// Under root's `--userns` (#208), a base layer's owner past the
     /// `ranikust` range is reported with the owner, the map and that
     /// range's ways out; a rootless build's report of the same refusal
-    /// names the user's ranges instead.
+    /// names neither that range nor `--userns`.
     #[test]
     fn an_owner_past_the_ranikust_range_is_reported_with_its_ways_out() {
         let mut tar = tar::Builder::new(Vec::new());

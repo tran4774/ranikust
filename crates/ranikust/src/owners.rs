@@ -22,6 +22,14 @@ pub(crate) enum MadeBy {
     Userns,
 }
 
+impl MadeBy {
+    /// The maker of rootless overlay mode's namespace: root's `--userns`
+    /// where `userns`, else a user's or root's rootless build.
+    pub(crate) fn rootless(userns: bool) -> Self {
+        if userns { Self::Userns } else { Self::Rootless }
+    }
+}
+
 /// The user namespace the build runs in, as the ways out tell it apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Namespace {
@@ -124,7 +132,8 @@ fn needed_text(uid: Option<u32>, gid: Option<u32>) -> String {
 
 /// The widest range the ways out ask an administrator for: `useradd`'s
 /// default count. A wider one would likely take ids another user or a real
-/// account holds, so past it they ask for root or a container instead.
+/// account holds, so past it they ask for root or a container instead, or,
+/// under `--userns`, a build without it.
 const RANGE_MAX: u32 = 65536;
 
 /// What every way out that names a range says of it.
@@ -159,7 +168,8 @@ fn userns_ways_out(uid: Option<u32>, gid: Option<u32>) -> String {
         ids_text(uid, gid)
     );
     let counts = counts_text(uid, gid);
-    let far = |id: Option<u32>| id.filter(|&id| u64::from(id) + 1 > u64::from(RANGE_MAX));
+    // Id N takes a count of N + 1, past `RANGE_MAX` from `RANGE_MAX` on.
+    let far = |id: Option<u32>| id.filter(|&id| id >= RANGE_MAX);
     if far(uid).is_none() && far(gid).is_none() {
         format!(
             "{maps}: widen that range to at least {counts} ({NO_OVERLAP}, nor ids another \
@@ -178,6 +188,7 @@ fn userns_ways_out(uid: Option<u32>, gid: Option<u32>) -> String {
 fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String {
     let (uid, gid) = highest(found, ids);
     let named = ids_text(uid, gid);
+    // A user's range maps id N as its N-th: N ids, past `RANGE_MAX` above it.
     let far = |id: Option<u32>| id.filter(|&id| id > RANGE_MAX);
     let too_few = (far(uid).is_some() || far(gid).is_some()).then(|| {
         format!(
@@ -235,6 +246,7 @@ fn ways_out(found: &Unmapped, ns: Namespace, ids: Option<&MappedIds>) -> String 
             "the user namespace ranikust was started in does not map {named}; {too_few}: run \
              ranikust as root on a host or in a rootful container"
         ),
+        // `too_few` is a user's range's rule: `--userns` has its own.
         (Namespace::Userns, _) => userns_ways_out(uid, gid),
     }
 }
@@ -406,6 +418,8 @@ mod tests {
     /// user's range, root or a container.
     #[test]
     fn userns_ways_out_name_the_ranikust_range_and_the_count_it_needs() {
+        assert_eq!(MadeBy::rootless(true), MadeBy::Userns);
+        assert_eq!(MadeBy::rootless(false), MadeBy::Rootless);
         let shifted = ids("0 100000 1000\n", "0 200000 42\n");
         assert_eq!(
             namespace(MadeBy::Userns, Some(100_000), Some(&shifted)),

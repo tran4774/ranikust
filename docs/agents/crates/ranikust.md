@@ -130,8 +130,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names
   `--userns`. Its messages name `--userns`, its guidance
   `USERNS_UNUSABLE`; an owner or user the range lacks gets the `ranikust`
-  range's ways out (`overlay_built` passes `owners::MadeBy::Userns`, #208).
-  `config.rs` refuses it with `--mode=kaniko` (exit 2).
+  range's ways out (`overlay_built` maps the outcome's `userns` through
+  `owners::MadeBy::rootless`, #208). `config.rs` refuses it with
+  `--mode=kaniko` (exit 2).
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; then a path ending in
   `..`, before anything is opened; then `statedir::check`
