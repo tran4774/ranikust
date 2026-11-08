@@ -1982,6 +1982,16 @@ fn execute(
     // ranikust's own filters answer with an errno: a `SIGSYS` comes from a
     // profile's kill or trap.
     let profile = job.args.profile.is_some();
+    // What a refused switch to the user names ([`unmapped_user`]).
+    let user = RunUser {
+        uid: job.args.uid,
+        gid: job.args.gid,
+        groups: if job.args.set_groups {
+            job.args.groups.clone()
+        } else {
+            Vec::new()
+        },
+    };
     if running.is_some_and(Running::is_cancelled) {
         return Err(Error::Cancelled);
     }
@@ -2080,7 +2090,38 @@ fn execute(
             );
         }
     })?;
-    ending(status, unreported, failure, profile, program).map(|s| (s, usage))
+    ending(status, unreported, failure, profile, program)
+        .map_err(|e| unmapped_user(e, &user))
+        .map(|s| (s, usage))
+}
+
+/// The ids a `RUN` switches to before `execve`.
+struct RunUser {
+    uid: Uid,
+    gid: Gid,
+    /// The supplementary groups, when they are set.
+    groups: Vec<Gid>,
+}
+
+/// `e`, or, for a switch to `user` refused with `EINVAL`, which
+/// `setgroups`, `setresgid` and `setresuid` return for an id the user
+/// namespace does not map, [`Error::Unmapped`] naming the ids (ADR-0098).
+fn unmapped_user(e: Error, user: &RunUser) -> Error {
+    match e {
+        Error::Setup {
+            step: step @ (Step::Groups | Step::Gid | Step::Uid),
+            source,
+        } if source.raw_os_error() == Some(libc::EINVAL) => {
+            let groups: Vec<u32> = user.groups.iter().map(|g| g.as_raw()).collect();
+            Error::Unmapped(rnk_rootfs::Unmapped::user(
+                step,
+                user.uid.as_raw(),
+                user.gid.as_raw(),
+                &groups,
+            ))
+        }
+        e => e,
+    }
 }
 
 /// How a reaped `RUN` that was not cancelled ended: its status, the
@@ -2477,6 +2518,42 @@ mod tests {
         rustix::io::write(&w, &rec[..3]).unwrap();
         drop(w);
         assert!(read_failure(&r).is_err());
+    }
+
+    /// A switch to the `RUN`'s user refused with `EINVAL` names the ids the
+    /// user namespace does not map, and still ran no command; another
+    /// errno, or another step, stays as it was.
+    #[test]
+    fn a_user_switch_refused_with_einval_names_the_ids() {
+        let user = RunUser {
+            uid: Uid::from_raw(1000),
+            gid: Gid::from_raw(1000),
+            groups: vec![Gid::from_raw(27)],
+        };
+        let setup = |step, errno| Error::Setup {
+            step,
+            source: io::Error::from_raw_os_error(errno),
+        };
+        let e = unmapped_user(setup(Step::Gid, libc::EINVAL), &user);
+        assert!(e.ran_no_command());
+        assert_eq!(
+            e.to_string(),
+            "RUN sandbox: set the group id for uid 1000, gid 1000, groups 27: an id this user \
+             namespace does not map"
+        );
+        let source = std::error::Error::source(&e).and_then(|s| s.downcast_ref());
+        assert_eq!(
+            source,
+            Some(&rnk_rootfs::Unmapped::user(Step::Gid, 1000, 1000, &[27]))
+        );
+        for step in [Step::Groups, Step::Uid] {
+            let e = unmapped_user(setup(step, libc::EINVAL), &user);
+            assert!(matches!(e, Error::Unmapped(_)), "{step}");
+        }
+        for (step, errno) in [(Step::Uid, libc::EPERM), (Step::Workdir, libc::EINVAL)] {
+            let e = unmapped_user(setup(step, errno), &user);
+            assert!(matches!(e, Error::Setup { .. }), "{step}");
+        }
     }
 
     /// A `RUN`'s end: its status, or the child's record from before

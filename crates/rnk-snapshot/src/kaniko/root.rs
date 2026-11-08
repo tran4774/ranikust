@@ -47,8 +47,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use rnk_layer::{Compression, EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
 use rnk_rootfs::{
-    CopyOpts, FileType, IgnoreList, RootPath, Whiteouts, copy_filtered, delete_contents, extract,
-    extract_live, extract_live_literal,
+    CopyOpts, FileType, IgnoreList, RootPath, Unmapped, Whiteouts, copy_filtered, delete_contents,
+    extract, extract_live, extract_live_literal,
 };
 use rnk_store::{NamedGuard, Store};
 use rustix::io::Errno;
@@ -56,7 +56,9 @@ use rustix::io::Errno;
 use super::walk::{SnapshotMode, WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
+use crate::owners;
 use crate::stage::{Base, ExportLayer, Keep, LayerOpen, Snapshotter, StageRootfs};
+use crate::userns::UserNamespace;
 
 /// A base layer in kaniko mode, extracted into the root only when a stage
 /// is prepared on it: its blob in the store, or streamed from its source
@@ -558,6 +560,10 @@ impl Snapshotter for Kaniko {
         })
     }
 
+    fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
+        check_live_owners(layers)
+    }
+
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
         if self.shared.is_slash() {
             // One more stage or image of the build to extract it: its spool
@@ -975,6 +981,16 @@ fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// [`Snapshotter::check_owners`] of the kaniko-mode snapshotters, in the
+/// user namespace this process was started in, if any (a rootless
+/// container's): every blob is read, as nothing of a live root is kept.
+pub(crate) fn check_live_owners(layers: &[(Digest, PathBuf)]) -> Result<()> {
+    match UserNamespace::current()? {
+        None => Ok(()),
+        Some(ns) => owners::check(layers, ns.ids(), owners::Form::Live, |_| Ok(false)),
+    }
+}
+
 /// Extracts one base layer into the shared root ([`open_for_root`]).
 fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
     let tar = open_for_root(shared, layer)?;
@@ -1024,7 +1040,10 @@ impl Spooled {
     /// them once, which nothing else sees: to check the tar headers as the
     /// extraction frames them and refuses them from a header alone, the
     /// `tar-header` limit and the kernel's limits included
-    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID. The
+    /// ([`rnk_rootfs::check_headers`]), and to compute the diff ID; in a
+    /// user namespace, also to find the owners the extraction would give
+    /// that the namespace does not map, refused once the layer is verified
+    /// (ADR-0098). The
     /// body is read to its end, even after a bad header, where its source
     /// checks the size and the compressed digest. The first failure of the
     /// body or of its decompression is reported as such, before a bad
@@ -1033,6 +1052,7 @@ impl Spooled {
         let LayerSource::Stream(_) = &layer.source else {
             return Ok(Self(SpooledBlob::Blob(layer.clone())));
         };
+        let mut owners = UserNamespace::current()?.map(|ns| Unmapped::owners(ns.ids().clone()));
         let what = || PathBuf::from(layer.diff_id.as_str());
         let file = store.scratch_file()?;
         let copy = file.try_clone().map_err(|source| Error::Io {
@@ -1053,7 +1073,10 @@ impl Spooled {
             inner: &mut decoder,
             first: None,
         };
-        let headers = rnk_rootfs::check_headers(&mut read);
+        let headers = match owners.as_mut() {
+            None => rnk_rootfs::check_headers(&mut read),
+            Some(found) => rnk_rootfs::check_headers_and_owners(&mut read, found),
+        };
         // The kept error, not the tar's: a decoder may fail once, then fail
         // otherwise or read as an end.
         if let Some(e) = read.first {
@@ -1072,6 +1095,9 @@ impl Spooled {
                 expected: layer.diff_id.to_string(),
                 actual: actual.to_string(),
             });
+        }
+        if let Some(found) = owners.filter(|f| !f.is_empty()) {
+            return Err(rnk_rootfs::Error::Unmapped(found).into());
         }
         Ok(Self(SpooledBlob::File {
             file,

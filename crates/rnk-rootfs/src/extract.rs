@@ -21,6 +21,7 @@ use crate::delete::{self, Counts, Keep};
 use crate::error::{Error, Result, io_err};
 use crate::ignore::IgnoreList;
 use crate::meta::{self, FileTime, FileType, Handle, Meta, PERMISSION_BITS, Stat, Xattrs};
+use crate::owners::Unmapped;
 use crate::path::{self, PATH_MAX};
 use crate::root::{self, Mounts, RootPath};
 
@@ -305,16 +306,69 @@ pub fn check_headers(tar: impl Read) -> Result<()> {
 
 /// [`check_headers`], directory paths held to `dir_max` bytes.
 fn check_headers_within(tar: impl Read, dir_max: usize) -> Result<()> {
+    scan(tar, Whiteouts::Apply, dir_max, None)
+}
+
+/// [`check_headers`], which also notes in `found` each owner that
+/// [`extract_live`] would give and the map `found` was made for does not
+/// hold: a directory's, a file's or a symlink's (a live root makes no
+/// node, and a hardlink takes its target's). For the spool pass on `/` in
+/// a user namespace (ADR-0098): the caller refuses the layer when `found`
+/// is not empty.
+///
+/// # Errors
+///
+/// As [`check_headers`].
+pub fn check_headers_and_owners(tar: impl Read, found: &mut Unmapped) -> Result<()> {
+    scan(tar, Whiteouts::Apply, SLASH_DIR_MAX, Some((found, false)))
+}
+
+/// Notes in `found` each owner that [`extract_overlay`] in a user
+/// namespace ([`DeviceNodes::Skip`]) would give an entry of the plain tar
+/// stream `tar` and the map `found` was made for does not hold: a
+/// directory's, a file's, a symlink's or a FIFO's (a device node is left
+/// out, and a hardlink takes its target's). Reads as that extraction does,
+/// refuses what it would refuse from the headers alone, and writes
+/// nothing: the base layers of an image are scanned so before any of them
+/// is extracted (ADR-0098), and the caller refuses them when `found` is not
+/// empty.
+///
+/// # Errors
+///
+/// As [`check_headers`].
+pub fn scan_owners(tar: impl Read, found: &mut Unmapped) -> Result<()> {
+    scan(tar, Whiteouts::Overlay, PATH_MAX, Some((found, true)))
+}
+
+/// Reads every header of `tar` as an extraction in the form `wh` does,
+/// directory paths held to `dir_max` bytes, and notes the owners it would
+/// give in `owners`, FIFOs' too when it says so.
+fn scan(
+    tar: impl Read,
+    wh: Whiteouts,
+    dir_max: usize,
+    mut owners: Option<(&mut Unmapped, bool)>,
+) -> Result<()> {
     let (mut skipped, mut first_skipped) = (0, None);
     for_each_entry(tar, |entry| {
-        read_header(
-            entry,
-            Whiteouts::Apply,
-            dir_max,
-            &mut skipped,
-            &mut first_skipped,
-        )
-        .map(drop)
+        let header = read_header(entry, wh, dir_max, &mut skipped, &mut first_skipped)?;
+        if let (
+            Some((found, fifos)),
+            Header::Entry {
+                path, kind, meta, ..
+            },
+        ) = (owners.as_mut(), &header)
+        {
+            let owned = match kind {
+                Kind::Dir | Kind::File | Kind::Symlink(_) => true,
+                Kind::Node(RawFileType::Fifo, ..) => *fifos,
+                Kind::Hardlink(_) | Kind::Node(..) => false,
+            };
+            if owned {
+                found.note(meta.uid, meta.gid, path);
+            }
+        }
+        Ok(())
     })
 }
 

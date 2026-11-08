@@ -110,6 +110,26 @@ where
         ));
     }
 
+    // Every owner of every layer is checked before the first is extracted
+    // (ADR-0098).
+    let owned = blobs
+        .iter()
+        .map(|b| {
+            let path = b
+                .path()
+                .ok_or_else(|| Error::Invalid("a pulled blob has no file".to_owned()))?;
+            Ok((b.diff_id.clone(), path.to_owned()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let checker = Arc::clone(snapshotter);
+    tokio::task::spawn_blocking(move || checker.check_owners(&owned))
+        .await
+        .map_err(|e| Error::Invalid(format!("checking the layers' owners: {e}")))?
+        .map_err(|e| Error::Image {
+            reference: reference.to_string(),
+            source: Box::new(e.into()),
+        })?;
+
     let mut layers: Vec<S::Layer> = Vec::with_capacity(blobs.len());
     for blob in &blobs {
         let snapshotter = Arc::clone(snapshotter);

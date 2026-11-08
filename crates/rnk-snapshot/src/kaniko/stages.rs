@@ -46,7 +46,7 @@ use rnk_rootfs::{
 };
 use rnk_store::Store;
 
-use super::root::{BROKEN, KanikoLayer, extract_blob, extract_checked};
+use super::root::{BROKEN, KanikoLayer, check_live_owners, extract_blob, extract_checked};
 use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
@@ -215,6 +215,10 @@ impl Snapshotter for KanikoStages {
         _below: &[KanikoLayer],
     ) -> Result<KanikoLayer> {
         Ok(KanikoLayer::from_blob(diff_id, blob))
+    }
+
+    fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
+        check_live_owners(layers)
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {

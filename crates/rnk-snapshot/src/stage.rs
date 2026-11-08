@@ -10,12 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rnk_layer::{EncodeOptions, LayerDigests};
 use rnk_oci::Digest;
 use rnk_rootfs::{IgnoreList, RootPath, delete_contents};
-use rnk_store::Store;
+use rnk_store::{EntryKey, Store};
 
 use crate::error::{Error, Result};
 use crate::export::{DiffCounts, LayerDiff};
 use crate::layer::{self, LayerDir};
 use crate::mount::{self, MountApi, Spec};
+use crate::owners;
 use crate::probe::OverlayCaps;
 use crate::userns::UserNamespace;
 
@@ -182,6 +183,18 @@ pub trait Snapshotter {
         below: &[Self::Layer],
     ) -> Result<Self::Layer>;
 
+    /// Refuses the base layers `layers` (diff ID and blob in the store,
+    /// image order), before any is made a base layer, when an entry of one
+    /// would get an owner the user namespace this process runs in does not
+    /// map (ADR-0098): the refusal names every such id of them all, and
+    /// nothing is written. Outside a user namespace, every id is mapped.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Rootfs`] wrapping [`rnk_rootfs::Error::Unmapped`]; a store,
+    /// decoding, header or diff ID error.
+    fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()>;
+
     /// A base layer whose compressed bytes `open` yields each time a stage
     /// is prepared on it, its blob never kept (ADR-0055); `None` when this
     /// snapshotter keeps base layers itself (overlay mode). Default: `None`.
@@ -306,6 +319,18 @@ impl Snapshotter for Overlay {
             source,
         })?;
         layer::extract_layer(&self.store, self.userns.as_ref(), diff_id, file, below)
+    }
+
+    /// A layer the store already has extracted for this namespace's map is
+    /// not read again: its extraction gave every owner.
+    fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
+        let Some(ns) = &self.userns else {
+            return Ok(());
+        };
+        owners::check(layers, ns.ids(), owners::Form::Overlay, |chain| {
+            let key = EntryKey::Layer(ns.layer_key(chain));
+            Ok(self.store.get(&key)?.is_some())
+        })
     }
 
     fn prepare(&self, base: Base<'_, OverlayStage, LayerDir>) -> Result<OverlayStage> {

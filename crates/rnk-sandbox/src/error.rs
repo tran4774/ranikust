@@ -267,6 +267,11 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    /// The `RUN` child's switch to its user failed with `EINVAL`, before
+    /// `execve`: the user, group or a supplementary group is an id the user
+    /// namespace does not map (ADR-0098). No flag lets it pass.
+    #[error("RUN sandbox: {0}")]
+    Unmapped(#[source] rnk_rootfs::Unmapped),
     /// The command could not be executed: not found on `PATH`, not
     /// executable, or not a valid binary.
     #[error("RUN: cannot execute {program:?}: {source}")]
@@ -487,6 +492,7 @@ impl Error {
         matches!(
             self,
             Self::Setup { .. }
+                | Self::Unmapped(_)
                 | Self::Cgroup { .. }
                 | Self::Exec { .. }
                 | Self::InvalidSpec(_)

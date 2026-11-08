@@ -1951,6 +1951,67 @@ fn check_headers_leaves_what_depends_on_the_root_to_the_extraction() {
     extract_live(&f.root, bytes.as_slice(), &live_keep()).unwrap();
 }
 
+/// The scans of owners note the ids an extraction in a user namespace
+/// would give and the map does not hold, each with its first entry: not a
+/// hardlink's, a device node's (left out there) or a whiteout's, and a
+/// FIFO's only where it is made (not in a live root). They read and refuse
+/// as [`check_headers`] does.
+#[test]
+fn a_scan_of_owners_notes_what_the_extraction_would_chown() {
+    let f = Fixture::new();
+    let mut t = Tar::new(&f);
+    let owner = |t: &mut Tar, uid: u64, gid: u64| {
+        t.uid = uid;
+        t.gid = gid;
+    };
+    owner(&mut t, 0, 0);
+    t.dir("./", 0o755);
+    owner(&mut t, 0, 42);
+    t.file("etc/shadow", 0o640, b"");
+    owner(&mut t, 1000, 1000);
+    t.symlink("s", "etc/shadow").file("t", 0o644, b"");
+    owner(&mut t, 2000, 2000);
+    t.hardlink("h", "etc/shadow");
+    owner(&mut t, 3000, 3000);
+    t.node("c", EntryType::Char, 1, 3).file(".wh.x", 0o644, b"");
+    owner(&mut t, 4000, 4000);
+    t.node("p", EntryType::Fifo, 0, 0);
+    // `chown` reads `u32::MAX` as "unchanged".
+    owner(&mut t, u64::from(u32::MAX), 0);
+    t.file("u", 0o644, b"");
+    let bytes = t.bytes();
+    let map = || crate::MappedIds::parse("0 1000 1\n", "0 1000 1\n").unwrap();
+
+    let mut found = Unmapped::owners(map());
+    let mut read = std::io::Cursor::new(&bytes);
+    scan_owners(&mut read, &mut found).unwrap();
+    assert_eq!(read.position(), u64::try_from(bytes.len() - 512).unwrap());
+    assert_eq!(
+        found.to_string(),
+        "owners this user namespace does not map: uid 1000 (/s), uid 4000 (/p), gid 42 \
+         (/etc/shadow), gid 1000 (/s), gid 4000 (/p); it maps uid 0 and gid 0"
+    );
+    let mut live = Unmapped::owners(map());
+    check_headers_and_owners(bytes.as_slice(), &mut live).unwrap();
+    assert_eq!(
+        live.to_string(),
+        "owners this user namespace does not map: uid 1000 (/s), gid 42 (/etc/shadow), gid \
+         1000 (/s); it maps uid 0 and gid 0"
+    );
+    let mut none = Unmapped::owners(crate::MappedIds::parse("0 0 4001\n", "0 0 4001\n").unwrap());
+    scan_owners(bytes.as_slice(), &mut none).unwrap();
+    assert!(none.is_empty(), "{none}");
+
+    for (what, tar) in bad_headers(&f) {
+        let checked = check_headers(tar.as_slice()).unwrap_err().to_string();
+        let mut found = Unmapped::owners(map());
+        let scanned = scan_owners(tar.as_slice(), &mut found).unwrap_err();
+        assert_eq!(scanned.to_string(), checked, "{what}");
+        let live = check_headers_and_owners(tar.as_slice(), &mut found).unwrap_err();
+        assert_eq!(live.to_string(), checked, "{what}");
+    }
+}
+
 /// A cleaned directory path of `len` bytes made of names of at most 255
 /// bytes, the kernel's `NAME_MAX`.
 fn dir_of(len: usize) -> String {

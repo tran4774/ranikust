@@ -78,6 +78,18 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    /// An image pulled for `FROM` or `COPY --from` is refused before any of
+    /// its layers is extracted: an owner the user namespace does not map
+    /// (ADR-0098), or a layer that is not what its config says.
+    #[error("image {reference}: {source}")]
+    Image {
+        /// The image, as pulled.
+        reference: String,
+        /// Why.
+        #[source]
+        source: Box<Error>,
+    },
+
     /// The Dockerfile asks for something this build refuses: a feature of
     /// a later phase, or an invalid value (a missing source, a bad
     /// `--chmod`).
