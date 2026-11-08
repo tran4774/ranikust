@@ -102,16 +102,25 @@ fn red_team_a_planted_probe_directory_goes_without_following_or_blocking() {
     assert!(opened.unwrap(), "the store opened and closed");
     assert!(state.join(STATE_MARKER).is_file());
     assert_eq!(tree(&outside), before, "nothing outside changed");
-    assert_eq!(fs::metadata(outside.join("own")).unwrap().nlink(), 1);
+    let own_links = fs::metadata(outside.join("own")).unwrap().nlink();
     // Directories without search or write permission may keep it from a
-    // user, which only warns: what it must never do is reach outside.
+    // user, which only warns: what it must never do is reach outside. The
+    // removal stops at the first of them, so what it reached before depends
+    // on the order the filesystem lists the directory in.
     if probe.exists() {
         assert!(!rustix::process::geteuid().is_root(), "root left {probe:?}");
+        let hard_left = fs::symlink_metadata(probe.join("hard")).is_ok();
+        assert_eq!(
+            own_links,
+            1 + u64::from(hard_left),
+            "hard link left: {hard_left}"
+        );
         eprintln!("measured: a user leaves the planted directory in part");
         for name in ["no-write", "no-search", "none"] {
             let _ = fs::set_permissions(probe.join(name), fs::Permissions::from_mode(0o700));
         }
     } else {
+        assert_eq!(own_links, 1);
         eprintln!("measured: the planted directory is removed whole");
     }
 }
