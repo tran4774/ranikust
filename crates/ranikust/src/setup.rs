@@ -470,14 +470,30 @@ pub(crate) fn hold_state_dir(
     children: &[rnk_store::IdMaps],
     on_overlayfs: impl FnOnce() -> Refusal,
 ) -> Result<rnk_store::StateDirHold, Refusal> {
+    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
+        return Err(on_overlayfs());
+    }
+    stage_and_hold(state_dir, euid, owner, children)
+}
+
+/// [`hold_state_dir`] past its overlayfs check, for kaniko mode off `/`
+/// too, which builds there: [`crate::statedir::stage`]'s checks, then
+/// [`Store::check_state_dir_for`] with `children`, then the mode.
+///
+/// # Errors
+///
+/// As [`hold_state_dir`], overlayfs aside.
+fn stage_and_hold(
+    state_dir: &Path,
+    euid: u32,
+    owner: crate::statedir::Owner,
+    children: &[rnk_store::IdMaps],
+) -> Result<rnk_store::StateDirHold, Refusal> {
     let refusal = |refused: crate::statedir::Refused| Refusal {
         kind: Kind::Other,
         reason: refused.0,
         guidance: "".into(),
     };
-    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
-        return Err(on_overlayfs());
-    }
     let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
     let held = Store::check_state_dir_for(state_dir, children)
         .map_err(|e| store_refusal(&e, state_dir, euid))?;
@@ -622,7 +638,7 @@ pub(crate) fn set_up_kaniko(
     // On `/`, the lock first, on `/` itself: two builds in one container
     // never share it, whatever their state directories.
     let root_lock = if on_slash { Some(lock_slash()?) } else { None };
-    prepare_state_dir(state_dir)?;
+    let held = kaniko_state_dir(state_dir, on_slash, euid)?;
     let slash = Path::new("/");
     // On `/` a `RUN` reads any file with a path: the store keeps none, its
     // blobs are anonymous files (ADR-0051). A `RUN` also writes the state
@@ -633,6 +649,7 @@ pub(crate) fn set_up_kaniko(
     } else {
         open_store(state_dir, state_dir, euid)?
     };
+    drop(held);
     let root = if on_slash {
         let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;
         Some((root, slash.to_path_buf()))
@@ -1335,6 +1352,27 @@ fn kernel_refused_mount(e: &SnapshotError) -> bool {
         }
         _ => false,
     }
+}
+
+/// Kaniko mode's state directory, made where missing. Off `/`, the
+/// store's checks come before the mode it gets, as in overlay mode
+/// ([`stage_and_hold`]): the hold is the caller's until [`Store::open`]
+/// returns. On `/`, [`crate::statedir::prepare`] alone; the anonymous
+/// store then refuses one that holds data (ADR-0077).
+///
+/// # Errors
+///
+/// A [`Refusal`] from [`stage_and_hold`] or [`prepare_state_dir`].
+fn kaniko_state_dir(
+    state_dir: &Path,
+    on_slash: bool,
+    euid: u32,
+) -> Result<Option<rnk_store::StateDirHold>, Refusal> {
+    if on_slash {
+        prepare_state_dir(state_dir)?;
+        return Ok(None);
+    }
+    stage_and_hold(state_dir, euid, crate::statedir::Owner::me(), &[]).map(Some)
 }
 
 /// [`crate::statedir::prepare`] as a [`Refusal`].

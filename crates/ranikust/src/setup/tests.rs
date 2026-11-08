@@ -750,10 +750,7 @@ fn set_up_refusal(state: &Path) -> Refusal {
 }
 
 /// Root's overlay mode refuses its state directory before it changes
-/// anything there, as rootless overlay mode does: one another process
-/// holds alone, one a kaniko-mode build on `/` used, one a `prune --all`
-/// cut short, and one whose store directory is a symlink keep their modes
-/// and names.
+/// anything there, as rootless overlay mode does ([`refuses_unchanged`]).
 #[test]
 fn overlay_mode_refuses_its_state_directory_unchanged() {
     if as_root() {
@@ -765,7 +762,36 @@ fn overlay_mode_refuses_its_state_directory_unchanged() {
         eprintln!("skipped: the temporary directory is on overlayfs");
         return;
     }
-    let state = tmp.path().join("state");
+    refuses_unchanged(&tmp.path().join("state"), set_up_refusal, |state| {
+        let euid = rustix::process::geteuid().as_raw();
+        let me = crate::statedir::Owner::me();
+        drop(hold_state_dir(state, euid, me, &[], || unreachable!("on overlayfs")).unwrap());
+    });
+}
+
+/// Kaniko mode off `/` refuses its state directory before it changes
+/// anything there ([`refuses_unchanged`]), on overlayfs too, where it
+/// builds; [`set_up_kaniko`] itself needs root.
+#[test]
+fn kaniko_mode_off_slash_refuses_its_state_directory_unchanged() {
+    let tmp = private_tempdir();
+    let euid = rustix::process::geteuid().as_raw();
+    let refused = |state: &Path| match kaniko_state_dir(state, false, euid) {
+        Ok(_) => panic!("kaniko mode took {}", state.display()),
+        Err(refusal) => refusal,
+    };
+    refuses_unchanged(&tmp.path().join("state"), refused, |state| {
+        drop(kaniko_state_dir(state, false, euid).unwrap());
+    });
+}
+
+/// A set-up refuses the state directory `state`, made here, with
+/// `refused(state)` before it changes anything there: one another process
+/// holds alone, one a kaniko-mode build on `/` used, one a `prune --all`
+/// cut short, and one whose store directory is a symlink keep their modes
+/// and names. The control: `taken(state)` makes it private.
+fn refuses_unchanged(state: &Path, refused: impl Fn(&Path) -> Refusal, taken: impl FnOnce(&Path)) {
+    let state = state.to_path_buf();
     Store::open(&BuildPaths::new(&state, &state))
         .unwrap()
         .close()
@@ -784,7 +810,7 @@ fn overlay_mode_refuses_its_state_directory_unchanged() {
     };
     let check = |what: &str, says: &str| {
         let before = seen();
-        let refusal = set_up_refusal(&state);
+        let refusal = refused(&state);
         assert!(refusal.reason.contains(says), "{what}: {refusal}");
         assert_eq!(seen(), before, "{what}: {refusal}");
         refusal
@@ -814,11 +840,8 @@ fn overlay_mode_refuses_its_state_directory_unchanged() {
     check("a symlink as blobs", "holds blobs, which is a symlink");
     fs::remove_file(&blobs).unwrap();
 
-    // The control: taken, it is made private.
-    let euid = rustix::process::geteuid().as_raw();
-    let me = crate::statedir::Owner::me();
-    drop(hold_state_dir(&state, euid, me, &[], || unreachable!("on overlayfs")).unwrap());
-    assert_eq!(seen().1, 0o700);
+    taken(&state);
+    assert_eq!((seen().1, seen().2), (0o700, 0o700));
 }
 
 /// A missing state directory whose nearest parent is on overlayfs (a
