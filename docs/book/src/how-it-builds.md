@@ -135,6 +135,18 @@ overlay mount options.
   mode, as it did before rootless overlay mode, and logs why. `SIGINT` and
   `SIGTERM` reach the build through the waiting process, and the exit code
   is the build's.
+- **Owners.** A file can only be given an owner, uid or gid, that the user
+  namespace maps: without `newuidmap` and `newgidmap`, or without ranges,
+  that is one id. Before extracting any layer of an image, ranikust reads
+  their owners and refuses the image where one is not mapped, naming the
+  owners, the files that have them and the ways out: install `uidmap`
+  (Ubuntu does not by default) and give the user ranges in `/etc/subuid`
+  and `/etc/subgid` that reach them, widen the ranges it has, run as root,
+  or run in a container (whose ranges must reach them too). A `COPY --chown`
+  or a `USER` the map lacks is refused the same way, when it comes. No flag
+  lets a failed `chown` through: the file would get the wrong owner
+  ([ADR-0098]). This holds in any user namespace, also kaniko mode's in a
+  rootless container.
 
 ## kaniko mode
 
@@ -385,6 +397,7 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0077]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md
 [ADR-0084]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0084-kaniko-mode-on-root-allows-secret-files-and-ignores-their-directory.md
 [ADR-0085]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0085-a-secret-file-on-slash-goes-at-its-target-is-ignored-by-its-own-path-and-removed-after-its-run.md
+[ADR-0098]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md
 [ADR-0101]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0101-a-build-runs-from-a-sealed-copy-of-the-binary.md
 [ADR-0106]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0106-extraction-in-a-user-namespace-skips-device-nodes-and-counts-them.md
 [ADR-0107]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md

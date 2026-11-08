@@ -252,9 +252,11 @@ The steps, in order:
    groups, as rootless runc does. Denied with several ids, the call is
    still made and fails the `RUN` (`Step::Groups`): there the skip would
    hand a `USER` groups that are not its own. `devpts` gets no `gid=5`
-   where gid 5 is unmapped (3.4). A `USER` whose ids the map lacks fails
-   at the first step 7 call that names one (`Step::Groups`, `Step::Gid` or
-   `Step::Uid`).
+   where gid 5 is unmapped (3.4). A `USER` whose ids the map lacks is
+   refused at the first step 7 call that fails with `EINVAL`
+   (`Step::Groups`, `Step::Gid` or `Step::Uid`), as `Error::Unmapped`
+   naming the ids, which `ranikust` gives with the ways out
+   ([modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
    *Planned, Phase 3:* the command's own user namespace leaves the init's uid
    out ([below](#hardening-planned-for-phase-3)).
 3. **Mounts**, in this order:

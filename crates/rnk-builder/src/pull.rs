@@ -36,7 +36,9 @@ pub struct PulledImage<L = LayerDir> {
 /// Pulls `reference` for `platform`: the manifest, the config, every layer
 /// blob into the store (`blobs/`, verified while it streams) and every
 /// layer made a base layer by the snapshotter (in overlay mode extracted in
-/// `layers/`, checked against the config's diff IDs).
+/// `layers/`, checked against the config's diff IDs), once
+/// [`Snapshotter::check_owners`] has found every owner of every layer
+/// mapped (ADR-0098).
 ///
 /// Unless `keep_blobs` (an output written to a file needs the bytes), a
 /// snapshotter that streams base layers ([`Snapshotter::streamed_layer`],
@@ -51,7 +53,8 @@ pub struct PulledImage<L = LayerDir> {
 /// # Errors
 ///
 /// A registry, store or extraction error; [`Error::Invalid`] when the
-/// manifest and the config disagree on the number of layers.
+/// manifest and the config disagree on the number of layers;
+/// [`Error::Image`] when the owner check refuses the layers.
 pub async fn pull_image<S>(
     client: &Arc<Client>,
     store: &Arc<Store>,

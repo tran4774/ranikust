@@ -790,9 +790,12 @@ layer is.
   so a hit with a header every extraction refuses from the header alone (a
   value over the kernel's limits included), or one over the limit, is a miss
   too;
-  per stage a layer is extracted as it arrives (ADR-0055). The scan ADR-0098
-  plans for base layers in a user namespace (Phase 3) must cover cached layers
-  too.
+  per stage a layer is extracted as it arrives (ADR-0055). In a user
+  namespace the same pass, base layers' and cached ones' alike, refuses an
+  owner the namespace does not map once the layer is verified; per stage the
+  first `chown` that fails with `EINVAL` does
+  ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
+  [modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
 - **The walk catches up lazily.** Applying a layer marks the walk's record
   of the root stale; the next `begin_layer` of a stage whose layers are
   needed takes a new baseline (`forget`, then a full walk), so the next diff
