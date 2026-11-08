@@ -203,25 +203,39 @@ fn advise(binary: Option<&Path>, stop: Stop, here: &Here) -> String {
 ///
 /// Why not, or what stopped the check: any error says no.
 fn holds_ranikust(path: &Path) -> Result<(), String> {
-    use std::io::Read as _;
     let exe = std::fs::File::open("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
-    let ran = rustix::fs::fstat(&exe).map_err(|e| format!("/proc/self/exe: {e}"))?;
-    let maps =
-        std::fs::read_to_string("/proc/self/maps").map_err(|e| format!("/proc/self/maps: {e}"))?;
+    // Paths in the maps may not be UTF-8; only their numbers are read.
+    let maps = std::fs::read("/proc/self/maps").map_err(|e| format!("/proc/self/maps: {e}"))?;
     let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
+    holds(exe, &String::from_utf8_lossy(&maps), code, path)
+}
+
+/// [`holds_ranikust`] for `exe`, the file `/proc/self/exe` opened, `maps`,
+/// `/proc/self/maps`' text, and `code`, the address of one of ranikust's
+/// functions.
+///
+/// # Errors
+///
+/// As [`holds_ranikust`].
+fn holds(exe: std::fs::File, maps: &str, code: usize, path: &Path) -> Result<(), String> {
+    use std::io::Read as _;
+    let ran = rustix::fs::fstat(&exe).map_err(|e| format!("/proc/self/exe: {e}"))?;
     let runs_from = (
         rustix::fs::major(ran.st_dev),
         rustix::fs::minor(ran.st_dev),
         ran.st_ino,
     );
-    if backing(&maps, code) != Some(runs_from) {
-        return Err("ranikust does not run from the file /proc/self/exe names".to_owned());
+    if backing(maps, code) != Some(runs_from) {
+        return Err("ranikust cannot tell it runs from the file /proc/self/exe names".to_owned());
     }
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY;
     let file = rustix::fs::open(path, flags | OFlags::CLOEXEC, Mode::empty())
         .map_err(|e| e.to_string())?;
     let st = rustix::fs::fstat(&file).map_err(|e| e.to_string())?;
-    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile || st.st_size != ran.st_size {
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+        return Err("it is not a regular file".to_owned());
+    }
+    if st.st_size != ran.st_size {
         return Err("its size differs".to_owned());
     }
     let mut left = u64::try_from(ran.st_size).map_err(|e| e.to_string())?;
@@ -242,6 +256,7 @@ fn holds_ranikust(path: &Path) -> Result<(), String> {
 /// The device (major, minor) and inode of the file mapped at `addr`, read
 /// from `maps`, `/proc/self/maps`' text; `None` where no file backs it.
 fn backing(maps: &str, addr: usize) -> Option<(u32, u32, u64)> {
+    // A line that does not parse backs nothing, and the check says no.
     maps.lines().find_map(|line| {
         let mut fields = line.split_ascii_whitespace();
         let (start, end) = fields.next()?.split_once('-')?;

@@ -287,9 +287,9 @@ fn without_root_the_set_up_never_makes_the_default_state_dir() {
 
 /// A user with no user namespace is told, in order: `sudo`; where AppArmor
 /// restricts user namespaces and ranikust runs unconfined in the host's
-/// user namespace, the profile, after installing the binary under
-/// `/usr/local/bin`, as this one, built in the checkout, is the user's; a
-/// container. Elsewhere no profile is named.
+/// user namespace and in no container, the profile, after installing the
+/// binary under `/usr/local/bin`, as this one, built in the checkout, is
+/// the user's; a container. Elsewhere no profile is named.
 #[test]
 fn without_a_user_namespace_the_advice_is_sudo_the_profile_then_a_container() {
     if skip_as_root() {
@@ -1322,6 +1322,7 @@ fn offers_a_profile_here() -> bool {
         read("/proc/self/uid_map")
             .split_ascii_whitespace()
             .eq(["0", "0", "4294967295"]);
+    // `container::Runtime::ALL`'s names.
     let runtimes = [
         "docker",
         "rkt",
@@ -1361,8 +1362,9 @@ fn offers_a_profile_here() -> bool {
 }
 
 /// Red team (#81): the profile is offered only for a path that holds
-/// ranikust itself, not for a root-owned program a forged marker names, nor
-/// for the loader that ran a dynamic ranikust.
+/// ranikust itself, not for a root-owned program a forged marker names (the
+/// loader that ran a dynamic ranikust is `no_userns`' unit test: through
+/// it, the faults this file sets would not hold).
 #[test]
 fn red_team_no_profile_for_a_root_program_that_is_not_ranikust() {
     use std::os::fd::AsRawFd as _;
@@ -1386,35 +1388,41 @@ fn red_team_no_profile_for_a_root_program_that_is_not_ranikust() {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let out = Command::new(format!("/proc/self/fd/{}", held.as_raw_fd()))
-        .args(args)
-        .current_dir(tmp.path())
-        .env_clear()
-        .env("RANIKUST_DEBUG_FAULT", "no-userns")
-        .env("RANIKUST_SEALED_COPY", format!("tmpfile root {hex}"))
-        .output()
-        .expect("run the copy");
-    let mut offered = Vec::new();
-    if userns_advice(&stderr(&out)).contains(&format!("changed to {}", interpreter.display())) {
-        offered.push(interpreter.clone());
-    }
-    // The loader of this binary's own architecture only.
-    let loader = cfg!(target_arch = "x86_64")
-        .then(|| fs::canonicalize(Path::new("/lib64/ld-linux-x86-64.so.2")));
-    if let Some(Ok(loader)) = loader {
-        let out = Command::new(&loader)
-            .arg(env!("CARGO_BIN_EXE_ranikust"))
+    let out = output_of_a_copy(
+        Command::new(format!("/proc/self/fd/{}", held.as_raw_fd()))
             .args(args)
             .current_dir(tmp.path())
             .env_clear()
-            .env("RANIKUST_DEBUG_FAULT", "seal-none")
-            .output()
-            .expect("run through the loader");
-        if userns_advice(&stderr(&out)).contains(&format!("changed to {}", loader.display())) {
-            offered.push(loader.clone());
+            .envs(container_var())
+            .env("RANIKUST_DEBUG_FAULT", "no-userns")
+            .env("RANIKUST_SEALED_COPY", format!("tmpfile root {hex}")),
+    );
+    let advice = userns_advice(&stderr(&out)).to_owned();
+    assert!(
+        !advice.contains(&format!("changed to {}", interpreter.display())),
+        "{advice}"
+    );
+    assert!(advice.contains("does not hold ranikust itself"), "{advice}");
+}
+
+/// `cmd`'s output, tried again while another test's child, forked before
+/// a copy of the binary was closed, still holds it open for writing.
+fn output_of_a_copy(cmd: &mut Command) -> Output {
+    for _ in 0..100 {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::TXTBSY.raw_os_error()) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            out => return out.expect("run the copy"),
         }
     }
-    assert!(offered.is_empty(), "the profile is offered for {offered:?}");
+    panic!("the copy stayed busy");
+}
+
+/// The variable `container`, which ranikust's container check reads, kept
+/// where a test clears the rest, so [`offers_a_profile_here`] holds there.
+fn container_var() -> Option<(&'static str, std::ffi::OsString)> {
+    std::env::var_os("container").map(|v| ("container", v))
 }
 
 /// A link to (or else a copy of) the binary at `to`.
@@ -1452,6 +1460,7 @@ fn red_team_the_advice_escapes_a_hostile_binary_path() {
         ])
         .current_dir(tmp.path())
         .env_clear()
+        .envs(container_var())
         .env("RANIKUST_DEBUG_FAULT", "no-userns")
         .env("PATH", &path_var)
         .env("HOME", tmp.path())
@@ -1493,6 +1502,7 @@ fn red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile() {
         cmd.args(args)
             .current_dir(tmp.path())
             .env_clear()
+            .envs(container_var())
             .env("RANIKUST_DEBUG_FAULT", "no-userns")
             .env("HOME", tmp.path());
         if let Some(marker) = marker {

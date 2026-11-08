@@ -307,6 +307,22 @@ fn the_file_behind_an_address_is_read_from_the_maps() {
 #[test]
 fn only_the_running_program_s_bytes_hold_ranikust() {
     let me = std::fs::canonicalize("/proc/self/exe").unwrap();
+    let st = std::fs::metadata(&me).unwrap();
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
+    let file = (
+        rustix::fs::major(st.dev()),
+        rustix::fs::minor(st.dev()),
+        st.ino(),
+    );
+    if backing(&maps, code) != Some(file) {
+        eprintln!(
+            "skipped: the maps name this binary's file otherwise than fstat (btrfs, overlayfs \
+             before Linux 6.8)"
+        );
+        assert_eq!(holds_ranikust(&me), Err(CANNOT_TELL.to_owned()));
+        return;
+    }
     assert_eq!(holds_ranikust(&me), Ok(()));
     let tmp = tempfile::tempdir().unwrap();
     let sized = tmp.path().join("sized");
@@ -321,6 +337,51 @@ fn only_the_running_program_s_bytes_hold_ranikust() {
     if let Ok(env) = std::fs::canonicalize("/usr/bin/env") {
         assert_eq!(holds_ranikust(&env), Err("its size differs".to_owned()));
     }
+    let fifo = tmp.path().join("fifo");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        FileType::Fifo,
+        Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        holds_ranikust(&fifo),
+        Err("it is not a regular file".to_owned())
+    );
+}
+
+const CANNOT_TELL: &str = "ranikust cannot tell it runs from the file /proc/self/exe names";
+
+/// Red team (#81): where `/proc/self/exe` names a program the code does not
+/// run from (the loader that ran a dynamic ranikust), that program's own
+/// path does not hold ranikust, though its bytes are `/proc/self/exe`'s;
+/// with maps that named it at the code, they would.
+#[test]
+fn a_program_ranikust_does_not_run_from_does_not_hold_it() {
+    let Some(other) = ["/usr/bin/env", "/bin/sh"]
+        .iter()
+        .find_map(|p| std::fs::canonicalize(p).ok())
+    else {
+        eprintln!("skipped: no /usr/bin/env or /bin/sh");
+        return;
+    };
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
+    let exe = std::fs::File::open(&other).unwrap();
+    assert_eq!(holds(exe, &maps, code, &other), Err(CANNOT_TELL.to_owned()));
+    let st = std::fs::metadata(&other).unwrap();
+    let named = format!(
+        "{code:x}-{:x} r-xp 00000000 {:02x}:{:02x} {} {}\n",
+        code + 1,
+        rustix::fs::major(st.dev()),
+        rustix::fs::minor(st.dev()),
+        st.ino(),
+        other.display()
+    );
+    let exe = std::fs::File::open(&other).unwrap();
+    assert_eq!(holds(exe, &named, code, &other), Ok(()));
 }
 
 /// A profile names only a path of plain characters as it is: no glob,
