@@ -9,7 +9,9 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
-use rnk_sandbox::{Fallbacks, KernelFs, MountResult, Sandbox, SubordinateIds};
+use rnk_sandbox::{
+    Fallbacks, KernelFs, MountResult, Sandbox, StepResult, SubordinateIds, UsernsReport,
+};
 use rnk_store::{BuildPaths, Store};
 
 use super::no_userns::Stop;
@@ -88,7 +90,7 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32, binary: Option<&Path>) -> No
 
 /// The user namespace probe for rootless overlay mode, before the build's
 /// user namespace: for a user other than root, whether it gets one with
-/// capabilities, with nothing written ([`without_capabilities`]); the state
+/// capabilities, with nothing written ([`capabilities`]); the state
 /// directory's check ([`state_dir_for_probe`]), the subordinate ids of this
 /// user ([`crate::subids`]), then the steps and the overlay mount in a user
 /// namespace, in a directory made for them in the state directory, named
@@ -109,11 +111,8 @@ pub(crate) fn plan(
     binary: Option<&Path>,
 ) -> Result<Plan, NotHere> {
     let euid = rustix::process::geteuid().as_raw();
-    if euid != 0
-        && let Some(not_here) = without_capabilities(euid, binary)
-    {
-        return Err(not_here);
-    }
+    // With capabilities, AppArmor's switch is not what stops a later step.
+    let capable = euid != 0 && capabilities(euid, binary)?;
     let unprobed = |refusal| NotHere {
         refusal,
         probed: false,
@@ -158,9 +157,14 @@ pub(crate) fn plan(
     };
     if let Some(step) = report.stop(allowed) {
         let rbind = matches!(report.proc, MountResult::Rbind { .. });
+        let stop = if capable {
+            Stop::Unknown
+        } else {
+            stop_at(step, report)
+        };
         return Err(not_here(
             format!("the user namespace probe stops at {step}"),
-            guidance(step, Stop::at(step, &report.unshare), rbind, euid, binary),
+            guidance(step, stop, rbind, euid, binary),
         ));
     }
     if let Some(e) = probed.overlay_error() {
@@ -183,31 +187,67 @@ pub(crate) fn plan(
     })
 }
 
-/// The refusal of a user other than root (`euid`) that gets no user
-/// namespace with capabilities, before the state directory is made or
-/// anything else written (#81), logged as the probe's line; `binary` as for
-/// [`plan`]. `None` where it gets one, or where the check cannot tell: the
-/// probe decides then.
-fn without_capabilities(euid: u32, binary: Option<&Path>) -> Option<NotHere> {
-    let found = rnk_sandbox::probe_user_namespace_capabilities()
-        .inspect_err(|e| tracing::debug!("ranikust: user namespace capability check: {e}"))
-        .ok()?;
-    let step = found.stop()?;
+/// Whether a user other than root (`euid`) gets a user namespace with
+/// capabilities, checked before the state directory is made or anything
+/// else written (#81): `Ok(true)` where it does, `Ok(false)` where the
+/// check cannot tell, and the probe decides; `binary` as for [`plan`].
+///
+/// # Errors
+///
+/// The refusal where it gets none, logged as the probe's line.
+fn capabilities(euid: u32, binary: Option<&Path>) -> Result<bool, NotHere> {
+    let found = match rnk_sandbox::probe_user_namespace_capabilities() {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::debug!("ranikust: user namespace capability check: {e}");
+            return Ok(false);
+        }
+    };
+    let Some(step) = found.stop() else {
+        return Ok(found.unshare == StepResult::Ok && found.mount_ns == StepResult::Ok);
+    };
     tracing::info!(
         "ranikust: user namespace probe: stops at {step}, nothing written; {found}; \
          kernel.apparmor_restrict_unprivileged_userns: {}",
         super::apparmor_switch()
     );
-    Some(NotHere {
+    let result = if step == "unshare" {
+        &found.unshare
+    } else {
+        &found.mount_ns
+    };
+    Err(NotHere {
         refusal: Refusal {
             kind: Kind::Other,
             reason: format!(
                 "rootless overlay mode cannot run here: the user namespace probe stops at {step}"
             ),
-            guidance: guidance(step, Stop::at(step, &found.unshare), false, euid, binary),
+            guidance: guidance(
+                step,
+                Stop::at(step, &found.unshare, result),
+                false,
+                euid,
+                binary,
+            ),
         },
         probed: true,
     })
+}
+
+/// What stopped the probe at `step`, as the advice weighs it
+/// ([`Stop::at`]); for the map, the last one tried.
+fn stop_at(step: &str, report: &UsernsReport) -> Stop {
+    let result = match step {
+        "unshare" => &report.unshare,
+        "map" => match report.maps.last() {
+            Some((_, result)) => result,
+            None => return Stop::Unknown,
+        },
+        "chown" => &report.chown,
+        "mount namespace" => &report.mount_ns,
+        _ => return Stop::Unknown,
+    };
+    Stop::at(step, &report.unshare, result)
 }
 
 /// The state directory the probe may write in, made if missing: private

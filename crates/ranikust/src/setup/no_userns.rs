@@ -24,19 +24,23 @@ const PROFILE: &str = "ranikust's AppArmor profile (contrib/apparmor/ranikust in
      repository; the book's \"Choosing where to run it\" shows it)";
 
 /// The `f_type`s of the local filesystems whose owners and modes only what
-/// root mounted sets: ext2/3/4, xfs, btrfs, squashfs, erofs, tmpfs,
-/// overlayfs and zfs. Any other (FUSE, NFS, SMB, 9p, Ceph, AFS…) may show
+/// root mounted sets. Any other (FUSE, NFS, SMB, 9p, Ceph, AFS…) may show
 /// what its server, or the user who mounted it, says.
 const LOCAL: [u32; 8] = [
-    0xEF53,
-    0x5846_5342,
-    0x9123_683E,
-    0x7371_7368,
-    0xE0F5_E1E2,
-    0x0102_1994,
-    0x794C_7630,
-    0x2FC1_2FC1,
+    0xEF53,      // ext2, ext3, ext4
+    0x5846_5342, // xfs
+    0x9123_683E, // btrfs
+    0x7371_7368, // squashfs
+    0xE0F5_E1E2, // erofs
+    0x0102_1994, // tmpfs
+    0x794C_7630, // overlayfs
+    0x2FC1_2FC1, // zfs
 ];
+
+/// rnk-sandbox's name for the `unshare` step's own operation, which a step
+/// before it (the probe's `fchdir`) may stand in for: another name, or a
+/// renamed one, offers no profile.
+const UNSHARE_USER: &str = "unshare(CLONE_NEWUSER)";
 
 /// What stopped a user other than root, as the advice weighs it: AppArmor's
 /// switch leaves a user namespace without capabilities, and a profile
@@ -47,27 +51,34 @@ const LOCAL: [u32; 8] = [
 pub(crate) enum Stop {
     /// `unshare(CLONE_NEWUSER)` refused, with this errno.
     Unshare(i32),
-    /// A step in the user namespace `unshare` made: the map, `chown`, the
-    /// mount namespace.
+    /// A step refused in the user namespace `unshare` made: the map,
+    /// `chown`, the mount namespace.
     InNamespace,
-    /// Not known: `unshare` refused with no errno, a step not reported, or
-    /// a refusal after the probe passed.
+    /// Not known: `unshare`'s step refused by another operation or with no
+    /// errno, a step that did not run (a child cut short), a namespace
+    /// shown to have capabilities, or a refusal once the probe passed.
     Unknown,
 }
 
 impl Stop {
     /// The stop named `step`, as [`rnk_sandbox::UsernsReport::stop`] names
-    /// it, where `unshare` is how `unshare(CLONE_NEWUSER)` went: a later
-    /// step counts only once `unshare` is known to have worked.
-    pub(crate) fn at(step: &str, unshare: &StepResult) -> Self {
-        match (step, unshare) {
+    /// it, from how `unshare(CLONE_NEWUSER)` went (`unshare`) and how that
+    /// step went (`result`; `unshare` again for `unshare`): a later step
+    /// counts only where `unshare` worked and the step itself was refused.
+    pub(crate) fn at(step: &str, unshare: &StepResult, result: &StepResult) -> Self {
+        match (step, unshare, result) {
             (
                 "unshare",
+                _,
                 StepResult::Failed(StepFailure {
-                    errno: Some(errno), ..
+                    op: UNSHARE_USER,
+                    errno: Some(errno),
+                    ..
                 }),
             ) => Self::Unshare(*errno),
-            ("map" | "chown" | "mount namespace", StepResult::Ok) => Self::InNamespace,
+            ("map" | "chown" | "mount namespace", StepResult::Ok, StepResult::Failed(_)) => {
+                Self::InNamespace
+            }
             _ => Self::Unknown,
         }
     }
@@ -285,11 +296,9 @@ fn verdict(nodes: &[(PathBuf, Node)], leaf: FileType) -> Result<(), String> {
                 n.mode
             ));
         }
-        // A user's mount (udisks2, fstab `user`, fusermount) is `nosuid`.
+        // udisks2 and fusermount always mount `nosuid`, fstab `user` by default.
         if n.nosuid {
-            return Err(format!(
-                "{at} is on a nosuid mount, as a mount a user may make is"
-            ));
+            return Err(format!("{at} is on a nosuid mount, as a user's mount is"));
         }
         if !local(n.fs_type) {
             return Err(format!(
