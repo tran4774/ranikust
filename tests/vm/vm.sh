@@ -21,8 +21,8 @@
 # group or an ACL), never sudo. Each run boots a fresh copy-on-write overlay
 # of a provisioned base image (the verified Ubuntu cloud image with Docker
 # installed, or AlmaLinux's with Podman, built once and cached:
-# cloud-init/provision, provision-el9), copies in static
-# musl binaries and the guest scripts, runs the suites over SSH, copies the
+# cloud-init/provision, provision-el9), copies in static musl binaries and
+# the guest scripts, runs the suites over SSH, copies the
 # results out to target/vm/results/<release>/ and deletes the VM, its disk
 # and its key whatever the outcome.
 #
@@ -96,8 +96,9 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 case "$RELEASE" in noble | jammy | alma9) ;; *) die "RANIKUST_VM_RELEASE must be noble, jammy or alma9" ;; esac
 if [ "$RELEASE" = alma9 ]; then
   # dnf's packages: Podman, with the `docker` command guest/net.sh and the
-  # results' copy use; ausearch's audit, for SELinux's denials. newuidmap is
-  # in shadow-utils, there already.
+  # results' copy use; audit, whose auditd logs SELinux's denials; tar, for
+  # the copy of the scripts and results. newuidmap is in shadow-utils, there
+  # already.
   PACKAGES=(podman podman-docker audit tar)
   PROVISION="$HERE/cloud-init/provision-el9" USER_DATA="$HERE/cloud-init/user-data-el9"
 fi
@@ -407,33 +408,41 @@ if [ "$RELEASE" = alma9 ]; then
   # AlmaLinux 9's key (keys/RPM-GPG-KEY-AlmaLinux-9), pinned by the
   # fingerprint https://almalinux.org/security/ lists. The image is on the
   # repository while 9.8 is AlmaLinux 9's current release, then in the
-  # vault: the first place whose CHECKSUM file is there is used.
+  # vault: the first place whose signed CHECKSUM lists it is used.
   IMG_NAME=AlmaLinux-9-GenericCloud-9.8-20261102.x86_64.qcow2
   ALMA_PLACES=(https://repo.almalinux.org/almalinux/9.8/cloud/x86_64/images https://vault.almalinux.org/9.8/cloud/x86_64/images)
   ALMA_KEY_FPR=BF18AC2876178908D6E71267D36CB86CB86B3716
   SUMS="$CACHE/$RELEASE-CHECKSUM"
-  IMG_URL=
-  for place in "${ALMA_PLACES[@]}"; do
-    rm -f "$SUMS" "$SUMS.asc"
-    if curl -fsSL "$place/CHECKSUM" -o "$SUMS" && curl -fsSL "$place/CHECKSUM.asc" -o "$SUMS.asc"; then
-      IMG_URL=$place
-      break
-    fi
-    log "no CHECKSUM and signature at $place"
-  done
-  [ -n "$IMG_URL" ] || die "no CHECKSUM and signature for $IMG_NAME at ${ALMA_PLACES[*]}"
   # A keyring of that one key, for gpgv, in a directory of its own that
-  # is gone before anything reads the checksums.
+  # is gone before the image is fetched.
   keydir="$CACHE/.$RELEASE-key"
   rm -rf "$keydir" && mkdir -m 0700 "$keydir"
   gpg --batch --quiet --homedir "$keydir" --dearmor <"$HERE/keys/RPM-GPG-KEY-AlmaLinux-9" >"$keydir/key.gpg"
-  sig="$(gpgv --keyring "$keydir/key.gpg" --status-fd 1 "$SUMS.asc" "$SUMS" 2>/dev/null)" || sig=
+  IMG_URL= want=
+  for place in "${ALMA_PLACES[@]}"; do
+    rm -f "$SUMS" "$SUMS.asc"
+    if ! curl -fsSL "$place/CHECKSUM" -o "$SUMS" || ! curl -fsSL "$place/CHECKSUM.asc" -o "$SUMS.asc"; then
+      log "no CHECKSUM and signature at $place"
+      continue
+    fi
+    sig="$(gpgv --keyring "$keydir/key.gpg" --status-fd 1 "$SUMS.asc" "$SUMS" 2>"$keydir/gpgv.err")" || sig=
+    # VALIDSIG ends with the fingerprint of the signing key's primary key. A
+    # bad signature stops the run: no other place is tried.
+    if ! grep -Eq "^\[GNUPG:\] VALIDSIG [0-9A-F]{40} .* $ALMA_KEY_FPR\$" <<<"$sig"; then
+      err="$(tr '\n' ' ' <"$keydir/gpgv.err")"
+      rm -rf "$keydir" && rm -f "$SUMS" "$SUMS.asc"
+      die "$place/CHECKSUM has no good signature by AlmaLinux 9's key ($ALMA_KEY_FPR): gpgv: $err"
+    fi
+    want="$(awk -v f="$IMG_NAME" '$2 == f { print $1 }' "$SUMS")"
+    if [[ "$want" =~ ^[0-9a-f]{64}$ ]]; then
+      IMG_URL=$place
+      break
+    fi
+    log "$IMG_NAME is not in $place/CHECKSUM once, with a SHA-256"
+    want=
+  done
   rm -rf "$keydir"
-  # VALIDSIG ends with the fingerprint of the signing key's primary key.
-  grep -Eq "^\[GNUPG:\] VALIDSIG [0-9A-F]{40} .* $ALMA_KEY_FPR\$" <<<"$sig" ||
-    { rm -f "$SUMS" "$SUMS.asc"; die "$IMG_URL/CHECKSUM has no good signature by AlmaLinux 9's key ($ALMA_KEY_FPR)"; }
-  want="$(awk -v f="$IMG_NAME" '$2 == f { print $1 }' "$SUMS")"
-  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || die "$IMG_NAME is not in $IMG_URL/CHECKSUM once, with a SHA-256"
+  [ -n "$IMG_URL" ] || die "no CHECKSUM signed by AlmaLinux 9's key lists $IMG_NAME at ${ALMA_PLACES[*]}"
 else
   IMG_NAME="$RELEASE-server-cloudimg-amd64.img"
   IMG_URL="https://cloud-images.ubuntu.com/$RELEASE/current"
@@ -811,8 +820,8 @@ check_free_gib() { # <dir> <GiB>
 # Booting the plain cloud image costs every run cloud-init's package
 # installation (and snapd's first-boot seeding). The provisioned base image
 # is that boot done once: cloud-init/provision (provision-el9 for alma9)
-# installs the packages, removes
-# what is per machine (SSH host keys, machine ID) and powers the VM off;
+# installs the packages, removes what is per machine (SSH host keys, machine
+# ID) and powers the VM off;
 # the disk is then flattened into one qcow2 in the cache, read-only, with its
 # SHA-256 beside it. Its name holds a hash of what it is made from (release,
 # the cloud image's SHA-256, the package list, the provisioning seed), so a

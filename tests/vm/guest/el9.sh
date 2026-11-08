@@ -10,9 +10,10 @@
 # Each builds one RUN per in-sandbox check of `just smoke`, the rootless
 # case's `content` stage (one --reproducible digest for both legs: no
 # SELinux label reaches a layer) and tests/smoke/e2e; Podman runs what they
-# built. SELinux denials (AVC) logged while they build are printed, and none
-# may be; Podman's bind of a home directory, which SELinux denies, is the
-# control that the audit log shows them.
+# built. Each RUN must keep the SELinux context of the process that started
+# ranikust. SELinux denials (AVC) logged while they build are printed, and
+# none may be; Podman's bind of a home directory, which SELinux denies, is
+# the control that the audit log shows them.
 set -euo pipefail
 cd "$HOME/rnk"
 # shellcheck disable=SC1091
@@ -71,12 +72,16 @@ RUN echo "RUN selinux context: $(tr -d '\000' </proc/self/attr/current)"
 EOF
 } >"$CHECKS/Dockerfile"
 
-# avc_since <epoch>: the SELinux records of the audit log from then on.
+# avc_since <epoch>: the SELinux records of the audit log from then on, the
+# logs auditd rotated in the meantime included.
 avc_since() {
-  sudo awk -v t0="$1" '/^type=(AVC|USER_AVC|SELINUX_ERR) / && match($0, /msg=audit\([0-9.]+/) {
-    if (substr($0, RSTART + 10, RLENGTH - 10) + 0 >= t0 + 0) print
-  }' "$AUDIT"
+  sudo find "${AUDIT%/*}" -maxdepth 1 -type f -name "${AUDIT##*/}*" -exec awk -v t0="$1" \
+    '/^type=(AVC|USER_AVC|SELINUX_ERR) / && match($0, /msg=audit\([0-9.]+/) {
+      if (substr($0, RSTART + 10, RLENGTH - 10) + 0 >= t0 + 0) print
+    }' {} +
 }
+# run_context <leg>: the SELinux context the checks' RUN printed.
+run_context() { sed -n 's/^RUN selinux context: //p' "$OUT/$1-checks.log"; }
 
 # --- The legs --------------------------------------------------------------------
 
@@ -113,6 +118,9 @@ content_args=(--context "$HOME/rnk/guest/cases/rootless" --no-push --target cont
 t0="$(date +%s.%N)"
 echo "=== root: overlay mode as root expected"
 leg_build root checks --context "$CHECKS" --no-push >/dev/null
+# ranikust sets no SELinux context: the RUN keeps its caller's.
+[ "$(run_context root)" = "$(sudo id -Z)" ] ||
+  fail "root: the RUN's SELinux context $(run_context root), not its caller's $(sudo id -Z)"
 root_digest="$(leg_build root content "${content_args[@]}" --tar-path "$W/content.tar")"
 sudo mkdir -m 700 "$W/e2e"
 smoke_e2e_args "$HOME/rnk/guest/smoke-e2e" "$ROOT_STATE" "$W/e2e" "$W/token"
@@ -124,6 +132,8 @@ echo "root: ok"
 
 echo "=== user $me: rootless overlay mode expected"
 leg_build user checks --context "$CHECKS" --no-push >/dev/null
+[ "$(run_context user)" = "$(id -Z)" ] ||
+  fail "user: the RUN's SELinux context $(run_context user), not its caller's $(id -Z)"
 user_digest="$(leg_build user content "${content_args[@]}" --tar-path "$U/content.tar")"
 [ "$user_digest" = "$root_digest" ] ||
   fail "user: the content stage's --reproducible digest $user_digest, root's $root_digest"
@@ -136,8 +146,14 @@ smoke_check_no_secret "$U/e2e/oci" "$SMOKE_E2E_SECRET"
 smoke_check_no_empty_layer "$U/e2e/oci"
 echo "user: ok"
 
+smoke_check_no_secret_in "$SMOKE_E2E_SECRET" "$OUT/root-e2e.log" "$OUT/user-e2e.log"
+
+# The types the policy gives the default state directories, where the
+# overlays' upper and work directories are.
 echo "=== state directories"
 sudo ls -Zd "$ROOT_STATE" "$USER_STATE"
+[[ "$(sudo stat -c %C "$ROOT_STATE")" == *:var_lib_t:* ]] || fail "$ROOT_STATE is not var_lib_t"
+[[ "$(stat -c %C "$USER_STATE")" == *:data_home_t:* ]] || fail "$USER_STATE is not data_home_t"
 
 # The audit log's records reach the file a little after the event.
 sleep 2
@@ -188,7 +204,7 @@ echo "control: the audit log shows SELinux's denial"
 
 echo "=== the VM after the legs"
 ! grep -qE " ($W|$ROOT_STATE|$USER_STATE)" /proc/self/mountinfo || fail "mounts left by a build"
-! pgrep -x ranikust >/dev/null || fail "ranikust processes left"
+! pgrep -x ranikust >/dev/null && ! pgrep -x ranikust-init >/dev/null || fail "ranikust processes left"
 sudo rm -rf --one-file-system "$W"
 rm -rf "$U"
 echo "el9: ok"

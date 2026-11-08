@@ -29,7 +29,7 @@ runcmd:
   # smaller.
   - [fstrim, --all]
   # Read by vm.sh from the serial log: the image is complete.
-  - [sh, -c, 'command -v podman && command -v docker && command -v newuidmap && command -v ausearch && systemctl is-enabled auditd && test "$(getenforce)" = Enforcing && echo ranikust-golden-ready >/dev/ttyS0']
+  - [sh, -c, 'command -v podman && command -v docker && command -v newuidmap && command -v tar && systemctl is-enabled auditd && test "$(getenforce)" = Enforcing && echo ranikust-golden-ready >/dev/ttyS0']
 
 power_state:
   mode: poweroff
