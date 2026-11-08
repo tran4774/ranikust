@@ -33,7 +33,8 @@ use crate::root::{Mounts, RootPath, open_name};
 /// it was (inode, device and mount id), else [`Error::Changed`].
 /// Memory is linear in the entries on the walk's stack (each level keeps
 /// its name, its `statx` and the names of its directory not yet visited)
-/// plus one path buffer, never quadratic in depth.
+/// plus one path buffer, never quadratic in depth; time is linear in the
+/// entries, `keep` asked about each by [`IgnoreList::covers_walked`].
 ///
 /// # Errors
 ///
@@ -50,8 +51,9 @@ pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()> {
     );
     let _entered = span.enter();
     let mut counts = Counts::default();
+    // The walk's paths are its root's and the names it read: no `..`.
     let mut decide = |p: &Path, _: FileType| {
-        if keep.covers(p) {
+        if keep.covers_walked(p) {
             Keep::Whole
         } else {
             Keep::Remove
