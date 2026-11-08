@@ -500,8 +500,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and on system binaries, against the standard library's view), the file
   behind an address read from `/proc/self/maps`' text, only the running
   program's bytes holding ranikust (not a file of its size, another
-  program, a symlink, a FIFO or a missing file; skipped where the maps and
-  `fstat` name the file differently), nor a program `/proc/self/exe`
+  program, a symlink, a FIFO or a missing file; where the maps and `fstat`
+  name the file differently, its own path holds nothing and the rest runs
+  on maps written for it), nor a program `/proc/self/exe`
   names that the code does not run from, as a loader
   (`a_program_ranikust_does_not_run_from_does_not_hold_it`); its red team
   (`red_team_no_link_up_level_or_nul_gets_the_profile`,
@@ -647,8 +648,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (the hook's advice: `sudo` before a container, and between them, where
   the host's switch is 1 and the test runs unconfined in the host's user
   namespace and in no container (`offers_a_profile_here`, computed as
-  ranikust computes it), the profile after an install under `/usr/local/bin`, naming
-  the test binary's own path; else no profile); their red team, with the
+  ranikust computes it), the profile after an install under
+  `/usr/local/bin`, naming the test binary's own path; else no profile);
+  their red team, with the
   same gate: `red_team_the_advice_escapes_a_hostile_binary_path`,
   `red_team_a_deleted_binary_or_a_forged_marker_gets_no_profile`,
   `red_team_no_profile_for_a_root_program_that_is_not_ranikust` (a forged

@@ -699,7 +699,7 @@ print("%s killed in %d of %d runs, nothing left" % (what, caught, tries))'
 # Red team (#81): the real capability check refuses at the mount namespace
 # and writes nothing, whatever the state directory is or points to; a check
 # killed halfway, in the parent or the child, leaves no process, and a fork
-# refused by RLIMIT_NPROC leaves none either. Uses rl_args, ud and dir.
+# refused by RLIMIT_NPROC stops the run (exit 1). Uses rl_args, ud and dir.
 red_team_no_userns() {
   local r="$ud/red" form log rc before
   mkdir -m 700 "$r"

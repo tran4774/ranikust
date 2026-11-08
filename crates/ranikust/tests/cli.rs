@@ -1309,7 +1309,11 @@ fn userns_advice(err: &str) -> &str {
 /// container.
 fn offers_a_profile_here() -> bool {
     use std::io::ErrorKind::NotFound;
-    let read = |p: &str| fs::read_to_string(p).unwrap_or_default();
+    let read = |p: &str| {
+        String::from_utf8_lossy(&fs::read(p).unwrap_or_default())
+            .trim()
+            .to_owned()
+    };
     // As Go's `!os.IsNotExist(err)`, which the container check follows.
     let exists = |p: &str| fs::metadata(p).map_or_else(|e| e.kind() != NotFound, |_| true);
     let restricted = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").trim() == "1";
@@ -1328,6 +1332,7 @@ fn offers_a_profile_here() -> bool {
         "rkt",
         "systemd-nspawn",
         "lxc",
+        "lxc-libvirt",
         "openvz",
         "kube",
         "garden",
@@ -1362,9 +1367,10 @@ fn offers_a_profile_here() -> bool {
 }
 
 /// Red team (#81): the profile is offered only for a path that holds
-/// ranikust itself, not for a root-owned program a forged marker names (the
-/// loader that ran a dynamic ranikust is `no_userns`' unit test: through
-/// it, the faults this file sets would not hold).
+/// ranikust itself, not for a root-owned program a forged marker names. The
+/// loader case is `no_userns`' unit test: a run through the loader needs
+/// `seal-none`, which replaces the `no-userns` fault and so would make a
+/// user namespace.
 #[test]
 fn red_team_no_profile_for_a_root_program_that_is_not_ranikust() {
     use std::os::fd::AsRawFd as _;
@@ -1402,6 +1408,15 @@ fn red_team_no_profile_for_a_root_program_that_is_not_ranikust() {
         !advice.contains(&format!("changed to {}", interpreter.display())),
         "{advice}"
     );
+    // Where the interpreter's path fails the root-only check first, the
+    // bytes are never weighed.
+    if advice.contains("is not a path only root can change") {
+        eprintln!(
+            "skipped: {} fails the root-only check",
+            interpreter.display()
+        );
+        return;
+    }
     assert!(advice.contains("does not hold ranikust itself"), "{advice}");
 }
 

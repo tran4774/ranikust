@@ -303,39 +303,47 @@ fn the_file_behind_an_address_is_read_from_the_maps() {
 
 /// Only a file with the bytes of the one this code runs from holds
 /// ranikust: the running test binary does; a file of its size with other
-/// bytes, another program, a symlink to it and a missing file do not.
+/// bytes, another program, a symlink to it, a FIFO and a missing file do
+/// not. Where the maps name the binary's file otherwise than `fstat`
+/// (btrfs, overlayfs before Linux 6.8), its own path holds nothing, and the
+/// other cases run on maps written for it.
 #[test]
 fn only_the_running_program_s_bytes_hold_ranikust() {
     let me = std::fs::canonicalize("/proc/self/exe").unwrap();
     let st = std::fs::metadata(&me).unwrap();
-    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+    let maps = this_process_s_maps();
     let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
     let file = (
         rustix::fs::major(st.dev()),
         rustix::fs::minor(st.dev()),
         st.ino(),
     );
-    if backing(&maps, code) != Some(file) {
+    // Some file always backs this code.
+    assert!(backing(&maps, code).is_some(), "{maps}");
+    if backing(&maps, code) == Some(file) {
+        assert_eq!(holds_ranikust(&me), Ok(()));
+    } else {
         eprintln!(
             "skipped: the maps name this binary's file otherwise than fstat (btrfs, overlayfs \
              before Linux 6.8)"
         );
         assert_eq!(holds_ranikust(&me), Err(CANNOT_TELL.to_owned()));
-        return;
     }
-    assert_eq!(holds_ranikust(&me), Ok(()));
+    let named = maps_naming(&me, code);
+    let check = |path: &Path| holds(std::fs::File::open(&me).unwrap(), &named, code, path);
+    assert_eq!(check(&me), Ok(()));
     let tmp = tempfile::tempdir().unwrap();
     let sized = tmp.path().join("sized");
     let file = std::fs::File::create(&sized).unwrap();
-    file.set_len(std::fs::metadata(&me).unwrap().len()).unwrap();
+    file.set_len(st.len()).unwrap();
     drop(file);
-    assert_eq!(holds_ranikust(&sized), Err("its bytes differ".to_owned()));
+    assert_eq!(check(&sized), Err("its bytes differ".to_owned()));
     let link = tmp.path().join("link");
     std::os::unix::fs::symlink(&me, &link).unwrap();
-    assert!(holds_ranikust(&link).is_err());
-    assert!(holds_ranikust(&tmp.path().join("missing")).is_err());
+    assert!(check(&link).is_err());
+    assert!(check(&tmp.path().join("missing")).is_err());
     if let Ok(env) = std::fs::canonicalize("/usr/bin/env") {
-        assert_eq!(holds_ranikust(&env), Err("its size differs".to_owned()));
+        assert_eq!(check(&env), Err("its size differs".to_owned()));
     }
     let fifo = tmp.path().join("fifo");
     rustix::fs::mknodat(
@@ -346,16 +354,32 @@ fn only_the_running_program_s_bytes_hold_ranikust() {
         0,
     )
     .unwrap();
-    assert_eq!(
-        holds_ranikust(&fifo),
-        Err("it is not a regular file".to_owned())
-    );
+    assert_eq!(check(&fifo), Err("it is not a regular file".to_owned()));
 }
 
 const CANNOT_TELL: &str = "ranikust cannot tell it runs from the file /proc/self/exe names";
 
-/// Red team (#81): where `/proc/self/exe` names a program the code does not
-/// run from (the loader that ran a dynamic ranikust), that program's own
+/// `/proc/self/maps`, read as `holds_ranikust` reads it: a path that is not
+/// UTF-8 changes none of the numbers.
+fn this_process_s_maps() -> String {
+    String::from_utf8_lossy(&std::fs::read("/proc/self/maps").unwrap()).into_owned()
+}
+
+/// A maps line that names `path`'s file at `code`.
+fn maps_naming(path: &Path, code: usize) -> String {
+    let st = std::fs::metadata(path).unwrap();
+    format!(
+        "{code:x}-{:x} r-xp 00000000 {:02x}:{:02x} {} {}\n",
+        code + 1,
+        rustix::fs::major(st.dev()),
+        rustix::fs::minor(st.dev()),
+        st.ino(),
+        path.display()
+    )
+}
+
+/// Where `/proc/self/exe` names a program the code does not run from (the
+/// loader that ran a dynamic ranikust), that program's own
 /// path does not hold ranikust, though its bytes are `/proc/self/exe`'s;
 /// with maps that named it at the code, they would.
 #[test]
@@ -367,21 +391,14 @@ fn a_program_ranikust_does_not_run_from_does_not_hold_it() {
         eprintln!("skipped: no /usr/bin/env or /bin/sh");
         return;
     };
-    let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
     let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
     let exe = std::fs::File::open(&other).unwrap();
-    assert_eq!(holds(exe, &maps, code, &other), Err(CANNOT_TELL.to_owned()));
-    let st = std::fs::metadata(&other).unwrap();
-    let named = format!(
-        "{code:x}-{:x} r-xp 00000000 {:02x}:{:02x} {} {}\n",
-        code + 1,
-        rustix::fs::major(st.dev()),
-        rustix::fs::minor(st.dev()),
-        st.ino(),
-        other.display()
+    assert_eq!(
+        holds(exe, &this_process_s_maps(), code, &other),
+        Err(CANNOT_TELL.to_owned())
     );
     let exe = std::fs::File::open(&other).unwrap();
-    assert_eq!(holds(exe, &named, code, &other), Ok(()));
+    assert_eq!(holds(exe, &maps_naming(&other, code), code, &other), Ok(()));
 }
 
 /// A profile names only a path of plain characters as it is: no glob,
