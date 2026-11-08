@@ -413,19 +413,28 @@ pub(crate) fn is_leftover(name: &OsStr) -> bool {
     name.as_bytes().starts_with(PREFIX.as_bytes())
 }
 
+/// Whether `name` is a leftover an earlier anonymous store made, which
+/// tells a build cut short (ADR-0066): not a directory of the user
+/// namespace probe, which shares [`PREFIX`] and is made before any store
+/// opens.
+pub(crate) fn left_by_a_store(name: &OsStr) -> bool {
+    is_leftover(name) && !crate::store::is_probe_name(name)
+}
+
 /// Removes what a crashed build left in the state directory `root` (shown
 /// as `shown`): files made by name and not unlinked, and directories
 /// unpacked for a `COPY --from`, all named with [`PREFIX`]. A file or link
 /// is unlinked, never followed; a directory is emptied through
 /// descriptors, staying on its mount, and only if the directory opened is
-/// the one listed. Returns whether there was anything.
+/// the one listed. Returns whether there was any name an earlier store
+/// made ([`left_by_a_store`]).
 pub(crate) fn remove_leftovers(root: &RootPath, shown: &Path) -> Result<bool> {
     let mut found = false;
     for name in root.read_names("/")? {
         if !is_leftover(&name) {
             continue;
         }
-        found = true;
+        found |= left_by_a_store(&name);
         let rel = Path::new(&name);
         let st = root.statx(rel)?;
         if st.file_type() == FileType::Directory {

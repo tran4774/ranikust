@@ -246,9 +246,11 @@ in_fallback() {
 # a set-up made to fail (RANIKUST_DEBUG_FAULT=rootless-broken), before,
 # during and after its store's open and abandon, leaves no store that
 # stops a build in kaniko mode on /, here one that never tries rootless
-# overlay mode (--ignore-path): it builds and leaves the state directory
-# with no store marker (ADR-0136). Its log goes to the outputs, which
-# kaniko mode on / keeps, unlike /tmp.
+# overlay mode (--ignore-path): it builds, copying from a stage as only a
+# build not taken for one cut short does, and leaves the state directory
+# with no marker (ADR-0136, ADR-0066). What the sweep left is shown, not
+# checked: it depends on when each kill lands. Its log goes to the
+# outputs, which kaniko mode on / keeps, unlike /tmp.
 killed_in_fallback() {
   [ "${RANIKUST_CASE_MODE:-}" = kaniko ] || return 0
   state fallback-sweep
@@ -276,14 +278,14 @@ echo "status=$rc"
 grep -q "ranikust: kaniko mode on /, RUN directly" "${0%/bin/ranikust}/out/last.log" && echo "kaniko mode"
 echo "left: $(ls -A /var/lib/ranikust | tr "\n" " ")"
 [ "$rc" = 0 ] || cat "${0%/bin/ranikust}/out/last.log"' \
-    "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target userns \
+    "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target swept \
     --allow proc.rbind 2>&1)"
   PODMAN_ARGS=()
   printf '%s\n' "$got" >"$o/sweep.log"
   grep -qx 'status=0' <<<"$got" && grep -qx 'kaniko mode' <<<"$got" ||
     fail "kaniko mode on / after fallbacks killed: $got"
-  ! grep -Eq '^left: .*\.ranikust-(state|pruning)' <<<"$got" ||
-    fail "a store left by fallbacks killed: $got"
+  ! grep -Eq '^left: .*\.ranikust-(state|pruning|building)' <<<"$got" ||
+    fail "a store or marker left by fallbacks killed: $got"
 }
 
 # Kaniko leg only: a kaniko-mode build killed during a RUN that planted a

@@ -62,8 +62,9 @@ the scheduler runs one stage at a time) or a private directory per stage
       A `RUN` that ended with an error once its command may have run poisons
       it. A start on the traces of a build cut short in this container (its
       `.ranikust-building` marker, holding the PID namespace and boot id, or
-      names left with none) makes no name, so a `COPY --from` a kept stage or
-      an image fails
+      names an anonymous store left with none; not the user namespace
+      probe's directories, made before any store opens) makes no name, so a
+      `COPY --from` a kept stage or an image fails
       ([ADR-0066](../adr/0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md)).
     - After each `RUN` the state directory's path must still lead, with no
       link, to the directory held. What must outlive the emptying of the root

@@ -1352,6 +1352,49 @@ fn an_anonymous_store_empties_a_store_with_no_data_first() {
     let e = Store::open_anonymous(&state).unwrap_err();
     assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
     assert_eq!(names(&state), before);
+
+    // With a name no store makes, or a prune's marker: refused, kept.
+    for name in ["notes", ".ranikust-pruning"] {
+        let state = dir.path().join(format!("with{name}"));
+        Store::open(&BuildPaths::new(dir.path(), &state))
+            .unwrap()
+            .close()
+            .unwrap();
+        fs::write(state.join(name), b"").unwrap();
+        let before = names(&state);
+        let e = Store::open_anonymous(&state).unwrap_err();
+        assert!(matches!(e, Error::StateNotEmpty { .. }), "{name}: {e}");
+        assert_eq!(names(&state), before, "{name}");
+    }
+}
+
+/// The user namespace probe's directories share the anonymous prefix but
+/// are made before any store opens: one a killed set-up left, alone or
+/// beside a store with no data, is removed and tells no build cut short.
+#[test]
+fn a_probe_directory_left_tells_no_build_cut_short() {
+    let dir = tempfile::tempdir().unwrap();
+    let probe = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    for with_store in [false, true] {
+        let state = dir.path().join(format!("state-{with_store}"));
+        if with_store {
+            Store::open(&BuildPaths::new(dir.path(), &state))
+                .unwrap()
+                .close()
+                .unwrap();
+        } else {
+            fs::create_dir(&state).unwrap();
+        }
+        fs::create_dir_all(state.join(&probe).join("x")).unwrap();
+        let store = Store::open_anonymous(&state).unwrap();
+        drop(store.named_window().unwrap());
+        store.close().unwrap();
+        assert!(
+            names(&state).is_empty(),
+            "{with_store}: {:?}",
+            names(&state)
+        );
+    }
 }
 
 #[test]

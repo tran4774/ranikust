@@ -1,8 +1,9 @@
 # Red team of rootless overlay mode (#79): what a RUN writes and reaches
 # (`writes`), what it leaves running (`left`), an exit status it chooses
 # (`exit75`), its user namespace (`userns`), a tree deeper than PATH_MAX
-# in its layer (`deep`) or a cache mount (`deep-cache`, the VM's), and what
-# a kaniko-mode RUN on / plants in the state directory (`plant`).
+# in its layer (`deep`) or a cache mount (`deep-cache`, the VM's), what a
+# kaniko-mode RUN on / plants in the state directory (`plant`), and a
+# stage copied from after fallbacks killed (`swept`).
 ARG BASE
 FROM ${BASE} AS writes
 # One line per attempt: a kernel, cgroup or sysfs file written, a cgroup
@@ -50,6 +51,11 @@ RUN exit 75
 
 FROM ${BASE} AS userns
 RUN { cat /proc/self/uid_map; readlink /proc/self/ns/user; } >/userns
+
+# A COPY --from a built stage, which kaniko mode on / makes only where it
+# takes the build for no build cut short.
+FROM ${BASE} AS swept
+COPY --from=userns /userns /userns
 
 FROM ${BASE} AS deep-sh
 COPY deep.sh /deep.sh

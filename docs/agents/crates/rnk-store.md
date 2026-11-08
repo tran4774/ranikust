@@ -164,9 +164,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   through descriptors, removes the marker only if nothing is left and the
   build was clean, and unlocks last (`Error::NotEmptied` fails the build).
   A persistent store it finds is refused, unless it holds no data: then
-  it is emptied first, under the exclusive lock, as `abandon` empties it,
-  and the anonymous names found with it still count as a build cut short
-  (ADR-0136).
+  it is emptied first, under the exclusive lock, as `abandon` empties it
+  (ADR-0136), and the names an earlier anonymous store left with it still
+  count as a build cut short (ADR-0066); the user namespace probe's
+  directories, which share their prefix, never do.
 - `prune_all` removes nothing a running build uses: it takes the state
   directory's `flock` exclusive without waiting, which every build's store
   holds shared for its life, and keeps it to the end, so it is refused
@@ -231,8 +232,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   no data, a dead build's and the sandbox's directories included, then
   opens, the anonymous names found with it making it a build cut short;
   one another build holds, or that holds `.ranikust-building` too, stays
-  refused and as it was
-  (`an_anonymous_store_empties_a_store_with_no_data_first`).
+  refused and as it was, as does one beside a name no store makes or a
+  `.ranikust-pruning`
+  (`an_anonymous_store_empties_a_store_with_no_data_first`); a probe
+  directory left, alone or beside a store with no data, is removed and
+  tells no build cut short
+  (`a_probe_directory_left_tells_no_build_cut_short`). `src/store/tests.rs`:
+  every directory the store makes is one that holds data or a build's
+  own (`each_store_directory_holds_data_or_a_builds_own_files`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a
@@ -318,7 +325,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 
 - `rnk_store.lock` (`contended`; time = lock wait), `rnk_store.fill`
   (`reused`, `bytes_written`, `bytes_reused`), `rnk_store.cleanup`,
-  `rnk_store.prune` (`prune_all`, `abandon`, `open_or_abandon`; its fields
+  `rnk_store.prune` (`prune_all`, `abandon`, `open_or_abandon`, and
+  `open_anonymous` where it empties a store with no data; its fields
   come with Phase 5's `prune`)
   ([rows](../../design/metrics.md#rnk-store)).
 - Lock waits and reuse show what sharing the store costs and saves.

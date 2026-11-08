@@ -486,11 +486,10 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
 
 /// An open that fails once it took the state directory as a store, its
 /// build registered, empties it again where asked and the store holds no
-/// data, after `undoing` lets go of the directory (ADR-0136): kaniko mode
-/// on `/`, which follows, takes only an empty directory. So it does with a
-/// store found with no data, such as one an open killed right after it
-/// wrote the marker leaves; one holding data is kept. A plain open leaves
-/// its marker.
+/// data, after `undoing` lets go of the directory (ADR-0136), before
+/// kaniko mode on `/` follows. So it does with a store found with no
+/// data, such as one an open killed right after it wrote the marker
+/// leaves; one holding data is kept. A plain open leaves its marker.
 #[test]
 fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
     let dir = tempfile::tempdir().unwrap();
