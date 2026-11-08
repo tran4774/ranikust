@@ -97,7 +97,8 @@ Decided while building #83, as implementation choices under ADR-0104:
   line of `/etc/subuid` is refused before anything is written, naming the id or
   the line, and the same for the gid range against `/etc/group`, the primary
   gids of `/etc/passwd` and `/etc/subgid`. So is an account named `ranikust`
-  in `/etc/passwd`, to which `newuidmap` and `newgidmap` would give the range.
+  in `/etc/passwd` or a systemd userdb record, to which `newuidmap` and
+  `newgidmap` would give the range.
   Another line counts as every range a version of shadow's tools may read it
   as, and one whose numbers cannot be read so is refused
   ([sandbox](../design/sandbox.md#--userns)). Only those local files are read:

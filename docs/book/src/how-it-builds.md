@@ -182,7 +182,8 @@ the build is refused before anything is written, and so it is where:
   white space, a `+` or `0x` before the number are read as `newuidmap`
   reads them;
 - a line of those files has a NUL byte;
-- an account is named `ranikust`: `newuidmap` would give it the range.
+- an account is named `ranikust` in `/etc/passwd` (`+ranikust` too) or a
+  systemd userdb record: `newuidmap` would give it the range.
 
 Only these files are checked: not accounts from LDAP, SSSD or systemd
 (`DynamicUser`, userdb), and not the ranges other tools hand out, so keep

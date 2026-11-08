@@ -903,19 +903,22 @@ with another map:
   the host and before anything is written. Where either is missing, or
   starts at 0, the build is refused, naming the line to add to both files,
   `ranikust:<start>:65536`, `<start>` left to the admin. It is refused too
-  where `/etc/passwd` has an account named `ranikust`, which `newuidmap` and
-  `newgidmap` would let map the range, and where the range shares an id with
-  another line of the same file, or the uid range with a uid of
-  `/etc/passwd`, or the gid range with a gid of `/etc/group` or a primary gid
-  of `/etc/passwd`, naming that line or account: the build's ids would be
-  theirs. Another line counts as every range a version of shadow's tools may
+  where an account is named `ranikust`, which `newuidmap` and `newgidmap`
+  would let map the range: a line of `/etc/passwd` (`+ranikust`, NIS
+  compat's, included) or a systemd userdb record, `ranikust.user` in
+  `/etc/userdb`, `/run/userdb` or `/usr/lib/userdb`, of any type. It is
+  refused too where the range shares an id with another line of the same
+  file, or the uid range with a uid of `/etc/passwd`, or the gid range with
+  a gid of `/etc/group` or a primary gid of `/etc/passwd`, naming that line
+  or account: the build's ids would be theirs. Another line counts as every range a version of shadow's tools may
   read it as: its first three fields where it has more, its numbers as
   `strtoul` reads them in base 0 (hex after `0x`, both the octal and the
   decimal reading after a leading 0), a count past 32 bits whole. A line of
-  three fields or more whose start or count is not such a number, or with a
-  NUL byte, is refused, naming it; one ending in `\r` is counted without it.
-  `/etc/passwd` and `/etc/group` ids are read in base 10, as glibc reads
-  them. Only these local files are read: not accounts or ids that NSS takes
+  three fields or more whose start or count is not such a number (`0b`,
+  binary to glibc 2.38 and later, included), or with a NUL byte, is
+  refused, naming it; one ending in `\r` is counted without it.
+  `/etc/passwd` and `/etc/group` ids are read in base 10, as glibc and musl
+  read them; musl wraps one past 32 bits, and so does the check. Only these local files are read: not accounts or ids that NSS takes
   from elsewhere (LDAP, SSSD, systemd's `DynamicUser` and userdb), and not
   the ranges other allocators hand out, so choose a `<start>` outside each
   of them in use on the host:

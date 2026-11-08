@@ -78,12 +78,14 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`subids::root_range`: the first well-formed `ranikust` line of each
   file (decimal, no leading 0: `range_number`, as for a user's own range),
   by that name only, none starting at 0, no account named `ranikust` in
-  `/etc/passwd`, sharing no id with any range another line
-  of the file may give (`ranges_shadow_may_read`: the first three fields,
-  each `strtoul` base-0 reading, in 128 bits; a line whose numbers it
+  `/etc/passwd` (`+ranikust` too) or as a systemd userdb record
+  (`userdb_record`, `USERDB_DIRS`), sharing no id with any range another
+  line of the file may give (`ranges_shadow_may_read`: the first three
+  fields, each `strtoul` base-0 reading, in 128 bits; a line whose numbers it
   cannot read, or with a NUL, refused), nor the uids with `/etc/passwd`'s,
-  the gids with `/etc/group`'s and `/etc/passwd`'s primary ones (base 10,
-  as glibc); local files only, with a warning where `/etc/nsswitch.conf`
+  the gids with `/etc/group`'s and `/etc/passwd`'s primary ones (`loose`:
+  base 10, as glibc and musl read them; musl wraps past 32 bits, and so
+  does `loose`); local files only, with a warning where `/etc/nsswitch.conf`
   names a `subid:` module (`subid_module`); else refused with
   `ROOT_RANGE_GUIDANCE`), then checks the state directory for
   the range's first ids in `rootless::state_dir_for_probe`: overlayfs from

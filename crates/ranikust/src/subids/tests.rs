@@ -368,11 +368,67 @@ fn an_account_named_ranikust_refuses_root_s_range() {
     assert!(ROOT_RANGE_GUIDANCE.contains("no account named ranikust"));
     // Its fields need not be well-formed, and glibc passes over the white
     // space before its name.
-    for passwd in ["ranikust\n", " \tranikust:x:1500:1500::/:/bin/sh\n"] {
+    for passwd in [
+        "ranikust\n",
+        " \tranikust:x:1500:1500::/:/bin/sh\n",
+        "+ranikust::::::\n",
+    ] {
         write(PASSWD, passwd);
         let why = root_range_in(etc.path()).unwrap_err();
         assert!(why.contains("account named ranikust"), "{why}");
     }
+}
+
+/// A systemd userdb record named `ranikust`, of any type, is such an
+/// account too; one in none of the directories, or one of another name,
+/// is not.
+#[test]
+fn a_userdb_record_named_ranikust_is_found() {
+    let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let paths = dirs.iter().map(|d| d.path()).collect::<Vec<_>>();
+    let missing = dirs[0].path().join("missing");
+    assert_eq!(userdb_record(&paths), Ok(None));
+    fs::write(dirs[1].path().join("ranikustx.user"), "{}").unwrap();
+    fs::write(dirs[1].path().join("1500.user"), "{}").unwrap();
+    assert_eq!(userdb_record(&[missing.as_path(), paths[1]]), Ok(None));
+    std::os::unix::fs::symlink("/nowhere", dirs[1].path().join("ranikust.user")).unwrap();
+    let record = dirs[1].path().join("ranikust.user");
+    assert_eq!(userdb_record(&paths), Ok(Some(record.clone())));
+    fs::create_dir(dirs[0].path().join("ranikust.user")).unwrap();
+    assert_eq!(
+        userdb_record(&paths),
+        Ok(Some(dirs[0].path().join("ranikust.user")))
+    );
+    // A directory that is a file holds no record.
+    let file = dirs[0].path().join("file");
+    fs::write(&file, "").unwrap();
+    assert_eq!(userdb_record(&[file.as_path(), paths[1]]), Ok(Some(record)));
+}
+
+/// An id of `/etc/passwd` or `/etc/group` past 32 bits counts as musl
+/// wraps it.
+#[test]
+fn ids_past_32_bits_count_wrapped() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| fs::write(etc.path().join(name), text).unwrap();
+    write(SUBUID, "ranikust:600000:65536\n");
+    write(SUBGID, "ranikust:800000:65536\n");
+    write(GROUP, "root:x:0:\n");
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nsvc:x:4295567296:0::/:/bin/sh\n",
+    );
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("holds uid 600000 of svc"), "{why}");
+    write(PASSWD, "root:x:0:0::/:/bin/sh\n");
+    write(GROUP, "root:x:0:\nsvc:x:4295767296:\n");
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("holds gid 800000 of svc"), "{why}");
+    write(GROUP, "root:x:0:\nsvc:x:-600000:\nother:x:4294967295:\n");
+    assert!(root_range_in(etc.path()).is_ok());
+    assert_eq!(loose(b" +4295567296"), Some(600_000));
+    assert_eq!(loose(b"-5"), None);
+    assert_eq!(loose(b""), None);
 }
 
 /// Lines shadow's versions read differently are counted (ADR-0139): the
@@ -497,6 +553,7 @@ fn every_reading_of_a_line_s_numbers_counts() {
         (b"u:0x:1", "(not a number)"),
         (b"u:0x927c0g:1", "(not a number)"),
         (b"u:0800000:1", "(not a number)"),
+        (b"u:0b10010010011111000001:1", "(not a number)"),
         (b"u:+ 600001:1", "(not a number)"),
         (b"u::1", "(not a number)"),
         (b"u: :1", "(not a number)"),

@@ -55,7 +55,8 @@ fn read_in(etc: &std::path::Path, name: &str) -> Result<Vec<u8>, String> {
 /// `/etc/subgid` (ADR-0104): an entry of ranikust's own. Podman allocates
 /// its containers' ranges from `containers`, other tools from `root`, but
 /// `newuidmap` and `newgidmap` give a line to the account its owner names,
-/// so [`root_range`] refuses where `/etc/passwd` has one of this name.
+/// so [`root_range`] refuses where `/etc/passwd` or systemd's userdb has
+/// one of this name.
 pub(crate) const ROOT_ENTRY: &str = "ranikust";
 
 /// What to do where root has no range for `--userns` (ADR-0104): the
@@ -69,8 +70,8 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// `/etc/subgid`, the first well-formed range whose owner is
 /// [`ROOT_ENTRY`], by that name only, never a uid, sharing no id with the
 /// host's accounts or other ranges (ADR-0139): no account named
-/// [`ROOT_ENTRY`] in `/etc/passwd`, which `newuidmap` and `newgidmap` would
-/// let map the range; the uid range none of `/etc/passwd`'s uids, the gid
+/// [`ROOT_ENTRY`] in `/etc/passwd` or as a userdb record, which `newuidmap`
+/// and `newgidmap` would let map the range; the uid range none of `/etc/passwd`'s uids, the gid
 /// range none of `/etc/group`'s gids or of `/etc/passwd`'s primary gids;
 /// and neither any range another line of its file may give, as
 /// [`ranges_shadow_may_read`] counts them. Those local files only: a static
@@ -94,6 +95,14 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// that cannot be read. [`ROOT_RANGE_GUIDANCE`] says what to do.
 pub(crate) fn root_range() -> Result<SubordinateIds, String> {
     let etc = std::path::Path::new("/etc");
+    let userdb = USERDB_DIRS.map(std::path::Path::new);
+    if let Some(record) = userdb_record(&userdb)? {
+        return Err(format!(
+            "{} is a systemd userdb record of an account named {ROOT_ENTRY}, to which \
+             newuidmap and newgidmap would give root's {ROOT_ENTRY} range",
+            record.display()
+        ));
+    }
     let ids = root_range_in(etc)?;
     match read_in(etc, NSSWITCH) {
         Ok(text) => {
@@ -118,6 +127,37 @@ pub(crate) fn root_range() -> Result<SubordinateIds, String> {
 /// The NSS configuration, whose `subid:` line libsubid reads.
 const NSSWITCH: &str = "nsswitch.conf";
 
+/// Where systemd's userdb looks for an account's record, `<name>.user`
+/// (`nss-systemd`, ADR-0139).
+const USERDB_DIRS: [&str; 3] = ["/etc/userdb", "/run/userdb", "/usr/lib/userdb"];
+
+/// The first of `dirs` to hold a userdb record named for [`ROOT_ENTRY`],
+/// of any type: through `nss-systemd`, `newuidmap` would find that account.
+///
+/// # Errors
+///
+/// Where whether one is there cannot be told.
+fn userdb_record(dirs: &[&std::path::Path]) -> Result<Option<std::path::PathBuf>, String> {
+    for dir in dirs {
+        let record = dir.join(format!("{ROOT_ENTRY}.user"));
+        match std::fs::symlink_metadata(&record) {
+            Ok(_) => return Ok(Some(record)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(e) => {
+                return Err(format!(
+                    "cannot tell whether {} exists: {e}",
+                    record.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// The module the first `subid:` line of `nsswitch` that names one names
 /// first, where it is not `files`, as libsubid reads the file: from column
 /// 0, in any case, `#` lines passed over.
@@ -141,9 +181,12 @@ fn root_range_in(etc: &std::path::Path) -> Result<SubordinateIds, String> {
     let group = read_in(etc, GROUP)?;
     let path = |name: &str| etc.join(name).display().to_string();
     let (passwd_path, group_path) = (path(PASSWD), path(GROUP));
-    // glibc passes over white space before a line's name.
+    // glibc passes over white space before a line's name; `+name` is NIS
+    // compat's way to bring in that account.
     let named = passwd.split(|b| *b == b'\n').position(|line| {
-        without_c_space(line).split(|b| *b == b':').next() == Some(ROOT_ENTRY.as_bytes())
+        let name = without_c_space(line).split(|b| *b == b':').next();
+        let name = name.map(|n| n.strip_prefix(b"+").unwrap_or(n));
+        name == Some(ROOT_ENTRY.as_bytes())
     });
     if let Some(i) = named {
         return Err(format!(
@@ -308,7 +351,8 @@ fn ranges_shadow_may_read(line: &[u8]) -> Result<Vec<(u128, u128)>, &'static str
 ///
 /// Why it is not such a number: a sign, which `strtoul` takes and the
 /// versions read differently; anything else in the field, an empty one
-/// included; a value past 64 bits, which `strtoul` refuses.
+/// included, and `0b` or `0B`, binary to glibc 2.38 and later; a value
+/// past 64 bits, which `strtoul` refuses.
 fn readings(field: &[u8]) -> Result<Vec<u128>, &'static str> {
     const NOT: &str = "not a number";
     let s = without_c_space(field);
@@ -359,14 +403,20 @@ fn without_c_space(bytes: &[u8]) -> &[u8] {
     &bytes[start..]
 }
 
-/// A `/etc/passwd` or `/etc/group` id as glibc reads one: `strtoul` in base
-/// 10 where the whole field must be the number, C white space and a `+`
-/// before it allowed. None for a `-` or a value past 32 bits: glibc makes
-/// either `u32::MAX` (`-0` aside, which is 0), and neither id is ever in
-/// root's range.
+/// A `/etc/passwd` or `/etc/group` id in base 10, as glibc and musl read
+/// one: the whole field the number, C white space and a `+` before it
+/// allowed (glibc), and past 32 bits wrapped, as musl reads it (glibc makes
+/// it `u32::MAX`, which is never in root's range). None for a `-`, which
+/// glibc makes `u32::MAX` (`-0` aside, which is 0).
 fn loose(field: &[u8]) -> Option<u32> {
-    let s = std::str::from_utf8(without_c_space(field)).ok()?;
-    decimal(s.strip_prefix('+').unwrap_or(s))
+    let s = without_c_space(field);
+    let s = s.strip_prefix(b"+").unwrap_or(s);
+    if s.is_empty() || !s.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(s.iter().fold(0u32, |x, b| {
+        x.wrapping_mul(10).wrapping_add(u32::from(b - b'0'))
+    }))
 }
 
 /// The lines of `bytes` that are UTF-8: a line that is not is no
