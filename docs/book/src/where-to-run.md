@@ -76,8 +76,9 @@ apparmor_parser -r /etc/apparmor.d/ranikust
 - The refusal offers it only where AppArmor may be what refused: where the
   user namespace was made and a later step failed, or where making it was
   refused with `EACCES`; and only to a ranikust that AppArmor leaves
-  unconfined, run on the host itself, outside any container or user
-  namespace, where the path it checks is the one the profile attaches to.
+  unconfined, run on the host itself, in no container and in the host's
+  user namespace, where the path it checks is the one the profile
+  attaches to.
   Elsewhere, and where something else refuses it, such as a container's
   seccomp filter or `user.max_user_namespaces` at `0`, the advice is
   `sudo`, then a container.

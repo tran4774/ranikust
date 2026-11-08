@@ -475,10 +475,10 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   confinement and whose seccomp filter allows `unshare`, and in the
   sandboxes that setuid tools build. Where
   `kernel.apparmor_restrict_unprivileged_unconfined` is 0, Ubuntu 24.04's
-  default, any unconfined program can already enter it with `aa-exec`,
-  which gives everyone the same, as any profile that allows `userns` does
-  **[measured]** (T2 smoke). Load it only where users may have what the
-  switch at 0 gives them.
+  default, any user's unconfined program can also enter it with
+  `aa-exec` and get the same user namespaces, as with any profile that
+  allows `userns` **[measured]** (T2 smoke). Load it only where users may
+  have what the switch at 0 gives them.
 - The refusal checks the binary's path in the user and mount namespace
   ranikust runs in, and offers the profile only in the host's user
   namespace and in no container it detects. A chroot, or a namespace root

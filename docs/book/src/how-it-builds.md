@@ -333,11 +333,9 @@ and may be what refused,
 [ranikust's AppArmor profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
 for a binary run on the host from a path only root can change, on a local
 filesystem that root mounted (else after installing it in one, naming what
-failed); or running
-inside a container. A regular user is
-also refused where only an rbind of `/proc`
-would work and `--allow proc.rbind` is absent, and where the state directory is
-on overlayfs.
+failed); or running inside a container. A regular user is also refused
+where only an rbind of `/proc` would work and `--allow proc.rbind` is
+absent, and where the state directory is on overlayfs.
 
 ## Privilege levels at a glance
 

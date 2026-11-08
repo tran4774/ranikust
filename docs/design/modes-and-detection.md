@@ -454,18 +454,18 @@ refusal's guidance line gives, in order
 The path is the one `/proc/self/exe` named before the sealed copy ran
 (ADR-0101), the one AppArmor attaches a profile to where ranikust runs in
 the host's mount namespace, with no chroot; the sealed copy's marker
-carries it (`rnk_sandbox::Sealing::binary_path`). A chroot, or a mount or
-user namespace that maps every id as the host's does and that no container
-check finds, shows a tree root chose, which the check takes for the host's:
-only root can set one up. Neither that path nor `/proc/self/exe` proves
-the file is ranikust (a marker may name any file, and under a loader
-`/proc/self/exe` is the loader), so the path holds ranikust itself only
-where `/proc/self/exe` is the file mapped at one of ranikust's functions in
-`/proc/self/maps` (same device and inode) and the path's file has its size
-and bytes. Root alone may change it when `/`, each directory below it and
-the file are owned by root and written by neither group nor others (an ACL
-that grants writing shows in the group bits), none is a symlink, each is
-on a mount without `nosuid`
+carries it (`rnk_sandbox::Sealing::binary_path`). A chroot, or a mount
+namespace that no container check finds in a user namespace that maps
+every id as the host's does, shows a tree root chose, which the check
+takes for the host's: only root can set one up. Neither that path nor
+`/proc/self/exe` proves the file is ranikust (a marker may name any file,
+and under a loader `/proc/self/exe` is the loader), so the path holds
+ranikust itself only where `/proc/self/exe` is the file mapped at one of
+ranikust's functions in `/proc/self/maps` (same device and inode) and the
+path's file has its size and bytes. Root alone may change the path when
+`/`, each directory below it and the file are owned by root and written
+by neither group nor others (an ACL that grants writing shows in the
+group bits), none is a symlink, each is on a mount without `nosuid`
 (udisks2 and fusermount always add it, an fstab `user` mount by default)
 of a local filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs,
 tmpfs, overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS,
@@ -474,18 +474,16 @@ one: each component is opened `O_PATH` from the one above without
 following a symlink. A sticky directory such as `/tmp` fails, since any
 user may take the name once it is gone; so does any error, a removed
 binary (`(deleted)`) included. Any value of the switch but `1`, or none
-(Ubuntu 22.04, other distributions), offers no profile. With the profile loaded the binary keeps it through the sealed
-copy's `execveat`, which no other profile attaches to, and so does a `RUN`
-(T2 smoke). Where `kernel.apparmor_restrict_unprivileged_unconfined` is 0,
-24.04's default, any user's unconfined program may also enter the profile
-with `aa-exec -p ranikust` (measured, T2 smoke), as it may any profile that
-allows `userns`. AppArmor matches the path in every mount namespace, so a
-loaded profile also reaches a binary at that path in a container without
-AppArmor confinement whose seccomp filter allows `unshare`, and in the
-sandboxes setuid tools build; the book, the profile and the threat model
-(section 6) say so. The test hook
-`RANIKUST_DEBUG_FAULT=no-userns` gives the advice of a stop in the user
-namespace.
+(Ubuntu 22.04, other distributions), offers no profile. With the profile
+loaded the binary keeps it through the sealed copy's `execveat`, which no
+other profile attaches to, and so does a `RUN` (T2 smoke). Where
+`kernel.apparmor_restrict_unprivileged_unconfined` is 0, 24.04's default,
+any user's unconfined program may also enter the profile with
+`aa-exec -p ranikust` (measured, T2 smoke), as it may any profile that
+allows `userns`. What else a loaded profile reaches is in the
+[threat model, section 6](../security/threat-model.md#6-accepted-risks).
+The test hook `RANIKUST_DEBUG_FAULT=no-userns` gives the advice of a stop
+in the user namespace.
 
 ## Failure handling
 
