@@ -149,7 +149,12 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      such directory whose lock it takes
      ([cache and store](cache-and-store.md)); it takes the
      process's gid and no setgid bit, as the store's own directories do
-     ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
+     ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
+     Under root's `--userns` it is given to the range, so root deletes
+     nothing in it: it is left, unlocked, to the build's store, which
+     removes it from inside the namespace, and root removes only an empty
+     one of its own that a build killed before giving it away left
+     ([sandbox](sandbox.md#--userns));
    - where it only reports (`report_user_namespace`, root only: it checks the
      effective uid), in a directory of the build under the state directory
      (`userns-probe`, or a name the next start removes when the store is
@@ -306,7 +311,9 @@ build's user namespace, RUN enters its root with pivot_root, proc: a new
 instance, sysfs: a read-only rbind (for a RUN with --network=none, a new
 instance where it mounts, else the rbind with no network device), overlay
 mounts with fsconfig(lowerdir+)`;
-`proc: a read-only rbind` is the one that needs the flag.
+`proc: a read-only rbind` is the one that needs the flag. Root's `--userns`
+says `overlay mode with --userns, in the build's user namespace of the
+ranikust range` in place of the first part.
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode
 that cannot work fails with the probe's diagnosis
@@ -369,7 +376,8 @@ Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
   rootless overlay mode's.
 - Root's `--userns` builds in the build's user namespace of its `ranikust`
   range or is refused, before anything is written, where the range is
-  missing (naming the line to add to `/etc/subuid` and `/etc/subgid`) or the
+  missing (naming the line to add to `/etc/subuid` and `/etc/subgid`) or
+  shares an id with an account or another range (naming it), or the
   state directory is not one for the range's first uid (saying what it must
   be), and otherwise where a step of the namespace fails, never in another
   mode (`USERNS_UNUSABLE`); with `--mode=kaniko` it is a usage error.

@@ -149,18 +149,24 @@ ranikust:<start>:65536
 
 in both files, with a `<start>` above 0 that no account and no other range
 uses, such as one past the last range there. Without it the build is refused
-before anything is written.
+before anything is written, and so it is where the range shares an id with
+another line of those files or with an account of `/etc/passwd` or
+`/etc/group` (accounts from LDAP or SSSD are not checked). Every `--userns`
+build runs as that range: they are kept apart from the host, not from each
+other.
 
 - **State directory.** The range's first uid owns it: pass a `--state-dir` of
   its own, below directories only root owns and may write, each searchable by
-  that uid, such as `/var/lib/ranikust-userns` (ranikust makes a missing one).
-  Root's own state directory is refused, never given away, and so is any at,
-  below or above root's default, `/var/lib/ranikust`, whether it exists or
-  not.
+  that uid through its mode bits (ACLs are not supported), such as
+  `/var/lib/ranikust-userns` (ranikust makes a missing one). Root's own state
+  directory is refused, never given away, and so is any at, below or above
+  root's default, `/var/lib/ranikust`, whether it exists or not ([ADR-0139]).
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the
-  outputs.
+  outputs. Root is to read the credentials and secrets itself first
+  ([#206](https://github.com/tran4774/ranikust/issues/206)); until then that
+  uid must be able to read them.
 - **No other mode.** Where a step of the user namespace fails, the build is
   refused; it never falls back to a mode without it. `--mode=kaniko` with
   `--userns` is a usage error, and so is `--userns` from a user other than
@@ -429,3 +435,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0131]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0131-a-link-to-a-device-a-lower-layer-left-out-takes-the-normal-hardlink-path.md
 [ADR-0132]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0132-the-proc-rbind-is-bound-read-only-so-a-run-writes-nothing-under-it.md
 [ADR-0134]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md
+[ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md

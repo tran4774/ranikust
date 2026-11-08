@@ -127,7 +127,9 @@ Design: [locks](../../design/cache-and-store.md#locks),
   (`USERNS_PROBE_PREFIX`, a real directory on the state directory's mount,
   told by `statx` without following) do not count: `check_marker` marks the
   directory, and `open` then removes each whose `flock` it takes (a probe
-  holds its own while it uses it), through descriptors; every emptying
+  holds its own while it uses it), through descriptors; under `--userns`
+  this is how the probe's directory goes, which root gave the range and
+  deletes nothing in (ADR-0139); every emptying
   (`empty_if_unused`, `prune_all`, `open_anonymous`, an anonymous `close`)
   takes the same lock, leaves one held, and keeps a store with no data
   beside it. A new state directory is `0700`; one owned by another user or

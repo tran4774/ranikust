@@ -77,7 +77,10 @@ process's files through `/proc`
 Root's `--userns` does too, in a state directory of its own: owned by the
 first ids of root's `ranikust` range, which the build runs as on the host,
 never root's own, whose layers are extracted with real ids
-([sandbox](sandbox.md#--userns)). Its layers are kept apart from root's by
+([sandbox](sandbox.md#--userns),
+[ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md)).
+Its store removes the probe's directory root gave it, from inside the
+namespace. Its layers are kept apart from root's by
 that directory, and within it by their map, as below.
 
 In a user namespace other than the initial one (a rootless or `--userns`

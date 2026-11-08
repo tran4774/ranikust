@@ -879,6 +879,7 @@ With `--userns`, real root runs the whole build in a user namespace whose uid
 and gid 0 are unprivileged ids of the host, so that a process escaping a `RUN`
 is not the host's root ([ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
 [ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md),
+[ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md),
 [#83](https://github.com/tran4774/ranikust/issues/83)). It is rootless overlay
 mode's path ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)),
 with another map:
@@ -887,7 +888,12 @@ with another map:
   `ranikust` line of `/etc/subuid` and of `/etc/subgid`, by that name only, on
   the host and before anything is written. Where either is missing, or starts
   at 0, the build is refused, naming the line to add to both files,
-  `ranikust:<start>:65536`, `<start>` left to the admin.
+  `ranikust:<start>:65536`, `<start>` left to the admin. It is refused too
+  where the range shares an id with another line of the same file, or the uid
+  range with a uid of `/etc/passwd`, or the gid range with a gid of
+  `/etc/group` or a primary gid of `/etc/passwd`, naming that line or account:
+  the build's ids would be theirs. Only these local files are read, not
+  accounts that NSS takes from elsewhere (LDAP, SSSD).
 - **The map** (`BuildIds::Shifted`, logged as `shifted range`) is
   `0 <start> <count>` for uids and for gids: the range alone, root's own ids
   unmapped. Root writes it from outside, as for its multi-range map; no other
@@ -901,15 +907,30 @@ with another map:
 - **The state directory** is the namespace root's own: owned by the range's
   first uid and gid, below directories that only root owns, none writable by
   group or others even where sticky (that uid could rename what it owns
-  there), each searchable by that uid and gid by its mode bits (an ACL is not
-  read). A missing one is made for it, `0700`, the missing directories above
-  it root's with mode `0711`. An existing one of root's is refused, never given
-  away: root's own builds keep layers extracted with real ids, setuid-root
-  files among them. A state directory at, below or above root's default,
-  `/var/lib/ranikust`, is refused too, missing or not: made for the range, it
-  would refuse root's own builds there. Every refusal comes before anything is
-  written, with guidance. Extracted layers are keyed by the namespace's id map,
-  as in every user namespace ([cache-and-store](cache-and-store.md)).
+  there), each searchable by that uid and gid by its mode bits alone. ACLs are
+  not supported: a directory searchable only through one is refused, and one
+  an ACL closes to that uid fails once the build reaches it. A missing one is
+  made for it, `0700`, the missing directories above it root's with mode
+  `0711`, each under a temporary name, given its owner and mode, then renamed
+  into place without replacing anything, so that a build killed meanwhile
+  leaves no directory of root's at that path. An existing one of root's is
+  refused, never given away: root's own builds keep layers extracted with real
+  ids, setuid-root files among them. A state directory at, below or above
+  root's default, `/var/lib/ranikust`, is refused too, missing or not: made for
+  the range, it would refuse root's own builds there
+  ([ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md),
+  which replaces ADR-0104's option (d) for `--userns`). Every refusal comes
+  before anything is written, with guidance: overlayfs is looked for from the
+  nearest existing directory, and a state directory the store would refuse
+  keeps its mode. Extracted layers are keyed by the namespace's id map, as in
+  every user namespace ([cache-and-store](cache-and-store.md)); pruning such a
+  state directory is [#207](https://github.com/tran4774/ranikust/issues/207).
+- **The probe's directory**, in the state directory, is given to the range
+  before the probe runs; root then deletes nothing in it. The build's store
+  removes it from inside the namespace, with the range's rights, as it does
+  any probe directory left in the state directory; root removes only an
+  empty one of its own, mode `0700`, that a build killed before giving it
+  away left.
 - **Root only.** From a user other than root, `--userns` is a usage error
   before anything is written: only root may map the range, and that user's
   build already runs in a user namespace of its own.
@@ -925,14 +946,20 @@ with another map:
   the outputs are reached with its permissions, not root's, and so is the
   working directory, where a relative `--dockerfile` is looked for first: one
   it cannot search, such as `/root`, is an error, not a fallback to the
-  context.
+  context. Root is to read the registry credentials and the secret sources
+  before it enters the namespace, and refuse with a clear error a context or
+  Dockerfile that uid cannot read
+  ([ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md),
+  [#206](https://github.com/tran4774/ranikust/issues/206)); until then that
+  uid reads them all.
 
 Measured in the T2 VM (`userns` quick case, Ubuntu 24.04): a `RUN`'s
 `uid_map` read from the host is `0 <start> 65536`, its ids there are the
 range's first, a file it makes is owned there by them, and the image's
 `--reproducible` digest equals the build's without `--userns`, and
 [ADR-0074](../adr/0074-setuid-through-proc-root-of-a-full-sandbox-run-is-nosuid.md)'s
-residual is closed for host accounts other than root
+residual is closed for host accounts other than root, not between `--userns`
+builds, which share the range
 ([threat model](../security/threat-model.md#6-accepted-risks)).
 
 *Planned, Phase 3:* a `RUN`'s command runs where the init's uid is unmapped,
@@ -941,8 +968,9 @@ in rootless mode too
 (b), [#34](https://github.com/tran4774/ranikust/issues/34)): under `--userns`
 the init still runs as the namespace's root. An image with an owner outside
 the range is to be refused with guidance, as in rootless mode
-([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md));
-until then its extraction fails at that owner's `chown`.
+([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
+[#208](https://github.com/tran4774/ranikust/issues/208)); until then its
+extraction fails at that owner's `chown`.
 
 ## Failure handling
 
