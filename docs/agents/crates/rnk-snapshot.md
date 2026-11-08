@@ -165,7 +165,10 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   come as blobs and are all checked first. On `/` a streamed layer is not
   a blob: the spool pass (`Spooled::of`) notes its owners in the same read
   as its headers, against the namespace `Kaniko` read once, and refuses
-  once the layer is verified, before it is extracted (ADR-0137). A `chown`
+  once the layer is verified, before it is extracted (ADR-0137). A `COPY
+  --from` image on `/` is unpacked with no ignore list: its spool, or its
+  kept blob, is checked again for the ignored paths before any directory is
+  made (`Shared::spool`). A `chown`
   that fails with `EINVAL` during extraction is refused the same way
   (`rnk_rootfs::Error::Unmapped`).
 - A `mount(2)` mount makes `lowers-<m>/` in the stage directory and mounts
@@ -336,7 +339,8 @@ that found a bug stay as its regression test.
   header is refused before any of it is written or any directory made, and
   keeps no spool; in a user namespace only `/` takes a streamed base layer
   (ADR-0098, ADR-0137), its owners checked in the spool pass against the
-  namespace the build read, the ignore list's paths skipped
+  namespace the build read, the ignore list's paths skipped for a base and
+  not for a `COPY --from` image, from its own spool, a base's or a kept blob
   (`on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass`;
   red team in `rnk-rootfs`'s `tests/red_team_owners.rs`). `tests/spans.rs`: on `/` a streamed layer is decoded
   once before its extraction, a refused one once and never extracted

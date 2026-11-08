@@ -1059,10 +1059,13 @@ fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_by_the
 }
 
 /// On `/`, the ids of the user namespace the build runs in reach the spool
-/// pass, with the ignore list: a streamed layer with an owner they lack is
-/// refused before anything of it reaches the root; one whose only such
-/// owner is on an ignored path, which its extraction skips, passes
-/// (ADR-0098, ADR-0137).
+/// pass, with the ignore list of the extraction that follows: a streamed
+/// layer with an owner they lack is refused before anything of it reaches
+/// the root; one whose only such owner is on an ignored path passes as a
+/// base layer, whose extraction skips it, and is refused as a `COPY
+/// --from` image, whose unpacking does not, before any directory is made,
+/// even from a spool or a kept blob checked for a base (ADR-0098,
+/// ADR-0137).
 #[test]
 fn on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass() {
     let (uid, gid) = (
@@ -1094,6 +1097,57 @@ fn on_slash_the_namespace_s_ids_and_the_ignore_list_reach_the_spool_pass() {
     let root = f.kaniko.prepare(Base::Image(&layers)).unwrap();
     // `/ranikust` holds the build's marker (ADR-0052), nothing of the layer.
     assert!(!f.host.join("ranikust/b").exists());
+    root.release().unwrap();
+
+    // The same layer as a base, then as an image: the spool the base's check
+    // kept is checked again for the image, with no second download.
+    let (f, _store) = in_namespace();
+    let (layers, source) = streamed_for(&f, "l1", &[("ranikust/b", b"unpacked")], 2);
+    let root = f.kaniko.prepare(Base::Image(&layers[..1])).unwrap();
+    let mut image = f.kaniko.prepare_source(&layers[1..]).unwrap();
+    let e = image.view().unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string().contains(&format!("uid {uid} (/ranikust")),
+        "{e}"
+    );
+    assert_eq!(f.state_names(), ["blob"]);
+    assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+    image.release().unwrap();
+    root.release().unwrap();
+
+    // A kept blob `check_owners` passed, its ignored paths skipped, is
+    // checked again before an image is unpacked from it.
+    let (f, _store) = in_namespace();
+    let holder = f.kaniko.prepare(Base::Scratch).unwrap();
+    let blob = f.layer("l1", &[("ranikust/b", b"kept")]);
+    let owned = [(blob.diff_id().clone(), blob.blob().unwrap().to_owned())];
+    f.kaniko.check_owners(&owned).unwrap();
+    let mut image = f.kaniko.prepare_source(&[blob]).unwrap();
+    let e = image.view().unwrap_err();
+    assert!(
+        e.to_string().contains(&format!("uid {uid} (/ranikust")),
+        "{e}"
+    );
+    assert_eq!(f.state_names(), ["blob"]);
+    image.release().unwrap();
+    holder.release().unwrap();
+
+    // The control: in a namespace that maps every id the image passes the
+    // same check and is unpacked whole, from the base's spool.
+    let (f, _store) = Fixture::tars();
+    let all = "0 0 4294967295\n";
+    let ns = UserNamespace::from_maps(all, all).unwrap();
+    f.kaniko.shared.userns.set(Some(ns)).unwrap();
+    let (layers, source) = streamed_for(&f, "l1", &[("ranikust/b", b"unpacked")], 2);
+    let root = f.kaniko.prepare(Base::Image(&layers[..1])).unwrap();
+    let mut image = f.kaniko.prepare_source(&layers[1..]).unwrap();
+    assert_eq!(read(image.view().unwrap(), "ranikust/b"), "unpacked");
+    assert_eq!(source.opens.load(Ordering::Relaxed), 1);
+    image.release().unwrap();
     root.release().unwrap();
 }
 

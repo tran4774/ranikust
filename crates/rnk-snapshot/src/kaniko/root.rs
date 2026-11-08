@@ -215,6 +215,9 @@ struct SpoolUse {
     used: usize,
     /// The verified spool, kept while `used < expected`.
     spool: Option<Arc<Spooled>>,
+    /// Whether the kept spool's owners were checked on the ignored paths
+    /// too, as a `COPY --from` image unpacked whole needs.
+    whole: bool,
 }
 
 /// A directory unpacked in the state directory for a `COPY --from` on `/`.
@@ -471,25 +474,36 @@ impl Shared {
     /// than announced is spooled anew. While the store's files are in
     /// memory (`memfd`), charged to the container's memory, no new spool is
     /// kept: each use spools the layer anew, one layer at a time. A blob of
-    /// the store is read as it is.
-    fn spool(&self, store: &Store, layer: &KanikoLayer) -> Result<Arc<Spooled>> {
+    /// the store is read as it is. The owners are checked as the extraction
+    /// that follows writes them: a base layer's skip the ignore list, a
+    /// `COPY --from` image's (`whole`) do not, so a spool a base's check
+    /// kept, or a blob [`Snapshotter::check_owners`] checked, is checked
+    /// again before an image uses it.
+    fn spool(&self, store: &Store, layer: &KanikoLayer, whole: bool) -> Result<Arc<Spooled>> {
+        let none = IgnoreList::new();
+        let keep = if whole { &none } else { &self.ignore };
+        let ids = self.user_namespace()?.map(UserNamespace::ids);
         if !matches!(layer.source, LayerSource::Stream(_)) {
-            return Spooled::of(store, layer, None, &self.ignore).map(Arc::new);
+            let blob = Spooled::of(store, layer, None, keep)?;
+            if let Some(ids) = ids.filter(|_| whole) {
+                blob.check_owners(ids, keep)?;
+            }
+            return Ok(Arc::new(blob));
         }
         let cached = {
             let mut spools = self.spools();
             let entry = spools.entry(layer.diff_id.clone()).or_default();
             entry.used += 1;
-            entry.spool.clone()
+            entry.spool.clone().map(|spool| (spool, entry.whole))
         };
-        let spooled = match cached {
-            Some(spooled) => spooled,
-            None => Arc::new(Spooled::of(
-                store,
-                layer,
-                self.user_namespace()?.map(UserNamespace::ids),
-                &self.ignore,
-            )?),
+        let (spooled, checked_whole) = match cached {
+            Some((spooled, checked_whole)) => {
+                if let Some(ids) = ids.filter(|_| whole && !checked_whole) {
+                    spooled.check_owners(ids, keep)?;
+                }
+                (spooled, checked_whole || whole)
+            }
+            None => (Arc::new(Spooled::of(store, layer, ids, keep)?), whole),
         };
         let mut spools = self.spools();
         if let Some(entry) = spools.get_mut(&layer.diff_id) {
@@ -497,6 +511,7 @@ impl Shared {
                 spools.remove(&layer.diff_id);
             } else if !store.files_in_memory() {
                 entry.spool = Some(Arc::clone(&spooled));
+                entry.whole = checked_whole;
             }
         }
         Ok(spooled)
@@ -1061,7 +1076,7 @@ fn open_for_root(shared: &Shared, layer: &KanikoLayer) -> Result<Box<dyn std::io
         let store = shared.tar_store()?.ok_or(Error::State(
             "no store to verify a streamed layer in before it reaches /",
         ))?;
-        return shared.spool(&store, layer)?.reader();
+        return shared.spool(&store, layer, false)?.reader();
     }
     layer.open()
 }
@@ -1163,6 +1178,19 @@ impl Spooled {
     /// second time; its diff ID is checked again on the way.
     fn extract(&self, root: &RootPath, ignore: &IgnoreList) -> Result<()> {
         extract_checked(root, ignore, self.reader()?, self.diff_id())
+    }
+
+    /// Refuses the owners of the verified layer that `ids` lack, the paths
+    /// `keep` covers skipped: for a use that extracts paths the check of
+    /// [`Spooled::of`] skipped (ADR-0098).
+    fn check_owners(&self, ids: &MappedIds, keep: &IgnoreList) -> Result<()> {
+        let mut found = Unmapped::owners(ids.clone());
+        let mut tar = rnk_layer::Decoder::new(self.reader()?)?;
+        rnk_rootfs::check_headers_and_owners(&mut tar, keep, &mut found)?;
+        if found.is_empty() {
+            return Ok(());
+        }
+        Err(rnk_rootfs::Error::Unmapped(found).into())
     }
 
     /// The verified layer's compressed bytes from the first one, read
@@ -1626,7 +1654,7 @@ impl KanikoRoot {
             {
                 let spooled = layers
                     .iter()
-                    .map(|layer| shared.spool(&store, layer))
+                    .map(|layer| shared.spool(&store, layer, true))
                     .collect::<Result<Vec<_>>>()?;
                 *tars = Some(spooled);
             }
