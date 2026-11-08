@@ -462,7 +462,10 @@ takes for the host's: only root can set one up. Neither that path nor
 and under a loader `/proc/self/exe` is the loader), so the path holds
 ranikust itself only where `/proc/self/exe` is the file mapped at one of
 ranikust's functions in `/proc/self/maps` (same device and inode) and the
-path's file has its size and bytes. Root alone may change the path when
+path's file has its size and bytes. Where the maps name that file
+otherwise than `fstat` (btrfs, overlayfs before Linux 6.8) and ranikust
+runs from no memfd copy, no path holds it, and the advice falls back to
+the install. Root alone may change the path when
 `/`, each directory below it and the file are owned by root and written
 by neither group nor others (an ACL that grants writing shows in the
 group bits), none is a symlink, each is on a mount without `nosuid`
