@@ -30,6 +30,7 @@ use rnk_store::{BuildPaths, Store};
 
 use crate::config::Seccomp;
 
+mod no_userns;
 pub(crate) mod rootless;
 
 /// The outcome the probes picked (ADR-0002, ADR-0004). Each library gets
@@ -237,13 +238,6 @@ pub(crate) fn enter_namespace() -> Result<(), Refusal> {
     rnk_sandbox::enter_build_namespace().map_err(|e| namespace_refusal(e, euid))
 }
 
-/// Guidance where no user namespace with a map can be made for a user
-/// other than root.
-const NO_USER_NAMESPACE: &str = "a build by a user other than root needs a user namespace of \
-     its own with an id map: where kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu \
-     23.10 and later), only a program an AppArmor profile allows gets one; otherwise run \
-     ranikust as root";
-
 /// The build's user namespace, entered, and the store opened in it.
 #[cfg_attr(
     not(test),
@@ -280,7 +274,9 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
     prepare_state_dir(state_dir)?;
     // The user's, for the guidance: root of the namespace once in it.
     let euid = rustix::process::geteuid().as_raw();
-    let userns = enter_build_userns(NO_USER_NAMESPACE.into())?;
+    // No capability check came first: what refuses is not known.
+    let no_userns = no_userns::guidance(None, no_userns::Stop::Unknown);
+    let userns = enter_build_userns(no_userns.into())?;
     let store = open_store(state_dir, state_dir, euid).map_err(inside_userns)?;
     Ok(UsernsSetup { userns, store })
 }
@@ -1120,17 +1116,21 @@ fn probe_in_scratch(
     };
     let keep = keeps_dir(None, overlay.as_ref().and_then(|r| r.as_ref().err()));
     let overlay = overlay.map(|r| r.map_err(|e| e.to_string()));
-    let apparmor = match std::fs::read_to_string(APPARMOR_USERNS) {
-        Ok(v) => v.trim().to_owned(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
-        Err(e) => format!("unreadable: {e}"),
-    };
     let probed = Probed {
         report,
         overlay,
-        apparmor,
+        apparmor: apparmor_switch(),
     };
     (Ok(probed), keep)
+}
+
+/// [`APPARMOR_USERNS`]'s value for the probe's line.
+fn apparmor_switch() -> String {
+    match std::fs::read_to_string(APPARMOR_USERNS) {
+        Ok(v) => v.trim().to_owned(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
+        Err(e) => format!("unreadable: {e}"),
+    }
 }
 
 /// `rnk-snapshot`'s overlay probe in `dir`, run in the user namespace: the

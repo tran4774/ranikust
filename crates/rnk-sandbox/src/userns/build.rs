@@ -131,7 +131,7 @@ pub(crate) fn enter_build(ids_wanted: BuildIds) -> Result<BuildUserNamespace> {
 /// Tries `plan` in a forked child: the steps [`enter_with`] takes, which
 /// leave this process as it is.
 fn trial(plan: &Plan, user: bool) -> Result<Trial> {
-    let run = supervise(plan, user, None, -1, ATTEMPT_DEADLINE, |args| {
+    let run = supervise(Some(plan), user, None, -1, ATTEMPT_DEADLINE, |args| {
         // SAFETY: the report pipe's write end, open in this child.
         let report = unsafe { BorrowedFd::borrow_raw(args.report) };
         if enter(args, report) && enter_mount_namespace(report) {

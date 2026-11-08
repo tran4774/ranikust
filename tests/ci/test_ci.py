@@ -89,6 +89,9 @@ class Classify(unittest.TestCase):
                   "tests/vm/guest/k8s/pin.env"]:
             self.check([p], {"t2"})
 
+    def test_the_apparmor_profile_runs_t2_and_the_book(self):
+        self.check(["contrib/apparmor/ranikust"], {"t2", "book"})
+
     def test_the_workflows_and_this_script_run_everything(self):
         for p in [".github/workflows/ci.yml", ".github/workflows/t2.yml",
                   ".github/workflows/release.yml", "scripts/ci.py", ".gitattributes"]:

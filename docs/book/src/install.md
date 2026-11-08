@@ -59,6 +59,10 @@ the kernel lets one create user namespaces, in rootless overlay mode
 sudo ranikust --context=. --destination=registry.example.com/team/app:1.0
 ```
 
+On Ubuntu 23.10 and later a regular user's build needs ranikust's AppArmor
+profile for `/usr/local/bin/ranikust`, which root loads
+([the AppArmor profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile)).
+
 ## Use it in a container
 
 Bind-mount the binary at `/ranikust/bin/ranikust`, read-only. In kaniko mode,

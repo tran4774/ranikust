@@ -81,8 +81,9 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    refused should kaniko mode on `/` follow all the same.
    The copy runs with `execveat(<n>, "", AT_EMPTY_PATH)` on its
    close-on-exec descriptor, with the same arguments, environment and
-   descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>`, and the core-file
-   limit ranikust started with (`forbid_core_dumps` records it again). A copy
+   descriptors, plus `RANIKUST_SEALED_COPY=<way> <mount>[ <path>]` (the
+   path `/proc/self/exe` named, in lowercase hex), and the core-file limit
+   ranikust started with (`forbid_core_dumps` records it again). A copy
    that needs an interpreter (binfmt_misc, with or without `O`; a `#!` line)
    is refused before the exec (`ENOENT`), and the next way is tried. The
    copy's run makes no copy, checks `/proc/self/exe` (the memfd's seals,
@@ -418,6 +419,13 @@ The steps, in order:
         detaches the tmpfs. The secret never reaches a disk and dies with the
         mount namespace. A secret with `env=` is a variable of that `RUN`
         instead.
+      - A `uid=` or `gid=` of `4294967295`, on a new cache directory or a
+        secret, is `chown`'s "unchanged": that id stays as the new directory
+        or file gets it (root's, or the group of a setgid parent), as
+        BuildKit passes it on
+        (`buildkit@cd8ee244 vendor/github.com/tonistiigi/fsutil/copy/mkdir_unix.go:44`,
+        `solver/llbsolver/mounts/secretmount_unix.go:76`;
+        [#212](https://github.com/tran4774/ranikust/issues/212)).
       - Every bind is remounted `nodev` (ADR-0032) through the new mount
         itself: made detached with `open_tree(OPEN_TREE_CLONE)`, attached with
         `move_mount`, remounted by its own descriptor. A lookup by name would
@@ -880,6 +888,12 @@ killed once the command exits ([kaniko-mode](kaniko-mode.md)).
   gives a container `container_t` with its own MCS pair on an SELinux host
   ([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md);
   labelling is revisited in Phase 6, [#89](https://github.com/tran4774/ranikust/issues/89)).
+  Where root has loaded ranikust's sample AppArmor profile
+  ([`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust)),
+  ranikust and every `RUN` run under it, which confines nothing and allows
+  user namespaces, a reach
+  [threat model section 6](../security/threat-model.md#6-accepted-risks)
+  accepts.
 - A `RUN` gets no resource limits, so a fork bomb is bounded only by the
   environment ([ADR-0007](../adr/0007-run-anywhere-shared-store.md)). Where a
   delegated tree exists it gets cgroups of its own, limited only in how many

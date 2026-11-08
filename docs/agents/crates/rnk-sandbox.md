@@ -62,11 +62,15 @@ them for both.
   an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
   `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
   closure as root of a namespace with the map that worked, for the overlay
-  probe. `ranikust` probes as root in root's own modes (reported only,
-  no subordinate ids) and as the user for rootless overlay mode, with the
-  subordinate ids it reads (`subids.rs`), which the build's user namespace
-  below takes too, and as root with `--userns`, with root's `ranikust`
-  range.
+  probe. `probe_user_namespace_capabilities` (#81) tries, in one child
+  with no directory, `unshare(CLONE_NEWUSER)` and, unmapped,
+  `unshare(CLONE_NEWNS)`, so that `ranikust` refuses a user whose user
+  namespace has no capabilities before it writes anything; a child cut
+  short is no refusal. `ranikust` probes as root in root's own modes
+  (reported only, no subordinate ids) and as the user for rootless overlay
+  mode, with the subordinate ids it reads (`subids.rs`), which the build's
+  user namespace below takes too, and as root with `--userns`, with root's
+  `ranikust` range.
 - The build's user namespace (`userns/build.rs`, #75): moves the process
   into a user namespace of its own and a mount namespace that namespace
   owns, `/` a recursive slave. Each map of the probe's order is first tried
@@ -145,7 +149,7 @@ Boundaries: `crates/rnk-sandbox/src/lib.rs`. In short:
 ```rust
 pub fn run_from_sealed_copy(ways: &[SealedCopy], walk: bool) -> rustix::io::Result<Sealing>; // first, single-threaded (ADR-0101): execveat from the first copy made; returns in the copy's run (Sealed, checked) or when none ran (Unsealed); Err only when RLIMIT_CORE cannot go back to 0; walk: whether the build may be kaniko mode on a container's / (the caller decides), without which no mount point is looked up
 pub enum SealedCopy { Memfd, Tmpfile }  // ALL: the order tried
-pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount }, Unsealed { why: String, binary: BinaryMount } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed
+pub enum Sealing { Sealed { way: SealedCopy, passed_over: String, binary: BinaryMount, path: Option<PathBuf> }, Unsealed { why: String, binary: BinaryMount, path: Option<PathBuf> } } // passed_over: why the ways before failed; binary(): the installed binary's mount, measured before the copy (from the marker), or on the file run when unsealed; binary_path(): the path /proc/self/exe named before the copy (the one an AppArmor profile attaches to), from the marker likewise, a name only
 pub enum BinaryMount { Root, ReadOnly, Writable, Exposed, Linked, NoMountId, Unplaced, NotWeighed, Unknown(Errno) } // against the mount of /: statx STATX_MNT_ID, statvfs ST_RDONLY; on another read-only mount, and on / when it is not an overlay (copies_up: overlayfs, or FUSE typed fuse.fuse-overlayfs in mountinfo; verdict), Linked: stx_nlink > 1, Exposed: another writable mount of its major:minor whose root contains its path (rnk_rootfs::parse_mountinfo) or is its inode (a file root, statx_physical at its mount point through RootPath, its mount's root), Unplaced: not placed (a writable directory whose source was removed, a writable mount covered or not reached at its mount point, a table changed during the walk, among them); NotWeighed: the walk not asked for; Unknown: a failed call, a lookup of its name or a mount point among them, unless a writable mount was found to reach it on a table that read the same twice; NoMountId: an id of 0 (qemu-user, a memfd; fdinfo fallback: #95)
 pub fn enter_build_namespace() -> Result<()>;   // unshare(CLONE_NEWNS) + rslave; refuses with other threads, and in a plain chroot (Error::InPlainChroot)
 pub fn enter_build_user_namespace(ids: BuildIds) -> Result<BuildUserNamespace>; // #75, instead of enter_build_namespace, before any thread and any read of credentials: a user namespace and a mount namespace it owns, the first map whose trial in a child passed; Error::NotSingleThreaded, InPlainChroot, NoUserNamespace { tried } with the process unchanged; UserNamespaceBroken(StepFailure) once inside: the process must end
@@ -158,6 +162,8 @@ pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]; Display: "
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
 impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; `ranikust` calls it for --allow proc.rbind): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's files of /proc/<pid> not under ptrace's check (cmdline, status, stat, mountinfo, cgroup, net/*…), not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6), and writes nothing there: the bind is read-only (ADR-0132); this crate does not scan for a shared PID namespace: `ranikust` runs the peer scan (ADR-0129) and the check of ADR-0134 before it enters the build's user namespace
 pub enum RootEntry { PivotRoot, MoveMount }
+pub fn probe_user_namespace_capabilities() -> Result<UsernsCapabilities>; // #81, single-threaded caller, nothing on disk: a forked child's unshare(CLONE_NEWUSER), then, unmapped, unshare(CLONE_NEWNS), which needs CAP_SYS_ADMIN in it
+pub struct UsernsCapabilities { pub unshare: StepResult, pub mount_ns: StepResult, pub cut_short: Option<String> } // stop(): "unshare" or "mount namespace" where refused, None where both worked or the child was cut short; Display: the two steps for the log line
 pub fn probe_user_namespace(dir: &RootPath, ids: BuildIds) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty, except under a shifted range: then given to the range with what the probe made, nothing in it deleted, for the caller to remove with the range's rights
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(allowed: Fallbacks): the first step a RUN needs that failed, an rbind of /proc passing `proc` only where allowed has allow_proc_rbind (ADR-0126), one of /sys always; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId, Shifted } // #[non_exhaustive]; "multi-range", "newuidmap", "one uid", "shifted range"
@@ -189,7 +195,7 @@ pub struct StopSignal { pub signo: i32, pub pid: u32, pub obeyed: bool }  // obe
 pub fn forbid_core_dumps() -> rustix::io::Result<()>;  // first in main (ADR-0051): soft RLIMIT_CORE 0; every later RUN gets the recorded soft limit back (Step::CoreLimit)
 pub struct RunSpec { /* root_dir, argv, env, user, workdir, network, hostname, mounts, secrets, stdin/out/err, isolation, script, root_id */ }  // #[non_exhaustive]; RunSpec::new
 pub struct BindMount { pub source, pub target, pub kind: MountKind, pub read_only }  // RUN --mount=type=cache
-pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // written by the child on its own tmpfs, bound read-only; Debug hides the bytes
+pub struct SecretFile { pub data: Vec<u8>, pub target, pub uid, pub gid, pub mode }  // written by the child on its own tmpfs, bound read-only; Debug hides the bytes; an id of u32::MAX is chown's -1, the child's own kept (#212)
 pub enum Stdio { Inherit, Null, Fd(OwnedFd) }
 pub enum Network { Host, None }                 // [decided] ADR-0010
 pub enum Isolation { Full, Direct }             // #[non_exhaustive]; no bare-chroot variant (ADR-0060)
@@ -375,7 +381,8 @@ What a change here must keep, with where it lives:
   (binfmt_misc, a `#!` line) is then refused before the exec, and the next
   way tried. The copy gets back the core-file limit ranikust started with.
   When no way works the build goes on, warned. The marker carries the
-  installed binary's mount only to a copy that checks; otherwise the file run
+  installed binary's mount and its path (in hexadecimal: a path may hold
+  any byte but NUL) only to a copy that checks; otherwise the file run
   is measured. Whether a writable mount reaches the binary is told from
   `/proc/self/mountinfo`: a directory root by its path, compared by
   component; a file root by its inode. Mount points and the binary's name
@@ -534,8 +541,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   order (a new `proc` and `sysfs` or their rbinds), the probe's next
   attempt (an rbind only after an allowed `EPERM`; `/proc`'s only on
   request, `/sys`'s without one), `setgroups` (skipped only where
-  denied in a one-id map) and the tty gid read from `/proc/self`
-  (`src/userns/tests.rs`),
+  denied in a one-id map), the capability check's step and line from its
+  records, a child cut short no refusal, and the tty gid read from
+  `/proc/self` (`src/userns/tests.rs`),
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, what the parent outside the build's user namespace
   does once its child ended (`supervise.rs`: a stop signal wins over the
@@ -549,8 +557,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   no name, open read-only, a `#!` copy refused before the exec in a child
   run of the test binary, a way after another copying the whole binary,
   the binary's mount against `/` (a zero id: `NoMountId`), measured on
-  files and carried in the marker, a marker that does not check not
-  believed, a writable mount reaching the binary by sample mountinfo,
+  files and carried in the marker, the binary's path carried there too
+  (any byte, a malformed spelling refused), a marker that does not check
+  not believed about either, a writable mount reaching the binary by
+  sample mountinfo,
   a binary in a root that is not an overlay weighed (by sample values and
   on `/`), a fuse-overlayfs root counted as an overlay, a FUSE root the
   table does not type unplaced, the root mount not counted, FUSE told
@@ -725,7 +735,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   of its own `oom_score_adj`, or of that of a process outside the build of
   its kernel uid, fails with `EROFS`, one through `/dev/stderr` works
   (without the read-only flag, both writes succeed); `USER _apt` gets
-  42:65534 through `setgroups`; `--network=none` has `lo` up in a network
+  42:65534 through `setgroups`; a secret's id of 4294967295 is left the
+  `RUN`'s own (#212); `--network=none` has `lo` up in a network
   namespace of its own, and its `/sys` shows no network device or
   address, and no mount below it lists anything (Podman's cgroup2 at
   `/sys/fs/cgroup`, which the shared network's `RUN` sees, is an empty
@@ -921,7 +932,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/userns/tests.rs`, profile `default`, also in the T2 unit suite on the
   VM: every step passes with root's own ranges on a host, `unshare` is
   refused under Docker's defaults, and nothing is left in the probe's
-  directory); the probe's red team as root (`red_team_as_root_*`, profile
+  directory), and likewise
+  `the_capability_check_as_root_passes_on_a_host_and_stops_at_unshare_in_docker`;
+  the probe's red team as root (`red_team_as_root_*`, profile
   `sysadmin`: the T0 attacks with the whole path, `proc` and `sysfs`
   mounts and `mknodat` reached, and the probe on a tmpfs, one that runs
   out of inodes part-way, a read-only one and a ramfs, each leaving
@@ -945,7 +958,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `max_rss_kb`, faults, blocks, context switches) when the child was reaped
   after `execve`, and `failed`; `rnk_sandbox.setup` (`stubs`);
   `rnk_sandbox.probe` (`ok`) per attempt; `rnk_sandbox.probe_userns`
-  (`ok`, `map`) per user-namespace probe; `rnk_sandbox.cgroups` (`layout`:
+  (`ok`, `map`) per user-namespace probe;
+  `rnk_sandbox.probe_userns_capabilities` (`ok`) per capability check;
+  `rnk_sandbox.cgroups` (`layout`:
   `nested`, `single` or `none`) once per `Sandbox::start` that may use them
   ([rows](../../design/metrics.md#rnk-sandbox)).
 - Spans are opened on the caller's thread, so they nest in its span with no

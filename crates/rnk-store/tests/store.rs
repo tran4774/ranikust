@@ -827,6 +827,46 @@ fn a_new_cache_gets_its_owner_and_mode_once() {
     );
 }
 
+/// An owner id of `u32::MAX`, which `chown` reads as "unchanged", leaves
+/// that id as a new directory gets it, with the mode asked for.
+#[test]
+fn a_new_cache_owned_by_u32_max_keeps_the_processs_id() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    for (n, (owner_uid, owner_gid)) in [(u32::MAX, gid), (uid, u32::MAX), (u32::MAX, u32::MAX)]
+        .into_iter()
+        .enumerate()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&paths(dir.path())).unwrap();
+        let owner = rnk_store::CacheOwner {
+            uid: owner_uid,
+            gid: owner_gid,
+            mode: 0o750,
+        };
+        // A new directory's group: the egid, or its parent's where that is
+        // setgid or the mount is `grpid`.
+        let made_gid = fs::metadata(store.state_dir().join("caches"))
+            .unwrap()
+            .gid();
+        let a = store
+            .cache_lease("k", CacheSharing::Shared, Some(owner), &never)
+            .unwrap_or_else(|e| panic!("{n}: {owner:?}: {e}"));
+        assert!(a.created());
+        let meta = fs::metadata(a.path()).unwrap();
+        let want_gid = if owner_gid == u32::MAX {
+            made_gid
+        } else {
+            owner_gid
+        };
+        assert_eq!((meta.uid(), meta.gid()), (uid, want_gid), "{owner:?}");
+        assert_eq!(meta.permissions().mode() & 0o7777, 0o750, "{owner:?}");
+    }
+}
+
 /// A cache that cannot be made leaves no temporary directory and no cache:
 /// without the right to give files away, giving it to root fails.
 #[test]

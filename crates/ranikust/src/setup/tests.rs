@@ -123,6 +123,9 @@ const EACCES: i32 = 13;
 /// Not root: the uid of a test user. Only the comparison with 0 matters.
 const USER: u32 = 1000;
 
+/// A caller's guidance for a user with no user namespace.
+const NO_USER_NAMESPACE: &str = "the caller's advice";
+
 const CAPS: OverlayCaps = OverlayCaps {
     api: MountApi::LowerdirPlus,
 };

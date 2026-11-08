@@ -51,7 +51,7 @@ fn the_ways_are_tried_in_order_until_one_runs() {
         },
         |way, _copy, failed| {
             ran.push((way, failed.iter().map(|(w, _)| *w).collect::<Vec<_>>()));
-            Ok(marker(way, BinaryMount::Writable, failed))
+            Ok(marker(way, BinaryMount::Writable, None, failed))
         },
         || Ok::<(), Errno>(()),
     );
@@ -60,7 +60,12 @@ fn the_ways_are_tried_in_order_until_one_runs() {
     };
     assert_eq!(made, SealedCopy::ALL);
     assert_eq!(ran, [(SealedCopy::Tmpfile, vec![SealedCopy::Memfd])]);
-    let (way, binary, passed_over) = parse_marker(&marker).expect("a marker");
+    let Marker {
+        way,
+        binary,
+        passed_over,
+        ..
+    } = parse_marker(&marker).expect("a marker");
     assert_eq!(way, SealedCopy::Tmpfile);
     assert_eq!(binary, BinaryMount::Writable);
     assert!(passed_over.starts_with("memfd: "), "{passed_over}");
@@ -158,7 +163,7 @@ fn the_copy_gets_the_environment_with_one_marker() {
     // The sample is what the seal builds when `vm.memfd_noexec=2` refuses the memfd.
     let failed = [(SealedCopy::Memfd, context("memfd_create")(Errno::ACCESS))];
     assert_eq!(
-        super::marker(SealedCopy::Tmpfile, BinaryMount::ReadOnly, &failed),
+        super::marker(SealedCopy::Tmpfile, BinaryMount::ReadOnly, None, &failed),
         marker
     );
     let vars = [
@@ -178,9 +183,15 @@ fn the_copy_gets_the_environment_with_one_marker() {
             "RANIKUST_SEALED_COPY=tmpfile ro; memfd: memfd_create: Permission denied (os error 13)",
         ]
     );
+    let named = |way, binary, passed_over| Marker {
+        way,
+        binary,
+        path: None,
+        passed_over,
+    };
     assert_eq!(
         parse_marker(marker),
-        Some((
+        Some(named(
             SealedCopy::Tmpfile,
             BinaryMount::ReadOnly,
             "memfd: memfd_create: Permission denied (os error 13)"
@@ -188,9 +199,10 @@ fn the_copy_gets_the_environment_with_one_marker() {
     );
     assert_eq!(
         parse_marker("memfd root"),
-        Some((SealedCopy::Memfd, BinaryMount::Root, ""))
+        Some(named(SealedCopy::Memfd, BinaryMount::Root, ""))
     );
-    // A way, and the binary's mount, must both be named.
+    // A way, and the binary's mount, must both be named; a path, only
+    // spelled in pairs of lowercase hexadecimal digits.
     for refused in [
         "memfd",
         "memfd; x",
@@ -201,13 +213,19 @@ fn the_copy_gets_the_environment_with_one_marker() {
         "memfd unknown:0",
         "memfd unknown:-1",
         "memfd unknown:4096",
+        "memfd root ",
+        "memfd root 2f7",
+        "memfd root 2F",
+        "memfd root 2g",
+        "memfd root /bin/ranikust",
+        "memfd root 2f 2f",
     ] {
         assert_eq!(parse_marker(refused), None, "{refused}");
     }
     for raw in [1, 4095] {
         assert_eq!(
             parse_marker(&format!("memfd unknown:{raw}")),
-            Some((
+            Some(named(
                 SealedCopy::Memfd,
                 BinaryMount::Unknown(Errno::from_raw_os_error(raw)),
                 ""
@@ -215,6 +233,31 @@ fn the_copy_gets_the_environment_with_one_marker() {
             "{raw}"
         );
     }
+}
+
+/// The marker carries the binary's path to the copy, whatever bytes it
+/// holds: an AppArmor profile attaches to it (ADR-0004).
+#[test]
+fn the_marker_carries_the_binarys_path() {
+    let failed = [(SealedCopy::Memfd, io::Error::other("x; y"))];
+    for path in [
+        &b"/usr/local/bin/ranikust"[..],
+        b"/home/a b/bin/ranikust; memfd root",
+        b"/tmp/\xff\n\x01ranikust (deleted)",
+    ] {
+        let path = PathBuf::from(OsString::from_vec(path.to_vec()));
+        for failed in [&[][..], &failed[..]] {
+            let value = marker(SealedCopy::Memfd, BinaryMount::Root, Some(&path), failed);
+            let parsed = parse_marker(&value).expect("a marker");
+            assert_eq!(parsed.path.as_deref(), Some(path.as_path()), "{value}");
+            assert_eq!(parsed.binary, BinaryMount::Root, "{value}");
+        }
+    }
+    let path = Path::new("/r");
+    assert_eq!(
+        marker(SealedCopy::Tmpfile, BinaryMount::ReadOnly, Some(path), &[]),
+        "tmpfile ro 2f72"
+    );
 }
 
 /// ADR-0101: the marker carries every answer about the binary's mount to
@@ -233,10 +276,10 @@ fn the_marker_carries_the_binarys_mount() {
         BinaryMount::Unknown(Errno::NOSYS),
     ] {
         for failed in [vec![], vec![(SealedCopy::Memfd, io::Error::other("x; y"))]] {
-            let value = marker(SealedCopy::Tmpfile, binary, &failed);
+            let value = marker(SealedCopy::Tmpfile, binary, None, &failed);
             let parsed = parse_marker(&value);
             assert_eq!(
-                parsed.map(|(way, b, _)| (way, b)),
+                parsed.map(|m| (m.way, m.binary)),
                 Some((SealedCopy::Tmpfile, binary)),
                 "{value}"
             );
@@ -608,26 +651,36 @@ fn a_file_in_the_root_is_weighed_by_the_roots_file_system() {
 }
 
 /// ADR-0101: a marker whose copy does not check is not believed: the
-/// binary's mount is measured on the file this process runs from.
+/// binary's mount is measured on the file this process runs from, and its
+/// path is that file's.
 #[test]
 fn an_unchecked_marker_is_not_believed_about_the_binary() {
     let actual = mount_of(exe().as_fd(), true);
+    let own = std::fs::read_link("/proc/self/exe").expect("readlink /proc/self/exe");
     let lie = if actual == BinaryMount::Writable {
         BinaryMount::ReadOnly
     } else {
         BinaryMount::Writable
     };
-    let value = OsString::from(format!("memfd {}", lie.token()));
-    let Sealing::Unsealed { why, binary } = copy_run(&value, true) else {
-        panic!("the test binary passes for a memfd copy");
-    };
-    assert!(why.contains("is no such copy"), "{why}");
-    assert_eq!(binary, actual);
-    let Sealing::Unsealed { why, binary } = copy_run(OsStr::new("memfd"), true) else {
+    // `/usr/local/bin/ranikust`, in the marker's spelling.
+    let elsewhere = "2f7573722f6c6f63616c2f62696e2f72616e696b757374";
+    for value in [
+        format!("memfd {}", lie.token()),
+        format!("memfd {} {elsewhere}", lie.token()),
+    ] {
+        let Sealing::Unsealed { why, binary, path } = copy_run(OsStr::new(&value), true) else {
+            panic!("the test binary passes for a memfd copy");
+        };
+        assert!(why.contains("is no such copy"), "{why}");
+        assert_eq!(binary, actual);
+        assert_eq!(path.as_deref(), Some(own.as_path()), "{value}");
+    }
+    let Sealing::Unsealed { why, binary, path } = copy_run(OsStr::new("memfd"), true) else {
         panic!("a marker with no mount passes");
     };
     assert!(why.contains("names no way"), "{why}");
     assert_eq!(binary, actual);
+    assert_eq!(path.as_deref(), Some(own.as_path()));
 }
 
 /// ADR-0101: the memfd copy holds the binary's bytes and its seals refuse

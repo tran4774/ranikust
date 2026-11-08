@@ -1,7 +1,6 @@
 # How ranikust builds
 
-> This page describes what is built; where a part is not, it says so. The
-> AppArmor advice for a regular user (Phase 3) is not built
+> This page describes what is built; where a part is not, it says so
 > ([status](status.md)).
 
 A Dockerfile build runs each instruction of each stage in a root filesystem
@@ -51,7 +50,13 @@ Where none of that works a regular user is refused (see
   `--seccomp` changes the profile, [ADR-0109]). It gets no SELinux label of
   its own: it keeps the context of the process that started ranikust, so on a
   host with SELinux enforcing the sandbox holds it, not policy as for a
-  container ([ADR-0140]).
+  container ([ADR-0140]). Nor does ranikust apply an AppArmor profile of its
+  own: where root has loaded
+  [ranikust's sample profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
+  ranikust and every `RUN` run under it, which confines nothing and allows
+  user namespaces, a reach the
+  [threat model](https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks)
+  accepts.
   The host name is always `ranikust`. `/etc/hosts` is the one ranikust itself
   sees, so Kubernetes `hostAliases` keep working, or loopback names only with
   `--network=none` ([ADR-0031]). ranikust itself runs from a copy of its
@@ -415,13 +420,16 @@ may mount but overlayfs is unusable (a state directory on NFS, say).
 
 As a regular user where user namespaces are restricted (the default on Ubuntu
 24.04 and later), or in a pod that is neither root nor allowed user
-namespaces, ranikust cannot build. It stops before doing anything, names the
-step of the probe that failed and says what would work: running as root, or
-inside a container. The AppArmor profile for the binary, which lifts the
-restriction on Ubuntu 24.04, is advice planned for Phase 3: the message does
-not give it yet. A regular user is also refused where only an rbind of `/proc`
-would work and `--allow proc.rbind` is absent, and where the state directory is
-on overlayfs.
+namespaces, ranikust cannot build. It stops before it writes anything, names
+the step of the probe that failed and says what would work, in order: running
+as root with `sudo`; where Ubuntu's AppArmor switch restricts user namespaces
+and may be what refused,
+[ranikust's AppArmor profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
+for a binary run on the host from a path only root can change, on a local
+filesystem that root mounted (else after installing it in one, naming what
+failed); or running inside a container. A regular user is also refused
+where only an rbind of `/proc` would work and `--allow proc.rbind` is
+absent, and where the state directory is on overlayfs.
 
 ## Privilege levels at a glance
 

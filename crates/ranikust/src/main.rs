@@ -80,8 +80,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// `overlay-refused` takes overlay mode's probe, once it passed, as a
 /// failed probe check, which routes as NFS's refused mount does
 /// ([`setup::set_up`]); `no-userns` refuses rootless overlay mode before
-/// its probe, so that a test of the binary as a user other than root makes
-/// no user namespace ([`rootless`]); `rootless-broken` fails rootless
+/// its probe as where no user namespace is usable, with that advice, so
+/// that a test of the binary as a user other than root makes no user
+/// namespace ([`rootless`]); `rootless-broken` fails rootless
 /// overlay mode's set-up in the build's user namespace at its last step,
 /// once its sandbox started, where `--mode=auto` falls back to kaniko mode
 /// for root (ADR-0136). It lets the tests run the real binary through
@@ -248,6 +249,7 @@ fn main() -> ExitCode {
             way,
             passed_over,
             binary,
+            ..
         }) if passed_over.is_empty() => {
             tracing::debug!(%way, ?binary, "running from a sealed copy of the binary (ADR-0101)");
         }
@@ -255,26 +257,26 @@ fn main() -> ExitCode {
             way,
             passed_over,
             binary,
+            ..
         }) => tracing::debug!(
             %way,
             %passed_over,
             ?binary,
             "running from a sealed copy of the binary (ADR-0101)"
         ),
-        Some(Sealing::Unsealed { why, binary }) => tracing::warn!(
+        Some(Sealing::Unsealed { why, binary, .. }) => tracing::warn!(
             ?binary,
             "running from the binary as installed, not from a sealed copy (ADR-0101): {why}"
         ),
         None => {}
     }
-    let binary = sealing.as_ref().map(Sealing::binary);
     let result = tracing::debug_span!("ranikust.run").in_scope(|| {
         run(
             &command,
             &telemetry,
             fault.as_deref(),
             metrics_file.as_deref(),
-            binary,
+            sealing.as_ref(),
         )
     });
     let (code, outcome) = match &result {
@@ -459,14 +461,14 @@ fn write_metrics_file(
         .map_err(std::io::Error::other)
 }
 
-/// `binary` is where the binary ranikust started from lies, measured for
+/// `sealing` is how the binary ranikust started from was sealed, for
 /// `build` only.
 fn run(
     command: &Command,
     telemetry: &Telemetry,
     fault: Option<&str>,
     metrics_file: Option<&Path>,
-    binary: Option<BinaryMount>,
+    sealing: Option<&Sealing>,
 ) -> Result<(), Failure> {
     match fault {
         Some("panic") => deliberate_panic(),
@@ -483,7 +485,7 @@ fn run(
             Ok(())
         }
         Command::Build(args) => tracing::debug_span!("ranikust.build")
-            .in_scope(|| build(args, telemetry, metrics_file, binary, fault)),
+            .in_scope(|| build(args, telemetry, metrics_file, sealing, fault)),
         Command::Prune(args) => {
             let (state_dir, pruned) = tracing::debug_span!("ranikust.prune")
                 .in_scope(|| prune::run(args))
@@ -499,14 +501,18 @@ fn run(
     }
 }
 
-/// `fault` is the test hook's value ([`DEBUG_FAULT_ENV`]).
+/// `sealing` says where the binary ranikust started from lies, and its
+/// path, which a refusal of rootless overlay mode names; `fault` is the
+/// test hook's value ([`DEBUG_FAULT_ENV`]).
 fn build(
     args: &BuildArgs,
     telemetry: &Telemetry,
     metrics_file: Option<&Path>,
-    binary: Option<BinaryMount>,
+    sealing: Option<&Sealing>,
     fault: Option<&str>,
 ) -> Result<(), Failure> {
+    let binary = sealing.map(Sealing::binary);
+    let path = sealing.and_then(Sealing::binary_path);
     let refuse_overlay = fault == Some("overlay-refused");
     let config = BuildConfig::from_args(args).map_err(|invalid| Failure::usage(invalid.0))?;
     let seccomp = config::read_seccomp(config.seccomp.as_ref())
@@ -545,6 +551,7 @@ fn build(
             started_in,
             Via::Userns(args),
             fault,
+            path,
         )
         .refused();
     }
@@ -581,8 +588,16 @@ fn build(
             // A user other than root builds in a user namespace of its own.
             if !rustix::process::geteuid().is_root() {
                 let started_in = started_in.as_ref().map_err(|&e| e);
-                return rootless(&config, &seccomp, &span, started_in, Via::Overlay, fault)
-                    .refused();
+                return rootless(
+                    &config,
+                    &seccomp,
+                    &span,
+                    started_in,
+                    Via::Overlay,
+                    fault,
+                    path,
+                )
+                .refused();
             }
             let refusal = match span.in_scope(setup::enter_namespace) {
                 Ok(()) => {
@@ -602,7 +617,15 @@ fn build(
                 Some(off) => off,
                 None => {
                     let started_in = started_in.as_ref().map_err(|&e| e);
-                    match rootless(&config, &seccomp, &span, started_in, Via::Overlay, fault) {
+                    match rootless(
+                        &config,
+                        &seccomp,
+                        &span,
+                        started_in,
+                        Via::Overlay,
+                        fault,
+                        path,
+                    ) {
                         Rootless::Built(built) => return built,
                         Rootless::NotHere(not_here) => not_here.refusal.to_string(),
                         // Never: only `--mode=auto` falls back.
@@ -629,6 +652,7 @@ fn build(
                     started_in,
                     Via::AutoUser(args),
                     fault,
+                    path,
                 )
                 .refused();
             }
@@ -720,7 +744,7 @@ fn build(
                         None => {
                             let started_in = started_in.as_ref().map_err(|&e| e);
                             let via = Via::AutoRoot(args);
-                            match rootless(&config, &seccomp, &span, started_in, via, fault) {
+                            match rootless(&config, &seccomp, &span, started_in, via, fault, path) {
                                 Rootless::Built(built) => return built,
                                 Rootless::NotHere(not_here) => {
                                     tracing::info!("ranikust: {}", not_here.refusal);
@@ -873,7 +897,9 @@ fn rootless_kept_off() -> Option<String> {
 /// ([`rnk_sandbox::fork_to_wait`]): it returns only where the child's
 /// set-up failed ([`Rootless::FellBack`]), else ends as the child did.
 /// `started_in` as for [`kaniko`]; `fault` is the test hook's value
-/// ([`DEBUG_FAULT_ENV`]: `no-userns`, `rootless-broken`).
+/// ([`DEBUG_FAULT_ENV`]: `no-userns`, `rootless-broken`); `binary` the
+/// path ranikust started from ([`Sealing::binary_path`]), which the
+/// refusal of a user with no user namespace weighs.
 fn rootless(
     config: &BuildConfig,
     seccomp: &Seccomp,
@@ -881,6 +907,7 @@ fn rootless(
     started_in: rustix::io::Result<&exposure::MountNamespace>,
     via: Via<'_>,
     fault: Option<&str>,
+    binary: Option<&Path>,
 ) -> Rootless {
     let how = via.flag();
     // `--userns` has no other mode to try: its usage error precedes any write.
@@ -892,10 +919,14 @@ fn rootless(
     let plan = match span.in_scope(|| {
         if fault == Some("no-userns") {
             let euid = rustix::process::geteuid().as_raw();
-            return Err(setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, euid));
+            return Err(setup::rootless::refused_by_hook(
+                DEBUG_FAULT_ENV,
+                euid,
+                binary,
+            ));
         }
         let userns = matches!(via, Via::Userns(_));
-        setup::rootless::plan(&config.state_dir, config.allow_proc_rbind, userns)
+        setup::rootless::plan(&config.state_dir, config.allow_proc_rbind, userns, binary)
     }) {
         Ok(plan) => plan,
         Err(not_here) => return Rootless::NotHere(not_here),
@@ -947,6 +978,7 @@ fn rootless(
         userns_network: config.allow_network_none_userns,
         child: child.as_ref(),
         broken_by: (fault == Some("rootless-broken")).then_some(DEBUG_FAULT_ENV),
+        binary,
     };
     let setup =
         span.in_scope(|| setup::rootless::set_up(&config.state_dir, plan, scanned, seccomp, &then));
@@ -2357,13 +2389,14 @@ mod tests {
         );
     }
 
-    /// The test hook's refusal leaves the process unchanged and points a
-    /// user other than root at root, root at nothing more.
+    /// The test hook's refusal leaves the process unchanged and gives a
+    /// user other than root the advice for no user namespace, root nothing
+    /// more.
     #[test]
     fn the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe() {
-        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0);
+        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0, None);
         assert_eq!(as_root.refusal.guidance, "");
-        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000);
+        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000, None);
         assert!(!not_here.probed);
         assert_eq!(not_here.refusal.kind, setup::Kind::Other);
         assert!(

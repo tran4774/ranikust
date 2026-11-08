@@ -2012,6 +2012,76 @@ fn a_scan_of_owners_notes_what_the_extraction_would_chown() {
     }
 }
 
+/// An owner of `u32::MAX`, which `chown` reads as "unchanged", leaves a
+/// directory, a file and a symlink the extracting process's own in every
+/// extraction, whether a PAX record (over a header naming another owner)
+/// or the header's base-256 field gives it, as the uid or the gid; and the
+/// scans, which take it as no owner, agree: nothing for a map that holds
+/// the process's ids.
+#[test]
+fn an_owner_of_u32_max_leaves_the_processs_own_and_the_scans_agree() {
+    let f = Fixture::new();
+    let (uid, gid) = f.ids();
+    let max = u32::MAX.to_string();
+    // Not the process's own: a PAX record ignored would show.
+    let other = |id: u32| u64::from(id ^ 1);
+    let entries = |t: &mut Tar, pax: Option<(&str, &[u8])>| {
+        let record = |t: &mut Tar| {
+            if let Some(record) = pax {
+                t.pax(&[record]);
+            }
+        };
+        record(t);
+        t.dir("d", 0o755);
+        record(t);
+        t.file("f", 0o644, b"data");
+        record(t);
+        t.symlink("s", "f");
+    };
+    let mut cases = Vec::new();
+    for key in ["uid", "gid"] {
+        let mut t = Tar::new(&f);
+        if key == "uid" {
+            t.uid = other(uid);
+        } else {
+            t.gid = other(gid);
+        }
+        entries(&mut t, Some((key, max.as_bytes())));
+        cases.push((format!("PAX {key}"), t.bytes()));
+    }
+    for (u, g) in [(true, false), (false, true), (true, true)] {
+        let mut t = Tar::new(&f);
+        if u {
+            t.uid = u64::from(u32::MAX);
+        }
+        if g {
+            t.gid = u64::from(u32::MAX);
+        }
+        entries(&mut t, None);
+        cases.push((format!("base-256, uid {u}, gid {g}"), t.bytes()));
+    }
+    let own = || {
+        crate::MappedIds::parse(&format!("{uid} {uid} 1\n"), &format!("{gid} {gid} 1\n")).unwrap()
+    };
+    for (what, tar) in &cases {
+        for (how, r, owners) in every_extraction_with(tar, |host| {
+            ["d", "f", "s"].map(|n| {
+                let m = fs::symlink_metadata(host.join(n)).unwrap();
+                (m.uid(), m.gid())
+            })
+        }) {
+            r.unwrap_or_else(|e| panic!("{what}, {how}: {e}"));
+            assert_eq!(owners, [(uid, gid); 3], "{what}, {how}");
+        }
+        let mut found = Unmapped::owners(own());
+        scan_owners(tar.as_slice(), &mut found).unwrap();
+        assert!(found.is_empty(), "{what}: {found}");
+        let mut live = Unmapped::owners(own());
+        check_headers_and_owners(tar.as_slice(), &mut live).unwrap();
+        assert!(live.is_empty(), "{what}: {live}");
+    }
+}
+
 /// A cleaned directory path of `len` bytes made of names of at most 255
 /// bytes, the kernel's `NAME_MAX`.
 fn dir_of(len: usize) -> String {
@@ -2590,6 +2660,20 @@ fn the_check_takes_a_posix_acl_where_the_kernel_does() {
 /// the names in the root afterwards (a deeper walk by host path would stop
 /// at `PATH_MAX`).
 fn every_extraction(tar: &[u8]) -> Vec<(&'static str, Result<()>, BTreeSet<OsString>)> {
+    every_extraction_with(tar, |host| {
+        fs::read_dir(host)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect()
+    })
+}
+
+/// [`every_extraction`], with what `inspect` reads of each root by its
+/// host path instead of its names.
+fn every_extraction_with<T>(
+    tar: &[u8],
+    inspect: impl Fn(&Path) -> T,
+) -> Vec<(&'static str, Result<()>, T)> {
     type Run = fn(&RootPath, &[u8]) -> Result<()>;
     let runs: [(&str, Run); 5] = [
         ("Apply", |r, t| extract(r, t, Whiteouts::Apply)),
@@ -2604,11 +2688,7 @@ fn every_extraction(tar: &[u8]) -> Vec<(&'static str, Result<()>, BTreeSet<OsStr
         .map(|(name, run)| {
             let f = Fixture::new();
             let r = run(&f.root, tar);
-            let names = fs::read_dir(&f.host)
-                .unwrap()
-                .map(|e| e.unwrap().file_name())
-                .collect();
-            (name, r, names)
+            (name, r, inspect(&f.host))
         })
         .collect()
 }

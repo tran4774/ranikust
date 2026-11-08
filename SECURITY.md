@@ -151,8 +151,14 @@ These are documented properties, not vulnerabilities:
   starts, the host's, or one whose PID 1 is in another mount namespace
   ([ADR-0129](docs/adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md),
   [ADR-0134](docs/adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md));
-  the AppArmor advice for Ubuntu 24.04 or later is Phase 3
-  ([ADR-0004](docs/adr/0004-support-every-privilege-level.md)).
+  where AppArmor restricts user namespaces and may be what refused, the
+  refusal offers ranikust's AppArmor profile
+  ([`contrib/apparmor/ranikust`](contrib/apparmor/ranikust)) only for a
+  binary run on the host, unconfined, whose path root alone may change,
+  on a local filesystem that root mounted, a path that holds ranikust
+  itself; what a loaded profile grants is an accepted risk
+  ([ADR-0004](docs/adr/0004-support-every-privilege-level.md),
+  [threat model section 6](docs/security/threat-model.md#6-accepted-risks)).
 - Vulnerabilities in base images, in the tools a Dockerfile runs, or in the
   kernel. Report kernel bugs to the kernel.
 

@@ -425,6 +425,434 @@ echo "=== default: a default docker run, --mode=auto"
 default_userns
 echo "default: ok"
 
+# Whether each argument after the first comes in $1, after the one before.
+in_order() {
+  local rest="$1" part
+  shift
+  for part in "$@"; do
+    [[ "$rest" == *"$part"* ]] || return 1
+    rest="${rest#*"$part"}"
+  done
+}
+
+# The guidance line of a refusal in the log $1: ranikust indents it.
+advice_of() { grep '^  ' <<<"$1" || true; }
+
+AA_SWITCH=kernel.apparmor_restrict_unprivileged_userns
+AA_PROFILE=/etc/apparmor.d/ranikust
+AA_BINARY=/usr/local/bin/ranikust
+# Undoes apparmor_profile's changes; its EXIT trap runs it too.
+apparmor_undo() {
+  if [ -e "$AA_PROFILE" ]; then
+    sudo apparmor_parser -R "$AA_PROFILE" >/dev/null 2>&1 || true
+    sudo rm -f "$AA_PROFILE"
+  fi
+  sudo rm -f "$AA_BINARY"
+}
+
+# Whether root alone may change what is in the directory $1, as ranikust
+# checks it, there and in every directory above: owner, mode, no symlink,
+# no nosuid, a filesystem on its list.
+root_only_chain() {
+  local d="$1"
+  while :; do
+    [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] ||
+      return 1
+    [[ ",$(findmnt -no OPTIONS -T "$d")," != *,nosuid,* ]] || return 1
+    case "$(stat -f -c %t "$d")" in
+      ef53 | 58465342 | 9123683e | 73717368 | e0f5e1e2 | 1021994 | 794c7630 | 2fc12fc1) ;;
+      *) return 1 ;;
+    esac
+    [ "$d" = / ] && return 0
+    d="$(dirname "$d")"
+  done
+}
+
+usr_local_bin_root_only() {
+  root_only_chain /usr/local/bin
+}
+
+# #81: root's copy of the binary at /usr/local/bin/ranikust is refused as
+# this user at the mount namespace, writing no state directory, with the
+# profile as shipped (or, where /usr/local/bin is not root's alone, with the
+# install in a directory that is first); with ranikust's profile loaded, it
+# builds the rootless case in rootless overlay mode, with a fresh proc and
+# root's --reproducible digest, and a RUN keeps the profile; where
+# kernel.apparmor_restrict_unprivileged_unconfined is 0, aa-exec enters the
+# profile. Uses rl_args, root_digest, ud and dir from the user section.
+apparmor_profile() {
+  local log rc=0 got aa="$ud/aa"
+  command -v apparmor_parser >/dev/null ||
+    { echo "error: user: no apparmor_parser where AppArmor restricts user namespaces" >&2; exit 1; }
+  [ ! -e "$AA_BINARY" ] && [ ! -e "$AA_PROFILE" ] ||
+    { echo "error: user: $AA_BINARY or $AA_PROFILE is there already" >&2; exit 1; }
+  trap 'sudo rm -f "$MARKER"; apparmor_undo' EXIT
+  sudo install -m 0755 -o root -g root "$RNK" "$AA_BINARY"
+  mkdir -m 700 -p "$aa" "$aa/w" "$aa/ctx"
+  # A state directory not made yet: the refusal writes nothing.
+  log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/new" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/apparmor-before.log"
+  [ ! -e "$aa/new" ] && grep -q 'the user namespace probe stops at mount namespace' <<<"$log" ||
+    { echo "error: user: expected a refusal at the mount namespace, writing nothing:" >&2; echo "$log" >&2; exit 1; }
+  local advice
+  advice="$(advice_of "$log")"
+  if usr_local_bin_root_only; then
+    [ "$rc" = 1 ] && in_order "$advice" 'run ranikust as root, with sudo; ' \
+      "or, as root, copy ranikust's AppArmor profile" \
+      'to /etc/apparmor.d/ranikust and run apparmor_parser -r /etc/apparmor.d/ranikust; ' \
+      'or run ranikust in a container' && ! grep -q 'first' <<<"$advice" ||
+      { echo "error: user: expected the profile as shipped for $AA_BINARY, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  else
+    [ "$rc" = 1 ] && in_order "$advice" 'run ranikust as root, with sudo; ' \
+      'install ranikust first in a directory only root can change, which /usr/local/bin is not here' \
+      "$AA_BINARY is not a path only root can change (" 'or run ranikust in a container' ||
+      { echo "error: user: expected the install in a root-only directory first, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  fi
+  echo "user: $AA_BINARY, root's, without the profile: refused; advice: sudo, the profile, a container"
+  sudo cp "$HOME/rnk/guest/apparmor-ranikust" "$AA_PROFILE"
+  sudo apparmor_parser -r "$AA_PROFILE"
+  rc=0
+  log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/w" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/apparmor.log"
+  [ "$rc" = 0 ] &&
+    grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
+    { echo "error: user: expected rootless overlay mode with a fresh proc under the profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  got="$(smoke_digest "$log")"
+  [ "$got" = "$root_digest" ] ||
+    { echo "error: user: under the profile, --reproducible digest $got, root's $root_digest" >&2; exit 1; }
+  echo "user: with the profile, $AA_BINARY builds in rootless overlay mode, with root's --reproducible digest $got"
+  # shellcheck disable=SC2016 # expanded by the RUN's shell
+  printf 'FROM %s\nRUN echo "label: $(cat /proc/self/attr/current)"\n' "$E2E_BASE" >"$aa/ctx/Dockerfile"
+  rc=0
+  log="$("$AA_BINARY" --context "$aa/ctx" --no-push --state-dir "$aa/w" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/apparmor-run.log"
+  [ "$rc" = 0 ] && grep -q '^label: ranikust (unconfined)$' <<<"$log" ||
+    { echo "error: user: expected a RUN under the profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: a RUN keeps the profile: $(grep '^label: ' <<<"$log")"
+  # The docs say: where kernel.apparmor_restrict_unprivileged_unconfined is
+  # 0, an unconfined program of this user may enter the profile without
+  # being ranikust.
+  local unconfined
+  unconfined="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined 2>/dev/null || echo absent)"
+  if [ "$unconfined" = 0 ]; then
+    command -v aa-exec >/dev/null || { echo "error: user: no aa-exec where AppArmor restricts user namespaces" >&2; exit 1; }
+    got="$(aa-exec -p ranikust -- unshare --user --map-root-user --mount true 2>&1)" ||
+      { echo "error: user: aa-exec -p ranikust -- unshare -Urm refused at unprivileged_unconfined=0: $got" >&2; exit 1; }
+    echo "user: at kernel.apparmor_restrict_unprivileged_unconfined=0, aa-exec -p ranikust gives an unconfined program of this user a user namespace, as the docs say"
+    red_team_profile_grant
+  else
+    echo "user: kernel.apparmor_restrict_unprivileged_unconfined=$unconfined: aa-exec not checked"
+  fi
+  apparmor_undo
+  trap 'sudo rm -f "$MARKER"' EXIT
+}
+
+# #81: the profile is offered only for a path on a local filesystem that
+# root mounted: root's copy of the binary on a nosuid tmpfs, then on ramfs (off
+# the list), owned by root and written by no one else, is refused at the
+# mount namespace with the install under /usr/local/bin first, naming the
+# mount, and writes no state directory. Uses rl_args, ud and dir from the
+# user section.
+AA_MOUNT=/mnt/rnk-aa-mount
+apparmor_mounts() {
+  local m="$AA_MOUNT" log rc advice c fs opts why
+  [ ! -L /mnt ] && [ "$(stat -c %u /mnt)" = 0 ] && [ $((8#$(stat -c %a /mnt) & 8#022)) = 0 ] ||
+    { echo "error: user: /mnt is not root's alone here" >&2; exit 1; }
+  sudo mkdir -m 755 -p "$m"
+  trap 'sudo rm -f "$MARKER"; sudo umount "$AA_MOUNT" 2>/dev/null || true; sudo rmdir "$AA_MOUNT" 2>/dev/null || true' EXIT
+  for c in "tmpfs|nosuid,mode=755|is on a nosuid mount" \
+    "ramfs|mode=755|is not on a local filesystem ranikust knows"; do
+    IFS='|' read -r fs opts why <<<"$c"
+    sudo mount -t "$fs" -o "$opts" "rnk-$fs" "$m"
+    sudo install -m 0755 -o root -g root "$RNK" "$m/ranikust"
+    rc=0
+    log="$("$m/ranikust" "${rl_args[@]}" --state-dir "$ud/on-$fs" 2>&1)" || rc=$?
+    sudo umount "$m"
+    printf '%s\n' "$log" >"$dir/apparmor-$fs.log"
+    advice="$(advice_of "$log")"
+    [ "$rc" = 1 ] && [ ! -e "$ud/on-$fs" ] &&
+      grep -q 'the user namespace probe stops at mount namespace' <<<"$log" &&
+      in_order "$advice" 'run ranikust as root, with sudo; ' 'or, as root, install ranikust ' \
+        "$m/ranikust is not a path only root can change ($m $why" 'or run ranikust in a container' ||
+      { echo "error: user: expected no profile for a binary on $fs ($opts), got $rc:" >&2; echo "$log" >&2; exit 1; }
+    echo "user: root's binary on $fs ($opts): the profile only after an install elsewhere ($m $why)"
+  done
+  sudo rmdir "$m"
+  trap 'sudo rm -f "$MARKER"' EXIT
+}
+
+# #81: a user other than root in a default `docker run`, whose seccomp
+# filter refuses unshare(CLONE_NEWUSER) with EPERM, is refused there and
+# advised sudo then a container, with no profile whatever the switch reads:
+# no profile lifts a seccomp refusal.
+seccomp_user_advice() {
+  local d="$W/default-user" rc=0 log advice
+  sudo mkdir -m 755 -p "$d/ctx"
+  printf 'FROM %s\nRUN true\n' "$E2E_BASE" | sudo tee "$d/ctx/Dockerfile" >/dev/null
+  log="$(sudo docker run --rm --user 1000:1000 -v "$RNK:/ranikust/bin/ranikust:ro" \
+    -v "$d/ctx:/ranikust/ctx:ro" "$IMAGE" /ranikust/bin/ranikust --context /ranikust/ctx \
+    --no-push --state-dir /tmp/rnk-state 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/build.log" >/dev/null
+  advice="$(advice_of "$log")"
+  [ "$rc" = 1 ] && grep -q 'the user namespace probe stops at unshare' <<<"$log" &&
+    grep -q 'unshare(CLONE_NEWUSER): EPERM' <<<"$log" &&
+    in_order "$advice" 'run ranikust as root, with sudo; ' 'or run ranikust in a container' &&
+    ! grep -qi 'apparmor' <<<"$advice" ||
+    { echo "error: default-user: expected a refusal at unshare (EPERM), advising sudo then a container and no profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "default-user: a user in a default docker run: refused at unshare (EPERM); advice: sudo, a container, no profile ($AA_SWITCH: $(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null || echo absent))"
+}
+
+# #81: where the switch is 1, a user other than root in a privileged
+# container (no seccomp filter, no AppArmor confinement, the host's id map)
+# is refused at the mount namespace and advised sudo then a container, with
+# no profile: a path checked in a container is not the one a profile on the
+# host attaches to.
+privileged_user_advice() {
+  local d="$W/privileged-user" rc=0 log advice
+  if [ "$(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null)" != 1 ]; then
+    echo "privileged-user: $AA_SWITCH is not 1: not checked"
+    return
+  fi
+  sudo mkdir -m 755 -p "$d/ctx"
+  printf 'FROM %s\nRUN true\n' "$E2E_BASE" | sudo tee "$d/ctx/Dockerfile" >/dev/null
+  log="$(sudo docker run --rm --privileged --user 1000:1000 -v "$RNK:/ranikust/bin/ranikust:ro" \
+    -v "$d/ctx:/ranikust/ctx:ro" "$IMAGE" /ranikust/bin/ranikust --context /ranikust/ctx \
+    --no-push --state-dir /tmp/rnk-state 2>&1)" || rc=$?
+  echo "$log" | sudo tee "$d/build.log" >/dev/null
+  advice="$(advice_of "$log")"
+  [ "$rc" = 1 ] && grep -q 'the user namespace probe stops at mount namespace' <<<"$log" &&
+    in_order "$advice" 'run ranikust as root, with sudo; ' 'or run ranikust in a container' &&
+    ! grep -qi 'apparmor' <<<"$advice" ||
+    { echo "error: privileged-user: expected a refusal at the mount namespace, advising sudo then a container and no profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "privileged-user: a user in a privileged docker run: refused at the mount namespace; advice: sudo, a container, no profile"
+}
+
+# #81: where the switch is 0 (Ubuntu 22.04), or absent, the advice for no
+# user namespace (the test hook's) names no profile: sudo, then a container.
+# Where it is 1 it is set to 0 for the run, then back.
+advice_without_the_switch() {
+  local log rc=0 advice before
+  before="$(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null || true)"
+  if [ "$before" = 1 ]; then
+    trap 'sudo rm -f "$MARKER"; sudo sysctl -qw "$AA_SWITCH=1"' EXIT
+    sudo sysctl -qw "$AA_SWITCH=0"
+  fi
+  log="$(RANIKUST_DEBUG_FAULT=no-userns "$RNK" "${rl_args[@]}" --state-dir "$ud/hook" 2>&1)" || rc=$?
+  if [ "$before" = 1 ]; then
+    sudo sysctl -qw "$AA_SWITCH=1"
+    trap 'sudo rm -f "$MARKER"' EXIT
+  fi
+  advice="$(advice_of "$log")"
+  [ "$rc" = 1 ] && grep -q 'refused by RANIKUST_DEBUG_FAULT=no-userns' <<<"$log" &&
+    in_order "$advice" 'run ranikust as root, with sudo; ' 'or run ranikust in a container' &&
+    ! grep -qi 'apparmor' <<<"$advice" && [ ! -e "$ud/hook" ] ||
+    { echo "error: user: expected sudo then a container and no profile at $AA_SWITCH=0, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: at $AA_SWITCH=0 (${before:-absent} here) the advice names no profile"
+}
+
+# Every node under $1: path, kind, size, mode, owner, inode, times, target.
+rt_tree() { find "$1" -printf '%p %y %s %m %U %i %T@ %C@ %l\n' | sort; }
+
+# Kills ranikust ($1, run in $2 with the arguments after $4) $4 times as soon
+# as the capability check's child shows: the parent or the child ($3). Fails
+# where a process of the run is left, where a killed parent made the state
+# directory, or where no child was caught.
+RT_KILL='import os, signal, subprocess, sys, time
+binary, work, what, tries, args = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5:]
+caught, left = 0, []
+for i in range(tries):
+    state = os.path.join(work, "kill-%s-%d" % (what, i))
+    p = subprocess.Popen([binary, *args, "--state-dir", state], cwd=work,
+                         env={"PATH": "/usr/bin:/bin", "HOME": work},
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, process_group=0)
+    kids, deadline = [], time.monotonic() + 10
+    while not kids and time.monotonic() < deadline and p.poll() is None:
+        try:
+            with open("/proc/%d/task/%d/children" % (p.pid, p.pid)) as f:
+                kids = f.read().split()
+        except OSError:
+            break
+    hit = False
+    if kids:
+        try:
+            os.killpg(p.pid, signal.SIGSTOP)
+            for pid in [p.pid] if what == "parent" else kids:
+                os.kill(int(pid), signal.SIGKILL)
+            hit = True
+        except ProcessLookupError:
+            pass
+        try:
+            os.killpg(p.pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+    p.wait()
+    time.sleep(0.5)
+    if hit:
+        caught += 1
+        if what == "parent" and os.path.exists(state):
+            sys.exit("a parent killed during the check made %s" % state)
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open("/proc/%s/stat" % pid) as f:
+                stat = f.read()
+        except OSError:
+            continue
+        if int(stat[stat.rindex(")") + 2:].split()[2]) == p.pid:
+            left.append((i, pid, stat))
+if left or not caught:
+    sys.exit("caught %d of %d, left: %r" % (caught, tries, left))
+print("%s killed in %d of %d runs, nothing left" % (what, caught, tries))'
+
+# Red team (#81): the real capability check refuses at the mount namespace
+# and writes nothing, whatever the state directory is or points to; a check
+# killed halfway, in the parent or the child, leaves no process, and a fork
+# refused by RLIMIT_NPROC stops the run (exit 1). Uses rl_args, ud and dir.
+red_team_no_userns() {
+  local r="$ud/red" form log rc before
+  mkdir -m 700 "$r"
+  mkdir -m 700 "$r/full" "$r/target" "$r/home" "$r/kill"
+  echo x >"$r/full/keep"
+  echo y >"$r/file"
+  ln -s "$r/target" "$r/to-dir"
+  ln -s "$r/absent" "$r/dangling"
+  before="$(rt_tree "$r")"
+  for form in full to-dir dangling a/b/c file default; do
+    rc=0
+    if [ "$form" = default ]; then
+      log="$(cd "$r" && env -u XDG_DATA_HOME HOME="$r/home" "$RNK" "${rl_args[@]}" 2>&1)" || rc=$?
+    else
+      log="$(cd "$r" && "$RNK" "${rl_args[@]}" --state-dir "$form" 2>&1)" || rc=$?
+    fi
+    printf '%s\n' "$log" >"$dir/red-team-state-${form//\//-}.log"
+    [ "$rc" = 1 ] && grep -q 'the user namespace probe stops at mount namespace' <<<"$log" &&
+      [ "$(rt_tree "$r")" = "$before" ] ||
+      { echo "error: red team: --state-dir $form: expected a refusal that writes nothing, got $rc:" >&2; echo "$log" >&2; diff <(echo "$before") <(rt_tree "$r") >&2 || true; exit 1; }
+  done
+  echo "red team: the real check refuses and writes nothing for a state directory full, a symlink to a directory, a dangling symlink, missing parents, a file, the default"
+  for form in parent child; do
+    python3 -I -c "$RT_KILL" "$RNK" "$r/kill" "$form" 20 "${rl_args[@]}" ||
+      { echo "error: red team: killing the check's $form" >&2; exit 1; }
+  done
+  rc=0
+  log="$(prlimit --nproc=1:1 "$RNK" "${rl_args[@]}" --state-dir "$r/nproc" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/red-team-nproc.log"
+  [ "$rc" = 1 ] && grep -q "fork the probe's child: Resource temporarily unavailable" <<<"$log" ||
+    { echo "error: red team: expected the probe's fork refused under RLIMIT_NPROC=1, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "red team: under RLIMIT_NPROC=1 the check cannot fork and the run stops"
+}
+
+# Writes an access ACL on $1 (as root): this user rwx, the mask $2 (octal).
+RT_ACL='import os, struct, sys
+path, uid, mask = sys.argv[1], int(sys.argv[2]), int(sys.argv[3], 8)
+undef = 0xFFFFFFFF
+entries = [(0x01, 7, undef), (0x02, 7, uid), (0x04, 5, undef), (0x10, mask, undef), (0x20, 5, undef)]
+os.setxattr(path, "system.posix_acl_access",
+            struct.pack("<I", 2) + b"".join(struct.pack("<HHI", t, p, i) for t, p, i in entries))'
+
+# Red team (#81): root's binary in a root-only directory outside
+# /usr/local/bin gets the profile with its path changed; an ACL that lets
+# this user write the directory or the file, or a sticky world-writable
+# directory, takes it away; an ACL whose mask keeps writing out does not;
+# this user's symlink to it names root's path; a hardlink in this user's
+# directory is refused by the kernel or gets no profile. Uses rl_args, ud
+# and dir. The directory goes under the first of RT_PARENTS that root alone
+# may change: any user may write /opt and /usr/local/bin on CI's runners.
+RT_PARENTS="/usr/lib /var/lib"
+RT_DIR=
+red_team_acl() {
+  local parent d b c n=0 setup program expect log rc advice what at mask
+  local writable="is writable by its group or others"
+  for parent in $RT_PARENTS ""; do
+    [ -z "$parent" ] || ! root_only_chain "$parent" || break
+  done
+  [ -n "$parent" ] || { echo "error: red team: none of $RT_PARENTS is root's alone here" >&2; exit 1; }
+  RT_DIR="$parent/rnk-red-team" d="$parent/rnk-red-team" b="$parent/rnk-red-team/ranikust"
+  [ ! -e "$d" ] || { echo "error: red team: $d is there already" >&2; exit 1; }
+  trap 'sudo rm -f "$MARKER"; sudo rm -rf "$RT_DIR"' EXIT
+  ln -s "$b" "$ud/red-link"
+  for c in "none|$b|changed to $b, and run" \
+    "acl $d 7|$b|$d $writable" \
+    "acl $b 7|$b|$b $writable" \
+    "acl $d 5|$b|changed to $b, and run" \
+    "sticky|$b|$d $writable" \
+    "none|$ud/red-link|changed to $b, and run"; do
+    IFS='|' read -r setup program expect <<<"$c"
+    sudo rm -rf "$d"
+    sudo mkdir -m 755 -p "$d"
+    sudo install -m 0755 -o root -g root "$RNK" "$b"
+    read -r what at mask <<<"$setup"
+    case "$what" in
+      acl) sudo python3 -I -c "$RT_ACL" "$at" "$(id -u)" "$mask" ;;
+      sticky) sudo chmod 1777 "$d" ;;
+    esac
+    n=$((n + 1)) rc=0
+    log="$("$program" "${rl_args[@]}" --state-dir "$ud/red-acl-$n" 2>&1)" || rc=$?
+    printf '%s\n' "$log" >"$dir/red-team-acl-$n.log"
+    advice="$(advice_of "$log")"
+    [ "$rc" = 1 ] && [ ! -e "$ud/red-acl-$n" ] && grep -qF -- "$expect" <<<"$advice" ||
+      { echo "error: red team: after '$setup', $program: expected '$expect', got $rc:" >&2; echo "$log" >&2; exit 1; }
+    echo "red team: $program after '$setup': $expect"
+  done
+  if ln "$b" "$ud/red-hard" 2>/dev/null; then
+    rc=0
+    log="$("$ud/red-hard" "${rl_args[@]}" --state-dir "$ud/red-hard-state" 2>&1)" || rc=$?
+    [ "$rc" = 1 ] && ! grep -q 'changed to' <<<"$(advice_of "$log")" ||
+      { echo "error: red team: a hardlink in this user's directory got the profile, $rc:" >&2; echo "$log" >&2; exit 1; }
+    echo "red team: a hardlink to root's binary in this user's directory gets no profile"
+  else
+    echo "red team: the kernel refuses this user a hardlink to root's binary"
+  fi
+  sudo rm -rf "$d"
+  rm -f "$ud/red-link" "$ud/red-hard"
+  trap 'sudo rm -f "$MARKER"' EXIT
+}
+
+# Red team (#81): an unconfined program of this user that enters ranikust's
+# profile (aa-exec, where kernel.apparmor_restrict_unprivileged_unconfined
+# is 0) gets a user namespace and nothing else it lacks: the same
+# capabilities; no command that fails without the profile works with it;
+# io_uring stays refused where AppArmor refuses it to the unconfined.
+RT_URING='import ctypes, sys
+params = ctypes.create_string_buffer(120)
+sys.exit(0 if ctypes.CDLL(None, use_errno=True).syscall(425, 1, params) >= 0 else 1)'
+red_team_profile_grant() {
+  local c caps under switch=kernel.apparmor_restrict_unprivileged_io_uring before
+  [ "$(aa-exec -p ranikust -- cat /proc/self/attr/current)" = 'ranikust (unconfined)' ] ||
+    { echo "error: red team: aa-exec -p ranikust did not enter the profile" >&2; exit 1; }
+  caps="$(grep '^Cap' /proc/self/status)"
+  under="$(aa-exec -p ranikust -- grep '^Cap' /proc/self/status)"
+  [ "$caps" = "$under" ] ||
+    { echo "error: red team: the profile changes the capabilities: $caps / $under" >&2; exit 1; }
+  for c in 'cat /etc/shadow' 'touch /etc/rnk-red-team' 'cat /proc/1/environ' \
+    'head -c1 /proc/1/mem' 'dmesg' 'ls /root' 'cat /sys/kernel/security/apparmor/profiles' \
+    'unshare --user --map-root-user cat /etc/shadow' \
+    'unshare --user --map-root-user touch /etc/rnk-red-team'; do
+    if ! sh -c "$c" >/dev/null 2>&1 && aa-exec -p ranikust -- sh -c "$c" >/dev/null 2>&1; then
+      sudo rm -f /etc/rnk-red-team
+      echo "error: red team: '$c' fails without the profile and works with it" >&2
+      exit 1
+    fi
+  done
+  echo "red team: the profile adds no capability, and no command that fails without it works with it"
+  if before="$(sudo sysctl -n "$switch" 2>/dev/null)"; then
+    trap 'sudo rm -f "$MARKER"; apparmor_undo; sudo sysctl -qw "'"$switch=$before"'"' EXIT
+    sudo sysctl -qw "$switch=1"
+    if python3 -I -c "$RT_URING"; then
+      echo "red team: io_uring works at $switch=1 (io_uring_disabled: $(cat /proc/sys/kernel/io_uring_disabled 2>/dev/null || echo absent)): not checked"
+    elif aa-exec -p ranikust -- python3 -I -c "$RT_URING"; then
+      sudo sysctl -qw "$switch=$before"
+      echo "error: red team: at $switch=1 the profile gives io_uring an unconfined program is refused" >&2
+      exit 1
+    else
+      echo "red team: at $switch=1 io_uring stays refused under the profile"
+    fi
+    sudo sysctl -qw "$switch=$before"
+    trap 'sudo rm -f "$MARKER"; apparmor_undo' EXIT
+  else
+    echo "red team: no $switch here: io_uring not checked"
+  fi
+}
+
 # #78: smoke-build as this regular user, in the build's user namespace
 # through newuidmap. Where AppArmor restricts unprivileged user namespaces
 # (Ubuntu 24.04) it is refused before anything runs; elsewhere (22.04) a
@@ -461,7 +889,9 @@ fi
 # --reproducible digest root's build of it gets, then tests/smoke/e2e,
 # whose `RUN --network=none` reads /sys/class/net: a new sysfs for the
 # network namespace the build owns, not the rbind of /sys; where AppArmor
-# restricts the user namespace, it refuses, naming the switch.
+# restricts the user namespace, it refuses from this user's path with sudo,
+# the profile after an install under /usr/local/bin, then a container, and
+# builds from there once root loaded the profile (#81).
 ud="$dir/rootless" rc=0
 # The user's umask may leave a new directory group-writable, which a state
 # directory and every directory above it may not be (ADR-0050).
@@ -476,10 +906,16 @@ log="$("$RNK" "${rl_args[@]}" --state-dir "$ud/w" 2>&1)" || rc=$?
 printf '%s\n' "$log" >"$dir/rootless.log"
 grep -E 'user namespace probe|rootless' <<<"$log" || true
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
-  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
-    grep -q 'where kernel.apparmor_restrict_unprivileged_userns is 1' <<<"$log" ||
-    { echo "error: user: expected rootless overlay mode refused, got $rc:" >&2; echo "$log" >&2; exit 1; }
-  echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it, as expected"
+  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at mount namespace' <<<"$log" &&
+    in_order "$(advice_of "$log")" 'where kernel.apparmor_restrict_unprivileged_userns is 1, as here' \
+      'run ranikust as root, with sudo; ' 'or, as root, install ranikust ' \
+      "$(realpath "$RNK") is not a path only root can change (" '; or run ranikust in a container' ||
+    { echo "error: user: expected rootless overlay mode refused, with sudo, the profile after an install under /usr/local/bin, then a container, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it; advice: sudo, the profile after an install under /usr/local/bin, a container"
+  red_team_no_userns
+  apparmor_profile
+  apparmor_mounts
+  red_team_acl
 else
   [ "$rc" = 0 ] &&
     grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
@@ -553,6 +989,9 @@ else
   [ "$rc" = 0 ] || { echo "error: user: a build after prune --all ($rc):" >&2; echo "$log" >&2; exit 1; }
   echo "user: prune --all empties a deep cache tree a RUN left; the next build runs"
 fi
+advice_without_the_switch
+seccomp_user_advice
+privileged_user_advice
 echo "user: ok"
 
 echo "=== escape control: a plain chroot into the host variant's root"

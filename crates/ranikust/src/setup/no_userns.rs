@@ -1,0 +1,471 @@
+//! The advice for a user other than root who gets no usable user namespace
+//! (`design/modes-and-detection.md#no-usable-user-namespace`), in order:
+//! `sudo`; where AppArmor may be what refused (`Stop`) and ranikust runs
+//! where its profile would attach (`Here`: the switch
+//! `kernel.apparmor_restrict_unprivileged_userns` at 1, unconfined, on the
+//! host), ranikust's AppArmor profile (`contrib/apparmor/ranikust`), for
+//! the binary's own path where only root may change it and it holds
+//! ranikust itself, else after installing the binary where only root may;
+//! a container.
+
+use std::os::fd::OwnedFd;
+use std::path::{Component, Path, PathBuf};
+
+use rnk_sandbox::{StepFailure, StepResult};
+use rustix::fs::{CWD, FileType, FsWord, Mode, OFlags, StatVfsMountFlags};
+use rustix::io::Errno;
+
+/// The path the repository's profile binds.
+const PROFILE_PATH: &str = "/usr/local/bin/ranikust";
+
+/// The directory of [`PROFILE_PATH`].
+const PROFILE_DIR: &str = "/usr/local/bin";
+
+/// The profile, and where to read it.
+const PROFILE: &str = "ranikust's AppArmor profile (contrib/apparmor/ranikust in its \
+     repository; the book's \"Choosing where to run it\" shows it)";
+
+/// The `f_type`s of the local filesystems whose owners and modes only what
+/// root mounted sets. Any other (FUSE, NFS, SMB, 9p, Ceph, AFS…) may show
+/// what its server, or the user who mounted it, says.
+const LOCAL: [u32; 8] = [EXT2_3_4, XFS, BTRFS, SQUASHFS, EROFS, TMPFS, OVERLAYFS, ZFS];
+const EXT2_3_4: u32 = 0xEF53;
+const XFS: u32 = 0x5846_5342;
+const BTRFS: u32 = 0x9123_683E;
+const SQUASHFS: u32 = 0x7371_7368;
+const EROFS: u32 = 0xE0F5_E1E2;
+const TMPFS: u32 = 0x0102_1994;
+const OVERLAYFS: u32 = 0x794C_7630;
+const ZFS: u32 = 0x2FC1_2FC1;
+
+/// rnk-sandbox's name for the `unshare` step's own operation, which a step
+/// before it (the probe's `fchdir`) may stand in for: another name, or a
+/// renamed one, offers no profile.
+const UNSHARE_USER: &str = "unshare(CLONE_NEWUSER)";
+
+/// What stopped a user other than root, as the advice weighs it: AppArmor's
+/// switch leaves a user namespace without capabilities, and a profile
+/// without `userns` refuses `unshare` with `EACCES`; what else refuses
+/// `unshare` (a seccomp filter, `kernel.unprivileged_userns_clone`,
+/// `user.max_user_namespaces`) no profile lifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// `unshare(CLONE_NEWUSER)` refused, with this errno.
+    Unshare(i32),
+    /// A step refused in the user namespace `unshare` made: the map,
+    /// `chown`, the mount namespace.
+    InNamespace,
+    /// Not known: `unshare`'s step refused by another operation or with no
+    /// errno, a step that did not run (a child cut short), a namespace
+    /// shown to have capabilities, or a refusal once the probe passed.
+    Unknown,
+}
+
+impl Stop {
+    /// The stop named `step`, as [`rnk_sandbox::UsernsReport::stop`] names
+    /// it, from how `unshare(CLONE_NEWUSER)` went (`unshare`) and how that
+    /// step went (`result`; `unshare` again for `unshare`): a later step
+    /// counts only where `unshare` worked and the step itself was refused.
+    pub(crate) fn at(step: &str, unshare: &StepResult, result: &StepResult) -> Self {
+        match (step, unshare, result) {
+            (
+                "unshare",
+                _,
+                StepResult::Failed(StepFailure {
+                    op: UNSHARE_USER,
+                    errno: Some(errno),
+                    ..
+                }),
+            ) => Self::Unshare(*errno),
+            ("map" | "chown" | "mount namespace", StepResult::Ok, StepResult::Failed(_)) => {
+                Self::InNamespace
+            }
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Whether AppArmor may be what refused.
+    fn offers_profile(self) -> bool {
+        match self {
+            Self::InNamespace => true,
+            Self::Unshare(errno) => errno == Errno::ACCESS.raw_os_error(),
+            Self::Unknown => false,
+        }
+    }
+}
+
+/// The advice for this host, for `binary`, the path ranikust started from
+/// (`None` where it could not be read), stopped by `stop`: the profile only
+/// where [`Here::offers`] and AppArmor may be what refused, for that path
+/// only where root alone may change it and it holds ranikust itself.
+pub(crate) fn guidance(binary: Option<&Path>, stop: Stop) -> String {
+    // Where AppArmor cannot be what refused, where ranikust runs changes nothing.
+    if !stop.offers_profile() {
+        return advice(None);
+    }
+    advise(binary, stop, &Here::read())
+}
+
+/// Where ranikust runs, as the advice weighs it.
+#[derive(Clone, Copy, Debug)]
+struct Here {
+    /// `kernel.apparmor_restrict_unprivileged_userns` reads 1.
+    restricted: bool,
+    /// AppArmor's label of this process reads `unconfined`: the switch
+    /// applies to it, and a profile bound to its path attaches when it
+    /// starts.
+    unconfined: bool,
+    /// In the host's user namespace and no container ([`on_host`]): the
+    /// paths ranikust sees are taken for the ones a profile loaded on the
+    /// host attaches to (a chroot, or a mount namespace root set up to
+    /// look like the host's, is not told apart).
+    on_host: bool,
+}
+
+impl Here {
+    fn read() -> Self {
+        let label = match std::fs::read("/proc/self/attr/apparmor/current") {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::read("/proc/self/attr/current")
+            }
+            label => label,
+        };
+        // An unread map counts as not the host's: no profile.
+        let uid_map = std::fs::read_to_string("/proc/self/uid_map").ok();
+        Self {
+            restricted: restricted(),
+            unconfined: label.is_ok_and(|l| unconfined(&l)),
+            on_host: on_host(
+                uid_map.as_deref(),
+                crate::container::detect(&crate::container::Real),
+            ),
+        }
+    }
+
+    /// Whether a profile may be offered here at all.
+    fn offers(self) -> bool {
+        self.restricted && self.unconfined && self.on_host
+    }
+}
+
+/// Whether `label`, AppArmor's for this process, is `unconfined`: a label
+/// of another profile, or of a stack, is not.
+fn unconfined(label: &[u8]) -> bool {
+    label.trim_ascii() == b"unconfined"
+}
+
+/// Whether `uid_map` (`None`: unread) is the host's user namespace's, and
+/// `container` none: elsewhere the tree ranikust sees, and its owners, may
+/// be a container's or a user's own, not the one a profile on the host
+/// attaches to.
+fn on_host(uid_map: Option<&str>, container: Option<crate::container::Runtime>) -> bool {
+    let initial = uid_map.is_some_and(|map| {
+        let mut lines = map.lines();
+        lines
+            .next()
+            .is_some_and(|l| l.split_ascii_whitespace().eq(["0", "0", "4294967295"]))
+            && lines.next().is_none()
+    });
+    initial && container.is_none()
+}
+
+/// [`guidance`] for `here`.
+fn advise(binary: Option<&Path>, stop: Stop, here: &Here) -> String {
+    if !(stop.offers_profile() && here.offers()) {
+        return advice(None);
+    }
+    let bound = match binary {
+        None => Err("ranikust cannot read the path it runs from".to_owned()),
+        Some(path) => match only_root_changes(path, FileType::RegularFile) {
+            Err(why) => Err(format!(
+                "{} is not a path only root can change ({why})",
+                path.display()
+            )),
+            Ok(()) if !plain(path) => Err(format!(
+                "{} has characters a profile reads as a pattern or a separator",
+                path.display()
+            )),
+            Ok(()) => holds_ranikust(path)
+                .map(|()| path)
+                .map_err(|why| format!("{} does not hold ranikust itself ({why})", path.display())),
+        },
+    };
+    let dir = only_root_changes(Path::new(PROFILE_DIR), FileType::Directory);
+    advice(Some(Checked { bound, dir }))
+}
+
+/// Whether `path` holds ranikust itself: the bytes of the file this code
+/// runs from, which `/proc/self/exe` must name. The path ranikust is given
+/// is not proof: a loader that ran ranikust is `/proc/self/exe` then, and a
+/// sealed copy's marker may name any file.
+///
+/// # Errors
+///
+/// Why not, or what stopped the check: any error says no.
+fn holds_ranikust(path: &Path) -> Result<(), String> {
+    let exe = std::fs::File::open("/proc/self/exe").map_err(|e| format!("/proc/self/exe: {e}"))?;
+    // Paths in the maps may not be UTF-8; only their numbers are read.
+    let maps = std::fs::read("/proc/self/maps").map_err(|e| format!("/proc/self/maps: {e}"))?;
+    let code = holds_ranikust as fn(&Path) -> Result<(), String> as usize;
+    holds(exe, &String::from_utf8_lossy(&maps), code, path)
+}
+
+/// [`holds_ranikust`] for `exe`, the file `/proc/self/exe` opened, `maps`,
+/// `/proc/self/maps`' text, and `code`, the address of one of ranikust's
+/// functions.
+///
+/// # Errors
+///
+/// As [`holds_ranikust`].
+fn holds(exe: std::fs::File, maps: &str, code: usize, path: &Path) -> Result<(), String> {
+    use std::io::Read as _;
+    let ran = rustix::fs::fstat(&exe).map_err(|e| format!("/proc/self/exe: {e}"))?;
+    let runs_from = (
+        rustix::fs::major(ran.st_dev),
+        rustix::fs::minor(ran.st_dev),
+        ran.st_ino,
+    );
+    if backing(maps, code) != Some(runs_from) {
+        return Err("ranikust cannot tell it runs from the file /proc/self/exe names".to_owned());
+    }
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY;
+    let file = rustix::fs::open(path, flags | OFlags::CLOEXEC, Mode::empty())
+        .map_err(|e| e.to_string())?;
+    let st = rustix::fs::fstat(&file).map_err(|e| e.to_string())?;
+    if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+        return Err("it is not a regular file".to_owned());
+    }
+    if st.st_size != ran.st_size {
+        return Err("its size differs".to_owned());
+    }
+    let mut left = u64::try_from(ran.st_size).map_err(|e| e.to_string())?;
+    let (mut theirs, mut ours) = (std::fs::File::from(file), exe);
+    let (mut a, mut b) = (vec![0; 1 << 16], vec![0; 1 << 16]);
+    while left > 0 {
+        let n = usize::try_from(left).map_or(a.len(), |left| left.min(a.len()));
+        theirs.read_exact(&mut a[..n]).map_err(|e| e.to_string())?;
+        ours.read_exact(&mut b[..n]).map_err(|e| e.to_string())?;
+        if a[..n] != b[..n] {
+            return Err("its bytes differ".to_owned());
+        }
+        left -= u64::try_from(n).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The device (major, minor) and inode of the file mapped at `addr`, read
+/// from `maps`, `/proc/self/maps`' text; `None` where no file backs it.
+fn backing(maps: &str, addr: usize) -> Option<(u32, u32, u64)> {
+    // A line that does not parse backs nothing, and the check says no.
+    maps.lines().find_map(|line| {
+        let mut fields = line.split_ascii_whitespace();
+        let (start, end) = fields.next()?.split_once('-')?;
+        let start = usize::from_str_radix(start, 16).ok()?;
+        let end = usize::from_str_radix(end, 16).ok()?;
+        if !(start..end).contains(&addr) {
+            return None;
+        }
+        let (major, minor) = fields.nth(2)?.split_once(':')?;
+        let inode = fields.next()?.parse().ok().filter(|&i: &u64| i != 0)?;
+        Some((
+            u32::from_str_radix(major, 16).ok()?,
+            u32::from_str_radix(minor, 16).ok()?,
+            inode,
+        ))
+    })
+}
+
+/// Whether `kernel.apparmor_restrict_unprivileged_userns` reads 1: any
+/// other value, or none, offers no profile.
+fn restricted() -> bool {
+    std::fs::read(super::APPARMOR_USERNS).is_ok_and(|v| v.trim_ascii() == b"1")
+}
+
+/// Whether a profile may name `path` as it is: letters, digits and `._+-/`
+/// alone, none of which AppArmor reads as a pattern.
+fn plain(path: &Path) -> bool {
+    path.as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b"._+-/".contains(&b))
+}
+
+/// What the advice weighs where it may offer the profile (`Stop` and
+/// `Here`).
+struct Checked<'a> {
+    /// The binary's path, where a profile may be bound to it, else why not.
+    bound: Result<&'a Path, String>,
+    /// Whether only root may change [`PROFILE_DIR`], else why not.
+    dir: Result<(), String>,
+}
+
+/// The advice's text; `profile` is `None` where the profile is not offered
+/// (`Stop::offers_profile`, `Here::offers`).
+fn advice(profile: Option<Checked<'_>>) -> String {
+    const SUDO: &str = "run ranikust as root, with sudo";
+    const CONTAINER: &str = "or run ranikust in a container";
+    const LOAD: &str = "apparmor_parser -r /etc/apparmor.d/ranikust";
+    const INSTALL: &str = "owned by root and written by no one else (install -o root -g root -m \
+                           0755)";
+    const ANY: &str = "a profile lets whatever is at its path make user namespaces";
+    let Some(Checked { bound, dir }) = profile else {
+        return format!(
+            "a user other than root builds in a user namespace of its own, which this user \
+             cannot get here: {SUDO}; {CONTAINER}"
+        );
+    };
+    let profile = match (bound, dir) {
+        (Ok(path), _) if path == Path::new(PROFILE_PATH) => {
+            format!("or, as root, copy {PROFILE} to /etc/apparmor.d/ranikust and run {LOAD}")
+        }
+        (Ok(path), _) => format!(
+            "or, as root, copy {PROFILE} to /etc/apparmor.d/ranikust with its path \
+             {PROFILE_PATH} changed to {}, and run {LOAD}",
+            path.display()
+        ),
+        (Err(why), Ok(())) => format!(
+            "or, as root, install ranikust as {PROFILE_PATH} first, {INSTALL}, copy {PROFILE} \
+             to /etc/apparmor.d/ranikust and run {LOAD}, then run ranikust from \
+             {PROFILE_PATH}: {why}, and {ANY}"
+        ),
+        (Err(why), Err(dir)) => format!(
+            "or, as root, install ranikust first in a directory only root can change, which \
+             {PROFILE_DIR} is not here ({dir}), {INSTALL}, copy {PROFILE} to \
+             /etc/apparmor.d/ranikust with its path {PROFILE_PATH} changed to the binary's, \
+             and run {LOAD}, then run ranikust from there: {why}, and {ANY}"
+        ),
+    };
+    format!(
+        "a user other than root builds in a user namespace of its own, and where \
+         kernel.apparmor_restrict_unprivileged_userns is 1, as here, only a program an AppArmor \
+         profile allows gets a usable one: {SUDO}; {profile}; {CONTAINER}"
+    )
+}
+
+/// Whether only root may change what `path` names, so that a profile bound
+/// to it gives a user namespace to no one else's program: `path` absolute,
+/// with no `..`; `/`, each directory below it and the node itself, of kind
+/// `leaf`, owned by root and not writable by group or others (an ACL that
+/// grants writing shows in the group bits), none a symlink, each on a
+/// mount without `nosuid` of a local filesystem ([`LOCAL`]): elsewhere the
+/// owners and modes are what a user or a server says.
+///
+/// # Errors
+///
+/// The first node that fails and why, or the error that stopped the walk:
+/// any error says no.
+fn only_root_changes(path: &Path, leaf: FileType) -> Result<(), String> {
+    let nodes = walk(path).map_err(|(at, e)| format!("{}: {e}", at.display()))?;
+    verdict(&nodes, leaf)
+}
+
+/// What [`walk`] found of one component of a path.
+#[derive(Clone, Copy, Debug)]
+struct Node {
+    kind: FileType,
+    uid: u32,
+    /// The permission bits, sticky included.
+    mode: u32,
+    /// Its filesystem's `f_type`.
+    fs_type: FsWord,
+    /// Whether its mount is `nosuid`.
+    nosuid: bool,
+}
+
+/// `/` and each component of `path` below it, each with the path it is
+/// at, opened `O_PATH` from the one above without following a symlink: a
+/// symlink is a node of its own, and nothing is found below it. The paths
+/// are only shown, never opened.
+///
+/// # Errors
+///
+/// The path where the walk stopped and why: `EINVAL` for a relative path
+/// or a `..`.
+fn walk(path: &Path) -> Result<Vec<(PathBuf, Node)>, (PathBuf, Errno)> {
+    let mut components = path.components();
+    let mut at = PathBuf::from("/");
+    if components.next() != Some(Component::RootDir) {
+        return Err((path.to_owned(), Errno::INVAL));
+    }
+    let how = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let stop = |at: &Path| {
+        let at = at.to_owned();
+        move |e| (at, e)
+    };
+    let mut fd =
+        rustix::fs::openat(CWD, "/", how | OFlags::DIRECTORY, Mode::empty()).map_err(stop(&at))?;
+    let mut nodes = vec![(at.clone(), node(&fd).map_err(stop(&at))?)];
+    for component in components {
+        let Component::Normal(name) = component else {
+            return Err((path.to_owned(), Errno::INVAL));
+        };
+        at.push(name);
+        fd = rustix::fs::openat(&fd, name, how, Mode::empty()).map_err(stop(&at))?;
+        nodes.push((at.clone(), node(&fd).map_err(stop(&at))?));
+    }
+    Ok(nodes)
+}
+
+fn node(fd: &OwnedFd) -> rustix::io::Result<Node> {
+    let st = rustix::fs::fstat(fd)?;
+    let fs = rustix::fs::fstatfs(fd)?;
+    let mount = rustix::fs::fstatvfs(fd)?;
+    Ok(Node {
+        kind: FileType::from_raw_mode(st.st_mode),
+        uid: st.st_uid,
+        mode: st.st_mode & 0o7777,
+        fs_type: fs.f_type,
+        nosuid: mount.f_flag.contains(StatVfsMountFlags::NOSUID),
+    })
+}
+
+/// Whether `fs_type` is one of [`LOCAL`].
+fn local(fs_type: FsWord) -> bool {
+    u32::try_from(fs_type).is_ok_and(|t| LOCAL.contains(&t))
+}
+
+/// [`only_root_changes`]'s rule on what [`walk`] found, `/` first: the
+/// last node of kind `leaf`, the others directories.
+fn verdict(nodes: &[(PathBuf, Node)], leaf: FileType) -> Result<(), String> {
+    let Some(last) = nodes.len().checked_sub(1) else {
+        return Err("nothing was found".to_owned());
+    };
+    for (i, (at, n)) in nodes.iter().enumerate() {
+        let at = at.display();
+        let want = if i == last { leaf } else { FileType::Directory };
+        if n.kind == FileType::Symlink {
+            return Err(format!("{at} is a symlink"));
+        }
+        if n.kind != want {
+            let what = if want == FileType::Directory {
+                "a directory"
+            } else {
+                "a regular file"
+            };
+            return Err(format!("{at} is not {what}"));
+        }
+        if n.uid != 0 {
+            return Err(format!("{at} is owned by uid {}", n.uid));
+        }
+        if n.mode & 0o022 != 0 {
+            return Err(format!(
+                "{at} is writable by its group or others (mode {:o})",
+                n.mode
+            ));
+        }
+        // udisks2 and fusermount always mount `nosuid`, fstab `user` by default.
+        if n.nosuid {
+            return Err(format!("{at} is on a nosuid mount, as a user's mount is"));
+        }
+        if !local(n.fs_type) {
+            return Err(format!(
+                "{at} is not on a local filesystem ranikust knows (f_type {:#x})",
+                n.fs_type
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
