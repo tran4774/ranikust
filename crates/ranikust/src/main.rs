@@ -129,8 +129,9 @@ impl Failure {
         Self::error(refusal.reason).with_guidance(refusal.guidance)
     }
 
-    /// The build failed: with the ways out, by who made its user namespace
-    /// (`made`), when an id that namespace does not map is why (ADR-0098).
+    /// The build failed; where an id its user namespace does not map is the
+    /// cause, the guidance gives the ways out for whoever made that
+    /// namespace, `made` (ADR-0098).
     fn built(failed: build::Failed, made: owners::MadeBy) -> Self {
         let guidance = failed
             .unmapped

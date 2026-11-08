@@ -412,14 +412,21 @@ mod tests {
         assert!(!text.contains("4294967295"), "{text}");
     }
 
+    /// The set-up's `userns` flag picks `--userns`'s ways out for rootless
+    /// overlay mode's namespace; the T2 `userns` case covers the rest of
+    /// the mapping from `setup::Outcome`, which no T0 test can build.
+    #[test]
+    fn the_set_up_s_userns_flag_picks_userns_s_ways_out() {
+        assert_eq!(MadeBy::rootless(true), MadeBy::Userns);
+        assert_eq!(MadeBy::rootless(false), MadeBy::Rootless);
+    }
+
     /// Root's `--userns` maps its `ranikust` range from id 0 on, whatever
     /// the maps read: the ways out name that range and the count each file
     /// needs, id N being its N+1-th, or a build without `--userns`; never a
     /// user's range, root or a container.
     #[test]
     fn userns_ways_out_name_the_ranikust_range_and_the_count_it_needs() {
-        assert_eq!(MadeBy::rootless(true), MadeBy::Userns);
-        assert_eq!(MadeBy::rootless(false), MadeBy::Rootless);
         let shifted = ids("0 100000 1000\n", "0 200000 42\n");
         assert_eq!(
             namespace(MadeBy::Userns, Some(100_000), Some(&shifted)),
