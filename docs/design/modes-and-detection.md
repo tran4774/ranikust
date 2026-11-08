@@ -435,7 +435,8 @@ refusal's guidance line gives, in order
 1. Run ranikust as root, with `sudo`.
 2. Only where `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads
    `1`, where ranikust runs unconfined (AppArmor's label `unconfined`), in
-   the host's user namespace (`/proc/self/uid_map` reads `0 0 4294967295`)
+   the host's user namespace (the initial one, told by its inode,
+   `rnk_snapshot::UserNamespace::current`)
    and in no container `container::detect` finds (`no_userns::Here`), and
    where AppArmor may be what refused (`no_userns::Stop`): the user
    namespace was made and a later step failed (the map, `chown`, the mount
@@ -515,8 +516,8 @@ failed `chown` pass
 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
 The map is the process's own `/proc/self/uid_map` and `gid_map`: the one
 ranikust wrote (probe step 2), or the container's, read by
-`rnk_snapshot::UserNamespace` alone. In the initial namespace every id maps
-and nothing is checked.
+`rnk_snapshot::UserNamespace`. In the initial namespace every id maps and
+nothing is checked.
 
 - **Base layers, before extraction.** `Snapshotter::check_owners`
   decompresses each base layer once more and reads its tar headers as the
@@ -536,8 +537,8 @@ and nothing is checked.
   base is read again for it.
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
   entry, `COPY --chown`, a cache mount's owner, a secret file's) refuses at
-  once, naming the file (a mount by its target). So does a `RUN`'s switch to its user (`setgroups`, `setgid`,
-  `setuid`, for `USER`), naming the ids, where nothing else explains the
+  once, naming the file (a mount by its target). So does a `RUN`'s switch
+  to its user (`setgroups`, `setgid`, `setuid`, for `USER`), naming the ids, where nothing else explains the
   `EINVAL`: in a user namespace other than the initial one, with no more
   supplementary groups than the kernel's `NGROUPS_MAX` (65536); otherwise
   the step's error stays.

@@ -228,10 +228,11 @@ impl Snapshotter for KanikoStages {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
+        // Only the check on `/` was decided to skip the ignore list (#209).
         check_live_owners(
             layers,
             UserNamespace::current()?.as_ref(),
-            &self.shared.ignore,
+            &IgnoreList::new(),
         )
     }
 

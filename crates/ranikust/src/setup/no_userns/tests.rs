@@ -259,27 +259,16 @@ fn only_an_unconfined_program_on_the_host_gets_the_profile() {
     }
 }
 
-/// The host's user namespace maps every id to itself, in one line; a
+/// Only the host's user namespace, the initial one, is the host, and a
 /// container runtime ranikust detects is not the host either.
 #[test]
 fn only_the_host_s_user_namespace_outside_a_container_is_the_host() {
     use crate::container::Runtime;
-    let initial = "         0          0 4294967295\n";
-    assert!(on_host(Some(initial), None));
-    assert!(!on_host(Some(initial), Some(Runtime::Docker)));
-    assert!(!on_host(Some(initial), Some(Runtime::Podman)));
-    for map in [
-        "         0       1000          1\n",
-        "      1000       1000          1\n",
-        "         0     100000      65536\n",
-        "         0          0      65536\n",
-        "         0          0 4294967295\n         0          0          1\n",
-        "         1          0 4294967295\n",
-        "",
-    ] {
-        assert!(!on_host(Some(map), None), "{map:?}");
-    }
-    assert!(!on_host(None, None));
+    assert!(on_host(true, None));
+    assert!(!on_host(true, Some(Runtime::Docker)));
+    assert!(!on_host(true, Some(Runtime::Podman)));
+    assert!(!on_host(false, None));
+    assert!(!on_host(false, Some(Runtime::Docker)));
 }
 
 /// The file mapped at an address is read from `/proc/self/maps`' fields;

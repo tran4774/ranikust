@@ -12,8 +12,8 @@ use crate::meta::chown_id;
 const NAMED: usize = 8;
 
 /// The uids and gids a user namespace maps: the ids inside it that the lines
-/// of its `uid_map` and `gid_map` give, and the lines themselves. The one
-/// parser of those maps (ADR-0098).
+/// of its `uid_map` and `gid_map` give, and the lines themselves: the
+/// parser the owner checks and the layer keys use (ADR-0098).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MappedIds {
     /// Inclusive ranges, sorted, neither overlapping nor adjacent.

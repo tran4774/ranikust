@@ -17,8 +17,8 @@
 //! `fsconfig(lowerdir+)` or else `mount(2)`.
 //!
 //! And tells the user namespace this process runs in, [`UserNamespace`]:
-//! its id maps are read here alone, for the layer keys and the owner checks
-//! of extraction, and for the binary's refusal guidance (ADR-0098).
+//! its id maps are read here for the layer keys and the owner checks of
+//! extraction, and for the binary's refusal guidance (ADR-0098).
 //!
 //! # Boundaries
 //!

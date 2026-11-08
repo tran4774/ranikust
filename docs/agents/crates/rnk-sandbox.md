@@ -256,13 +256,14 @@ What a change here must keep, with where it lives:
   `wait4` reaps it: the kill never reaches a reused pid.
 - **Between `clone` and `execve`** the child only makes system calls (rustix's
   raw backend, a few `libc` calls) on arguments built before the clone. A
-  failing step writes `(step, errno)` to a close-on-exec pipe and exits 127;
-  end-of-file on the pipe means `execve` succeeded. Right after the clone the
-  child closes every descriptor it copied from ranikust but the few it needs
-  (`close_inherited`, `Full` and `Direct` alike), then puts the stdio sources
-  on 0-2 (`early_stdio`). `/dev/null` is never opened by name in the child:
-  `Full` opens its fresh `/dev` tmpfs's node by descriptor before any
-  `RUN --mount` (read-only bind); `Direct` gets the host's from the parent
+  failing step writes `(step, item, errno)` to a close-on-exec pipe and
+  exits 127; end-of-file on the pipe means `execve` succeeded. Right after
+  the clone the child closes every descriptor it copied from ranikust but
+  the few it needs (`close_inherited`, `Full` and `Direct` alike), then
+  puts the stdio sources on 0-2 (`early_stdio`). `/dev/null` is never
+  opened by name in the child: `Full` opens its fresh `/dev` tmpfs's node
+  by descriptor before any `RUN --mount` (read-only bind); `Direct` gets
+  the host's from the parent
   (`host_null`: no symlink, char device 1:3).
 - **Namespaces:** mount, PID, UTS, IPC; network for `--network=none` (the
   clone's own, or, where `CAP_NET_ADMIN` is missing, refused unless

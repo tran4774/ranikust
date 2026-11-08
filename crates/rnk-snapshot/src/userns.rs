@@ -3,8 +3,9 @@
 //! extracts by the namespace's id map (ADR-0104), so a layer extracted with
 //! one map is never a lower under another. The map is relative to the parent
 //! namespace: nested namespaces with one map under parents with different
-//! ones share keys. The maps are read here alone and parsed by
-//! [`MappedIds::parse`] alone (ADR-0098).
+//! ones share keys. For the layer keys, the owner checks and the binary's
+//! guidance the maps are read here and parsed by [`MappedIds::parse`]
+//! (ADR-0098).
 
 use std::fs::File;
 use std::io::{self, Read as _};

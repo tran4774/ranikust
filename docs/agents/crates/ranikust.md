@@ -57,7 +57,7 @@ writer) before `unshare`, the probes and the state directory's checks.
   ([No usable user namespace](../../design/modes-and-detection.md#no-usable-user-namespace)):
   `sudo`; the AppArmor profile where the switch reads 1, ranikust runs
   unconfined in the host's user namespace and in no container
-  (`no_userns::Here`: the label, `/proc/self/uid_map`,
+  (`no_userns::Here`: the label, `rnk_snapshot::UserNamespace::current`,
   `container::detect`), and AppArmor may be what refused
   (`no_userns::Stop`: a step in the namespace `unshare`
   made, or `unshare`'s `EACCES`; the test hook counts as the first; a
