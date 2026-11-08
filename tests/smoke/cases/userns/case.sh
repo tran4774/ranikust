@@ -116,7 +116,7 @@ case_run() {
     <<<"$log" || fail "the --userns build's mode line: $log"
   expect "$(sudo stat -c '%u:%g %a' "$UW/new" "$UW/new/a" "$UW/new/a/state" | paste -sd ' ')" \
     "0:0 711 0:0 711 $S:$G 700" "the --userns state directory and the parents it made"
-  expect "$(sudo find "$UW/new" -maxdepth 3 \( -name '.ranikust-anon-userns-probe-*' \
+  expect "$(sudo find "$UW" -maxdepth 4 \( -name '.ranikust-anon-userns-probe-*' \
     -o -name '.ranikust-new-*' \) | wc -l)" 0 "probe and unnamed directories --userns left"
 
   local mapped plain

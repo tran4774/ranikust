@@ -70,8 +70,10 @@ pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:6553
 /// `/etc/passwd`'s uids, the gid range none of `/etc/group`'s gids or of
 /// `/etc/passwd`'s primary gids, and neither another well-formed line of
 /// its file. Those local files only: a static binary has no NSS, so an id
-/// only a directory service knows is not seen. Read on the host before
-/// anything is written.
+/// only a directory service knows is not seen. Lines end at `\n` alone, as
+/// shadow's own parser reads them: a `ranikust` line ending in `\r` is not
+/// well-formed, so not found, unlike [`lookup`], which takes `\r\n` as a
+/// line end too. Read on the host before anything is written.
 ///
 /// # Errors
 ///

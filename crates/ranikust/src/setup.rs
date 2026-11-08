@@ -820,7 +820,8 @@ pub(crate) fn probe_in_dir(
         ));
     }
     let root = RootPath::open(parent).map_err(|e| e.to_string())?;
-    let (scratch, held) = make_probe_dir(&root, parent, name)?;
+    let (name, scratch, held) = make_probe_dir_again(&root, parent, name)?;
+    let name = name.as_str();
     let (r, left) = match own_group(&scratch) {
         Ok(_) => probe_in_scratch(&scratch, &parent.join(name), ids),
         Err(e) => (Err(e.to_string()), false),
@@ -849,30 +850,58 @@ pub(crate) fn probe_in_dir(
     r
 }
 
+/// [`make_probe_dir`] with `name`, then once more with a name of its own
+/// where another build took the first for a leftover before it was held
+/// ([`remove_own_probe_leftovers`]): the name made.
+fn make_probe_dir_again(
+    root: &RootPath,
+    parent: &Path,
+    name: &str,
+) -> Result<(String, RootPath, Option<OwnedFd>), String> {
+    let again = format!("{name}-again");
+    for name in [name, &again] {
+        if let Some((scratch, held)) = make_probe_dir(root, parent, name)? {
+            return Ok((name.to_owned(), scratch, held));
+        }
+    }
+    Err(format!(
+        "{} was removed by another build before it could be held",
+        parent.join(again).display()
+    ))
+}
+
 /// Makes the directory `name` in `root` (at `parent`) for the probe, and
 /// holds it where the store would take it for a leftover: one named
 /// [`rnk_store::USERNS_PROBE_PREFIX`]. Others (in a build's directory) are
-/// never held.
+/// never held. `None` where it was removed before it was held.
 fn make_probe_dir(
     root: &RootPath,
     parent: &Path,
     name: &str,
-) -> Result<(RootPath, Option<OwnedFd>), String> {
+) -> Result<Option<(RootPath, Option<OwnedFd>)>, String> {
     let scratch = root
         .create_sub_root(name, 0o700)
         .map_err(|e| e.to_string())?;
     if !name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
-        return Ok((scratch, None));
+        return Ok(Some((scratch, None)));
     }
-    match hold_dir(&scratch) {
-        Ok(held) => Ok((scratch, Some(held))),
+    #[cfg(test)]
+    tests::before_hold(&parent.join(name));
+    let held = match hold_dir(&scratch) {
+        Ok(Some(held)) => held,
+        // Taken for a leftover, so gone or about to be.
+        Ok(None) => return Ok(None),
         Err(e) => {
             // The lock's error is the one to report; an empty directory
             // left is one the store removes.
             let _ = root.remove_dir(name);
-            Err(format!("cannot lock {}: {e}", parent.join(name).display()))
+            return Err(format!("cannot lock {}: {e}", parent.join(name).display()));
         }
-    }
+    };
+    // Until it is held, an empty directory of this user's is a leftover to
+    // another build's start.
+    let st = rustix::fs::fstat(&held).map_err(|e| e.to_string())?;
+    Ok((st.st_nlink > 0).then_some((scratch, Some(held))))
 }
 
 /// Removes each directory of the user namespace probe in `parent`
@@ -959,10 +988,11 @@ fn remove_if_own_and_empty(root: &RootPath, name: &std::ffi::OsStr) -> Result<bo
         Err(Errno::WOULDBLOCK) => return Ok(false),
         Err(e) => return Err(e.to_string()),
     }
-    let mut entries = rustix::fs::Dir::read_from(&fd).map_err(|e| e.to_string())?;
-    let empty = entries.all(|e| e.is_ok_and(|e| matches!(e.file_name().to_bytes(), b"." | b"..")));
-    if !empty {
-        return Ok(false);
+    for entry in rustix::fs::Dir::read_from(&fd).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !matches!(entry.file_name().to_bytes(), b"." | b"..") {
+            return Ok(false);
+        }
     }
     // The name alone: `rmdir` takes only an empty directory, whatever is
     // there now.
@@ -981,14 +1011,17 @@ fn remove_if_own_and_empty(root: &RootPath, name: &std::ffi::OsStr) -> Result<bo
 }
 
 /// A descriptor of the directory `dir` holding its exclusive `flock`, taken
-/// without waiting: it was just made, so only a store about to remove it
-/// as a leftover holds it.
-fn hold_dir(dir: &RootPath) -> Result<OwnedFd, String> {
+/// without waiting: it was just made, so only a store or a build's start
+/// about to remove it as a leftover holds it (`None`).
+fn hold_dir(dir: &RootPath) -> Result<Option<OwnedFd>, String> {
     let fd = dir
         .open_at(".", &rnk_rootfs::OpenHow::read().directory().no_follow())
         .map_err(|e| e.to_string())?;
-    rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).map_err(|e| e.to_string())?;
-    Ok(fd)
+    match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(fd)),
+        Err(Errno::WOULDBLOCK) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Gives the directory `name` in `root`, which this process just made, to

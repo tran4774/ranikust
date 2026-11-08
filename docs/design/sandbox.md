@@ -913,11 +913,12 @@ with another map:
   made for it, `0700`, the missing directories above it root's with mode
   `0711`, each under a temporary name, given its owner and mode, then renamed
   into place without replacing anything, so that a build killed meanwhile
-  leaves no directory of root's at that path. An existing one of root's is
-  refused, never given away: root's own builds keep layers extracted with real
-  ids, setuid-root files among them. A state directory at, below or above
-  root's default, `/var/lib/ranikust`, is refused too, missing or not: made for
-  the range, it would refuse root's own builds there
+  leaves no directory of root's at that path, only an empty
+  `.ranikust-new-*` beside it, which ranikust does not remove. An existing
+  one of root's is refused, never given away: root's own builds keep layers
+  extracted with real ids, setuid-root files among them. A state directory
+  at, below or above root's default, `/var/lib/ranikust`, is refused too,
+  missing or not: made for the range, it would refuse root's own builds there
   ([ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md),
   which replaces ADR-0104's option (d) for `--userns`). Every refusal comes
   before anything is written, with guidance: overlayfs is looked for from the
@@ -930,7 +931,10 @@ with another map:
   removes it from inside the namespace, with the range's rights, as it does
   any probe directory left in the state directory; root removes only an
   empty one of its own, mode `0700`, that a build killed before giving it
-  away left.
+  away left. One killed while the probe's files were being made in it stays,
+  and the store warns of it at each start. A build's start may take another
+  build's new probe directory for such a leftover before that build holds
+  it; that build then makes one under another name, once.
 - **Root only.** From a user other than root, `--userns` is a usage error
   before anything is written: only root may map the range, and that user's
   build already runs in a user namespace of its own.

@@ -86,12 +86,16 @@ writer) before `unshare`, the probes and the state directory's checks.
   `.ranikust-new-` name, given, then renamed with `RENAME_NOREPLACE`), then
   `Store::check_state_dir`, and only then `Staged::finish` sets the modes.
   `setup::remove_own_probe_leftovers` removes an empty `0700` probe
-  directory of root's a killed build left, then the probe runs with
+  directory of root's a killed build left (one that is not empty stays,
+  and the store warns of it), then the probe runs with
   `rnk_sandbox::BuildIds::Shifted`, the probe's directory and its `overlay`
-  given to those ids (`setup::give_dir`); `probe_in_dir` deletes nothing in
-  a directory it gave away and refuses a name without
+  given to those ids (`setup::give_dir`); neither `probe_in_dir` nor
+  `rnk_sandbox::probe_user_namespace` deletes anything in a directory
+  given away, and `probe_in_dir` refuses a name without
   `USERNS_PROBE_PREFIX`: it releases its lock and the store removes it
-  inside the namespace. `set_up` enters the namespace with the same ids;
+  inside the namespace. A probe directory another build's start removed
+  before it was held is made again once under another name
+  (`make_probe_dir_again`). `set_up` enters the namespace with the same ids;
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names
   `--userns`. Its messages name `--userns`, its guidance
   `USERNS_UNUSABLE`. `config.rs` refuses it with `--mode=kaniko` (exit 2).
@@ -462,9 +466,18 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `userns_is_refused_with_kaniko_mode_only`, and for a user other than
   root, `userns_is_refused_for_a_user_other_than_root`), `statedir`
   (`a_userns_state_directory_is_the_mapped_root_s_below_parents_it_may_search`,
-  `a_userns_state_directory_is_never_at_below_or_above_root_s_default`),
-  `subids`
-  (`root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else`),
+  `a_userns_state_directory_is_never_at_below_or_above_root_s_default`,
+  `a_userns_state_directory_is_given_before_it_takes_its_name`,
+  `the_nearest_existing_directory_is_where_a_missing_one_is_made`),
+  `setup/rootless.rs` (refusals before anything is made or changed:
+  `a_missing_state_directory_on_overlayfs_is_refused_unmade`, run only
+  where the temporary directory is on overlayfs, and
+  `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (the
+  probe's directory: `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
+  `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
+  `a_probe_directory_removed_before_it_is_held_is_made_again`), `subids`
+  (`root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else`,
+  `root_s_range_shares_no_id_with_an_account_or_another_range`),
   `main` (`--userns` never falls back,
   `only_roots_auto_mode_falls_back_to_kaniko_mode`), `setup` (the
   outcome from the probes' results, which refusals route `--mode=auto` to

@@ -25,6 +25,52 @@ pub(super) fn probes_ran() {
     }
 }
 
+std::thread_local! {
+    /// How many directories [`before_hold`] removes, set by a test.
+    static REMOVE_BEFORE_HOLD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// [`make_probe_dir`]'s hook, between the directory `dir` made and held:
+/// removes it as another build's start would, as many times as a test
+/// asked on this thread.
+pub(super) fn before_hold(dir: &Path) {
+    let left = REMOVE_BEFORE_HOLD.with(std::cell::Cell::get);
+    if left > 0 {
+        REMOVE_BEFORE_HOLD.with(|n| n.set(left - 1));
+        remove_own_probe_leftovers(dir.parent().unwrap());
+    }
+}
+
+/// A probe directory another build's start removes before it is held is
+/// made again under a name of its own, once.
+#[test]
+fn a_probe_directory_removed_before_it_is_held_is_made_again() {
+    let tmp = private_tempdir();
+    let root = RootPath::open(tmp.path()).unwrap();
+    let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let names = || {
+        let mut n: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        n.sort();
+        n
+    };
+    REMOVE_BEFORE_HOLD.with(|n| n.set(1));
+    let (made, _, held) = make_probe_dir_again(&root, tmp.path(), &name).unwrap();
+    assert_eq!(made, format!("{name}-again"));
+    assert_eq!(names(), std::slice::from_ref(&made));
+    assert!(held.is_some());
+    drop(held);
+    fs::remove_dir(tmp.path().join(&made)).unwrap();
+    REMOVE_BEFORE_HOLD.with(|n| n.set(2));
+    let Err(e) = make_probe_dir_again(&root, tmp.path(), &name) else {
+        panic!("a probe directory removed twice before it was held");
+    };
+    assert!(e.contains("removed by another build"), "{e}");
+    assert!(names().is_empty());
+}
+
 /// Linux's `EACCES`, without a dependency on `libc` for one constant.
 const EACCES: i32 = 13;
 
@@ -502,13 +548,18 @@ impl LockedElsewhere {
     pub(crate) fn new(path: &Path) -> Self {
         let path_c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         let (r, w) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        let keep = u32::try_from(std::os::fd::AsRawFd::as_raw_fd(&w)).unwrap();
         // SAFETY: the child makes only async-signal-safe system calls, on
         // memory made before the fork, and never returns.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
             // SAFETY: plain system calls on a path and descriptors made
-            // before the fork; the child waits to be killed.
+            // before the fork; the child waits to be killed, and closes
+            // first every descriptor but `w`, so that it holds no other
+            // test's lock.
             unsafe {
+                libc::syscall(libc::SYS_close_range, 3_u32, keep - 1, 0_u32);
+                libc::syscall(libc::SYS_close_range, keep + 1, u32::MAX, 0_u32);
                 let fd = libc::open(
                     path_c.as_ptr(),
                     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
@@ -993,7 +1044,7 @@ fn only_a_probe_directory_a_store_would_remove_is_held() {
         rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).is_ok()
     };
     let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
-    let (_, held) = make_probe_dir(&root, dir.path(), &name).unwrap();
+    let (_, held) = make_probe_dir(&root, dir.path(), &name).unwrap().unwrap();
     assert!(held.is_some());
     assert!(!lock(&name), "held");
     drop(held);
@@ -1006,7 +1057,9 @@ fn only_a_probe_directory_a_store_would_remove_is_held() {
         }
     });
     assert!(released, "released");
-    let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe").unwrap();
+    let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe")
+        .unwrap()
+        .unwrap();
     assert!(held.is_none());
     assert!(lock("userns-probe"));
 }
