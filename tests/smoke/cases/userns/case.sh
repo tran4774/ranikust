@@ -138,15 +138,16 @@ reach() {
   echo "${r:- nothing}"
 }
 
-# urun NAME ARG...: ranikust as root with --userns, its context and its
-# outputs ($UW/out/NAME, the range's first ids') where those ids reach
-# them; prints the log, returns the exit code.
+# urun NAME ARG...: ranikust as root with --userns, its working directory,
+# its context and its outputs ($UW/out/NAME, the range's first ids') where
+# those ids reach them; prints the log, returns the exit code.
 urun() {
   local o="$UW/out/$1"
   shift
   sudo rm -rf "$o" && sudo mkdir -m 700 "$o" && sudo chown "${S:-0}:${G:-0}" "$o"
-  sudo "$RNK" --userns --context "$UW/ctx" --no-push --build-arg "BASE=$BASE" \
-    --oci-layout-path "$o/oci" --tar-path "$o/image.tar" "$@"
+  # The default --dockerfile is looked for from here first.
+  (cd "$UW/ctx" && sudo "$RNK" --userns --context "$UW/ctx" --no-push \
+    --build-arg "BASE=$BASE" --oci-layout-path "$o/oci" --tar-path "$o/image.tar" "$@")
 }
 
 # udigest NAME ARG...: urun into the state directory $UW/state; prints

@@ -881,10 +881,12 @@ fn a_shifted_range_s_layers_are_keyed_by_its_map() {
     assert_ne!(lower2, lower);
     assert_ne!(upper2, upper);
 
-    // The first map's own again: nothing new published.
+    // The first map's own again: found, so nothing extracted or published.
     let again = extract_shifted(&state, shifted_range(65_536), skip_selinux);
     let (_, report, paths) = split(&again);
-    assert_eq!(report, both(expected(true, skip_selinux)));
+    let found =
+        both(expected(true, skip_selinux)).replacen("nodes_skipped 2\n", "nodes_skipped null\n", 1);
+    assert_eq!(report, found);
     assert_eq!(paths, [lower, upper]);
 }
 
