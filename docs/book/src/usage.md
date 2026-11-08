@@ -84,11 +84,16 @@ a path below or above it (so without `--state-dir` it is refused). Then it
 empties the directory in the range's user namespace, as that uid, never as
 root, with the same rules as a user's `prune --all`. What that uid cannot
 remove (a mount below, a directory of root's that still holds entries, or a
-file of root's in a sticky directory of another id) stops it, saying so:
-remove it by hand, as root, and run it again; until then builds refuse the
-directory and name the command. A user other than root gets a usage error. Root's own
-`prune --all` on a directory this command takes names it instead of the
-commands below, which would stop at the range's other ids.
+file of root's in a sticky directory of another id) stops it; it names the
+top-level entries left. Stop every `--userns` build, since their `RUN`s run
+as the range's ids; then, as root, unmount anything below the directory,
+remove each entry it names from inside it with
+`rm -r --one-file-system -- <entry>`, keeping `.ranikust-pruning`, and run
+it again. Until then builds refuse the directory and name the command. A
+user other than root gets a usage error, and `--metrics-file` is refused
+with `--userns` (exit code 2): the report would be written as the range's
+uid. Root's own `prune --all` on a directory this command takes names it
+instead of the commands below, which would stop at the range's other ids.
 
 Without `--userns`, root is refused, a container's root included: it empties
 its state directory with ordinary tools while no build uses it and nothing is

@@ -364,8 +364,13 @@ the range's first uid owns, else to drop `--userns`. Where it cannot finish
 (a mount below; of a uid or gid the range does not map, such as root's, a
 directory that still holds entries, or an entry in a sticky directory
 another id owns, over which the namespace's root has no `CAP_FOWNER`), its
-refusal says to unmount, remove those by hand as root, and run it again; it
-prints no commands. Root's own `prune --all`, and a `--userns` build refused by a
+refusal names the top-level entries left and says to stop every `--userns`
+build (their `RUN`s may change that tree), then, as root, to unmount and
+remove each entry from inside the directory with `rm -r --one-file-system`,
+the marker kept, and run it again; it prints no commands. `--metrics-file`
+is refused with it before anything runs: the process writes the report at
+exit, by then as the range's uid. Root's own `prune --all`, and a
+`--userns` build refused by a
 prune cut short, name `prune --all --userns` instead of root's commands
 only for a marked directory it takes (owned by the range's first uid and
 passing the checks above), which those commands would refuse to empty, its

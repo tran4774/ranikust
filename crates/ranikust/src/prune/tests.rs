@@ -2007,23 +2007,33 @@ fn prune_userns_and_roots_prune_never_send_root_to_each_other() {
     assert_eq!(listing(tmp.path()), before);
 }
 
-/// What a `prune --all --userns` that could not finish says: unmount,
-/// remove by hand what the range's uid cannot (directories of ids it does
-/// not map that hold entries, such entries in a sticky directory), then
-/// run it again, naming the state directory.
+/// What a `prune --all --userns` that could not finish says: the
+/// top-level entries left, why the range's uid could not remove them;
+/// every `--userns` build stopped first; then, as root, unmount and remove
+/// each entry from inside the directory without leaving its filesystem,
+/// the marker kept; then run it again, naming the state directory.
 #[test]
 fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
-    let text = userns_unfinished(Path::new("/srv/rnk state"));
+    let text = userns_unfinished(Path::new("/srv/rnk state"), "\"builds\", \"cache\"");
+    assert!(
+        text.starts_with(
+            "ranikust prune --all --userns left \"builds\", \"cache\" in '/srv/rnk state':"
+        ),
+        "{text}"
+    );
     assert!(
         text.contains("directories that still hold entries"),
         "{text}"
     );
     assert!(text.contains("entries in a sticky directory"), "{text}");
+    assert!(text.contains("Stop every --userns build first;"), "{text}");
     assert!(
         text.contains("unmount anything below '/srv/rnk state'"),
         "{text}"
     );
-    assert!(text.contains("by hand, as root"), "{text}");
+    let rm = "cd -- '/srv/rnk state' && rm -r --one-file-system -- <entry>";
+    assert!(text.contains(rm), "{text}");
+    assert!(text.contains("never .ranikust-pruning"), "{text}");
     let again = "ranikust prune --all --userns --state-dir '/srv/rnk state' again";
     assert!(text.ends_with(again), "{text}");
 }

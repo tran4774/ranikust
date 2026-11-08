@@ -1130,6 +1130,35 @@ fn prune_userns_as_a_user_other_than_root_is_a_usage_error() {
     }
 }
 
+/// `--metrics-file` with `prune --userns` is a usage error, as root too,
+/// before any state directory is looked at: the prune ends as the first
+/// uid of the `ranikust` range, which would write the report. Nothing is
+/// written.
+#[test]
+fn prune_userns_refuses_a_metrics_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).expect("home");
+    let env = [("HOME", home.to_str().expect("utf-8 temp dir"))];
+    let args = [
+        "prune",
+        "--all",
+        "--userns",
+        "--state-dir=state",
+        "--metrics-file=out/m.json",
+    ];
+    let out = ranikust(tmp.path(), &args, &env);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--metrics-file is refused with prune --userns"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert_eq!(names(tmp.path()), vec![std::path::PathBuf::from("home")]);
+    assert_eq!(names(&home), Vec::<std::path::PathBuf>::new());
+}
+
 /// As root, a container's root included, `prune --all` is refused with
 /// nothing changed, naming Phase 5's `prune`; as a user,
 /// a state directory that does not exist, the default one included, is

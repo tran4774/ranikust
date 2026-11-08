@@ -381,14 +381,27 @@ fn metrics_writer(
 /// could have changed in between.
 pub(crate) static BUILD_FENCE: std::sync::OnceLock<rnk_rootfs::Fence> = std::sync::OnceLock::new();
 
-/// The checks of `--metrics-file` before the report is set up: for a build
-/// asking for a report, the build context must open, so the report's path
-/// can be kept out of it, and the path must pass as an output. The fence
-/// found, for the writer until the build opens its own context.
+/// The checks of `--metrics-file` before the report is set up: refused with
+/// `prune --userns`, whose process writes it at exit as the first uid of the
+/// `ranikust` range; for a build asking for a report, the build context must
+/// open, so the report's path can be kept out of it, and the path must pass
+/// as an output. The fence found, for the writer until the build opens its
+/// own context.
 fn metrics_preflight(
     command: &Command,
     metrics_file: Option<&Path>,
 ) -> Result<Option<rnk_rootfs::Fence>, String> {
+    if let Command::Prune(args) = command
+        && args.userns
+        && metrics_file.is_some()
+    {
+        return Err(
+            "--metrics-file is refused with prune --userns: the report is written at \
+                    exit, by then as the first uid of the ranikust range, which would own it \
+                    or could not write it; drop --metrics-file"
+                .to_owned(),
+        );
+    }
     if !matches!(command, Command::Build(_)) || metrics_file.is_none() {
         // The build reports its own usage errors and context.
         return Ok(context_fence(command).ok().flatten());
@@ -1904,6 +1917,31 @@ mod tests {
             guidance.starts_with("  ") && !guidance.contains("RNK"),
             "{guidance}"
         );
+    }
+
+    /// `--metrics-file` with `prune --userns` is refused before the report
+    /// is set up: the process writes it at exit, by then as the first uid
+    /// of the `ranikust` range. Without `--userns` it is not.
+    #[test]
+    fn the_metrics_file_is_refused_with_prune_userns() {
+        let file = Path::new("m.json");
+        for argv in [
+            &["ranikust", "prune", "--all", "--userns"][..],
+            &["ranikust", "prune", "--userns", "--state-dir=s"],
+        ] {
+            let command = cli::parse(argv).unwrap().cli.into_command();
+            let e = metrics_preflight(&command, Some(file)).unwrap_err();
+            assert!(
+                e.starts_with("--metrics-file is refused with prune --userns"),
+                "{e}"
+            );
+            assert!(metrics_preflight(&command, None).is_ok());
+        }
+        let command = cli::parse(["ranikust", "prune", "--all"])
+            .unwrap()
+            .cli
+            .into_command();
+        assert!(metrics_preflight(&command, Some(file)).is_ok());
     }
 
     /// `--metrics-file` in the build context, or through a symlink, is

@@ -383,20 +383,25 @@ fn userns_way(dir: &Path) -> String {
 }
 
 /// The ways out of `--userns`'s state directory `dir` that
-/// [`prune_userns`] could not finish emptying
-/// ([`rnk_store::Error::NotPruned`]): what the range's uid cannot remove
-/// goes first, by hand, since no build opens the directory meanwhile: a
-/// directory of an id the range does not map that holds entries, or such
-/// an entry in a sticky directory another id owns, where the namespace's
-/// root has no `CAP_FOWNER` over it.
-fn userns_unfinished(dir: &Path) -> String {
+/// [`prune_userns`] could not finish emptying, `left` being the top-level
+/// entries [`rnk_store::Error::NotPruned`] names: what the range's uid
+/// cannot remove goes by hand, since no build opens the directory
+/// meanwhile (a directory of an id the range does not map that holds
+/// entries, or such an entry in a sticky directory another id owns, where
+/// the namespace's root has no `CAP_FOWNER` over it). The range's `RUN`s
+/// can change that tree: root removes it only once every `--userns` build
+/// is stopped, from inside the directory, without leaving its filesystem,
+/// keeping the marker that keeps builds out.
+fn userns_unfinished(dir: &Path, left: &str) -> String {
     let d = shell_word(dir.as_os_str());
     format!(
-        "ranikust prune --all --userns leaves what is on another mount, and, of a uid or gid the \
-         ranikust range does not map (root's, or past a range shrunk since the build), \
-         directories that still hold entries and entries in a sticky directory another id owns, \
-         which its uid cannot remove: unmount anything below {d} and remove such entries by \
-         hand, as root, then run ranikust prune --all --userns --state-dir {d} again"
+        "ranikust prune --all --userns left {left} in {d}: what is on another mount, and, of a \
+         uid or gid the ranikust range does not map (root's, or past a range shrunk since the \
+         build), directories that still hold entries and entries in a sticky directory another \
+         id owns, which its uid cannot remove. Stop every --userns build first; then, as root, \
+         unmount anything below {d} and remove each top-level entry left from inside it, never \
+         .ranikust-pruning: cd -- {d} && rm -r --one-file-system -- <entry>; then run ranikust \
+         prune --all --userns --state-dir {d} again"
     )
 }
 
@@ -755,9 +760,10 @@ fn userns_with(
         Err(e) => Err(setup::inside_userns(Refusal {
             kind: Kind::Other,
             reason: e.to_string(),
-            guidance: match unfinished_prune(&e) {
-                Some((Unfinished::NotPruned, _)) => userns_unfinished(state_dir).into(),
-                Some((Unfinished::CutShort, _)) | None => "".into(),
+            guidance: if let rnk_store::Error::NotPruned { left, .. } = &e {
+                userns_unfinished(state_dir, left).into()
+            } else {
+                "".into()
             },
         })),
     }
@@ -773,30 +779,54 @@ fn userns_with(
 pub(crate) fn prune_all(euid: u32, state_dir: &Path) -> Result<Pruned, Refusal> {
     if euid == 0 {
         return Err(Refusal {
-            kind: Kind::Other,
-            reason: "ranikust prune --all empties the state directory of a user other than root \
-                     (ADR-0105), and refuses root, a container's root included"
-                .to_owned(),
             guidance: root_guidance(state_dir).into(),
+            ..root_refused()
         });
     }
     empty(state_dir)
 }
 
+/// Why `prune --all` refuses root (ADR-0105), without root's commands.
+fn root_refused() -> Refusal {
+    Refusal {
+        kind: Kind::Other,
+        reason: "ranikust prune --all empties the state directory of a user other than root \
+                 (ADR-0105), and refuses root, a container's root included"
+            .to_owned(),
+        guidance: "".into(),
+    }
+}
+
 /// Empties `state_dir` as root of the build's user namespace, which this
-/// process enters for good: a path ending in `..` refused before anything
-/// is opened, as root's commands refuse it; the state directory's checks
-/// outside, which change nothing ([`statedir::check`]); nothing more when
-/// it does not exist or is empty; else the namespace, then
+/// process enters for good: refused for an effective uid 0 here too,
+/// whatever its caller checked; a path ending in `..` refused before
+/// anything is opened, as root's commands refuse it; the state directory's
+/// checks outside, which change nothing ([`statedir::check`]); nothing more
+/// when it does not exist or is empty; else the namespace, then
 /// [`Store::prune_all`] in it. Call while single-threaded.
 ///
 /// # Errors
 ///
-/// A [`Refusal`]: naming a path ending in `..` or the state directory's
-/// check that failed; as
-/// [`setup::enter_build_userns`]; or naming what [`Store::prune_all`]
-/// refused or left, then of [`Kind::Broken`].
+/// A [`Refusal`]: naming root, a path ending in `..` or the state
+/// directory's check that failed; as [`setup::enter_build_userns`]; or
+/// naming what [`Store::prune_all`] refused or left, then of
+/// [`Kind::Broken`].
 pub(crate) fn empty(state_dir: &Path) -> Result<Pruned, Refusal> {
+    if rustix::process::geteuid().is_root() {
+        return Err(root_refused());
+    }
+    emptying(state_dir)
+}
+
+/// [`empty`] below its root check, for the T1 tests that run it as root of
+/// a rootless container.
+#[cfg(test)]
+pub(crate) fn empty_below_the_root_check(state_dir: &Path) -> Result<Pruned, Refusal> {
+    emptying(state_dir)
+}
+
+/// [`empty`]'s steps after its root check.
+fn emptying(state_dir: &Path) -> Result<Pruned, Refusal> {
     if ends_in_dotdot(state_dir) {
         return Err(Refusal {
             kind: Kind::Other,

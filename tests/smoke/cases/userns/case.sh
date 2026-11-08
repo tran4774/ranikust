@@ -139,9 +139,10 @@ case_run() {
 # namespace: root's own `prune --all` names it; it refuses root's default,
 # a state directory of root's and one below a directory the range's uid
 # cannot search, each left as it was, and root's `prune --all` does not
-# send root back to it for the last; a directory of root's put in the
-# store stays, which root would have removed, the prune says how to
-# finish, and a build is refused, naming it, until it does.
+# send root back to it for the last; with --metrics-file it is a usage
+# error; a directory of root's put in the store stays, which root would
+# have removed, the prune names what is left and how to finish, a build is
+# refused, naming it, until it does, and its way out works.
 pruned_as_the_range() {
   local log rc=0
   log="$(sudo "$RNK" prune --all --state-dir "$UW/state" 2>&1)" || rc=$?
@@ -182,6 +183,14 @@ pruned_as_the_range() {
   ! grep -qF -- "--userns" <<<"$log" ||
     fail "root's prune --all sent root back to prune --all --userns: $log"
 
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" --metrics-file "$UW/m.json" 2>&1)" ||
+    rc=$?
+  expect "$rc" 2 "prune --all --userns with --metrics-file"
+  grep -qF -- "--metrics-file is refused with prune --userns" <<<"$log" ||
+    fail "prune --all --userns with --metrics-file: $log"
+  sudo test ! -e "$UW/m.json" || fail "prune --all --userns wrote a metrics report"
+
   sudo test -d "$UW/state/builds" || fail "no builds/ in the --userns state directory"
   sudo mkdir -m 755 "$UW/state/builds/rnk-roots"
   sudo touch "$UW/state/builds/rnk-roots/f"
@@ -189,7 +198,10 @@ pruned_as_the_range() {
   log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
   expect "$rc" 1 "prune --all --userns with a directory of root's in the store"
   grep -qF "ranikust: the build's user namespace: shifted range" <<<"$log" &&
-    grep -qF "unmount anything below $UW/state and remove such entries by hand, as root" <<<"$log" ||
+    grep -qF "ranikust prune --all --userns left " <<<"$log" &&
+    grep -qF '"builds"' <<<"$log" &&
+    grep -qF "Stop every --userns build first;" <<<"$log" &&
+    grep -qF "cd -- $UW/state && rm -r --one-file-system -- <entry>" <<<"$log" ||
     fail "prune --all --userns with a directory of root's in the store: $log"
   sudo test -f "$UW/state/builds/rnk-roots/f" || fail "prune --all --userns removed a file of root's"
   rc=0
@@ -198,7 +210,9 @@ pruned_as_the_range() {
   grep -qF -- "ranikust prune --all --userns --state-dir $UW/state" <<<"$log" ||
     fail "a --userns build in a state directory a prune did not finish: $log"
 
-  sudo rm -r "$UW/state/builds/rnk-roots"
+  # The way out it names, as root, the marker kept.
+  sudo sh -c 'cd -- "$1" && rm -r --one-file-system -- builds' sh "$UW/state"
+  sudo test -f "$UW/state/.ranikust-pruning" || fail "the way out removed the marker"
   rc=0
   log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
   expect "$rc" 0 "prune --all --userns: $log"
