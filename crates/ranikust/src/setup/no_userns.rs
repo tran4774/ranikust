@@ -1,10 +1,12 @@
 //! The advice for a user other than root who gets no usable user namespace
 //! (`design/modes-and-detection.md#no-usable-user-namespace`), in order:
-//! `sudo`; where `kernel.apparmor_restrict_unprivileged_userns` is 1 and
-//! AppArmor may be what refused, ranikust's AppArmor profile
-//! (`contrib/apparmor/ranikust`), for the binary's own path where only root
-//! may change it, else after installing the binary where only root may; a
-//! container.
+//! `sudo`; where AppArmor may be what refused (`Stop`) and ranikust runs
+//! where its profile would attach (`Here`: the switch
+//! `kernel.apparmor_restrict_unprivileged_userns` at 1, unconfined, on the
+//! host), ranikust's AppArmor profile (`contrib/apparmor/ranikust`), for
+//! the binary's own path where only root may change it and it holds
+//! ranikust itself, else after installing the binary where only root may;
+//! a container.
 
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
@@ -95,8 +97,12 @@ impl Stop {
 /// The advice for this host, for `binary`, the path ranikust started from
 /// (`None` where it could not be read), stopped by `stop`: the profile only
 /// where [`Here::offers`] and AppArmor may be what refused, for that path
-/// only where root alone may change it.
+/// only where root alone may change it and it holds ranikust itself.
 pub(crate) fn guidance(binary: Option<&Path>, stop: Stop) -> String {
+    // Where AppArmor cannot be what refused, where ranikust runs changes nothing.
+    if !stop.offers_profile() {
+        return advice(None);
+    }
     advise(binary, stop, &Here::read())
 }
 
@@ -110,8 +116,9 @@ struct Here {
     /// starts.
     unconfined: bool,
     /// In the host's user namespace and no container ([`on_host`]): the
-    /// paths ranikust sees are the ones a profile loaded on the host
-    /// attaches to.
+    /// paths ranikust sees are taken for the ones a profile loaded on the
+    /// host attaches to (a chroot, or a mount namespace root set up to
+    /// look like the host's, is not told apart).
     on_host: bool,
 }
 
@@ -123,6 +130,7 @@ impl Here {
             }
             label => label,
         };
+        // An unread map counts as not the host's: no profile.
         let uid_map = std::fs::read_to_string("/proc/self/uid_map").ok();
         Self {
             restricted: restricted(),
@@ -267,7 +275,8 @@ fn plain(path: &Path) -> bool {
         .all(|&b| b.is_ascii_alphanumeric() || b"._+-/".contains(&b))
 }
 
-/// What the advice weighs where AppArmor restricts user namespaces.
+/// What the advice weighs where it may offer the profile (`Stop` and
+/// `Here`).
 struct Checked<'a> {
     /// The binary's path, where a profile may be bound to it, else why not.
     bound: Result<&'a Path, String>,
@@ -275,8 +284,8 @@ struct Checked<'a> {
     dir: Result<(), String>,
 }
 
-/// The advice's text; `profile` is `None` where AppArmor does not restrict
-/// user namespaces.
+/// The advice's text; `profile` is `None` where the profile is not offered
+/// (`Stop::offers_profile`, `Here::offers`).
 fn advice(profile: Option<Checked<'_>>) -> String {
     const SUDO: &str = "run ranikust as root, with sudo";
     const CONTAINER: &str = "or run ranikust in a container";

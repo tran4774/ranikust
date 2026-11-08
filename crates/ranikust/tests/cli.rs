@@ -1303,20 +1303,60 @@ fn userns_advice(err: &str) -> &str {
         .unwrap_or_else(|| panic!("no advice: {err}"))
 }
 
-/// Whether the advice may offer a profile here: the switch at 1, this
-/// process unconfined, in the host's user namespace and in no container
-/// (T0 runs on a host; the markers stand for ranikust's container check).
+/// Whether the advice may offer a profile here, decided as ranikust's
+/// `no_userns::Here` and `container::detect` decide it: the switch at 1,
+/// this process unconfined, in the host's user namespace and in no
+/// container.
 fn offers_a_profile_here() -> bool {
-    let restricted = fs::read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-        .is_ok_and(|v| v.trim_ascii() == b"1");
-    let unconfined = fs::read("/proc/self/attr/apparmor/current")
-        .or_else(|_| fs::read("/proc/self/attr/current"))
-        .is_ok_and(|v| v.trim_ascii() == b"unconfined");
-    let host_userns = fs::read_to_string("/proc/self/uid_map")
-        .is_ok_and(|m| m.split_ascii_whitespace().eq(["0", "0", "4294967295"]));
-    let in_container = ["/.dockerenv", "/run/.containerenv"]
-        .iter()
-        .any(|p| Path::new(p).exists());
+    use std::io::ErrorKind::NotFound;
+    let read = |p: &str| fs::read_to_string(p).unwrap_or_default();
+    // As Go's `!os.IsNotExist(err)`, which the container check follows.
+    let exists = |p: &str| fs::metadata(p).map_or_else(|e| e.kind() != NotFound, |_| true);
+    let restricted = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").trim() == "1";
+    let label = match fs::read("/proc/self/attr/apparmor/current") {
+        Err(e) if e.kind() == NotFound => fs::read("/proc/self/attr/current"),
+        label => label,
+    };
+    let unconfined = label.is_ok_and(|v| v.trim_ascii() == b"unconfined");
+    let host_userns =
+        read("/proc/self/uid_map")
+            .split_ascii_whitespace()
+            .eq(["0", "0", "4294967295"]);
+    let runtimes = [
+        "docker",
+        "rkt",
+        "systemd-nspawn",
+        "lxc",
+        "openvz",
+        "kube",
+        "garden",
+        "podman",
+        "gvisor",
+        "firejail",
+        "wsl",
+    ];
+    let names = |text: &str| !text.trim().is_empty() && runtimes.iter().any(|r| text.contains(r));
+    let mounts = read("/proc/mounts");
+    let mut root = mounts.lines().next().unwrap_or("").split(' ');
+    let overlay_root = matches!(
+        (root.next(), root.next(), root.next()),
+        (Some(device), Some("/"), Some(fs)) if !device.is_empty() && fs.starts_with("overlay")
+    );
+    let in_container = [
+        "/run/.containerenv",
+        "/.dockerenv",
+        "/var/run/secrets/kubernetes.io/serviceaccount",
+        "/__runsc_containers__",
+    ]
+    .iter()
+    .any(|p| exists(p))
+        || names(&read("/proc/self/cgroup"))
+        || (exists("/proc/vz") && !exists("/proc/bc"))
+        || names(&read("/proc/1/cmdline"))
+        || read("/proc/version_signature").starts_with("Microsoft")
+        || std::env::var("container").is_ok_and(|v| names(&v))
+        || names(&read("/run/systemd/container"))
+        || overlay_root;
     restricted && unconfined && host_userns && !in_container
 }
 
