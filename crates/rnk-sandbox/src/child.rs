@@ -717,6 +717,7 @@ fn run_init(
     // SAFETY: `status_w` is open in this process; the write is below
     // PIPE_BUF, so atomic. If ranikust is gone, no one reads it.
     let _ = rustix::io::write(unsafe { BorrowedFd::borrow_raw(status_w) }, &bytes);
+    // For `ending`: an init exiting 0 wrote no record; a record is the command's, before `execve`.
     // SAFETY: `_exit` ends the process at once; the kernel then kills what
     // is left of the namespace.
     unsafe { libc::_exit(0) }
