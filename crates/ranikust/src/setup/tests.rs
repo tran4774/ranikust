@@ -840,6 +840,205 @@ fn overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade() {
     assert!(!tmp.path().join("a").exists());
 }
 
+/// Every entry below `dir`, `dir` included, never following a symlink or
+/// opening a special file: its path, mode, size, mtime, ctime, and a
+/// file's bytes or a symlink's target.
+fn snapshot(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(p) = todo.pop() {
+        let m = fs::symlink_metadata(&p).unwrap();
+        let content = if m.is_file() {
+            String::from_utf8_lossy(&fs::read(&p).unwrap()).into_owned()
+        } else if m.file_type().is_symlink() {
+            fs::read_link(&p).unwrap().display().to_string()
+        } else {
+            String::new()
+        };
+        if m.is_dir() {
+            todo.extend(fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+        }
+        out.push(format!(
+            "{} {:o} {} {}.{} {}.{} {content}",
+            p.display(),
+            m.mode(),
+            m.len(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec()
+        ));
+    }
+    out.sort();
+    out
+}
+
+/// Red team: root's overlay mode, and the check rootless overlay mode and
+/// `--userns` share, refuse a state directory whose store directory is a
+/// special file or a link, one that is not a store, one whose marker is
+/// not a file, and one at or below a special file, without blocking and
+/// with nothing changed, what a link leads to included (T4).
+#[test]
+fn red_team_a_planted_state_directory_is_refused_unchanged_by_each_set_up() {
+    use rustix::fs::{CWD, FileType, Mode, mknodat};
+    use std::os::unix::fs::symlink;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    if as_root() {
+        return;
+    }
+    let tmp = private_tempdir();
+    if crate::statedir::on_overlayfs(tmp.path()) {
+        eprintln!("skipped: the temporary directory is on overlayfs");
+        return;
+    }
+    let t = tmp.path();
+    let node = |p: &Path, kind: FileType| mknodat(CWD, p, kind, Mode::from_raw_mode(0o600), 0);
+    let outside = t.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("f"), "keep").unwrap();
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+    let fifo_out = t.join("fifo-out");
+    node(&fifo_out, FileType::Fifo).unwrap();
+    fs::write(t.join("file"), "keep").unwrap();
+    symlink("missing", t.join("dead")).unwrap();
+    // 0:0, a whiteout: the only device node a user may make.
+    let chardev = node(&t.join("chardev"), FileType::CharacterDevice).is_ok();
+    drop(std::os::unix::net::UnixListener::bind(t.join("sock")).unwrap());
+    // A FIFO opened by mistake blocks: each set-up runs on a thread of its own.
+    let refused = |state: &Path, case: &str| -> Vec<String> {
+        let mut reasons = Vec::new();
+        for shared in [false, true] {
+            let (tx, rx) = mpsc::channel();
+            let s = state.to_owned();
+            std::thread::spawn(move || {
+                let r = if shared {
+                    let euid = rustix::process::geteuid().as_raw();
+                    let on_overlayfs = || Refusal {
+                        kind: Kind::OverlayUnusable,
+                        reason: "on overlayfs".into(),
+                        guidance: "".into(),
+                    };
+                    let me = crate::statedir::Owner::me();
+                    hold_state_dir(&s, euid, me, on_overlayfs).map(drop)
+                } else {
+                    set_up(&s, false, &Seccomp::Unset, &mut false, false, false).map(drop)
+                };
+                tx.send(r.map_err(|r| r.reason)).unwrap();
+            });
+            let r = rx
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{case} (shared {shared}): blocked"));
+            reasons.push(
+                r.err()
+                    .unwrap_or_else(|| panic!("{case} (shared {shared}): taken")),
+            );
+        }
+        reasons
+    };
+    let mut cases = 0;
+    let mut check = |state: &Path, case: &str, says: &str| {
+        let before = snapshot(t);
+        for reason in refused(state, case) {
+            assert!(reason.contains(says), "{case}: {reason}");
+        }
+        assert_eq!(snapshot(t), before, "{case}");
+        cases += 1;
+    };
+    // A store as builds leave it, open to others as no set-up leaves it.
+    let store = |name: &str| {
+        let state = t.join(name);
+        Store::open(&BuildPaths::new(&state, &state))
+            .unwrap()
+            .close()
+            .unwrap();
+        for p in [&state, &state.join("builds")] {
+            fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        state
+    };
+
+    for d in ["blobs", "builds", "tmp"] {
+        for plant in [
+            "a FIFO",
+            "a socket",
+            "a character device",
+            "a link out",
+            "a dead link",
+            "a link to a FIFO",
+        ] {
+            if plant == "a character device" && !chardev {
+                continue;
+            }
+            let state = store(&format!("{d}-{}", plant.replace(' ', "-")));
+            let at = state.join(d);
+            fs::remove_dir_all(&at).unwrap();
+            match plant {
+                "a FIFO" => node(&at, FileType::Fifo).unwrap(),
+                "a socket" => drop(std::os::unix::net::UnixListener::bind(&at).unwrap()),
+                "a character device" => node(&at, FileType::CharacterDevice).unwrap(),
+                "a link out" => symlink(&outside, &at).unwrap(),
+                "a dead link" => symlink("missing", &at).unwrap(),
+                _ => symlink(&fifo_out, &at).unwrap(),
+            }
+            let says = format!("holds {d}, which is");
+            check(&state, &format!("{d} as {plant}"), &says);
+        }
+    }
+
+    // Not a store: a directory as a system one is, and markers that are not files.
+    let sys = t.join("sys");
+    for d in ["bin", "etc", "usr/lib"] {
+        fs::create_dir_all(sys.join(d)).unwrap();
+    }
+    fs::write(sys.join("etc/passwd"), "root:x:0:0::/root:/bin/sh\n").unwrap();
+    fs::set_permissions(&sys, fs::Permissions::from_mode(0o755)).unwrap();
+    let unmarked = "has no regular file .ranikust-state";
+    check(&sys, "a system-like directory", unmarked);
+    for plant in [
+        "a directory",
+        "a FIFO",
+        "a link to a file out",
+        "a dead link",
+    ] {
+        let state = t.join(format!("marker-{}", plant.replace(' ', "-")));
+        fs::create_dir(&state).unwrap();
+        fs::create_dir(state.join("blobs")).unwrap();
+        let marker = state.join(rnk_store::STATE_MARKER);
+        match plant {
+            "a directory" => fs::create_dir(&marker).unwrap(),
+            "a FIFO" => node(&marker, FileType::Fifo).unwrap(),
+            "a link to a file out" => symlink(outside.join("f"), &marker).unwrap(),
+            _ => symlink("missing", &marker).unwrap(),
+        }
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+        check(&state, &format!("the marker as {plant}"), unmarked);
+    }
+
+    // At or below what is not a directory.
+    let mut at_or_below = vec!["fifo-out", "file", "dead", "sock"];
+    if chardev {
+        at_or_below.push("chardev");
+    }
+    for name in at_or_below {
+        let unopened = "as a directory without following a symlink";
+        check(&t.join(name), &format!("at {name}"), unopened);
+        check(
+            &t.join(name).join("state"),
+            &format!("below {name}"),
+            unopened,
+        );
+    }
+    assert!(cases >= 3 * 5 + 5 + 8, "{cases} cases");
+
+    // The control: a store as builds leave it is taken, and made private.
+    let state = store("taken");
+    let euid = rustix::process::geteuid().as_raw();
+    let me = crate::statedir::Owner::me();
+    drop(hold_state_dir(&state, euid, me, || unreachable!("on overlayfs")).unwrap());
+    assert_eq!(fs::metadata(&state).unwrap().mode() & 0o7777, 0o700);
+}
+
 #[test]
 fn kaniko_mode_on_a_host_without_mounts_is_refused() {
     // Q-330: never a bare chroot on the host; in a container, or with mount

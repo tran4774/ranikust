@@ -543,6 +543,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   overlay mode's refusal order through `setup::set_up`, run unprivileged
   and skipped as root: `overlay_mode_refuses_its_state_directory_unchanged`
   and `overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade`;
+  red team, through `set_up` and the `hold_state_dir` rootless overlay
+  mode shares: a store directory planted as a FIFO, a socket, a character
+  device or a link (out, dead, to a FIFO), a directory that is no store, a
+  marker that is not a file, and a path at or below a special file, each
+  refused without blocking, nothing below the temporary directory changed,
+  `red_team_a_planted_state_directory_is_refused_unchanged_by_each_set_up`;
   the probe's directory:
   `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
