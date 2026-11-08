@@ -749,7 +749,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   _apt` refused at `setgid` as `Error::Unmapped`, naming its ids (ADR-0098;
   T0: `a_user_switch_refused_with_einval_names_the_ids`,
   `a_user_switch_refused_with_einval_for_another_cause_names_no_id` and
-  `a_secret_s_owner_refused_with_einval_names_the_file` in
+  `a_secret_s_owner_refused_with_einval_names_the_file` and its red team
+  `red_team_a_refused_secret_owner_names_its_own_mount_and_no_value` in
   `spawner.rs`, `the_own_namespace_is_told_by_its_inode` in
   `userns/tests.rs`);
   `an_rbind_of_proc_needs_a_request`: unasked,

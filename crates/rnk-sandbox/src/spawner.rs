@@ -2753,6 +2753,61 @@ mod tests {
         }
     }
 
+    /// Red team of a refused secret owner's name (ADR-0098, T11): mounts
+    /// that share a secret but not its owner are files of their own, and
+    /// the record's item names the mount of the owner refused, never the
+    /// secret's bytes or its file on the tmpfs.
+    #[test]
+    fn red_team_a_refused_secret_owner_names_its_own_mount_and_no_value() {
+        let value: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"hunter2-SECRET"[..]);
+        let other: std::sync::Arc<[u8]> = std::sync::Arc::from(&b"other-SECRET"[..]);
+        let mount = |data: &std::sync::Arc<[u8]>, target: &str, uid: u32| SecretFile {
+            data: std::sync::Arc::clone(data),
+            target: PathBuf::from(target),
+            uid,
+            gid: 0,
+            mode: 0o400,
+        };
+        let far = 3_000_000_000;
+        let secrets = child_secrets(
+            Path::new("/scratch"),
+            &[
+                mount(&value, "/run/secrets/mapped", 0),
+                mount(&value, "/run/secrets/far", far),
+                mount(&value, "/run/secrets/mapped-again", 0),
+                mount(&other, "/run/secrets/other-far", far),
+                mount(&value, "/run/secrets/far-again", far),
+            ],
+        )
+        .unwrap();
+        let owners = secret_owners(Some(&secrets));
+        let refused = |item: u16| {
+            let e = Error::Setup {
+                step: Step::SecretOwner,
+                source: io::Error::from_raw_os_error(libc::EINVAL),
+            };
+            unmapped_secret(e, item, &owners, true).to_string()
+        };
+        assert_eq!(owners.len(), 3);
+        assert_eq!(
+            refused(1),
+            "RUN sandbox: chown /run/secrets/far to 3000000000:0: an id this user namespace \
+             does not map"
+        );
+        assert_eq!(
+            refused(2),
+            "RUN sandbox: chown /run/secrets/other-far to 3000000000:0: an id this user \
+             namespace does not map"
+        );
+        for item in 0..3 {
+            let text = refused(item);
+            assert!(
+                !text.contains("SECRET") && !text.contains("/scratch"),
+                "{text}"
+            );
+        }
+    }
+
     /// A `RUN`'s end: its status, or the child's record from before
     /// `execve`. An init that ended before it wrote the command's status
     /// (`unreported`) never passes its own status off as the command's: a
