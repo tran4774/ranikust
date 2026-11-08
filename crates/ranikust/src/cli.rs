@@ -36,7 +36,8 @@ pub(crate) struct Cli {
     build: BuildArgs,
 
     /// Write the metrics report (JSON) to this path when ranikust exits,
-    /// also after an error or a panic (ADR-0025, ADR-0037). Any subcommand.
+    /// also after an error or a panic (ADR-0025, ADR-0037). Any subcommand;
+    /// refused with prune --userns.
     #[arg(long, global = true, value_name = "PATH", help_heading = "ranikust")]
     metrics_file: Option<PathBuf>,
 }

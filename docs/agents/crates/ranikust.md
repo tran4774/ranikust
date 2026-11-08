@@ -186,8 +186,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   (the build's advice left out; refusals carry `prune::USERNS_ONLY`),
   `setup::rootless::enter_range`,
   then `Store::prune_all` as the range's first uid; an unfinished one gets
-  `prune::userns_unfinished` (the entries left, every `--userns` build
-  stopped, `rm -r --one-file-system` from inside), words only;
+  `prune::userns_unfinished` (every `--userns` build stopped, then root's
+  commands, `prune::USERNS_LEFT_SCRIPT` through `in_dir`, pinned outside
+  the namespace, which keep the marker);
   `--metrics-file` refused with it in `main.rs` (`metrics_preflight`). The
   steps and their order:
   [cache-and-store.md#prune](../../design/cache-and-store.md#prune).
@@ -719,7 +720,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `root_is_given_prune_userns_for_a_userns_state_directory`; neither
   sending root to the other for a directory of the range's uid that
   `--userns` refuses:
-  `prune_userns_and_roots_prune_never_send_root_to_each_other`),
+  `prune_userns_and_roots_prune_never_send_root_to_each_other`; an
+  unfinished one saying to stop every `--userns` build, then giving root's
+  commands, none without a pin:
+  `a_userns_prune_that_could_not_finish_names_the_ways_out`; those
+  commands, run by each shell present, removing every entry but the marker
+  whatever its name, a symlink out not followed, and changing nothing
+  without the regular marker, with an `rm` other than GNU coreutils' or at
+  a relative `PATH` entry: `a_userns_prunes_leftovers_go_but_the_marker`),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, named rightly through `..`, nothing created through a planted
@@ -879,7 +887,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   empty for `rmdir`, nothing outside changed, no process or mount left);
   `prune_all_leaves_what_a_running_build_uses` (refused, nothing removed,
   while another store is open; emptied once it closed);
-  `prune_all_refuses_root_of_a_rootless_container`;
+  `prune_all_refuses_root_of_a_rootless_container` (`prune_all`, and
+  `empty` in a child);
   `setup/tests/userns/layers.rs`
   `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque

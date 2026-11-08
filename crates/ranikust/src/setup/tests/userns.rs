@@ -898,6 +898,9 @@ fn prune_all_empties_a_state_directory_of_other_ids() {
 #[test]
 #[ignore = "T1: default: root of a rootless Podman container is refused"]
 fn prune_all_refuses_root_of_a_rootless_container() {
+    if !alone("prune_all_refuses_root_of_a_rootless_container") {
+        return;
+    }
     assert!(
         rustix::process::geteuid().is_root(),
         "run as root of a rootless Podman container (just test-rootless)"
@@ -917,9 +920,12 @@ fn prune_all_refuses_root_of_a_rootless_container() {
     assert!(refusal.reason.contains("refuses root"), "{refusal}");
     assert!(refusal.guidance.contains("Phase 5"), "{refusal}");
     assert_eq!(tree(&state), before);
-    // The emptying refuses root itself, whatever its caller checked.
-    let refusal = crate::prune::empty(&state).unwrap_err();
-    assert!(refusal.reason.contains("refuses root"), "{refusal}");
+    // The emptying refuses root itself, whatever its caller checked; in a
+    // child, where nothing stops it entering a namespace should it not.
+    let out = prune_in_child(&state, None, crate::prune::empty);
+    assert!(out.starts_with("refused\t"), "{out}");
+    assert!(out.contains("refuses root"), "{out}");
+    assert!(out.ends_with("\tnone"), "{out}");
     assert_eq!(tree(&state), before);
 }
 

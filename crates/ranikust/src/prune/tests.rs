@@ -2007,35 +2007,162 @@ fn prune_userns_and_roots_prune_never_send_root_to_each_other() {
     assert_eq!(listing(tmp.path()), before);
 }
 
-/// What a `prune --all --userns` that could not finish says: the
-/// top-level entries left, why the range's uid could not remove them;
-/// every `--userns` build stopped first; then, as root, unmount and remove
-/// each entry from inside the directory without leaving its filesystem,
-/// the marker kept; then run it again, naming the state directory.
+/// What a `prune --all --userns` that could not finish says: why the
+/// range's uid could not remove the entries its reason names; every
+/// `--userns` build stopped first; then root's commands, entering the
+/// directory once after the environment's check, pinned, while no build
+/// holds it, with no entry's name in them; then it again, naming the
+/// state directory. No command without a pin.
 #[test]
 fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
-    let text = userns_unfinished(Path::new("/srv/rnk state"), "\"builds\", \"cache\"");
-    assert!(
-        text.starts_with(
-            "ranikust prune --all --userns left \"builds\", \"cache\" in '/srv/rnk state':"
+    let dir = Path::new("/srv/rnk state");
+    let pin = Pin {
+        dev: 1,
+        ino: 2,
+        uid: 100_000,
+        mode: 0o700,
+    };
+    let text = userns_unfinished(dir, Ok(pin));
+    for want in [
+        "directories that still hold entries",
+        "entries in a sticky directory",
+        "the entries named above. Stop every --userns build first, and unmount anything below \
+         '/srv/rnk state'; then, as root, remove every entry but the .ranikust-pruning marker",
+        "need GNU coreutils' rm: ",
+        &format!(
+            r#"{ENV_FIRST}CDPATH= cd -P -- '/srv/rnk state' && stat -c %d:%i:%u:%a . | grep -qxF 1:2:100000:700 && exec flock -xn . sh -c '{USERNS_LEFT_SCRIPT}' ); then run ranikust prune --all --userns --state-dir '/srv/rnk state' again"#
         ),
-        "{text}"
-    );
+    ] {
+        assert!(text.contains(want), "{want}: {text}");
+    }
     assert!(
-        text.contains("directories that still hold entries"),
+        text.ends_with("--state-dir '/srv/rnk state' again"),
         "{text}"
     );
-    assert!(text.contains("entries in a sticky directory"), "{text}");
-    assert!(text.contains("Stop every --userns build first;"), "{text}");
+    let none = userns_unfinished(dir, Err(NoPin::Refused("why".to_owned())));
     assert!(
-        text.contains("unmount anything below '/srv/rnk state'"),
-        "{text}"
+        none.contains(
+            "unmount anything below '/srv/rnk state'; ranikust gives no commands for \
+             '/srv/rnk state': why; then run"
+        ),
+        "{none}"
     );
-    let rm = "cd -- '/srv/rnk state' && rm -r --one-file-system -- <entry>";
-    assert!(text.contains(rm), "{text}");
-    assert!(text.contains("never .ranikust-pruning"), "{text}");
-    let again = "ranikust prune --all --userns --state-dir '/srv/rnk state' again";
-    assert!(text.ends_with(again), "{text}");
+    assert!(!none.contains("cd -P"), "{none}");
+}
+
+/// Root's removal of what a `prune --all --userns` left, as printed, run
+/// by each shell present: every entry but the marker goes, whatever its
+/// name, a symlink out removed and not followed; it changes nothing
+/// without the regular marker, with a `rm` that is not GNU coreutils', or
+/// at a `PATH` with a relative entry, where it runs no tool put there.
+#[test]
+fn a_userns_prunes_leftovers_go_but_the_marker() {
+    let tmp = private_tempdir();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"x").unwrap();
+    let cwd = tmp.path().join("cwd");
+    fs::create_dir(&cwd).unwrap();
+    let state = tmp.path().join("state");
+    let names: [&[u8]; 8] = [
+        b"$(touch pwned)",
+        b"`touch pwned`",
+        b"-rf",
+        b"--preserve-root=no",
+        b"a b\nc",
+        b"*",
+        b"\xff",
+        b"builds",
+    ];
+    let fresh = |marker: &str| {
+        if state.exists() {
+            fs::remove_dir_all(&state).unwrap();
+        }
+        fs::create_dir(&state).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(state.join(marker), b"").unwrap();
+        for name in names {
+            let at = state.join(OsStr::from_bytes(name));
+            fs::create_dir(&at).unwrap();
+            fs::write(at.join("f"), b"x").unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, state.join("out")).unwrap();
+        std::os::unix::fs::symlink(&outside, state.join("builds/out")).unwrap();
+        pin_of(&state)
+    };
+    let real = std::env::var_os("PATH").expect("PATH");
+    for sh in shells() {
+        let command = in_dir(&state, fresh(rnk_store::PRUNING_MARKER), USERNS_LEFT_SCRIPT);
+        let out = shell_with(&sh, &command, &cwd, &[("PATH", &real)]);
+        assert!(out.status.success(), "{sh:?}: {out:?}");
+        let left: Vec<_> = fs::read_dir(&state)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [OsStr::new(rnk_store::PRUNING_MARKER)], "{sh:?}");
+        assert!(outside.join("keep").is_file(), "{sh:?}");
+        assert_eq!(fs::read_dir(&cwd).unwrap().count(), 0, "{sh:?}");
+        assert!(!state.join("pwned").exists(), "{sh:?}");
+    }
+    // Not a directory a `--userns` prune left: nothing changes.
+    let pin = fresh(rnk_store::STATE_MARKER);
+    let before = listing(tmp.path());
+    let out = shell_with(
+        &["bash"],
+        &in_dir(&state, pin, USERNS_LEFT_SCRIPT),
+        &cwd,
+        &[("PATH", &real)],
+    );
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no regular .ranikust-pruning here"),
+        "{out:?}"
+    );
+    assert_eq!(listing(tmp.path()), before);
+    // A `rm` that is not GNU coreutils': nothing changes.
+    let pin = fresh(rnk_store::PRUNING_MARKER);
+    let bin = tmp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        bin.join("rm"),
+        "#!/bin/sh\ncase \"$1\" in --version) echo 'rm (uutils coreutils) 0.1';; *) exec \
+         /bin/false;; esac\n",
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("rm"), fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = bin.clone().into_os_string();
+    path.push(":");
+    path.push(&real);
+    let before = listing(tmp.path());
+    let out = shell_with(
+        &["bash"],
+        &in_dir(&state, pin, USERNS_LEFT_SCRIPT),
+        &cwd,
+        &[("PATH", &path)],
+    );
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("needs GNU coreutils rm: nothing changed"),
+        "{out:?}"
+    );
+    assert_eq!(listing(tmp.path()), before);
+    // A relative `PATH` entry, a tool put in the directory: it never runs.
+    fs::write(state.join("rm"), "#!/bin/sh\ntouch ../ran\n").unwrap();
+    fs::set_permissions(state.join("rm"), fs::Permissions::from_mode(0o755)).unwrap();
+    let pin = pin_of(&state);
+    let mut path = std::ffi::OsString::from(".:");
+    path.push(&real);
+    let before = listing(tmp.path());
+    for sh in shells() {
+        let out = shell_with(
+            &sh,
+            &in_dir(&state, pin, USERNS_LEFT_SCRIPT),
+            &cwd,
+            &[("PATH", &path)],
+        );
+        assert!(!out.status.success(), "{sh:?}: {out:?}");
+        assert_eq!(listing(tmp.path()), before, "{sh:?}");
+    }
 }
 
 mod red_team;

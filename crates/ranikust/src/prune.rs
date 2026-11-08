@@ -242,6 +242,21 @@ const USER_SCRIPT: &str = gnu_find_first!(
     r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning && rm .ranikust-pruning"#
 );
 
+/// Root's removal of what `prune --all --userns` left in `--userns`'s
+/// state directory, for [`in_dir`]: with GNU coreutils' `rm` only, and
+/// only where the regular `.ranikust-pruning` that prune left is, which it
+/// keeps, so that no build takes the directory meanwhile; every other
+/// top-level entry, each an operand as `./name`, never an option: `rm`'s
+/// `--preserve-root=all` refuses one on another filesystem than the
+/// directory, `--one-file-system` skips any below it; then it checks that
+/// only the marker is left. No owner filter: what that prune leaves is of
+/// ids its range does not map.
+const USERNS_LEFT_SCRIPT: &str = concat!(
+    r#"rm --version 2>/dev/null | grep -q "GNU coreutils" || { echo "needs GNU coreutils rm: nothing changed" >&2; exit 1; }; "#,
+    r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
+    r#"find . -mindepth 1 -maxdepth 1 ! -path ./.ranikust-pruning -exec rm -r --one-file-system --preserve-root=all -- {} + && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || { echo "not emptied: what is named above is left, and the marker" >&2; exit 1; }"#
+);
+
 /// How root empties the state directory `dir`, pinned as `pin`, which
 /// holds a marker, with ordinary tools, then removes it.
 fn root_empties(dir: &Path, pin: Pin) -> String {
@@ -382,26 +397,35 @@ fn userns_way(dir: &Path) -> String {
     )
 }
 
-/// The ways out of `--userns`'s state directory `dir` that
-/// [`prune_userns`] could not finish emptying, `left` being the top-level
-/// entries [`rnk_store::Error::NotPruned`] names: what the range's uid
-/// cannot remove goes by hand, since no build opens the directory
-/// meanwhile (a directory of an id the range does not map that holds
-/// entries, or such an entry in a sticky directory another id owns, where
-/// the namespace's root has no `CAP_FOWNER` over it). The range's `RUN`s
-/// can change that tree: root removes it only once every `--userns` build
-/// is stopped, from inside the directory, without leaving its filesystem,
-/// keeping the marker that keeps builds out.
-fn userns_unfinished(dir: &Path, left: &str) -> String {
+/// The ways out of `--userns`'s state directory `dir`, pinned as `pin`
+/// outside the range's namespace, that [`prune_userns`] could not finish
+/// emptying ([`rnk_store::Error::NotPruned`], whose reason names the
+/// entries left): what the range's uid cannot remove goes as root (a
+/// directory of an id the range does not map that holds entries, or such
+/// an entry in a sticky directory another id owns, where the namespace's
+/// root has no `CAP_FOWNER` over it), since no build opens the directory
+/// meanwhile. The range's `RUN`s can change that tree: root's commands
+/// ([`USERNS_LEFT_SCRIPT`] in [`in_dir`]) come after every `--userns`
+/// build is stopped, and run only while none holds the directory.
+fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>) -> String {
     let d = shell_word(dir.as_os_str());
+    let by_root = match pin {
+        Ok(pin) => format!(
+            "then, as root, remove every entry but the .ranikust-pruning marker, which keeps \
+             builds out, with commands that refuse a PATH with a relative or empty entry, unset \
+             LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH, act only on the directory \
+             ranikust checked, while no build holds it, and need GNU coreutils' rm: {}",
+            in_dir(dir, pin, USERNS_LEFT_SCRIPT)
+        ),
+        Err(why) => no_commands(dir, &why, false),
+    };
     format!(
-        "ranikust prune --all --userns left {left} in {d}: what is on another mount, and, of a \
-         uid or gid the ranikust range does not map (root's, or past a range shrunk since the \
-         build), directories that still hold entries and entries in a sticky directory another \
-         id owns, which its uid cannot remove. Stop every --userns build first; then, as root, \
-         unmount anything below {d} and remove each top-level entry left from inside it, never \
-         .ranikust-pruning: cd -- {d} && rm -r --one-file-system -- <entry>; then run ranikust \
-         prune --all --userns --state-dir {d} again"
+        "ranikust prune --all --userns leaves what is on another mount, and, of a uid or gid the \
+         ranikust range does not map (root's, or past a range shrunk since the build), \
+         directories that still hold entries and entries in a sticky directory another id owns, \
+         which its uid cannot remove: the entries named above. Stop every --userns build first, \
+         and unmount anything below {d}; {by_root}; then run ranikust prune --all --userns \
+         --state-dir {d} again"
     )
 }
 
@@ -713,7 +737,8 @@ fn prune_userns(state_dir: &Path) -> Result<Pruned, Refusal> {
 /// ([`statedir::check_for_prune`] with [`statedir::Owner::Mapped`]: owned by
 /// that uid, below directories only root owns and writes and that it may
 /// search, not at, below or above root's default); nothing more when it
-/// does not exist or is empty; else the namespace
+/// does not exist or is empty; else its [`Pin`], for the commands of an
+/// unfinished prune ([`userns_unfinished`]), the namespace
 /// ([`setup::rootless::enter_range`]), then [`Store::prune_all`] in it.
 /// Root acts in the directory only through those read-only checks.
 ///
@@ -748,11 +773,14 @@ fn userns_with(
         uid: range.uids.start,
         gid: range.gids.start,
     };
-    match statedir::check_for_prune(state_dir, owner).map_err(|r| refused(r.0, USERNS_ONLY))? {
-        Found::Missing => return Ok(Pruned::Missing),
-        Found::Empty => return Ok(Pruned::Empty),
-        Found::Entries(_) => {}
-    }
+    let check =
+        match statedir::check_for_prune(state_dir, owner).map_err(|r| refused(r.0, USERNS_ONLY))? {
+            Found::Missing => return Ok(Pruned::Missing),
+            Found::Empty => return Ok(Pruned::Empty),
+            Found::Entries(check) => check,
+        };
+    // Outside: in the namespace, the owner reads as its root.
+    let pin = Pin::of(state_dir, &check);
     setup::rootless::enter_range(range)?;
     match Store::prune_all(state_dir) {
         Ok(true) => Ok(Pruned::Emptied),
@@ -760,10 +788,9 @@ fn userns_with(
         Err(e) => Err(setup::inside_userns(Refusal {
             kind: Kind::Other,
             reason: e.to_string(),
-            guidance: if let rnk_store::Error::NotPruned { left, .. } = &e {
-                userns_unfinished(state_dir, left).into()
-            } else {
-                "".into()
+            guidance: match unfinished_prune(&e) {
+                Some((Unfinished::NotPruned, _)) => userns_unfinished(state_dir, pin).into(),
+                Some((Unfinished::CutShort, _)) | None => "".into(),
             },
         })),
     }

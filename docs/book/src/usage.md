@@ -76,7 +76,7 @@ do), its error says how to get out, naming the directory; root's way is to
 run `ranikust prune --all --state-dir DIR`, which prints root's commands.
 
 Root empties the state directory of its `--userns` builds with
-`ranikust prune --all --userns --state-dir DIR` ([ADR-0139]). It first checks
+`ranikust prune --all --userns --state-dir DIR` ([ADR-0146]). It first checks
 the directory as a `--userns` build does, changing nothing: owned by the first
 uid of the `ranikust` range, below directories that only root owns and may
 write and that uid may search, and not root's default `/var/lib/ranikust` or
@@ -85,11 +85,14 @@ empties the directory in the range's user namespace, as that uid, never as
 root, with the same rules as a user's `prune --all`. What that uid cannot
 remove (a mount below, a directory of root's that still holds entries, or a
 file of root's in a sticky directory of another id) stops it; it names the
-top-level entries left. Stop every `--userns` build, since their `RUN`s run
-as the range's ids; then, as root, unmount anything below the directory,
-remove each entry it names from inside it with
-`rm -r --one-file-system -- <entry>`, keeping `.ranikust-pruning`, and run
-it again. Until then builds refuse the directory and name the command. A
+top-level entries left and prints commands for root. Stop every `--userns`
+build, since their `RUN`s run as the range's ids, and unmount anything
+below the directory; then run those commands as root and run it again.
+Like those of root's plain `prune --all`, they refuse a `PATH` with a
+relative or empty entry and act only on the directory ranikust checked,
+while no build holds it; they need GNU coreutils' `rm`, remove every entry
+but `.ranikust-pruning`, which keeps builds out, and leave one on another
+filesystem. Until then builds refuse the directory and name the command. A
 user other than root gets a usage error, and `--metrics-file` is refused
 with `--userns` (exit code 2): the report would be written as the range's
 uid. Root's own `prune --all` on a directory this command takes names it
@@ -277,7 +280,7 @@ example `--context=$CI_PROJECT_DIR/app --digest-file=$CI_PROJECT_DIR/digest`
 | `--snapshot-workers=N` | Threads of kaniko mode's filesystem walk. Default 8, the fastest measured; ignored, with a warning, in overlay mode. |
 | `--network=host\|none` | The network `RUN` gets. Default `host`. `none` is refused in kaniko mode on a container's `/`, where a `RUN` gets no network namespace of its own. `none` isolates the `RUN` only: ranikust's own registry requests use the network ranikust runs in, including the token service a registry names, which a Dockerfile-named registry can point at an internal address. |
 | `--platform=linux/amd64` | The image platform. Only `linux/amd64` for now. kaniko's `--custom-platform` and `--customPlatform` are refused, naming this flag. |
-| `--metrics-file=PATH` | Write the metrics report (JSON) there when ranikust exits, also after an error; works with `version` too. The only way to ask for it: `RANIKUST_METRICS_FILE` is not read (a warning says so). Like every output, it must lie outside the context and be reached without a symlink ([Where outputs go](#where-outputs-go)); otherwise ranikust refuses before anything else runs (exit code 2), and so is a build asking for a report whose `--context` cannot be opened, since the report could not be kept out of it. |
+| `--metrics-file=PATH` | Write the metrics report (JSON) there when ranikust exits, also after an error; works with `version` too, and is refused with `prune --userns` (exit code 2). The only way to ask for it: `RANIKUST_METRICS_FILE` is not read (a warning says so). Like every output, it must lie outside the context and be reached without a symlink ([Where outputs go](#where-outputs-go)); otherwise ranikust refuses before anything else runs (exit code 2), and so is a build asking for a report whose `--context` cannot be opened, since the report could not be kept out of it. |
 | `--secret=id=ID[,src=PATH\|,env=VAR]` | A secret for `RUN --mount=type=secret,id=ID`: a file (`src=`, `type=file`) or a variable of ranikust's environment (`env=`, or `type=env` with `src=VAR`); without either, the variable named ID if it is set, else the file ID. kaniko's and buildctl's syntax. Repeatable. Read once, at the start of the build, and kept in memory: a change to the file during the build is not seen. Kept out of every layer, the config and the logs; at most 500 KiB. In kaniko mode on a container's `/`, every `RUN` can read a file secret and copy it into the image or anywhere else, and ranikust does not stop it ([ADR-0084]); pass the secret in the environment there if no `RUN` should read it. |
 | `--allow=network.host` | Lets a `RUN --network=host` lift `--network=none`, as BuildKit's entitlement. |
 | `--allow=proc.rbind` | In rootless overlay mode, where a new `/proc` cannot be mounted (a container's masked `/proc`: default rootless Podman, Docker with `seccomp=unconfined` and `apparmor=unconfined`), binds the container's `/proc` into every `RUN`, read-only. Without it ranikust stops there and names the flag. With it every `RUN` sees each process of its PID namespace and reads the files of `/proc/<pid>` not under ptrace's check, such as `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, ranikust's included, and the `RUN`s go one at a time: keep no secrets in other processes' command lines, give the build container a PID namespace of its own (the host's, one whose PID 1 is another container's, and one shared with another container's process that ranikust can open as it starts are refused), and pass secrets with `--secret`, not as `--build-arg NAME=value`, which is on ranikust's command line (a name that looks like a secret's is warned about). Ignored where a new `/proc` mounts ([ADR-0126], [ADR-0127], [ADR-0129], [ADR-0130], [ADR-0132], [ADR-0134]). |
@@ -404,4 +407,5 @@ behaviour, which for most of them is what the flag turns on.
 [ADR-0104]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md
 [ADR-0136]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md
 [ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md
+[ADR-0146]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0146-root-empties-the-userns-state-directory-with-prune-all-userns-as-the-ranges-first-uid.md
 [threat model]: https://github.com/tran4774/ranikust/blob/main/docs/security/threat-model.md#6-accepted-risks

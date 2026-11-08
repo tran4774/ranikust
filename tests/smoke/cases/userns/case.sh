@@ -140,9 +140,11 @@ case_run() {
 # a state directory of root's and one below a directory the range's uid
 # cannot search, each left as it was, and root's `prune --all` does not
 # send root back to it for the last; with --metrics-file it is a usage
-# error; a directory of root's put in the store stays, which root would
-# have removed, the prune names what is left and how to finish, a build is
-# refused, naming it, until it does, and its way out works.
+# error; a directory of root's put in the store and a tmpfs mounted at
+# one of its entries stay, the prune names them and prints root's
+# commands, a build is refused, naming it, until it finishes; those
+# commands, run as root, leave the tmpfs and the marker, then, once it is
+# unmounted, all but the marker, which the prune then empties.
 pruned_as_the_range() {
   local log rc=0
   log="$(sudo "$RNK" prune --all --state-dir "$UW/state" 2>&1)" || rc=$?
@@ -193,15 +195,19 @@ pruned_as_the_range() {
 
   sudo test -d "$UW/state/builds" || fail "no builds/ in the --userns state directory"
   sudo mkdir -m 755 "$UW/state/builds/rnk-roots"
+  sudo mkdir -p "$UW/state/tmp"
   sudo touch "$UW/state/builds/rnk-roots/f"
+  sudo mount -t tmpfs rnk-userns-left "$UW/state/tmp"
+  sudo touch "$UW/state/tmp/keep"
   rc=0
   log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
   expect "$rc" 1 "prune --all --userns with a directory of root's in the store"
+  local way
+  way="$(grep -F "Stop every --userns build first, and unmount anything below $UW/state;" <<<"$log")" &&
+    grep -qF "( eval '" <<<"$way" ||
+    fail "prune --all --userns with a directory of root's in the store: $log"
   grep -qF "ranikust: the build's user namespace: shifted range" <<<"$log" &&
-    grep -qF "ranikust prune --all --userns left " <<<"$log" &&
-    grep -qF '"builds"' <<<"$log" &&
-    grep -qF "Stop every --userns build first;" <<<"$log" &&
-    grep -qF "cd -- $UW/state && rm -r --one-file-system -- <entry>" <<<"$log" ||
+    grep -F 'it still holds ' <<<"$log" | grep -F '"builds"' | grep -qF '"tmp"' ||
     fail "prune --all --userns with a directory of root's in the store: $log"
   sudo test -f "$UW/state/builds/rnk-roots/f" || fail "prune --all --userns removed a file of root's"
   rc=0
@@ -210,9 +216,20 @@ pruned_as_the_range() {
   grep -qF -- "ranikust prune --all --userns --state-dir $UW/state" <<<"$log" ||
     fail "a --userns build in a state directory a prune did not finish: $log"
 
-  # The way out it names, as root, the marker kept.
-  sudo sh -c 'cd -- "$1" && rm -r --one-file-system -- builds' sh "$UW/state"
-  sudo test -f "$UW/state/.ranikust-pruning" || fail "the way out removed the marker"
+  # The commands it prints, run as root: the marker and the tmpfs mounted
+  # at an entry stay, with what it holds, the rest goes; once unmounted,
+  # all but the marker.
+  way="( eval '${way#*"( eval '"}"
+  way="${way%"; then run ranikust prune --all --userns --state-dir $UW/state again"}"
+  rc=0
+  sudo bash -c "$way" || rc=$?
+  expect "$rc" 1 "the printed commands with a tmpfs mounted at an entry"
+  expect "$(sudo ls -A "$UW/state" | tr '\n' ' ')" ".ranikust-pruning tmp " \
+    "the state directory after the printed commands, a tmpfs mounted at an entry"
+  sudo test -f "$UW/state/tmp/keep" || fail "the printed commands removed a file on another mount"
+  sudo umount "$UW/state/tmp"
+  sudo bash -c "$way" || fail "the printed commands: $way"
+  expect "$(sudo ls -A "$UW/state")" ".ranikust-pruning" "the state directory after the printed commands"
   rc=0
   log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
   expect "$rc" 0 "prune --all --userns: $log"
@@ -339,6 +356,7 @@ udigest() {
 # clean_up: no RUN left waiting, and the id files as they were.
 clean_up() {
   local p
+  ! grep -qF " $UW/state/tmp " /proc/self/mountinfo || sudo umount "$UW/state/tmp" || true
   for p in $(pgrep -f -- 'rnk-userns-wait-' || true); do
     sudo rm -f "/proc/$p/root/tmp/wait-root" "/proc/$p/root/tmp/wait-user" || true
   done
