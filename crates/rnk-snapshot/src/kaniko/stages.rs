@@ -150,7 +150,8 @@ fn copy_stage(from: &RootPath, into: &RootPath, ignore: &IgnoreList) -> Result<(
         skip_special: true,
         ..CopyOpts::default()
     };
-    copy_filtered(from, "", into, "", &opts, &|p, _| !ignore.covers(p))?;
+    // From the root, the copy's paths are the names it read: no `..`.
+    copy_filtered(from, "", into, "", &opts, &|p, _| !ignore.covers_walked(p))?;
     let mut meta = root_meta(from)?;
     let xattrs = std::mem::take(&mut meta.xattrs);
     for x in xattrs {
@@ -371,7 +372,7 @@ impl KanikoStage {
         let ignore = &self.shared.ignore;
         // The same filter as the copy in `fill`: what the ignore list
         // covers, and device nodes, FIFOs and sockets.
-        let pruned = prune(&self.root, &|p, t| ignore.covers(p) || special(t))?;
+        let pruned = prune(&self.root, &|p, t| ignore.covers_walked(p) || special(t))?;
         if pruned.linked_outside {
             tracing::warn!(
                 "a stage root holds a file hardlinked from outside it: copied, not handed over"

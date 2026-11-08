@@ -89,7 +89,7 @@ pub fn reach(path, fence: &Fence) -> Result<Reached>; // walks a host path to re
 pub fn delete_contents(root: &RootPath, keep: &IgnoreList) -> Result<()>;
 pub fn prune(root: &RootPath, remove: &dyn Fn(&Path, FileType) -> bool) -> Result<Pruned>; // deletes what `remove` names (with what is below), every touched directory's times set back, overlay's own xattrs (is_overlay_own) removed from kept entries and the root; the machine's own / and a mount below the root refused (ADR-0061); Pruned { linked_outside }: a kept file has a hardlink outside the root
 pub fn refuse_own_root(root: &RootPath, path: &Path) -> Result<()>; // Error::InvalidPath when root is this process's own / by device and inode, whatever name or mount reaches it: prune's guard, also rnk-store's prune_all's (ADR-0061)
-pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, has_below, contains (exact literal)
+pub struct IgnoreList;  // insert (it and below), insert_below (kaniko's PrefixMatchOnly), insert_glob (--ignore-path, Go filepath.Match per component, linear in the name, never exponential in the stars); covers, covers_walked (a walk's path: a start with no `..` and listed names, none `.` or `..`; reads only as many leading names as the longest entry has, so asking about every entry is linear in the entries whatever their depth; a `..` past those names and the one after them panics a debug build, only as the last name past `PATH_MAX`), has_below, contains (exact literal)
 pub fn lookup_user(root: &RootPath, spec: &str) -> Result<User>;   // USER (rnk-sandbox): uid, gid, supplementary gids, home
 pub fn lookup_owner(root: &RootPath, spec: &str) -> Result<Owner>; // --chown (rnk-builder): gid = uid without a group
 pub fn parse_mountinfo(text: &[u8]) -> Result<Vec<MountInfo>, MountInfoError>; // proc(5) lines, \NNN unescaped; MountInfo { mount_id, parent_id, device, fs_root, mount_point, fs_type, read_only (ro first in the mount's or the file system's options), root_deleted (the kernel's `//deleted` mark, read off fs_root) }; fields after the file system's options ignored (a value spilled past a space); a line of another shape, or file-system options not starting ro or rw, is an error, never skipped
@@ -183,8 +183,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `prune` on trees 2,000 levels deep with only the 32 or 64 fds they
   promise left free under the soft `RLIMIT_NOFILE`, `prune` keeping its
   entries and setting every level's times back; `prune` on a chain of
-  100,000 levels within 20 times the time it took to make, and both on a
-  comb whose teeth are deeper than those fds, every other tooth kept;
+  100,000 levels within 20 times the time it took to make, and so, asking
+  an ignore list about every entry, `delete_contents` with an empty list
+  and with one, and a whiteout and an opaque marker in a live root; both
+  on a comb whose teeth are deeper than those fds, every other tooth kept;
   `tests/memory.rs`: that chain pruned in memory linear in its depth. A
   directory reopened through `..` must be the one left
   (`a_directory_reopened_through_dotdot_must_be_the_one_left`,
@@ -222,7 +224,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   searchable stops the walk with `EACCES`; the parent of a mount root is
   never reopened (`EXDEV`). The glob matcher is linear
   (`the_linear_matcher_agrees_with_every_split`, proptest against the old
-  matcher as oracle).
+  matcher as oracle). `covers`, `covers_walked` and `has_below` answer as
+  cleaning the whole path and comparing every entry does, on random lists
+  and paths (`the_walks_forms_answer_as_cleaning_the_whole_path_does`,
+  proptest; the walk's forms on paths with a `..` only among the names
+  they read or right after them); a `..` past those names panics a debug
+  build (`a_walked_path_with_a_parent_past_the_names_read_panics_in_a_debug_build`).
   `red_team_framed_never_falls_out_of_step_with_the_tar_crate`
   (`src/extract/limit/tests.rs`, proptest): the `tar-header` bound never
   changes what the `tar` crate hands on and never lets a name or PAX record
