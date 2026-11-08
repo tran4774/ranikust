@@ -69,7 +69,17 @@ decided in
 [ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md).
 Built: the T1 `rootless` smoke case (rootless Podman with a volume, row 5)
 and the T1 kaniko leg's cases (row 5b, in part); the runner, VM and k3s legs
-are planned ([testing](../testing.md#quick-smoke-cases)).
+are planned ([testing](../testing.md#quick-smoke-cases)), but for row 9e: the
+T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
+AlmaLinux 9.8 (kernel 5.14, SELinux enforcing, policy `targeted`), where
+root gets overlay mode as root and a regular user with ranges rootless
+overlay mode through `newuidmap`, as expected (measured). There SELinux
+denies nothing in either leg; a `RUN` runs in the SELinux context of the
+process that started ranikust (`unconfined_t` from a login shell), since
+ranikust sets none; the default state directories are labelled `var_lib_t`
+(root's) and `data_home_t` (the user's); and no label reaches a layer, the two
+legs' `--reproducible` digests being one. The kernel, a 5.14 with backports,
+takes overlay's `lowerdir+` ([step 4](#probe-order---modeauto)).
 
 ## Probe order (`--mode=auto`)
 
@@ -199,7 +209,9 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    Elsewhere a refused mount fails this probe.
 4. **Mount API.** Create a test overlay with `fsconfig(lowerdir+)`. Kernel
    5.15 accepts `FSCONFIG_SET_STRING` for `lowerdir+` and fails only at
-   `FSCONFIG_CMD_CREATE` (`EINVAL`), so only a real create counts. On failure
+   `FSCONFIG_CMD_CREATE` (`EINVAL`), so only a real create counts, and a
+   kernel's version says nothing: AlmaLinux 9.8's 5.14 creates it
+   (measured, the `el9` suite). On failure
    use `mount(2)` ([overlay-snapshot](overlay-snapshot.md)).
 5. **No overlay path passed.**
    - Root: **kaniko mode**. A bind-mount test decides between "can mount"

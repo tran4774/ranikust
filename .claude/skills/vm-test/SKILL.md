@@ -23,6 +23,7 @@ just test-vm unit         # only the #[ignore = "T2: ..."] and "T2c: ..." tests
 just test-vm quick        # the quick smoke cases (tests/smoke/cases) as real root
 RANIKUST_QUICK_CASES="run copy" just test-vm quick   # some of them
 RANIKUST_VM_RELEASE=jammy just test-vm   # kernel 5.15
+RANIKUST_VM_RELEASE=alma9 just test-vm   # AlmaLinux 9, SELinux enforcing: the el9 suite only
 just test-vm e2e          # light e2e: W0 by every builder, a few minutes
 just test-vm ultra        # ultra benchmark (W1-W3): only when the maintainer asks
 just registry-up && just test-vm push   # push to loopback, HTTP and HTTPS registries
