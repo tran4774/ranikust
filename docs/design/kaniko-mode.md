@@ -62,8 +62,9 @@ the scheduler runs one stage at a time) or a private directory per stage
       A `RUN` that ended with an error once its command may have run poisons
       it. A start on the traces of a build cut short in this container (its
       `.ranikust-building` marker, holding the PID namespace and boot id, or
-      names left with none) makes no name, so a `COPY --from` a kept stage or
-      an image fails
+      names an anonymous store left with none; not the user namespace
+      probe's directories, made before any store opens) makes no name, so a
+      `COPY --from` a kept stage or an image fails
       ([ADR-0066](../adr/0066-kaniko-mode-on-root-makes-no-names-after-a-build-cut-short.md)).
     - After each `RUN` the state directory's path must still lead, with no
       link, to the directory held. What must outlive the emptying of the root
@@ -74,6 +75,11 @@ the scheduler runs one stage at a time) or a private directory per stage
     errors and locks in [cache-and-store](cache-and-store.md#locks)). A
     `Direct` `RUN` writes it as root, and persistent builds reuse their
     entries without hashing them again.
+    - A persistent store found there is refused, unless it holds no data
+      (nothing in `blobs/`, `layers/` or `caches/`, as a set-up killed
+      before a fallback leaves it): that one is emptied first, under the
+      lock
+      ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)).
     - Nothing is kept between builds in this mode: no layer cache, and cache
       mounts are left out (ADR-0057). A safe cache is [open: #30].
     - The `.ranikust-building` marker is made this build's again after every

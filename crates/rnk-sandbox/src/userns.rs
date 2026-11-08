@@ -272,9 +272,12 @@ impl UsernsReport {
     /// The first step a `RUN` in a user namespace needs that failed, if
     /// any: `unshare`, `map`, `chown` (not tried with one id: an image with
     /// one owner needs none, ADR-0098), `mount namespace`, `proc` or `sysfs`
-    /// (`mknod` is never needed).
+    /// (`mknod` is never needed). `allowed` is what the operator allows: an
+    /// rbind of `/proc` passes `proc` only where it has
+    /// [`crate::Fallbacks::allow_proc_rbind`] (ADR-0126); an rbind of `/sys`
+    /// always passes `sysfs`.
     #[must_use]
-    pub fn stop(&self) -> Option<&'static str> {
+    pub fn stop(&self, allowed: crate::Fallbacks) -> Option<&'static str> {
         if self.unshare != StepResult::Ok {
             Some("unshare")
         } else if self.map().is_none() {
@@ -283,7 +286,9 @@ impl UsernsReport {
             Some("chown")
         } else if self.mount_ns != StepResult::Ok {
             Some("mount namespace")
-        } else if !self.proc.works() {
+        } else if !(self.proc == MountResult::Fresh
+            || allowed.proc && matches!(self.proc, MountResult::Rbind { .. }))
+        {
             Some("proc")
         } else if !self.sysfs.works() {
             Some("sysfs")
@@ -444,7 +449,13 @@ fn probe_in(root: &RootPath, subordinate: Option<SubordinateIds>) -> Result<User
     }
     remove_targets(root, targets);
     let report = report_of(maps, last);
-    span.record("ok", report.stop().is_none());
+    // Whether the steps work at all: the caller weighs the operator's
+    // request for an rbind of `/proc`.
+    let any = crate::Fallbacks {
+        proc: true,
+        sysfs: true,
+    };
+    span.record("ok", report.stop(any).is_none());
     if let Some(m) = report.map() {
         span.record("map", tracing::field::display(m));
     }

@@ -11,9 +11,11 @@
 //!   reads it once, at the start (ADR-0078), but cannot hide it.
 //!
 //! It also checks what it refuses to build under: a writable `/proc/sys`
-//! ([`proc_sys_read_only`]), and a process of another mount namespace in
-//! its PID namespace that it can open through `/proc` as it starts
-//! ([`scan_peers`], ADR-0101).
+//! ([`proc_sys_read_only`]), a process of another mount namespace in its
+//! PID namespace that it can open through `/proc` as it starts
+//! ([`scan_peers`], ADR-0101), and, for a build with an rbind of `/proc`, a
+//! PID namespace shared with another mount namespace as files with no
+//! ptrace check show it ([`check_pid_namespace`], ADR-0134).
 
 use std::ffi::OsString;
 use std::fs;
@@ -46,22 +48,61 @@ pub(crate) fn looks_secret(name: &str) -> bool {
     SECRET_WORDS.iter().any(|w| upper.contains(w))
 }
 
+/// What a `RUN` reads of each process under an rbind of `/proc`, as
+/// messages name it: the files no ptrace check guards (ADR-0134).
+pub(crate) const UNCHECKED_PROC_FILES: &str = "the files of /proc/<pid> not under ptrace's \
+     check, such as cmdline, status, stat, mountinfo, cgroup and net/*";
+
+/// How a `RUN` reaches the processes of ranikust's PID namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// Kaniko mode on `/`: a `RUN` shares ranikust's `/proc`, and opens
+    /// what root opens there (ADR-0051, ADR-0101).
+    Slash,
+    /// `--allow proc.rbind`: a `RUN` reads [`UNCHECKED_PROC_FILES`] of every
+    /// process through the rbind, though not its environment, files or
+    /// memory (ADR-0130, ADR-0134).
+    ProcRbind,
+}
+
+impl Reach {
+    /// The build, as a refusal names it.
+    pub(crate) fn build(self) -> &'static str {
+        match self {
+            Self::Slash => "kaniko mode on /",
+            Self::ProcRbind => "a build with an rbind of /proc (--allow proc.rbind)",
+        }
+    }
+}
+
 /// Warns for each `--build-arg NAME=value` whose name looks like a
-/// secret's: its value is on ranikust's command line. `--build-arg NAME`
-/// alone, which takes the value from the environment, is not on it.
-pub(crate) fn warn_build_args(args: &[BuildArg]) {
+/// secret's: its value is on ranikust's command line, which a `RUN` reads
+/// as `reach` says. `--build-arg NAME` alone, which takes the value from
+/// the environment, is not on it.
+pub(crate) fn warn_build_args(args: &[BuildArg], reach: Reach) {
     for arg in args {
         if arg.value.is_some() && looks_secret(&arg.name) {
-            tracing::warn!(
-                "--build-arg {}=…: the value is on ranikust's command line, which every RUN can \
-                 read through /proc/<pid>/cmdline in kaniko mode on /; pass a secret with \
-                 --secret, or as `--build-arg {}` with the value in the environment and \
-                 ranikust started as the container's PID 1 (exec it), else the shell that \
-                 started it holds the value where a RUN reads it",
-                arg.name,
-                arg.name
-            );
+            tracing::warn!("{}", build_arg_warning(&arg.name, reach));
         }
+    }
+}
+
+/// [`warn_build_args`]'s warning for the argument `name`.
+fn build_arg_warning(name: &str, reach: Reach) -> String {
+    match reach {
+        Reach::Slash => format!(
+            "--build-arg {name}=…: the value is on ranikust's command line, which every RUN can \
+             read through /proc/<pid>/cmdline in kaniko mode on /; pass a secret with \
+             --secret, or as `--build-arg {name}` with the value in the environment and \
+             ranikust started as the container's PID 1 (exec it), else the shell that \
+             started it holds the value where a RUN reads it"
+        ),
+        // Under the rbind a `RUN` reads no other process's environment.
+        Reach::ProcRbind => format!(
+            "--build-arg {name}=…: the value is on ranikust's command line, which every RUN can \
+             read through /proc/<pid>/cmdline with --allow proc.rbind; pass a secret with \
+             --secret, or as `--build-arg {name}` with the value in the environment"
+        ),
     }
 }
 
@@ -522,11 +563,149 @@ pub(crate) struct MountNamespace {
     /// (namespaces(7)).
     _held: OwnedFd,
     id: (u64, u64),
+    /// Its mount IDs, where [`MountNamespace::with_mounts`] read them.
+    mounts: Option<rustix::io::Result<Vec<u64>>>,
+}
+
+impl MountNamespace {
+    /// The namespace with the mount IDs `/proc/self/mountinfo` lists now,
+    /// for [`check_pid_namespace`]: call it while ranikust is still in it.
+    pub(crate) fn with_mounts(mut self) -> Self {
+        let read = fs::read("/proc/self/mountinfo")
+            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::IO))
+            .and_then(|text| {
+                let ids = mount_ids(&text);
+                if ids.is_empty() {
+                    Err(Errno::INVAL)
+                } else {
+                    Ok(ids)
+                }
+            });
+        self.mounts = Some(read);
+        self
+    }
 }
 
 /// ranikust's mount namespace now ([`namespace`] of `/proc/self/ns/mnt`).
 pub(crate) fn mount_namespace() -> rustix::io::Result<MountNamespace> {
     namespace(rustix::fs::CWD, "/proc/self/ns/mnt")
+}
+
+/// The mount IDs of a `mountinfo` table: the first field of each line,
+/// sorted; a line whose first field is not a number is left out.
+fn mount_ids(mountinfo: &[u8]) -> Vec<u64> {
+    let mut ids: Vec<u64> = mountinfo
+        .split(|&b| b == b'\n')
+        .filter_map(|line| line.split(|&b| b == b' ').next())
+        .filter_map(|id| std::str::from_utf8(id).ok()?.parse().ok())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// What [`check_pid_namespace`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PidNamespace {
+    /// PID 1 is in the mount namespace ranikust started in (ranikust
+    /// itself, where it is PID 1 of `/proc`'s PID namespace), and PID 2 is
+    /// no kernel thread.
+    Own,
+    /// PID 1 is in another mount namespace: its mount table shares no mount
+    /// with ranikust's as it started.
+    OtherInit(Process),
+    /// PID 2 is a kernel thread: the initial PID namespace, the host's.
+    Host(Process),
+    /// A file that tells could not be read or parsed: which, and the error.
+    Unknown(&'static str, Errno),
+}
+
+/// `PF_KTHREAD`, in the flags of `/proc/<pid>/stat`.
+const PF_KTHREAD: u64 = 0x0020_0000;
+
+/// For a build with an rbind of `/proc`, whether ranikust's PID namespace
+/// is shared with another mount namespace, from files that no ptrace check
+/// guards, as a `RUN` under the rbind reads them (ADR-0134): PID 2 is a
+/// kernel thread (`kthreadd`, in the initial PID namespace only), or PID 1
+/// lists no mount of the namespace ranikust started in (`started_in`, read
+/// [`MountNamespace::with_mounts`]). Unlike [`scan_peers`], it does not
+/// depend on what ranikust may open. Called while ranikust is still in
+/// `started_in`: elsewhere, as PID 1 itself, it is refused.
+pub(crate) fn check_pid_namespace(started_in: rustix::io::Result<&MountNamespace>) -> PidNamespace {
+    let started = match started_in {
+        Ok(ns) => ns.mounts.as_ref().map_or(Err(Errno::INVAL), |m| m.clone()),
+        Err(e) => Err(e),
+    };
+    let read =
+        |path: &str| fs::read(path).map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::IO));
+    decide_pid_namespace(
+        started.as_deref().map_err(|&e| e),
+        || read("/proc/1/mountinfo"),
+        || read("/proc/2/stat"),
+        || comm("1"),
+    )
+}
+
+/// [`check_pid_namespace`]'s decision for the mount IDs ranikust `started`
+/// with, and readers of PID 1's `mountinfo`, PID 2's `stat` and PID 1's
+/// name. ranikust's own pid is not asked: `getpid()` is its pid in its own
+/// PID namespace, which may not be the one `/proc` shows.
+fn decide_pid_namespace(
+    started: Result<&[u64], Errno>,
+    pid1_mountinfo: impl FnOnce() -> Result<Vec<u8>, Errno>,
+    pid2_stat: impl FnOnce() -> Result<Vec<u8>, Errno>,
+    pid1_comm: impl FnOnce() -> String,
+) -> PidNamespace {
+    const STAT: &str = "reading /proc/2/stat";
+    match pid2_stat() {
+        Ok(stat) => match kernel_thread(&stat) {
+            Some((true, comm)) => {
+                return PidNamespace::Host(Process {
+                    pid: "2".into(),
+                    comm,
+                });
+            }
+            Some((false, _)) => {}
+            None => return PidNamespace::Unknown(STAT, Errno::INVAL),
+        },
+        // No PID 2 (yet): not the initial PID namespace, where `kthreadd`
+        // always is.
+        Err(Errno::NOENT | Errno::SRCH) => {}
+        Err(e) => return PidNamespace::Unknown(STAT, e),
+    }
+    let started = match started {
+        Ok(ids) => ids,
+        Err(e) => {
+            return PidNamespace::Unknown("reading /proc/self/mountinfo as ranikust started", e);
+        }
+    };
+    let pid1 = match pid1_mountinfo() {
+        Ok(text) => mount_ids(&text),
+        Err(e) => return PidNamespace::Unknown("reading /proc/1/mountinfo", e),
+    };
+    // Mount IDs are unique across the system: a mount is in one namespace.
+    if pid1.iter().any(|id| started.binary_search(id).is_ok()) {
+        PidNamespace::Own
+    } else {
+        PidNamespace::OtherInit(Process {
+            pid: "1".into(),
+            comm: pid1_comm(),
+        })
+    }
+}
+
+/// Whether a `/proc/<pid>/stat` line is a kernel thread's (`PF_KTHREAD` in
+/// its flags, the 9th field), with its escaped name; `None` where it cannot
+/// be parsed.
+fn kernel_thread(stat: &[u8]) -> Option<(bool, String)> {
+    // The name, between the first `(` and the last `)`, may hold either.
+    let open = stat.iter().position(|&b| b == b'(')?;
+    let close = stat.iter().rposition(|&b| b == b')')?;
+    let name = escaped(stat.get(open + 1..close)?);
+    let rest = std::str::from_utf8(stat.get(close + 1..)?).ok()?;
+    // After the name: state, ppid, pgrp, session, tty_nr, tpgid, flags.
+    let flags: u64 = rest.split_ascii_whitespace().nth(6)?.parse().ok()?;
+    Some((flags & PF_KTHREAD != 0, name))
 }
 
 /// The mount namespace of `path` (an `ns/mnt` link) below `dir`, opened
@@ -537,6 +716,7 @@ fn namespace(dir: impl AsFd, path: &str) -> rustix::io::Result<MountNamespace> {
     Ok(MountNamespace {
         _held: fd,
         id: (st.st_dev, st.st_ino),
+        mounts: None,
     })
 }
 
@@ -558,6 +738,120 @@ pub(crate) fn proc_sys_read_only(path: &Path) -> rustix::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0134: the check of a build with an rbind of `/proc`, on fixture
+    /// text: PID 2 a kernel thread, or PID 1 sharing no mount with
+    /// ranikust's start, is refused, and so is what cannot be read.
+    #[test]
+    fn a_shared_pid_namespace_shows_in_files_no_ptrace_check_guards() {
+        let mine: &[u8] = b"22 1 0:50 / / rw,relatime - overlay overlay rw\n\
+            23 22 0:51 / /proc rw - proc proc rw\n";
+        let other: &[u8] = b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+            25 1 0:5 / /dev rw - devtmpfs udev rw\n";
+        let started = mount_ids(mine);
+        assert_eq!(started, [22, 23]);
+        let user = b"2 (sh) S 1 2 2 0 -1 4194560 100 0 0 0\n".to_vec();
+        let kthreadd = b"2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0\n".to_vec();
+        let decide = |pid1: &[u8], pid2: Result<Vec<u8>, Errno>| {
+            decide_pid_namespace(
+                Ok(&started),
+                || Ok(pid1.to_vec()),
+                || pid2,
+                || "init".into(),
+            )
+        };
+        let process = |pid: &str, comm: &str| Process {
+            pid: pid.into(),
+            comm: comm.into(),
+        };
+        // PID 1 in ranikust's mount namespace: ranikust itself, where it is
+        // PID 1 of `/proc`'s PID namespace, or a shell that started it.
+        assert_eq!(decide(mine, Ok(user.clone())), PidNamespace::Own);
+        assert_eq!(decide(mine, Err(Errno::NOENT)), PidNamespace::Own);
+        // ranikust may be PID 1 of a PID namespace of its own while `/proc`
+        // shows an enclosing one: only PID 1's mounts tell.
+        assert_eq!(
+            decide_pid_namespace(
+                Ok(&[10, 11]),
+                || Ok(b"20 1 0:5 / / rw - x x x\n".to_vec()),
+                || Err(Errno::NOENT),
+                || "pause".into()
+            ),
+            PidNamespace::OtherInit(process("1", "pause"))
+        );
+        assert_eq!(
+            decide(other, Ok(user.clone())),
+            PidNamespace::OtherInit(process("1", "init"))
+        );
+        // The host's PID namespace, whoever PID 1 is.
+        for pid1 in [mine, other] {
+            assert_eq!(
+                decide(pid1, Ok(kthreadd.clone())),
+                PidNamespace::Host(process("2", "kthreadd"))
+            );
+        }
+        // What cannot be read or parsed is refused.
+        let stat = "reading /proc/2/stat";
+        assert_eq!(
+            decide(mine, Err(Errno::ACCESS)),
+            PidNamespace::Unknown(stat, Errno::ACCESS)
+        );
+        assert_eq!(
+            decide(mine, Ok(b"2 (x".to_vec())),
+            PidNamespace::Unknown(stat, Errno::INVAL)
+        );
+        assert_eq!(
+            decide_pid_namespace(
+                Ok(&started),
+                || Err(Errno::ACCESS),
+                || Ok(user.clone()),
+                String::new
+            ),
+            PidNamespace::Unknown("reading /proc/1/mountinfo", Errno::ACCESS)
+        );
+        assert_eq!(
+            decide_pid_namespace(
+                Err(Errno::INVAL),
+                || Ok(mine.to_vec()),
+                || Ok(user.clone()),
+                String::new
+            ),
+            PidNamespace::Unknown(
+                "reading /proc/self/mountinfo as ranikust started",
+                Errno::INVAL
+            )
+        );
+    }
+
+    /// A kernel thread is told by `PF_KTHREAD` in its `stat` flags, past a
+    /// name that may hold spaces and parentheses.
+    #[test]
+    fn a_kernel_thread_is_told_by_its_stat_flags_whatever_its_name() {
+        assert_eq!(
+            kernel_thread(b"2 (kthreadd) S 0 0 0 0 -1 2129984 0 0\n"),
+            Some((true, "kthreadd".into()))
+        );
+        assert_eq!(
+            kernel_thread(b"9 (a) S (b) R 1 9 9 0 -1 4194560 0\n"),
+            Some((false, "a) S (b".into()))
+        );
+        assert_eq!(kernel_thread(b"9 (x) S 1 9 9 0 -1\n"), None);
+        assert_eq!(kernel_thread(b"garbage"), None);
+    }
+
+    /// The process running the test is no kernel thread, and the mount IDs
+    /// of its own namespace read.
+    #[test]
+    fn this_process_is_no_kernel_thread_and_its_mounts_read() {
+        let stat = fs::read("/proc/self/stat").unwrap();
+        assert_eq!(kernel_thread(&stat).map(|k| k.0), Some(false));
+        let ns = mount_namespace().unwrap().with_mounts();
+        assert!(
+            matches!(&ns.mounts, Some(Ok(ids)) if !ids.is_empty()),
+            "{:?}",
+            ns.mounts
+        );
+    }
 
     #[test]
     fn a_writable_directory_is_not_read_only_and_a_missing_one_errs() {
@@ -1241,6 +1535,30 @@ mod tests {
         for n in ["VERSION", "NODE_ENV", "TARGETPLATFORM"] {
             assert!(!looks_secret(n), "{n}");
         }
+    }
+
+    #[test]
+    fn a_build_arg_warning_names_how_a_run_reads_the_command_line() {
+        let slash = build_arg_warning("NPM_TOKEN", Reach::Slash);
+        assert!(
+            slash.starts_with("--build-arg NPM_TOKEN=…: ")
+                && slash.contains("in kaniko mode on /")
+                && slash.contains("--secret")
+                && slash.contains("PID 1"),
+            "{slash}"
+        );
+        // Through the rbind a `RUN` reads no environment: no PID 1 advice.
+        let rbind = build_arg_warning("NPM_TOKEN", Reach::ProcRbind);
+        assert!(
+            rbind.starts_with("--build-arg NPM_TOKEN=…: ")
+                && rbind.contains("with --allow proc.rbind")
+                && rbind.contains("--secret")
+                && rbind.ends_with("with the value in the environment")
+                && !rbind.contains("PID 1"),
+            "{rbind}"
+        );
+        assert_eq!(Reach::Slash.build(), "kaniko mode on /");
+        assert!(Reach::ProcRbind.build().contains("--allow proc.rbind"));
     }
 
     #[test]

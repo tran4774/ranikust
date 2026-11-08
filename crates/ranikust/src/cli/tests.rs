@@ -206,6 +206,17 @@ fn help_and_version_flags_exit_zero() {
     assert_eq!(clap_error(&["--version"]).exit_code(), 0);
 }
 
+/// ADR-0126: `--allow proc.rbind`'s help says what it exposes and what to
+/// do about it, in the threat model's words (section 6).
+#[test]
+fn the_help_says_what_proc_rbind_exposes() {
+    let help = clap_error(&["--help"]).to_string();
+    assert!(help.contains("proc.rbind"), "{help}");
+    assert!(help.contains("PID namespace of its own"), "{help}");
+    assert!(help.contains("not under ptrace's check"), "{help}");
+    assert!(help.contains("command lines"), "{help}");
+}
+
 #[test]
 fn refused_kaniko_flags_say_why() {
     let cases: &[(&[&str], &str)] = &[
@@ -528,6 +539,11 @@ fn allow_takes_buildkit_entitlements() {
         parse_entitlement("network.none-userns").unwrap(),
         Entitlement::NetworkNoneUserns
     );
+    assert_eq!(
+        parse_entitlement("proc.rbind").unwrap(),
+        Entitlement::ProcRbind
+    );
+    assert!(parse_entitlement("proc").is_err());
     assert!(parse_entitlement("security.insecure").is_err());
     assert!(parse_entitlement("network").is_err());
 }

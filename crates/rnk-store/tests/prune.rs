@@ -219,17 +219,29 @@ fn check_prune_tells_a_symlink_on_the_path_apart() {
 }
 
 /// Every name the store and a build make at the top is taken: the store's
-/// directories, the sandbox's and an anonymous store's names.
+/// directories, the sandbox's and an anonymous store's names, the user
+/// namespace probe's among them; one on a symlink is removed, not
+/// followed.
 #[test]
 fn prune_all_takes_every_name_the_store_makes() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
+    let outside = dir.path().join("outside");
+    fs::create_dir_all(outside.join("sub")).unwrap();
+    fs::write(outside.join("sub/f"), b"keep").unwrap();
     used_store(&state);
     fs::create_dir(state.join(rnk_store::SANDBOX_DIR)).unwrap();
     fs::write(state.join(rnk_store::SANDBOX_DIR).join("runs"), b"").unwrap();
     fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    let probe = state.join(format!("{}1-1", rnk_store::USERNS_PROBE_PREFIX));
+    fs::create_dir(&probe).unwrap();
+    std::os::unix::fs::symlink(outside.join("sub"), probe.join("out")).unwrap();
+    let link = state.join(format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX));
+    std::os::unix::fs::symlink(outside.join("sub"), link).unwrap();
+    let before = tree(&outside);
     assert!(Store::prune_all(&state).unwrap());
     assert_eq!(tree(&state), Vec::<PathBuf>::new());
+    assert_eq!(tree(&outside), before);
 }
 
 /// This process's own `/` is refused before anything is locked or looked
@@ -453,4 +465,106 @@ fn links_out_of_the_state_directory_are_removed_not_followed() {
     assert_eq!(fs::read(outside.join("own")).unwrap(), b"keep");
     assert_eq!(fs::metadata(outside.join("own")).unwrap().nlink(), 1);
     assert_eq!(fs::read(outside.join("sub/f")).unwrap(), b"keep");
+}
+
+/// A store with no data leaves the state directory empty when abandoned,
+/// whoever made it, the sandbox's directory and what dead builds left
+/// included, so that kaniko mode on `/` takes it (ADR-0136); one with an
+/// entry in `blobs/`, `layers/` or `caches/`, one another build holds, or
+/// one with a name the store does not make, is kept whole.
+#[test]
+fn abandon_empties_a_store_with_no_data_that_no_build_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let made = open(&state);
+    fs::create_dir(state.join(rnk_store::SANDBOX_DIR)).unwrap();
+    fs::write(made.build_dir().join("probe"), b"x").unwrap();
+    assert!(made.abandon().unwrap(), "emptied");
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+    let anon = Store::open_anonymous(&state).unwrap();
+    anon.close().unwrap();
+
+    // Found with no data, as a build killed before it used it leaves it.
+    let state = dir.path().join("unused");
+    open(&state).close().unwrap();
+    let dead = open(&state);
+    fs::write(dead.build_dir().join("left"), b"x").unwrap();
+    drop(dead);
+    fs::create_dir_all(state.join(rnk_store::SANDBOX_DIR).join("runs")).unwrap();
+    fs::write(state.join("locks").join("l"), b"").unwrap();
+    assert!(open(&state).abandon().unwrap(), "emptied");
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
+
+    // Found marked, with data: closed, the rest kept.
+    let state = dir.path().join("found");
+    used_store(&state);
+    // The dead build's directories go at the next open.
+    open(&state).close().unwrap();
+    let before = tree(&state);
+    assert!(!open(&state).abandon().unwrap(), "kept");
+    assert_eq!(tree(&state), before);
+    for data in ["blobs", "layers", "caches"] {
+        let state = dir.path().join(data);
+        open(&state).close().unwrap();
+        fs::write(state.join(data).join("e"), b"").unwrap();
+        let before = tree(&state);
+        assert!(!open(&state).abandon().unwrap(), "{data}: kept");
+        assert_eq!(tree(&state), before, "{data}");
+    }
+
+    // A name the store does not make: kept.
+    let state = dir.path().join("foreign");
+    open(&state).close().unwrap();
+    fs::write(state.join("mine"), b"keep").unwrap();
+    let before = tree(&state);
+    assert!(!open(&state).abandon().unwrap(), "kept");
+    assert_eq!(tree(&state), before);
+
+    // Made, but another build holds it: closed, the rest kept.
+    let state = dir.path().join("held");
+    let made = open(&state);
+    let other = open(&state);
+    assert!(!made.abandon().unwrap(), "kept while held");
+    assert!(state.join(rnk_store::STATE_MARKER).is_file());
+    other.close().unwrap();
+    assert!(Store::prune_all(&state).unwrap());
+}
+
+/// What an emptying of a store with no data cannot remove (a directory
+/// the test user may not empty) is named, and the marker stays: the
+/// directory is still a store, with no data, which builds open.
+#[test]
+fn abandon_keeps_the_marker_while_anything_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    open(&state).close().unwrap();
+    let shut = state.join("tmp").join("shut");
+    fs::create_dir(&shut).unwrap();
+    fs::write(shut.join("f"), b"x").unwrap();
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = shut.join("probe");
+    if fs::File::create(&probe).is_ok() {
+        // Root or `CAP_DAC_OVERRIDE`: the mode stops nothing here.
+        fs::remove_file(&probe).unwrap();
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+    // The mode given back before any `unwrap`: the temp dir must go even
+    // if one fails.
+    let abandoned = Store::open(&BuildPaths::new(&state, &state)).map(Store::abandon);
+    let left = tree(&state);
+    let opened = Store::open(&BuildPaths::new(&state, &state));
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+    let abandoned = abandoned.unwrap();
+    let e = abandoned.unwrap_err();
+    assert!(matches!(e, Error::NotAbandoned { .. }), "{e}");
+    assert!(e.to_string().contains("\"tmp\""), "{e}");
+    assert!(
+        left.contains(&PathBuf::from(rnk_store::STATE_MARKER)),
+        "{left:?}"
+    );
+    assert!(left.contains(&PathBuf::from("tmp/shut/f")), "{left:?}");
+    opened.unwrap().close().unwrap();
+    assert!(open(&state).abandon().unwrap());
+    assert_eq!(tree(&state), Vec::<PathBuf>::new());
 }

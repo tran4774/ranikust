@@ -78,9 +78,13 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// memfd way of sealing the binary and `seal-none` both ways (ADR-0101);
 /// `overlay-refused` takes overlay mode's probe, once it passed, as a
 /// failed probe check, which routes as NFS's refused mount does
-/// ([`setup::set_up`]). It lets the tests run the
-/// real binary through these paths, including a release build, where
-/// `panic = "abort"`.
+/// ([`setup::set_up`]); `no-userns` refuses rootless overlay mode before
+/// its probe, so that a test of the binary as a user other than root makes
+/// no user namespace ([`rootless`]); `rootless-broken` fails rootless
+/// overlay mode's set-up in the build's user namespace at its last step,
+/// once its sandbox started, where `--mode=auto` falls back to kaniko mode
+/// for root (ADR-0136). It lets the tests run the real binary through
+/// these paths, including a release build, where `panic = "abort"`.
 const DEBUG_FAULT_ENV: &str = "RANIKUST_DEBUG_FAULT";
 
 /// Exit code of a usage error, as clap uses.
@@ -506,8 +510,15 @@ fn build(
     tracing::debug!(limits = %config.limits.text(), "limits in force");
     // Before a set-up may enter a mount namespace of its own: kaniko mode on
     // `/` counts this one as ranikust's too, held open until its scan
-    // (`exposure::scan_peers`).
-    let started_in = exposure::mount_namespace();
+    // (`exposure::scan_peers`); a build that may bind `/proc` compares PID
+    // 1's mounts with its own (`exposure::check_pid_namespace`).
+    let started_in = exposure::mount_namespace().map(|ns| {
+        if config.allow_proc_rbind {
+            ns.with_mounts()
+        } else {
+            ns
+        }
+    });
     match config.mode {
         config::Mode::Kaniko => {
             // Whether root may mount picks how `RUN` is isolated on a root
@@ -535,22 +546,67 @@ fn build(
             )
         }
         config::Mode::Overlay => {
-            // Only kaniko mode on `/` looks at it.
-            drop(started_in);
             overlay_flags(args)?;
             // One span for the whole set-up: the namespace, then the rest.
             let span = tracing::debug_span!("ranikust.setup");
-            span.in_scope(setup::enter_namespace)
-                .map_err(Failure::refused)?;
-            overlay(&config, &seccomp, &span, refuse_overlay)
+            // A user other than root builds in a user namespace of its own.
+            if !rustix::process::geteuid().is_root() {
+                let started_in = started_in.as_ref().map_err(|&e| e);
+                return rootless(&config, &seccomp, &span, started_in, Via::Overlay, fault)
+                    .refused();
+            }
+            let refusal = match span.in_scope(setup::enter_namespace) {
+                Ok(()) => {
+                    // Only kaniko mode on `/` and a build that binds `/proc`
+                    // look at it, never reached here.
+                    drop(started_in);
+                    return overlay(&config, &seccomp, &span, refuse_overlay);
+                }
+                Err(refusal) => refusal,
+            };
+            if !refusal.needs_kaniko_mode() {
+                return Err(Failure::refused(refusal));
+            }
+            // Root may not mount: rootless overlay mode, where ADR-0107 lets
+            // it run; else the refusal stands, with why it did not run.
+            let why = match rootless_kept_off() {
+                Some(off) => off,
+                None => {
+                    let started_in = started_in.as_ref().map_err(|&e| e);
+                    match rootless(&config, &seccomp, &span, started_in, Via::Overlay, fault) {
+                        Rootless::Built(built) => return built,
+                        Rootless::NotHere(not_here) => not_here.refusal.to_string(),
+                        // Never: only `--mode=auto` falls back.
+                        Rootless::FellBack(reason) => reason,
+                    }
+                }
+            };
+            Err(Failure::refused(setup::Refusal {
+                reason: format!("{}\n  {why}", refusal.reason),
+                ..refusal
+            }))
         }
         // Whether root may mount decides, before anything is written
         // (ADR-0040).
         config::Mode::Auto => {
             let span = tracing::debug_span!("ranikust.setup");
+            // A user other than root builds in a user namespace of its own.
+            if !rustix::process::geteuid().is_root() {
+                let started_in = started_in.as_ref().map_err(|&e| e);
+                return rootless(
+                    &config,
+                    &seccomp,
+                    &span,
+                    started_in,
+                    Via::AutoUser(args),
+                    fault,
+                )
+                .refused();
+            }
             match span.in_scope(setup::enter_namespace) {
                 Ok(()) => {
-                    // Only kaniko mode on `/` looks at it, never reached here.
+                    // Only kaniko mode on `/` and a build that binds `/proc`
+                    // look at it, never reached here.
                     drop(started_in);
                     // Root may mount: overlay mode if its probes pass. Where
                     // overlayfs is unusable (a state directory on NFS or on
@@ -567,6 +623,7 @@ fn build(
                             config.allow_network_none_userns,
                             &seccomp,
                             &mut userns_probe,
+                            config.allow_proc_rbind,
                             refuse_overlay,
                         )
                     }) {
@@ -581,7 +638,7 @@ fn build(
                             for warning in warnings {
                                 tracing::warn!("{warning}");
                             }
-                            return overlay_built(&config, setup);
+                            return overlay_built(&config, setup, build::Stops::Own);
                         }
                         Err(refusal) => refusal,
                     };
@@ -623,12 +680,45 @@ fn build(
                 }
                 Err(refusal) if refusal.needs_kaniko_mode() => {
                     let why = refusal.reason;
+                    // Root may not mount: rootless overlay mode first, where
+                    // ADR-0107 lets it run and no flag needs kaniko mode,
+                    // then kaniko mode, as before it.
+                    let by = match kaniko_only_kept_off(args).or_else(rootless_kept_off) {
+                        Some(off) => {
+                            tracing::info!("ranikust: {off}");
+                            KanikoBy::Auto
+                        }
+                        None => {
+                            let started_in = started_in.as_ref().map_err(|&e| e);
+                            let via = Via::AutoRoot(args);
+                            match rootless(&config, &seccomp, &span, started_in, via, fault) {
+                                Rootless::Built(built) => return built,
+                                Rootless::NotHere(not_here) => {
+                                    tracing::info!("ranikust: {}", not_here.refusal);
+                                    // One probe line per build.
+                                    if not_here.probed {
+                                        KanikoBy::AutoProbed
+                                    } else {
+                                        KanikoBy::Auto
+                                    }
+                                }
+                                Rootless::FellBack(reason) => {
+                                    // A step its probe passed failed.
+                                    tracing::warn!(
+                                        "ranikust: {reason}; kaniko mode instead, before \
+                                         anything was built (ADR-0136)"
+                                    );
+                                    KanikoBy::AutoProbed
+                                }
+                            }
+                        }
+                    };
                     tracing::info!("kaniko mode, because root may not mount here: {why}");
                     let runtime = container::detect(&container::Real);
                     kaniko(
                         &config,
                         &seccomp,
-                        KanikoBy::Auto,
+                        by,
                         false,
                         runtime,
                         metrics_file,
@@ -639,6 +729,201 @@ fn build(
                 Err(refusal) => Err(Failure::refused(refusal)),
             }
         }
+    }
+}
+
+/// What [`rootless`] did.
+enum Rootless {
+    /// The run's result: built, or failed once rootless overlay mode was
+    /// chosen (a refused peer scan, the overlay flags, a failure in the
+    /// build's user namespace).
+    Built(Result<(), Failure>),
+    /// Rootless overlay mode cannot run here; the process is unchanged.
+    NotHere(setup::rootless::NotHere),
+    /// [`Via::AutoRoot`]: the set-up failed in the build's user namespace,
+    /// in the child that entered it, for this reason; the store it opened
+    /// in the state directory is emptied where it holds no data, and this
+    /// process is as it was before rootless overlay mode, its probe line
+    /// logged (ADR-0136).
+    FellBack(String),
+}
+
+impl Rootless {
+    /// The run's result where nothing may follow rootless overlay mode: a
+    /// user other than root.
+    fn refused(self) -> Result<(), Failure> {
+        match self {
+            Self::Built(built) => built,
+            Self::NotHere(not_here) => Err(Failure::refused(not_here.refusal)),
+            // Never: only root falls back.
+            Self::FellBack(reason) => Err(Failure::error(reason)),
+        }
+    }
+}
+
+/// How [`rootless`] was reached.
+#[derive(Clone, Copy)]
+enum Via<'a> {
+    /// `--mode=overlay`, whose flags were checked first.
+    Overlay,
+    /// `--mode=auto` as a user other than root, with its flags.
+    AutoUser(&'a BuildArgs),
+    /// `--mode=auto` as root that may not mount, with its flags: kaniko
+    /// mode follows where the set-up fails in the build's user namespace
+    /// (ADR-0136).
+    AutoRoot(&'a BuildArgs),
+}
+
+impl Via<'_> {
+    /// The flag, for messages.
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Overlay => "--mode=overlay",
+            Self::AutoUser(_) | Self::AutoRoot(_) => "--mode=auto",
+        }
+    }
+
+    /// Whether a set-up that fails in the build's user namespace falls
+    /// back to kaniko mode: root's `--mode=auto` only, which had kaniko
+    /// mode before rootless overlay mode; never a user other than root,
+    /// whom kaniko mode refuses, nor `--mode=overlay` (ADR-0136).
+    fn falls_back(self) -> bool {
+        matches!(self, Self::AutoRoot(_))
+    }
+}
+
+/// Why `--mode=auto`, as root that may not mount, does not try rootless
+/// overlay mode: a flag only kaniko mode honours, which overlay mode refuses
+/// and kaniko mode, the mode such a build got before rootless overlay mode,
+/// builds with (ADR-0049).
+fn kaniko_only_kept_off(args: &BuildArgs) -> Option<String> {
+    config::kaniko_only_flag(args).map(|flag| {
+        format!(
+            "rootless overlay mode is not tried: {flag} takes effect in kaniko mode only \
+             (ADR-0049)"
+        )
+    })
+}
+
+/// Why root that may not mount does not try rootless overlay mode: a
+/// writable `/proc/sys`, or one that cannot be told, where a `RUN` as the
+/// map's uid 0, the host's root unless ranikust runs in a user namespace,
+/// could write it (ADR-0107, case (ii), and ADR-0054).
+fn rootless_kept_off() -> Option<String> {
+    match exposure::proc_sys_read_only(Path::new("/proc/sys")) {
+        Ok(true) => None,
+        Ok(false) => Some(
+            "rootless overlay mode is not tried as root where /proc/sys is writable (ADR-0107)"
+                .to_owned(),
+        ),
+        Err(e) => Some(format!(
+            "rootless overlay mode is not tried as root where it cannot tell whether /proc/sys \
+             is read-only ({e}) (ADR-0107)"
+        )),
+    }
+}
+
+/// Rootless overlay mode (ADR-0104, ADR-0107): the user namespace probe
+/// ([`setup::rootless::plan`]); then, where the build binds `/proc`
+/// (`--allow proc.rbind`), the peer scan, refused as kaniko mode on `/`
+/// refuses it (ADR-0129, ADR-0130), the check of the PID namespace from
+/// files with no ptrace check (ADR-0134), and the warnings for what the
+/// rbind exposes, all before the build's user namespace, where ranikust
+/// could no longer open the other processes; then overlay mode's flags, where
+/// `flags` gives them (`--mode=auto`; `--mode=overlay` checked them
+/// first); then the set-up in the namespace and the build. Where `via`
+/// falls back ([`Via::falls_back`]), a child enters the namespace, sets up
+/// and builds, and this process waits outside it
+/// ([`rnk_sandbox::fork_to_wait`]): it returns only where the child's
+/// set-up failed ([`Rootless::FellBack`]), else ends as the child did.
+/// `started_in` as for [`kaniko`]; `fault` is the test hook's value
+/// ([`DEBUG_FAULT_ENV`]: `no-userns`, `rootless-broken`).
+fn rootless(
+    config: &BuildConfig,
+    seccomp: &Seccomp,
+    span: &tracing::Span,
+    started_in: rustix::io::Result<&exposure::MountNamespace>,
+    via: Via<'_>,
+    fault: Option<&str>,
+) -> Rootless {
+    let how = via.flag();
+    let plan = match span.in_scope(|| {
+        if fault == Some("no-userns") {
+            let euid = rustix::process::geteuid().as_raw();
+            return Err(setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, euid));
+        }
+        setup::rootless::plan(&config.state_dir, config.allow_proc_rbind)
+    }) {
+        Ok(plan) => plan,
+        Err(not_here) => return Rootless::NotHere(not_here),
+    };
+    let scanned = plan.proc_rbind();
+    if scanned {
+        let scan = exposure::scan_peers(started_in);
+        if let Err(failure) = refuse_reachable_peers(how, exposure::Reach::ProcRbind, scan)
+            .and_then(|()| {
+                refuse_shared_pid_namespace(how, exposure::check_pid_namespace(started_in))
+            })
+        {
+            return Rootless::Built(Err(failure));
+        }
+        exposure::warn_build_args(&config.build_args, exposure::Reach::ProcRbind);
+    }
+    if let Via::AutoUser(args) | Via::AutoRoot(args) = via
+        && let Err(failure) = overlay_flags(args)
+    {
+        return Rootless::Built(Err(failure));
+    }
+    let child = if via.falls_back() {
+        match span.in_scope(rnk_sandbox::fork_to_wait) {
+            Ok(rnk_sandbox::Forked::Child(child)) => Some(child),
+            Ok(rnk_sandbox::Forked::Parent(waiting)) => {
+                // The child holds the state directory until its store is
+                // open; a copy held here would keep it from undoing it.
+                drop(plan);
+                return Rootless::FellBack(waiting.wait());
+            }
+            Err(e) => {
+                return Rootless::NotHere(setup::rootless::NotHere {
+                    refusal: setup::Refusal {
+                        kind: setup::Kind::Other,
+                        reason: format!(
+                            "rootless overlay mode is not tried: the process that would wait \
+                             outside the build's user namespace cannot be forked: {e}"
+                        ),
+                        guidance: "".into(),
+                    },
+                    probed: true,
+                });
+            }
+        }
+    } else {
+        None
+    };
+    let then = setup::rootless::Then {
+        userns_network: config.allow_network_none_userns,
+        child: child.as_ref(),
+        broken_by: (fault == Some("rootless-broken")).then_some(DEBUG_FAULT_ENV),
+    };
+    let setup =
+        span.in_scope(|| setup::rootless::set_up(&config.state_dir, plan, scanned, seccomp, &then));
+    match (setup, child) {
+        (Ok(setup), Some(child)) => match child.proceed() {
+            Ok(()) => Rootless::Built(overlay_built(config, setup, build::Stops::Forwarded)),
+            Err(e) => {
+                close_store(setup.store);
+                Rootless::Built(Err(Failure::error(format!("rootless overlay mode: {e}"))))
+            }
+        },
+        (Ok(setup), None) => Rootless::Built(overlay_built(config, setup, build::Stops::Own)),
+        (Err(refusal), Some(child)) => child.fall_back(&refusal.reason),
+        (Err(refusal), None) if refusal.kind == setup::Kind::Broken => {
+            Rootless::Built(Err(Failure::refused(refusal)))
+        }
+        (Err(refusal), None) => Rootless::NotHere(setup::rootless::NotHere {
+            refusal,
+            probed: true,
+        }),
     }
 }
 
@@ -687,11 +972,12 @@ fn overlay(
                 config.allow_network_none_userns,
                 seccomp,
                 &mut false,
+                config.allow_proc_rbind,
                 refuse_overlay,
             )
         })
         .map_err(Failure::refused)?;
-    overlay_built(config, setup)
+    overlay_built(config, setup, build::Stops::Own)
 }
 
 /// Closes a store this run will not build with: its build directory goes
@@ -705,16 +991,21 @@ fn close_store(store: std::sync::Arc<rnk_store::Store>) {
     }
 }
 
-/// Overlay mode's build, once set up.
-fn overlay_built(config: &BuildConfig, setup: setup::Setup) -> Result<(), Failure> {
+/// Overlay mode's build, once set up, stopped by `stops`.
+fn overlay_built(
+    config: &BuildConfig,
+    setup: setup::Setup,
+    stops: build::Stops,
+) -> Result<(), Failure> {
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
     tracing::info!("set up for {}", setup.outcome);
-    let setup::Outcome::OverlayRoot { overlay, .. } = setup.outcome;
+    let (setup::Outcome::OverlayRoot { overlay, .. }
+    | setup::Outcome::OverlayRootless { overlay, .. }) = setup.outcome;
     let built = build::run(
         config,
         setup.store,
         setup.sandbox,
-        build::Snapshots::Overlay(overlay),
+        build::Snapshots::Overlay(overlay, stops),
     )
     .map_err(Failure::error)?;
     report_built(&built)
@@ -825,6 +1116,7 @@ fn kaniko(
                 nofile,
                 seccomp,
                 userns_probe,
+                config.allow_proc_rbind,
             )
         })
         .map_err(Failure::refused)?;
@@ -932,11 +1224,15 @@ fn refuse_unsafe_slash(
         }
     }
     refuse_writable_binary(how, binary)?;
-    refuse_reachable_peers(how, exposure::scan_peers(started_in))?;
+    refuse_reachable_peers(
+        how,
+        exposure::Reach::Slash,
+        exposure::scan_peers(started_in),
+    )?;
     // What ranikust cannot close itself (ADR-0051, B4 and B5; ADR-0078).
     // The processes holding credentials are looked for after the set-up,
     // with the capabilities a `RUN` keeps (`kaniko`).
-    exposure::warn_build_args(&config.build_args);
+    exposure::warn_build_args(&config.build_args, exposure::Reach::Slash);
     for warning in exposure::file_secret_warnings(&config.secrets) {
         tracing::warn!("{warning}");
     }
@@ -1033,21 +1329,33 @@ fn refuse_writable_binary(how: &str, binary: Option<BinaryMount>) -> Result<(), 
     }
 }
 
-/// Kaniko mode on `/` refuses a PID namespace shared with a process of
-/// another mount namespace that ranikust can open through `/proc` when it
-/// starts (ADR-0101): a `RUN` shares that PID namespace and could reach
-/// that process's files, which the container's own mount table does not
-/// show. A scan that cannot tell, or one of too many threads, is refused
-/// too, each with its own guidance.
-fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Failure> {
+/// Kaniko mode on `/`, and a build that binds `/proc` (`reach`), refuse a
+/// PID namespace shared with a process of another mount namespace that
+/// ranikust can open through `/proc` when it starts (ADR-0101, ADR-0129):
+/// a `RUN` shares that PID namespace and could reach that process's files,
+/// which the container's own mount table does not show, or, through the
+/// rbind, read its command line. A scan that cannot tell, or one of too
+/// many threads, is refused too, each with its own guidance.
+fn refuse_reachable_peers(
+    how: &str,
+    reach: exposure::Reach,
+    scan: exposure::PeerScan,
+) -> Result<(), Failure> {
     use exposure::PeerScan;
+    let subject = reach.build();
     match scan {
         PeerScan::None => Ok(()),
         PeerScan::Reachable(process) => Err(Failure::error(format!(
-            "{how}: kaniko mode on / sharing its PID namespace with process {process}, of \
-             another mount namespace, whose files ranikust reaches through /proc/{}, would let \
-             RUN reach that process's files",
-            process.pid
+            "{how}: {subject} sharing its PID namespace with process {process}, of another \
+             mount namespace, whose files ranikust reaches through /proc/{}, would let {}",
+            process.pid,
+            match reach {
+                exposure::Reach::Slash => "RUN reach that process's files".to_owned(),
+                exposure::Reach::ProcRbind => format!(
+                    "every RUN read that process's {}",
+                    exposure::UNCHECKED_PROC_FILES.trim_start_matches("the ")
+                ),
+            }
         ))
         .with_guidance(
             "do not share the build container's PID namespace with another container: no \
@@ -1055,7 +1363,7 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              podman --pid container:<name> or --pid=host (ADR-0101)",
         )),
         PeerScan::TooMany => Err(Failure::error(format!(
-            "{how}: kaniko mode on / sharing its PID namespace with more than {} threads; \
+            "{how}: {subject} sharing its PID namespace with more than {} threads; \
              ranikust refuses to build without looking at each for one of another mount \
              namespace that a RUN could reach",
             exposure::PEER_SCAN_LIMIT
@@ -1067,7 +1375,7 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
         )),
         PeerScan::Unknown(process, step, e) => Err(Failure::error(format!(
             "{how}: cannot tell whether process {process} is of another mount namespace that \
-             ranikust reaches through /proc: {step} failed ({e}); kaniko mode on / refuses to \
+             ranikust reaches through /proc: {step} failed ({e}); {subject} refuses to \
              build without knowing"
         ))
         .with_guidance(
@@ -1078,19 +1386,56 @@ fn refuse_reachable_peers(how: &str, scan: exposure::PeerScan) -> Result<(), Fai
              it, and share no PID namespace with another container (ADR-0101)",
         )),
         PeerScan::Unlisted(e) => Err(Failure::error(format!(
-            "{how}: cannot list the processes of its PID namespace in /proc ({e}); kaniko mode \
-             on / refuses to build without knowing whether one of another mount namespace is in \
+            "{how}: cannot list the processes of its PID namespace in /proc ({e}); {subject} \
+             refuses to build without knowing whether one of another mount namespace is in \
              reach"
         ))
         .with_guidance("mount /proc in the container, readable by root (ADR-0101)")),
         PeerScan::OwnNamespace(e) => Err(Failure::error(format!(
-            "{how}: cannot read ranikust's own mount namespace, /proc/self/ns/mnt ({e}); kaniko \
-             mode on / refuses to build without knowing which processes are of another mount \
+            "{how}: cannot read ranikust's own mount namespace, /proc/self/ns/mnt ({e}); {subject} \
+             refuses to build without knowing which processes are of another mount \
              namespace"
         ))
         .with_guidance(
             "mount /proc in the container, and let its seccomp profile allow opening \
              /proc/self/ns/mnt with O_PATH and fstat (ADR-0101)",
+        )),
+    }
+}
+
+/// A build that binds `/proc` refuses a PID namespace that files with no
+/// ptrace check show shared with another mount namespace, or cannot tell
+/// (ADR-0134): through the rbind every `RUN` reads those files of each
+/// process there, whether or not ranikust may open the process.
+fn refuse_shared_pid_namespace(how: &str, found: exposure::PidNamespace) -> Result<(), Failure> {
+    use exposure::PidNamespace;
+    let subject = exposure::Reach::ProcRbind.build();
+    let reads = exposure::UNCHECKED_PROC_FILES;
+    let guidance = "give the build container a PID namespace of its own: no Kubernetes \
+         hostPID: true or shareProcessNamespace: true on its pod, no Docker or podman \
+         --pid=host or --pid container:<name>, and start ranikust in the container's mount \
+         namespace (ADR-0134)";
+    match found {
+        PidNamespace::Own => Ok(()),
+        PidNamespace::Host(process) => Err(Failure::error(format!(
+            "{how}: {subject} in the host's PID namespace (process {process} is a kernel \
+             thread) would let every RUN read {reads} of each process of the host"
+        ))
+        .with_guidance(guidance)),
+        PidNamespace::OtherInit(process) => Err(Failure::error(format!(
+            "{how}: {subject} sharing its PID namespace with PID 1, process {process}, of \
+             another mount namespace (its /proc/1/mountinfo lists no mount of ranikust's) \
+             would let every RUN read {reads} of each process there"
+        ))
+        .with_guidance(guidance)),
+        PidNamespace::Unknown(step, e) => Err(Failure::error(format!(
+            "{how}: cannot tell whether {subject} shares its PID namespace with another mount \
+             namespace: {step} failed ({e}); it refuses to build without knowing"
+        ))
+        .with_guidance(
+            "mount /proc in the container, let ranikust read /proc/self/mountinfo, \
+             /proc/1/mountinfo and /proc/2/stat, and give the build container a PID namespace \
+             of its own (ADR-0134)",
         )),
     }
 }
@@ -1711,14 +2056,15 @@ mod tests {
 
     #[test]
     fn kaniko_mode_on_slash_refuses_a_reachable_process_of_another_mount_namespace() {
-        use exposure::{PeerScan, Process};
+        use exposure::{PeerScan, Process, Reach};
         let how = "--mode=kaniko";
-        refuse_reachable_peers(how, PeerScan::None).unwrap();
+        refuse_reachable_peers(how, Reach::Slash, PeerScan::None).unwrap();
         let sleep = || Process {
             pid: "42".into(),
             comm: "sleep".into(),
         };
-        let reached = refuse_reachable_peers(how, PeerScan::Reachable(sleep())).unwrap_err();
+        let reached =
+            refuse_reachable_peers(how, Reach::Slash, PeerScan::Reachable(sleep())).unwrap_err();
         assert!(
             reached.code == 1
                 && reached.message.starts_with(
@@ -1772,7 +2118,7 @@ mod tests {
                 "/proc/self/ns/mnt",
             ),
         ] {
-            let refused = refuse_reachable_peers(how, scan).unwrap_err();
+            let refused = refuse_reachable_peers(how, Reach::Slash, scan).unwrap_err();
             assert!(
                 refused.code == 1
                     && refused.message.starts_with("--mode=kaniko: ")
@@ -1792,6 +2138,7 @@ mod tests {
         };
         let refused = refuse_reachable_peers(
             how,
+            Reach::Slash,
             PeerScan::Unknown(unnamed, "opening /proc/<pid>", errno),
         )
         .unwrap_err();
@@ -1806,6 +2153,179 @@ mod tests {
         guidance.sort();
         guidance.dedup();
         assert_eq!(guidance.len(), 5);
+    }
+
+    /// ADR-0129, ADR-0130: a build with an rbind of `/proc` refuses a
+    /// shared PID namespace as kaniko mode on `/` does, naming what the
+    /// rbind exposes.
+    #[test]
+    fn a_build_with_an_rbind_of_proc_refuses_a_reachable_process_of_another_mount_namespace() {
+        use exposure::{PeerScan, Process, Reach};
+        let how = "--mode=auto";
+        refuse_reachable_peers(how, Reach::ProcRbind, PeerScan::None).unwrap();
+        let sleep = Process {
+            pid: "42".into(),
+            comm: "sleep".into(),
+        };
+        let reached =
+            refuse_reachable_peers(how, Reach::ProcRbind, PeerScan::Reachable(sleep)).unwrap_err();
+        assert!(
+            reached.code == 1
+                && reached.message.starts_with(
+                    "--mode=auto: a build with an rbind of /proc (--allow proc.rbind) sharing \
+                     its PID namespace with process 42 (sleep),"
+                )
+                && reached.message.ends_with(
+                    "would let every RUN read that process's files of /proc/<pid> not under \
+                     ptrace's check, such as cmdline, status, stat, mountinfo, cgroup and net/*"
+                )
+                && reached
+                    .guidance
+                    .starts_with("do not share the build container's PID namespace"),
+            "{}: {}",
+            reached.message,
+            reached.guidance
+        );
+        let errno = rustix::io::Errno::LOOP;
+        let unlisted =
+            refuse_reachable_peers(how, Reach::ProcRbind, PeerScan::Unlisted(errno)).unwrap_err();
+        assert!(
+            unlisted
+                .message
+                .contains("; a build with an rbind of /proc (--allow proc.rbind) refuses"),
+            "{}",
+            unlisted.message
+        );
+    }
+
+    /// ADR-0134: a build with an rbind of `/proc` refuses the host's PID
+    /// namespace, PID 1 of another mount namespace, and a check that
+    /// cannot tell, naming what every `RUN` would read.
+    #[test]
+    fn a_build_with_an_rbind_of_proc_refuses_a_pid_namespace_shared_as_unchecked_files_show() {
+        use exposure::{PidNamespace, Process};
+        let how = "--mode=overlay";
+        refuse_shared_pid_namespace(how, PidNamespace::Own).unwrap();
+        let process = |pid: &str, comm: &str| Process {
+            pid: pid.into(),
+            comm: comm.into(),
+        };
+        let host = refuse_shared_pid_namespace(how, PidNamespace::Host(process("2", "kthreadd")))
+            .unwrap_err();
+        let other =
+            refuse_shared_pid_namespace(how, PidNamespace::OtherInit(process("1", "systemd")))
+                .unwrap_err();
+        for (failure, what) in [
+            (
+                &host,
+                "in the host's PID namespace (process 2 (kthreadd) is a kernel thread)",
+            ),
+            (
+                &other,
+                "with PID 1, process 1 (systemd), of another mount namespace",
+            ),
+        ] {
+            assert!(
+                failure.code == 1
+                    && failure.message.starts_with(
+                        "--mode=overlay: a build with an rbind of /proc (--allow proc.rbind) "
+                    )
+                    && failure.message.contains(what)
+                    && failure.message.contains(
+                        "the files of /proc/<pid> not under ptrace's check, such as cmdline, \
+                         status, stat, mountinfo, cgroup and net/*"
+                    )
+                    && failure.guidance.contains("PID namespace of its own")
+                    && failure.guidance.contains("--pid=host"),
+                "{}: {}",
+                failure.message,
+                failure.guidance
+            );
+        }
+        let unknown = refuse_shared_pid_namespace(
+            how,
+            PidNamespace::Unknown("reading /proc/1/mountinfo", rustix::io::Errno::ACCESS),
+        )
+        .unwrap_err();
+        assert!(
+            unknown.code == 1
+                && unknown
+                    .message
+                    .contains("reading /proc/1/mountinfo failed (Permission denied")
+                && unknown
+                    .message
+                    .ends_with("it refuses to build without knowing"),
+            "{}",
+            unknown.message
+        );
+    }
+
+    /// The test hook's refusal leaves the process unchanged and points a
+    /// user other than root at root, root at nothing more.
+    #[test]
+    fn the_no_userns_hook_refuses_rootless_overlay_mode_before_its_probe() {
+        let as_root = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 0);
+        assert_eq!(as_root.refusal.guidance, "");
+        let not_here = setup::rootless::refused_by_hook(DEBUG_FAULT_ENV, 1000);
+        assert!(!not_here.probed);
+        assert_eq!(not_here.refusal.kind, setup::Kind::Other);
+        assert!(
+            not_here
+                .refusal
+                .reason
+                .ends_with("refused by RANIKUST_DEBUG_FAULT=no-userns"),
+            "{}",
+            not_here.refusal.reason
+        );
+        assert!(not_here.refusal.guidance.contains("sudo"));
+    }
+
+    /// Under `--mode=auto`, root that may not mount keeps kaniko mode for a
+    /// flag only kaniko mode honours, where rootless overlay mode would
+    /// refuse it; a flag overlay mode only warns about tries it still.
+    #[test]
+    fn auto_mode_keeps_kaniko_mode_for_a_flag_only_it_honours() {
+        let args_of = |flags: &[&str]| {
+            let argv = std::iter::once("ranikust").chain(flags.iter().copied());
+            let Command::Build(args) = cli::parse(argv).unwrap().cli.into_command() else {
+                panic!("expected build");
+            };
+            args
+        };
+        let ignored = args_of(&["--no-push", "--ignore-path=/var/cache/*"]);
+        let note = kaniko_only_kept_off(&ignored).expect("--ignore-path keeps kaniko mode");
+        assert!(
+            note.starts_with("rootless overlay mode is not tried: --ignore-path "),
+            "{note}"
+        );
+        assert!(config::overlay_mode_flags(&ignored).is_err());
+        for flags in [
+            &["--no-push"][..],
+            &["--no-push", "--snapshot-mode=redo", "--snapshot-workers=4"],
+        ] {
+            assert_eq!(kaniko_only_kept_off(&args_of(flags)), None, "{flags:?}");
+            assert!(
+                config::overlay_mode_flags(&args_of(flags)).is_ok(),
+                "{flags:?}"
+            );
+        }
+    }
+
+    /// Only root's `--mode=auto`, which built in kaniko mode before
+    /// rootless overlay mode, falls back to it from the build's user
+    /// namespace; a user other than root and `--mode=overlay` get the error
+    /// (ADR-0136).
+    #[test]
+    fn only_roots_auto_mode_falls_back_to_kaniko_mode() {
+        let argv = ["ranikust", "--no-push"];
+        let Command::Build(args) = cli::parse(argv).unwrap().cli.into_command() else {
+            panic!("expected build");
+        };
+        assert!(Via::AutoRoot(&args).falls_back());
+        assert!(!Via::AutoUser(&args).falls_back());
+        assert!(!Via::Overlay.falls_back());
+        assert_eq!(Via::AutoRoot(&args).flag(), "--mode=auto");
+        assert_eq!(Via::Overlay.flag(), "--mode=overlay");
     }
 
     /// `--snapshot-mode` and `--snapshot-workers` reach the walk with their

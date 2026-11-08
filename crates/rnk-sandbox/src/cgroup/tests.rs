@@ -268,16 +268,113 @@ fn only_a_missing_file_or_mark_reads_as_absent() {
 }
 
 /// Root trusts `trusted.delegate` alone: a root `RUN` can set
-/// `user.delegate` (ADR-0110, 1).
+/// `user.delegate` (ADR-0110, 1). A ranikust whose uid in the initial user
+/// namespace is not 0 trusts `user.delegate` too on a cgroup it owns, as
+/// it sees it, as root of the build's user namespace included (ADR-0135).
 #[test]
 fn root_trusts_only_trusted_delegate_and_an_owner_user_delegate_too() {
     let trusted: &[&str] = &["trusted.delegate"];
     let both: &[&str] = &["trusted.delegate", "user.delegate"];
-    assert_eq!(trusted_marks(0, 0), trusted);
-    assert_eq!(trusted_marks(0, 1000), trusted);
-    assert_eq!(trusted_marks(1000, 0), trusted);
-    assert_eq!(trusted_marks(1000, 1001), trusted);
-    assert_eq!(trusted_marks(1000, 1000), both);
+    // Root in the initial user namespace, seen from it or from the
+    // build's user namespace.
+    assert_eq!(trusted_marks(true, 0, 0), trusted);
+    assert_eq!(trusted_marks(true, 0, 1000), trusted);
+    assert_eq!(trusted_marks(true, 1000, 1000), trusted);
+    // Another uid, outside the build's user namespace.
+    assert_eq!(trusted_marks(false, 1000, 0), trusted);
+    assert_eq!(trusted_marks(false, 1000, 1001), trusted);
+    assert_eq!(trusted_marks(false, 1000, 1000), both);
+    // Another uid, as root of the build's user namespace: its own uid
+    // shows as 0, an unmapped owner as the overflow uid.
+    assert_eq!(trusted_marks(false, 0, 0), both);
+    assert_eq!(trusted_marks(false, 0, 65534), trusted);
+    assert_eq!(trusted_marks(false, 0, 1), trusted);
+}
+
+/// Root is the uid the parent user namespace sees as 0, or a map that
+/// cannot tell.
+#[test]
+fn root_is_uid_0_in_the_parent_user_namespace() {
+    let identity = "         0          0 4294967295\n";
+    let podman = "         0       1000          1\n         1     100000      65536\n";
+    assert!(maps_to_root(0, identity));
+    assert!(!maps_to_root(1000, identity));
+    // Root of a rootless container is its user, as is a uid in it.
+    assert!(!maps_to_root(0, podman));
+    assert!(!maps_to_root(1000, podman));
+    // A uid that is root in the parent.
+    assert!(maps_to_root(1000, "      1000          0          1\n"));
+    // Unmapped, unreadable or unparsable.
+    assert!(maps_to_root(1000, "         0       1000          1\n"));
+    assert!(maps_to_root(1000, ""));
+    assert!(maps_to_root(1000, "0 0\n"));
+    assert!(maps_to_root(1000, "0 0 x\n"));
+    assert!(maps_to_root(1000, "0 0 1 2\n"));
+}
+
+/// Root is the uid its namespace shows a root-owned sysctl's owner as,
+/// through any number of levels; the map decides only where that file is
+/// not the sysctl.
+#[test]
+fn root_is_the_uid_a_root_owned_sysctl_shows_as_its_owner() {
+    let proc = rustix::fs::PROC_SUPER_MAGIC;
+    let file = 0o100_444;
+    let ostype = |uid| sysctl_owner(proc, file, Some(false), b"Linux\n", uid);
+    let never = || -> String { panic!("the map is read only without the sysctl") };
+    // A host root, and root of a namespace that maps it, at any depth.
+    assert!(is_kernel_root(0, ostype(0), never));
+    // Uid 5 of a namespace that maps it to the initial root.
+    assert!(is_kernel_root(5, ostype(5), never));
+    // A user on a host; root of a namespace whose root is not the
+    // initial one (root of rootless Podman, a map one level down from it
+    // that the parent's map would call root).
+    assert!(!is_kernel_root(1000, ostype(0), never));
+    assert!(!is_kernel_root(0, ostype(65534), never));
+    // Overflow uid on both sides: cannot tell, so root.
+    assert!(is_kernel_root(65534, ostype(65534), never));
+    // A kernel that does not report mount roots (before Linux 5.8).
+    assert_eq!(sysctl_owner(proc, file, None, b"Linux\n", 0), Some(0));
+    // Not on a procfs, not a regular file, another procfs file bound over
+    // it (a process named `Linux` has a `comm` of mode 0644), or any file
+    // bound over it, a mount's root: the map decides.
+    let tmpfs = 0x0102_1994;
+    let not_root = Some(false);
+    assert_eq!(sysctl_owner(tmpfs, file, not_root, b"Linux\n", 0), None);
+    assert_eq!(sysctl_owner(proc, 0o040_555, not_root, b"Linux\n", 0), None);
+    assert_eq!(
+        sysctl_owner(proc, 0o100_644, not_root, b"Linux\n", 1000),
+        None
+    );
+    assert_eq!(
+        sysctl_owner(proc, file, not_root, b"1000 (sh) S 1\n", 1000),
+        None
+    );
+    assert_eq!(sysctl_owner(proc, file, not_root, b"Linux", 0), None);
+    assert_eq!(sysctl_owner(proc, file, Some(true), b"Linux\n", 1000), None);
+    let podman = "         0       1000          1\n";
+    assert!(!is_kernel_root(0, None, || podman.to_owned()));
+    assert!(is_kernel_root(0, None, String::new));
+}
+
+/// On this machine, which only reads: where the uid map is the initial
+/// namespace's, the sysctl shows root as 0 and the two readings agree.
+#[test]
+fn the_sysctl_and_an_initial_map_agree_on_this_host() {
+    let map = std::fs::read_to_string("/proc/self/uid_map").unwrap();
+    let initial = map.split_whitespace().eq(["0", "0", "4294967295"]);
+    let shown = root_shown_as();
+    eprintln!("uid map {map:?}, root shown as {shown:?}");
+    if !initial {
+        eprintln!("skipped: not in the initial user namespace");
+        return;
+    }
+    let Ok(Some(root)) = shown else {
+        eprintln!("skipped: no procfs at /proc/sys");
+        return;
+    };
+    assert_eq!(root, 0);
+    let euid = rustix::process::geteuid().as_raw();
+    assert_eq!(kernel_root_as_it_stands(), maps_to_root(euid, &map));
 }
 
 /// A root ranikust reads no `user.delegate`, which anyone who may write the
@@ -293,12 +390,13 @@ fn a_root_ranikust_never_reads_user_delegate() {
         }
         r => r.unwrap(),
     }
-    assert_eq!(delegation_mark(dir.as_fd(), 0), Ok(false));
     let me = rustix::process::geteuid().as_raw();
-    if me != 0 {
-        assert_eq!(delegation_mark(dir.as_fd(), me), Ok(true));
-        assert_eq!(delegation_mark(dir.as_fd(), me + 1), Ok(false));
-    }
+    assert_eq!(delegation_mark(dir.as_fd(), true, me), Ok(false));
+    assert_eq!(delegation_mark(dir.as_fd(), false, me), Ok(true));
+    assert_eq!(
+        delegation_mark(dir.as_fd(), false, me.wrapping_add(1)),
+        Ok(false)
+    );
 }
 
 /// The walk below a `RUN`'s cgroup opens no link and enters no other

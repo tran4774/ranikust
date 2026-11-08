@@ -51,7 +51,8 @@ compiled into the binary, of the C code some of them build (mimalloc, zstd,
 ring's), and of what the Rust toolchain links in (the standard library, musl
 libc, LLVM's libunwind).
 
-On a host ranikust builds as root, in overlay mode
+On a host ranikust builds as root, in overlay mode, or as a regular user where
+the kernel lets one create user namespaces, in rootless overlay mode
 ([Choosing where to run it](where-to-run.md)):
 
 ```sh

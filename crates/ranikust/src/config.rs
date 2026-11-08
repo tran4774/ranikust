@@ -226,6 +226,8 @@ pub(crate) struct BuildConfig {
     pub(crate) allow_network_host: bool,
     /// `--allow network.none-userns` (ADR-0033).
     pub(crate) allow_network_none_userns: bool,
+    /// `--allow proc.rbind` (ADR-0126).
+    pub(crate) allow_proc_rbind: bool,
     /// `--seccomp`, its file not read yet ([`read_seccomp`]).
     pub(crate) seccomp: Option<SeccompArg>,
     /// `--limit`s over the defaults (ADR-0079).
@@ -487,6 +489,7 @@ impl BuildConfig {
             allow_network_none_userns: args
                 .allow
                 .contains(&crate::cli::Entitlement::NetworkNoneUserns),
+            allow_proc_rbind: args.allow.contains(&crate::cli::Entitlement::ProcRbind),
             seccomp: args.seccomp.clone(),
             limits: crate::limits::Limits::from_args(&args.limits),
             compression_level,
@@ -652,6 +655,12 @@ fn read_seccomp_file(path: &Path) -> Result<Vec<u8>, Invalid> {
     Ok(json)
 }
 
+/// The flag given in `args` that only kaniko mode honours, which
+/// [`overlay_mode_flags`] refuses: `--ignore-path` (ADR-0049).
+pub(crate) fn kaniko_only_flag(args: &BuildArgs) -> Option<&'static str> {
+    (!args.ignore_paths.is_empty()).then_some("--ignore-path")
+}
+
 /// What overlay mode makes of the kaniko-mode flags given in `args`
 /// (ADR-0040): the warnings for those that change nothing there
 /// (`--snapshot-mode`, `--snapshot-workers`).
@@ -663,12 +672,11 @@ fn read_seccomp_file(path: &Path) -> Result<Vec<u8>, Invalid> {
 /// mounts. (`--single-snapshot` never gets here: it is refused with the
 /// other refused kaniko flags, before the arguments are parsed, ADR-0065.)
 pub(crate) fn overlay_mode_flags(args: &BuildArgs) -> Result<Vec<String>, Invalid> {
-    if !args.ignore_paths.is_empty() {
-        return Err(Invalid(
-            "--ignore-path takes effect in kaniko mode only (ADR-0049); overlay mode would \
-             build a different image: drop it, or use --mode=kaniko outside a container"
-                .to_owned(),
-        ));
+    if let Some(flag) = kaniko_only_flag(args) {
+        return Err(Invalid(format!(
+            "{flag} takes effect in kaniko mode only (ADR-0049); overlay mode would build a \
+             different image: drop it, or use --mode=kaniko outside a container"
+        )));
     }
     let mut warnings = Vec::new();
     if args.snapshot_mode.is_some() {

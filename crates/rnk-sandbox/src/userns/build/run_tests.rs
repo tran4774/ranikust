@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Barrier;
 
@@ -52,10 +51,29 @@ echo stderr=written >>/dev/stderr
 const IDS: &str = r#"echo "ids=$(id -u):$(id -g):$(id -G)""#;
 
 /// What a `--network=none` `RUN` prints: whether `lo` is up (its
-/// `127.0.0.1` local route exists only then) and its network namespace.
+/// `127.0.0.1` local route exists only then), its network namespace, the
+/// devices its `/sys/class/net` and `/sys/devices/virtual/net` show, and
+/// the addresses it reads there, each comma-separated; the filesystem at
+/// `/sys/fs/cgroup`, then `sub: <mount point> <entries>` for each
+/// directory a mount below `/sys` of its mountinfo names, with how many
+/// entries it lists there (an error counts).
 const NETWORK: &str = r#"
 if grep -q 127.0.0.1 /proc/net/fib_trie; then echo lo=up; else echo lo=down; fi
 echo "net=$(readlink /proc/self/ns/net)"
+n=
+for d in /sys/class/net/*; do if [ -e "$d" ]; then n="$n${n:+,}${d##*/}"; fi; done
+echo "netdevs=$n"
+v=
+for d in /sys/devices/virtual/net/*; do if [ -e "$d" ]; then v="$v${v:+,}${d##*/}"; fi; done
+echo "virtual=$v"
+a=
+for f in /sys/class/net/*/address /sys/devices/virtual/net/*/address; do
+  if [ -r "$f" ] && read -r m <"$f"; then a="$a${a:+,}$m"; fi
+done
+echo "macs=$a"
+echo "cgroupfs=$(stat -f -c %T /sys/fs/cgroup)"
+grep -E '^([^ ]+ ){4}/sys/[^ ]+ ' /proc/self/mountinfo | cut -d' ' -f5 | sort -u |
+  while read -r p; do if [ -d "$p" ]; then echo "sub: $p $(ls -A "$p" 2>&1 | wc -l)"; fi; done
 "#;
 
 /// One `RUN`: its `USER`, network and script.
@@ -75,20 +93,61 @@ const RUNS: [Run; 3] = [
     ("", Network::None, NETWORK),
 ];
 
-/// The `argv[0]` of [`Sleeper`], which [`OUTER`] looks for.
-const SLEEPER: &str = "rnk-outer-sleeper";
-
 /// What a root `RUN` prints about a [`Sleeper`] outside it, of its kernel
-/// uid, seen through an rbind of `/proc`: `outer=` its PID there, or
-/// `none`; `outer-oom=` as [`KERNEL`]'s `oom=`, for its `oom_score_adj`.
+/// uid, given its PID and start time (`stat`'s field 22) as this test sees
+/// them (`{pid}`, `{start}`), which an rbind of `/proc` shows and a new
+/// `proc` does not: `outer=` that PID if a process there started then, else
+/// `none` (a process of the `RUN`'s own PID namespace may hold the number);
+/// `outer-oom=` as [`KERNEL`]'s `oom=`, for its `oom_score_adj`; then, for
+/// each of its environment, memory, root, current directory and descriptor
+/// 0, `outer-<what>=opened` or the shell's error.
 const OUTER: &str = r#"
-p=none
-for d in /proc/[0-9]*; do
-  if grep -qs "rnk-outer-[s]leeper" "$d/cmdline"; then p=${d#/proc/}; fi
-done
-echo "outer=$p"
+p={pid}
+start=none
+if read -r s 2>/dev/null </proc/$p/stat; then s=${s##*") "}; set -- $s; start=${20}; fi
+if test "$start" = {start}; then echo "outer=$p"; else echo outer=none; p=none; fi
 echo "outer-oom=$( (read v </proc/$p/oom_score_adj && echo "$v" >/proc/$p/oom_score_adj && echo written) 2>&1)"
+for f in environ mem root cwd fd/0; do
+  echo "outer-${f%/0}=$( (exec 3</proc/$p/$f && echo opened) 2>&1)"
+done
 "#;
+
+/// What [`OUTER`] opens of the [`Sleeper`].
+const OUTER_FILES: [&str; 5] = ["environ", "mem", "root", "cwd", "fd"];
+
+/// [`OUTER`] for the [`Sleeper`] `sleeper`, by its PID and start time: a
+/// `RUN` can spoof neither, unlike a command line. Leaked: a test's
+/// `RUN` takes a `'static` script.
+fn outer(sleeper: &Sleeper) -> &'static str {
+    let pid = sleeper.0.id();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("the sleeper's stat");
+    // The command name, in parentheses, may hold spaces: count after it.
+    let after_comm = &stat[stat.rfind(") ").expect("stat's command name") + 2..];
+    let start = after_comm
+        .split_whitespace()
+        .nth(19)
+        .expect("stat's start time");
+    Box::leak(
+        OUTER
+            .replace("{pid}", &pid.to_string())
+            .replace("{start}", start)
+            .into_boxed_str(),
+    )
+}
+
+/// Whether the `RUN` that ran [`OUTER`] as `RUN` `n` opened nothing of the
+/// [`Sleeper`]: each of [`OUTER_FILES`] failed with `why`, as the shell
+/// words the error: `Permission denied` (`EACCES`) for a process it sees,
+/// `No such file` for one it does not.
+fn opened_nothing(out: &str, n: usize, why: &str) {
+    for f in OUTER_FILES {
+        let got = value(out, &format!("{n}:outer-{f}"));
+        assert!(
+            got.ends_with(why) && !got.contains("opened"),
+            "{f} of a process outside the build did not fail with {why:?}:\n{out}"
+        );
+    }
+}
 
 /// A `sleep` this test process starts, outside the build's user namespace
 /// but of its kernel uid: killed and reaped on drop.
@@ -96,18 +155,37 @@ struct Sleeper(std::process::Child);
 
 impl Sleeper {
     fn start() -> Self {
-        let child = std::process::Command::new("sleep")
-            // A `sleep` of its own (GNU coreutils' usual build) ignores
-            // `argv[0]`; a multi-call one (BusyBox, uutils,
-            // `coreutils-single`) would not sleep.
-            .arg0(SLEEPER)
+        Self::spawn(&mut Self::command())
+    }
+
+    /// Started in a user namespace of its own, with no map: a sibling of
+    /// the build's, not one the build's descends from.
+    fn start_in_own_user_namespace() -> Self {
+        use std::os::unix::process::CommandExt as _;
+        let mut command = Self::command();
+        // SAFETY: in the forked child before `execve`, `unshare` allocates
+        // nothing and touches no state the parent shares.
+        unsafe {
+            command.pre_exec(|| {
+                rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWUSER)
+                    .map_err(io::Error::from)
+            });
+        }
+        Self::spawn(&mut command)
+    }
+
+    fn command() -> std::process::Command {
+        let mut command = std::process::Command::new("sleep");
+        command
             .arg("300")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("start sleep");
-        Self(child)
+            .stderr(std::process::Stdio::null());
+        command
+    }
+
+    fn spawn(command: &mut std::process::Command) -> Self {
+        Self(command.spawn().expect("start sleep"))
     }
 }
 
@@ -407,11 +485,57 @@ fn check_proc(out: &str, how: KernelFs) {
     }
 }
 
-/// `--network=none`: `lo` up in a network namespace the `RUN` alone has.
+/// `--network=none`: `lo` up in a network namespace the `RUN` alone has,
+/// whose `/sys` shows its own `lo` (a new `sysfs`) or no device (the
+/// rbind, its network devices hidden), and no device or address of the
+/// network namespace outside.
 fn check_network(out: &str) {
     assert_eq!(value(out, "run2"), "exit 0", "{out}");
     assert_eq!(value(out, "2:lo"), "up", "{out}");
     assert_ne!(value(out, "2:net"), value(out, "0:net"), "{out}");
+    let (devs, virt, macs) = (
+        value(out, "2:netdevs"),
+        value(out, "2:virtual"),
+        value(out, "2:macs"),
+    );
+    assert!(devs.is_empty() || devs == "lo", "{out}");
+    assert!(virt.is_empty() || virt == "lo", "{out}");
+    for (name, mac) in outer_network() {
+        let seen = |list: &str| list.split(',').any(|d| d == name);
+        assert!(!seen(devs) && !seen(virt), "{name} seen:\n{out}");
+        let real = !mac.is_empty() && mac != "00:00:00:00:00:00";
+        assert!(!real || !macs.contains(&mac), "{name}'s {mac} read:\n{out}");
+    }
+    // A new sysfs has no mount below it; the rbind covers each it copied,
+    // and the masks are empty.
+    for sub in out.lines().filter_map(|l| l.strip_prefix("2:sub: ")) {
+        assert!(sub.ends_with(" 0"), "{sub} shows entries:\n{out}");
+    }
+}
+
+/// The devices of this process's network namespace but `lo`, with their
+/// addresses, as its `/sys/class/net` shows them.
+fn outer_network() -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/sys/class/net").unwrap() {
+        let entry = entry.unwrap();
+        // Not a device (`bonding_masters`): a device is a link.
+        if !entry.file_type().unwrap().is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let mac = match fs::read_to_string(format!("/sys/class/net/{name}/address")) {
+            Ok(mac) => mac.trim().to_owned(),
+            // Gone since it was listed (another container's veth): its
+            // name is still checked.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => panic!("{name}'s address: {e}"),
+        };
+        if name != "lo" {
+            found.push((name, mac));
+        }
+    }
+    found
 }
 
 /// The [`Caps`] line's kernel filesystems.
@@ -441,14 +565,20 @@ fn leg_dir() -> tempfile::TempDir {
 /// there, not even the `oom_score_adj` of a process outside it of its
 /// kernel uid. `USER _apt` gets its ids through `setgroups`;
 /// `--network=none` brings `lo` up in a network namespace the build owns,
-/// with no helper (ADR-0033).
+/// with no helper (ADR-0033), and, its new `sysfs` refused below Podman's
+/// masks, gets the rbind with no network device shown.
 #[test]
 #[ignore = "T1: default: RUNs in the build's user namespace of root in a rootless Podman container"]
 fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert!(rustix::process::geteuid().is_root(), "run as root");
     let dir = leg_dir();
     let sleeper = Sleeper::start();
-    let runs = [RUNS[0], RUNS[1], RUNS[2], ("", Network::Host, OUTER)];
+    let runs = [
+        RUNS[0],
+        RUNS[1],
+        RUNS[2],
+        ("", Network::Host, outer(&sleeper)),
+    ];
     let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, true, &runs));
     drop(sleeper);
     measured(&format!(
@@ -470,6 +600,19 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
+    // A new `sysfs` is refused below Podman's masks of `/sys`: the rbind,
+    // its network devices hidden, and the cgroup2 mount the rbind copied
+    // (the shared network's `RUN` 0 sees it) covered.
+    for key in ["2:netdevs", "2:virtual", "2:macs"] {
+        assert_eq!(value(&out, key), "", "{out}");
+    }
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("0:mount: /sys/fs/cgroup ") && l.ends_with(" cgroup2")),
+        "{out}"
+    );
+    assert_eq!(value(&out, "2:cgroupfs"), "tmpfs", "{out}");
+    assert!(out.lines().any(|l| l == "2:sub: /sys/fs/cgroup 0"), "{out}");
     assert_eq!(value(&out, "run3"), "exit 0", "{out}");
     assert_ne!(
         value(&out, "3:outer"),
@@ -481,6 +624,84 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
         value(&out, "3:outer-oom").ends_with("Read-only file system"),
         "{out}"
     );
+}
+
+/// A `RUN` in the build's user namespace, given `proc_rbind`, against
+/// `sleeper`, dumpable and of its kernel uid outside that namespace: the
+/// sandbox's `caps=` line and [`OUTER`]'s, as `RUN` 0.
+fn against_a_process_outside(sleeper: Sleeper, proc_rbind: bool) -> String {
+    let dir = leg_dir();
+    let runs = [("", Network::Host, outer(&sleeper))];
+    let out = in_subreaper(|| runs_in_build_namespace(dir.path(), None, proc_rbind, &runs));
+    drop(sleeper);
+    out
+}
+
+/// T1: root of rootless Podman, under an rbind of `/proc` (asked for): a
+/// `RUN` sees a process outside the build's user namespace, dumpable and
+/// of its kernel uid, yet opens none of its environment, memory, root,
+/// current directory or descriptors (ADR-0130).
+#[test]
+#[ignore = "T1: default: a RUN under an rbind of /proc opens nothing of a process outside the build in a rootless Podman container"]
+fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_outside_the_build() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = against_a_process_outside(Sleeper::start(), true);
+    measured(&format!(
+        "a RUN under an rbind of /proc, against a process outside the build: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Rbind, "{out}");
+    assert_eq!(value(&out, "run0"), "exit 0", "{out}");
+    assert_ne!(
+        value(&out, "0:outer"),
+        "none",
+        "the process is not seen:\n{out}"
+    );
+    opened_nothing(&out, 0, "Permission denied");
+}
+
+/// T1: root of rootless Podman, under an rbind of `/proc` (asked for): a
+/// `RUN` sees a process in a user namespace beside the build's, dumpable
+/// and of its kernel uid, yet opens none of its environment, memory, root,
+/// current directory or descriptors.
+#[test]
+#[ignore = "T1: default: a RUN under an rbind of /proc opens nothing of a process in another user namespace in a rootless Podman container"]
+fn a_run_under_an_rbind_of_proc_opens_nothing_of_a_process_in_another_user_namespace() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = against_a_process_outside(Sleeper::start_in_own_user_namespace(), true);
+    measured(&format!(
+        "a RUN under an rbind of /proc, against a process in another user namespace: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Rbind, "{out}");
+    assert_eq!(value(&out, "run0"), "exit 0", "{out}");
+    assert_ne!(
+        value(&out, "0:outer"),
+        "none",
+        "the process is not seen:\n{out}"
+    );
+    opened_nothing(&out, 0, "Permission denied");
+}
+
+/// T1: root of rootless `podman run --privileged`, where a new `proc`
+/// mounts: a `RUN` does not see a process outside the build's user
+/// namespace, dumpable and of its kernel uid, and opens nothing of it.
+#[test]
+#[ignore = "T1: privileged: a RUN with a new proc opens nothing of a process outside the build"]
+fn a_run_with_a_new_proc_opens_nothing_of_a_process_outside_the_build() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let out = against_a_process_outside(Sleeper::start(), false);
+    measured(&format!(
+        "a RUN with a new proc, against a process outside the build: {}",
+        out.replace('\n', "; ")
+    ));
+    assert!(!out.contains("error="), "{out}");
+    assert_eq!(chosen(&out).0, KernelFs::Fresh, "{out}");
+    assert_eq!(value(&out, "run0"), "exit 0", "{out}");
+    assert_eq!(value(&out, "0:outer"), "none", "{out}");
+    opened_nothing(&out, 0, "No such file");
 }
 
 /// T1: below a one-id user namespace (`unshare -r`), `setgroups` denied
@@ -525,7 +746,9 @@ fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
 /// is 1 (Ubuntu 24.04) it is refused before anything runs; elsewhere
 /// (22.04) a fresh `proc` mounts, so a `RUN` gets one, PID 2 under
 /// ranikust's init, and `sysfs`, whose network namespace the user does not
-/// own, an rbind of `/sys`, which needs no request.
+/// own, an rbind of `/sys`, which needs no request; a `--network=none`
+/// `RUN`, whose network namespace the build owns, a new `sysfs` showing
+/// `lo` alone.
 #[test]
 #[ignore = "T2: drops from root to the sudo user to run RUNs in the build's user namespace"]
 fn runs_in_the_build_user_namespace_of_a_regular_user() {
@@ -574,6 +797,7 @@ fn runs_in_the_build_user_namespace_of_a_regular_user() {
     assert_eq!(value(&out, "run1"), "exit 0", "{out}");
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
+    assert_eq!(value(&out, "2:netdevs"), "lo", "{out}");
 }
 
 /// T1: root of rootless Podman, where the user-namespace probe found that

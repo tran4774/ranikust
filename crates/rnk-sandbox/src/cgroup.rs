@@ -24,8 +24,8 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -101,6 +101,134 @@ const LIMITS: [(&str, usize, &str); 2] = [
 /// One [`Tree`] per process: nesting moves the whole process, and two
 /// sandboxes undoing it would undo each other's.
 static CLAIMED: AtomicBool = AtomicBool::new(false);
+
+/// Whether ranikust's uid in the initial user namespace is 0, recorded
+/// before it enters the build's user namespace ([`record_kernel_root`]),
+/// whose map hides it; unset where it never did.
+static KERNEL_ROOT: OnceLock<bool> = OnceLock::new();
+
+/// Records whether ranikust's uid in the initial user namespace is 0, for
+/// [`trusted_marks`] (ADR-0135). The first call counts:
+/// [`crate::enter_build_user_namespace`] makes it, before its `unshare`.
+pub(crate) fn record_kernel_root() {
+    KERNEL_ROOT.get_or_init(kernel_root_as_it_stands);
+}
+
+/// Whether ranikust's uid in the initial user namespace is 0: as recorded,
+/// else as it stands, never having entered the build's user namespace.
+fn kernel_root() -> bool {
+    KERNEL_ROOT
+        .get()
+        .copied()
+        .unwrap_or_else(kernel_root_as_it_stands)
+}
+
+/// A sysctl that uid 0 of the initial user namespace owns, whatever user
+/// namespace reads it: `stat` shows that owner as the reader's namespace
+/// maps it, through every level, and as the overflow uid where it maps it
+/// to nothing.
+const ROOT_OWNED_SYSCTL: &CStr = c"/proc/sys/kernel/ostype";
+
+/// [`is_kernel_root`] for this process's effective uid, as the owner of
+/// [`ROOT_OWNED_SYSCTL`] shows the initial user namespace's root, else by
+/// the map of the user namespace it runs in.
+pub(crate) fn kernel_root_as_it_stands() -> bool {
+    let euid = rustix::process::geteuid().as_raw();
+    let shown = root_shown_as().unwrap_or_else(|e| {
+        tracing::debug!(
+            "cannot stat {}: {e}; the uid map tells whether ranikust is root",
+            ROOT_OWNED_SYSCTL.to_string_lossy()
+        );
+        None
+    });
+    is_kernel_root(euid, shown, || {
+        std::fs::read_to_string("/proc/self/uid_map").unwrap_or_else(|e| {
+            tracing::debug!("cannot read /proc/self/uid_map ({e}): user.delegate is not trusted");
+            String::new()
+        })
+    })
+}
+
+/// The uid this process's user namespace shows the initial one's root as:
+/// the owner of [`ROOT_OWNED_SYSCTL`] ([`sysctl_owner`]); `None` where that
+/// is not the sysctl, such as under a `/proc/sys` something else covers.
+fn root_shown_as() -> rustix::io::Result<Option<u32>> {
+    let fd = rustix::fs::open(
+        ROOT_OWNED_SYSCTL,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NOCTTY | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?;
+    let fs = rustix::fs::fstatfs(&fd)?;
+    let st = rustix::fs::statx(
+        &fd,
+        c"",
+        AtFlags::EMPTY_PATH,
+        rustix::fs::StatxFlags::BASIC_STATS,
+    )?;
+    let mut buf = [0u8; 16];
+    let n = rustix::io::read(&fd, &mut buf)?;
+    Ok(sysctl_owner(
+        fs.f_type,
+        st.stx_mode.into(),
+        crate::probe::mount_root_attr(st.stx_attributes_mask, st.stx_attributes),
+        buf.get(..n).unwrap_or_default(),
+        st.stx_uid,
+    ))
+}
+
+/// `uid`, the owner of a file of filesystem type `f_type` and mode `mode`
+/// that reads `content`, and is the root of a mount where `mount_root` says
+/// so, where it is the kernel's `ostype` sysctl: a regular file of a
+/// procfs, mode 0444, that reads `Linux` and is no mount's root; not a
+/// file of a tmpfs, nor a procfs file of another mode or content, such as
+/// a process's `comm`, nor any file bound over it. Where the kernel does
+/// not report mount roots (`None`, before Linux 5.8), the rest decides.
+fn sysctl_owner(
+    f_type: FsWord,
+    mode: u32,
+    mount_root: Option<bool>,
+    content: &[u8],
+    uid: u32,
+) -> Option<u32> {
+    (f_type == rustix::fs::PROC_SUPER_MAGIC
+        && FileType::from_raw_mode(mode) == FileType::RegularFile
+        && mode & 0o7777 == 0o444
+        && mount_root != Some(true)
+        && content == b"Linux\n")
+        .then_some(uid)
+}
+
+/// Whether `euid` is uid 0 of the initial user namespace: the uid its
+/// namespace shows that root as (`shown`, [`root_shown_as`]), else, where
+/// that cannot be read, as [`maps_to_root`] reads `uid_map` (one level
+/// only). An `euid` that is the overflow uid where root shows as it too
+/// counts as root, the rule that trusts fewer marks.
+fn is_kernel_root(euid: u32, shown: Option<u32>, uid_map: impl FnOnce() -> String) -> bool {
+    match shown {
+        Some(root) => root == euid,
+        None => maps_to_root(euid, &uid_map()),
+    }
+}
+
+/// Whether `uid_map` (a `/proc/<pid>/uid_map` read from inside its
+/// namespace) maps `euid` to 0 in the parent namespace, or cannot tell: an
+/// id it maps nowhere, or a line it cannot parse, counts as root, the rule
+/// that trusts fewer marks.
+pub(crate) fn maps_to_root(euid: u32, uid_map: &str) -> bool {
+    for line in uid_map.lines() {
+        let mut fields = line.split_whitespace().map(str::parse::<u64>);
+        let (Some(Ok(inside)), Some(Ok(outside)), Some(Ok(count)), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return true;
+        };
+        let id = u64::from(euid);
+        if (inside..inside.saturating_add(count)).contains(&id) {
+            return outside + (id - inside) == 0;
+        }
+    }
+    true
+}
 
 /// Which cgroups ranikust makes in the delegated one, `D`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,16 +597,17 @@ fn if_present(r: rustix::io::Result<Vec<u8>>) -> rustix::io::Result<Option<Vec<u
     }
 }
 
-/// Whether `dir` carries a delegation mark, `1`, that a ranikust with
-/// effective uid `euid` trusts ([`trusted_marks`]).
-fn delegation_mark(dir: BorrowedFd<'_>, euid: u32) -> rustix::io::Result<bool> {
+/// Whether `dir` carries a delegation mark, `1`, that a ranikust of
+/// effective uid `euid`, root in the initial user namespace or not
+/// (`kernel_root`), trusts ([`trusted_marks`]).
+fn delegation_mark(dir: BorrowedFd<'_>, kernel_root: bool, euid: u32) -> rustix::io::Result<bool> {
     // Root trusts `trusted.delegate` alone: no owner to compare.
-    let owner = if euid == 0 {
+    let owner = if kernel_root {
         0
     } else {
         rustix::fs::fstat(dir)?.st_uid
     };
-    for &name in trusted_marks(euid, owner) {
+    for &name in trusted_marks(kernel_root, euid, owner) {
         let mut buf = [0u8; 8];
         let value = rustix::fs::fgetxattr(dir, name, &mut buf[..]);
         if is_mark(value.map(|n| buf.get(..n).unwrap_or_default()))? {
@@ -488,15 +617,18 @@ fn delegation_mark(dir: BorrowedFd<'_>, euid: u32) -> rustix::io::Result<bool> {
     Ok(false)
 }
 
-/// The marks a ranikust with effective uid `euid` trusts on a cgroup that
-/// `owner` owns (ADR-0110, 1): `trusted.delegate`, which only
-/// `CAP_SYS_ADMIN` in the initial user namespace can set; `user.delegate`
-/// only for a ranikust that is not root and owns the cgroup, since anyone
-/// who may write the cgroup's inode can set it, a root `RUN` with a cgroupfs
-/// of its own included. `euid` is ranikust's in its own user namespace: a
-/// rootless ranikust that entered one first would count as root (#79).
-fn trusted_marks(euid: u32, owner: u32) -> &'static [&'static str] {
-    if euid != 0 && owner == euid {
+/// The marks ranikust trusts on a cgroup that `owner` owns, `euid` its
+/// effective uid where it reads them (ADR-0110, 1): `trusted.delegate`,
+/// which only `CAP_SYS_ADMIN` in the initial user namespace can set;
+/// `user.delegate`, which anyone who may write the cgroup's inode can set,
+/// a root `RUN` with a cgroupfs of its own included, only where ranikust
+/// owns the cgroup and its uid in the initial user namespace is not 0
+/// (`kernel_root`, ADR-0135): a `RUN` then has no uid there that ranikust
+/// lacks. Rootless overlay mode reads them as root of the build's user
+/// namespace, which ranikust's own uid outside it maps to, and reads
+/// `trusted.*` there as absent.
+fn trusted_marks(kernel_root: bool, euid: u32, owner: u32) -> &'static [&'static str] {
+    if !kernel_root && owner == euid {
         &["trusted.delegate", "user.delegate"]
     } else {
         &["trusted.delegate"]
@@ -580,7 +712,7 @@ fn detect() -> Result<Found, NotFound> {
     // A namespace's root counts without a mark, so its read cannot fail it.
     let euid = rustix::process::geteuid().as_raw();
     let marked = !ns_root
-        && delegation_mark(dir.as_fd(), euid).map_err(|e| {
+        && delegation_mark(dir.as_fd(), kernel_root(), euid).map_err(|e| {
             NotFound::Unreadable(format!("{path}'s delegation mark cannot be read: {e}"))
         })?;
     if !marked && !ns_root {

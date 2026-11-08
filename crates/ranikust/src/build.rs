@@ -50,10 +50,28 @@ use crate::config::{self, BuildConfig};
 type Stage<S> = StageDone<<S as Snapshotter>::Root>;
 type ImageRoot<S> = ImageSource<<S as Snapshotter>::Root, <S as Snapshotter>::Layer>;
 
+/// The signals that stop an overlay-mode build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stops {
+    /// `SIGINT` and `SIGTERM`.
+    Own,
+    /// [`rnk_sandbox::FORWARDED_STOP`], which the process waiting outside
+    /// the build's user namespace sends for each of those (ADR-0136).
+    Forwarded,
+}
+
+/// What stops a build.
+enum Stopping {
+    /// Signals it handles itself.
+    Signals(Stops),
+    /// Kaniko mode on `/`: the operator's (ADR-0077).
+    Operator(StopSignals),
+}
+
 /// The snapshots of a build, as the set-up picked them.
 pub(crate) enum Snapshots {
-    /// Overlay mode, with what the probe found.
-    Overlay(rnk_snapshot::OverlayCaps),
+    /// Overlay mode, with what the probe found, stopped by `Stops`.
+    Overlay(rnk_snapshot::OverlayCaps, Stops),
     /// Kaniko mode on the shared root `/` in a container; `RUN` with
     /// `isolation` (`Direct`). `stop`: the stop signals, blocked before any
     /// thread started, so that only the operator's stop the build
@@ -247,7 +265,7 @@ pub(crate) fn run(
     snapshots: Snapshots,
 ) -> Result<Built, String> {
     match snapshots {
-        Snapshots::Overlay(caps) => {
+        Snapshots::Overlay(caps, stops) => {
             let overlay = match Overlay::new(Arc::clone(&store), caps) {
                 Ok(o) => Arc::new(o),
                 Err(e) => {
@@ -260,7 +278,7 @@ pub(crate) fn run(
                 store,
                 sandbox,
                 overlay,
-                (Isolation::Full, None),
+                (Isolation::Full, Stopping::Signals(stops)),
                 Roots::Own,
                 &|| {},
             )
@@ -285,7 +303,7 @@ pub(crate) fn run(
                 store,
                 sandbox,
                 Arc::clone(&snapshotter),
-                (isolation, Some(stop)),
+                (isolation, Stopping::Operator(stop)),
                 Roots::Shared,
                 &finish,
             )
@@ -297,7 +315,7 @@ pub(crate) fn run(
             store,
             sandbox,
             Arc::new(stages),
-            (Isolation::Full, None),
+            (Isolation::Full, Stopping::Signals(Stops::Own)),
             Roots::StageDirs,
             &|| {},
         ),
@@ -322,7 +340,7 @@ fn run_with<S: Snapshotter + Send + Sync + 'static>(
     store: Arc<Store>,
     sandbox: Sandbox,
     snapshotter: Arc<S>,
-    (isolation, stop): (Isolation, Option<StopSignals>),
+    (isolation, stop): (Isolation, Stopping),
     roots: Roots,
     before_close: &dyn Fn(),
 ) -> Result<Built, String>
@@ -1044,7 +1062,7 @@ fn stage_demand(
 async fn build<S: Snapshotter + Send + Sync + 'static>(
     config: &BuildConfig,
     shared: &Arc<Shared<S>>,
-    stop: Option<StopSignals>,
+    stop: Stopping,
 ) -> Result<Built, String>
 where
     S::Root: Send + Sync,
@@ -1055,11 +1073,11 @@ where
     let cancel = CancellationToken::new();
     let signals = match stop {
         // Kaniko mode on `/`: a `RUN` may not stop the build (ADR-0077).
-        Some(stop) => {
+        Stopping::Operator(stop) => {
             obey_operator_signals(stop, cancel.clone(), shared.store.marker_keeper());
             None
         }
-        None => Some(tokio::spawn(cancel_on_signals(cancel.clone()))),
+        Stopping::Signals(stops) => Some(tokio::spawn(cancel_on_signals(cancel.clone(), stops))),
     };
     let summary = Scheduler::new(config.jobs)
         .run_units(&shared.graph, &shared.units, &runner, &cancel)
@@ -1134,25 +1152,33 @@ fn push_jobs(config: &BuildConfig) -> NonZeroUsize {
         .unwrap_or(NonZeroUsize::MIN)
 }
 
-/// Cancels the build on the first SIGINT or SIGTERM: running `RUN`s are
-/// killed, as BuildKit does (ADR-0032), and stages stop. A second
-/// signal exits at once: the `RUN`s die with their parent thread
-/// (`PR_SET_PDEATHSIG`), the mounts with the private mount namespace, and
-/// the next build cleans the store.
-async fn cancel_on_signals(cancel: CancellationToken) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let (Ok(mut int), Ok(mut term)) = (
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::terminate()),
-    ) else {
+/// Cancels the build on the first SIGINT or SIGTERM, or the first one
+/// forwarded (`stops`): running `RUN`s are killed, as BuildKit does
+/// (ADR-0032), and stages stop. A second signal exits at once: the `RUN`s
+/// die with their parent thread (`PR_SET_PDEATHSIG`), the mounts with the
+/// private mount namespace, and the next build cleans the store.
+async fn cancel_on_signals(cancel: CancellationToken, stops: Stops) {
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+    let kinds = match stops {
+        Stops::Own => vec![SignalKind::interrupt(), SignalKind::terminate()],
+        // One stream: two of one signal would each count it.
+        Stops::Forwarded => vec![SignalKind::from_raw(rnk_sandbox::FORWARDED_STOP)],
+    };
+    let streams: std::io::Result<Vec<Signal>> = kinds.into_iter().map(signal).collect();
+    let Ok(mut streams) = streams else {
         tracing::warn!("cannot handle SIGINT and SIGTERM; they end the build at once");
         return;
     };
     for n in 0..2 {
-        tokio::select! {
-            _ = int.recv() => {}
-            _ = term.recv() => {}
-        }
+        std::future::poll_fn(|cx| {
+            for s in &mut streams {
+                if s.poll_recv(cx).is_ready() {
+                    return std::task::Poll::Ready(());
+                }
+            }
+            std::task::Poll::Pending
+        })
+        .await;
         if n == 0 {
             tracing::warn!("cancelling the build; a second signal stops at once");
             cancel.cancel();

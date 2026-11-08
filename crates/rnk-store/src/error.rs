@@ -83,6 +83,22 @@ pub enum Error {
         left: String,
     },
 
+    /// [`crate::Store::abandon`] left more than [`crate::STATE_MARKER`] in
+    /// a state directory whose store holds no data: an entry on another
+    /// mount, or one this process may not remove. The marker stays, so it
+    /// is still a store, with no data.
+    #[error(
+        "the state directory {}, whose store holds no data, could not be emptied for kaniko \
+         mode on /: it still holds {left}",
+        path.display()
+    )]
+    NotAbandoned {
+        /// The state directory.
+        path: PathBuf,
+        /// What is left, with the names quoted.
+        left: String,
+    },
+
     /// The state directory holds [`crate::PRUNING_MARKER`]: a `ranikust
     /// prune --all` was cut short or failed there, and may have emptied
     /// entries part-way under their published names, which a build would

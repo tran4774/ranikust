@@ -55,6 +55,7 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
+├── .ranikust-anon-userns-probe-*/  rootless overlay mode's probe, held (flock) while in use
 ├── builds/<build-id>.lock      held (flock) while the build runs
 └── builds/<build-id>/          one per running build, deleted afterwards;
                                 stage roots are stages/<n>/rootfs (ADR-0059)
@@ -69,6 +70,10 @@ ranikust, `0700`, below directories only root or that user may write
 ([kaniko-mode](kaniko-mode.md#host-safety-checks)). Kaniko mode on `/` keeps
 no persistent store, only an anonymous one that leaves the directory empty
 ([ADR-0077](../adr/0077-kaniko-mode-on-root-never-uses-a-persistent-store.md)).
+Rootless overlay mode opens the persistent store inside the build's user
+namespace, with `--allow proc.rbind` too, since its `RUN`s reach no other
+process's files through `/proc`
+([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
 
 In a user namespace other than the initial one (a rootless or `--userns`
 build, or ranikust started in a rootless container), an extracted layer's key
@@ -133,7 +138,9 @@ process dies (a T0 test kills with `SIGKILL`).
   - An anonymous store (kaniko mode on `/`) holds it exclusive: it never runs
     beside another build there (`Error::Busy`), because a `Direct` `RUN`
     writes the state directory as root. It refuses a persistent store
-    (`Error::StateNotEmpty`), makes `.ranikust-building` its own again after
+    (`Error::StateNotEmpty`), unless the store holds no data: that one it
+    empties first, under its lock, as `Store::abandon` does
+    ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)). It makes `.ranikust-building` its own again after
     every `RUN` and at its end, and empties the directory at its end, files
     closed first and lock released last. A close that leaves anything is
     `Error::NotEmptied`, which fails the build.
@@ -170,8 +177,34 @@ needs the same ownership).
 Start-up removes the `tmp/<id>` and `builds/<id>` directories whose build is
 no longer running. A state directory that is not empty and has no regular
 `.ranikust-state` file is refused, so this clean-up never runs in a directory
-the user pointed at by mistake. In overlay mode an upper directory written
-under `volatile` is never trusted after a crash.
+the user pointed at by mistake. Only the directories of ranikust's own
+user-namespace probe (a rootless build cut short before its store opened)
+do not count, each a real directory on the state directory's mount, told
+without following a link: such a directory is a new store and gets the
+marker, and the store removes each whose lock it takes, through
+descriptors (a probe holds its own while it uses it). So does every
+emptying of the directory (an anonymous store's start and end, a store with
+no data emptied, `prune --all`): one a probe holds stays, and keeps a store
+with no data as it is. `check_state_dir`,
+which rootless overlay mode runs before its probe, keeps the state
+directory's shared lock until the store opens. In overlay mode an upper
+directory written under `volatile` is never trusted after a crash.
+
+A rootless set-up that fails before its build, where root's `--mode=auto`
+falls back to kaniko mode on `/`, ends with `Store::abandon`
+([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)):
+the store closes, and the directory is emptied where the store holds no
+data, whoever made it: nothing in `blobs/`, `layers/` or `caches/`, only
+names `prune --all` takes, checked under the lock turned exclusive
+without waiting, so never while another build holds it. It is emptied as
+`prune --all` empties it, but with `.ranikust-state` removed last in place
+of a `.ranikust-pruning`: with no data, nothing a later build reuses can
+be left half-deleted, and a set-up killed before or during it leaves a
+store with no data, which kaniko mode on `/` empties the same way before
+it builds (`Store::open_anonymous`), as the next failed set-up does. An
+open that fails once it took the directory empties it the same way
+(`Store::open_or_abandon`). A store with data is kept, and kaniko mode
+refuses it.
 
 ## Prune
 

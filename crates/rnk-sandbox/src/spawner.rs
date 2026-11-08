@@ -1137,7 +1137,11 @@ impl Runner {
             child_stdio(stdout, 1, &mut keep)?,
             child_stdio(stderr, 2, &mut keep)?,
         ];
-        let mounts = mounts.into_iter().map(child_mount).collect::<Result<_>>()?;
+        let own_network = spec.isolation == Isolation::Full && spec.network == Network::None;
+        let mounts = mounts
+            .into_iter()
+            .map(|m| child_mount(m, own_network))
+            .collect::<Result<_>>()?;
         let (root_remount, dev_remount) = match spec.isolation {
             // Unused: `Direct` mounts nothing.
             Isolation::Direct => (MountFlags::BIND, [MountFlags::BIND; DEV_NODES.len()]),
@@ -1627,7 +1631,10 @@ fn is_rbind(how: KernelFs) -> bool {
 const DIRECT_UNDER_RBIND: &str =
     "Isolation::Direct where RUNs get an rbind of /proc: use Isolation::Full";
 
-fn child_mount(op: MountOp) -> Result<ChildMount> {
+/// `op` as the child performs it; `own_network` says the `RUN` has a
+/// network namespace of its own, for which an rbind of `/sys` tries a new
+/// `sysfs` first.
+fn child_mount(op: MountOp, own_network: bool) -> Result<ChildMount> {
     Ok(match op {
         MountOp::Proc { target, how } => ChildMount::Proc {
             target: cstring(&target)?,
@@ -1636,6 +1643,7 @@ fn child_mount(op: MountOp) -> Result<ChildMount> {
         MountOp::Sysfs { target, how } => ChildMount::Sysfs {
             target: cstring(&target)?,
             rbind: is_rbind(how),
+            fresh_first: is_rbind(how) && own_network,
         },
         MountOp::Dev { target } => ChildMount::Dev {
             target: cstring(&target)?,
@@ -3225,12 +3233,15 @@ mod tests {
         assert!(check_source(&d.join("cache"), MountKind::File).is_err());
         // A symlink as the last component is never followed.
         assert!(check_source(&d.join("link"), MountKind::Directory).is_err());
-        let m = child_mount(MountOp::Bind {
-            source: d.join("cache"),
-            target: "/root/.cache".into(),
-            kind: MountKind::Directory,
-            read_only: true,
-        })
+        let m = child_mount(
+            MountOp::Bind {
+                source: d.join("cache"),
+                target: "/root/.cache".into(),
+                kind: MountKind::Directory,
+                read_only: true,
+            },
+            false,
+        )
         .unwrap();
         let ChildMount::Bind {
             source,
@@ -3245,6 +3256,29 @@ mod tests {
         assert_eq!(source.as_bytes(), d.join("cache").as_os_str().as_bytes());
         assert!(is_dir);
         assert!(remount.contains(MountFlags::BIND | MountFlags::NODEV | MountFlags::RDONLY));
+    }
+
+    /// Where the probe chose an rbind of `/sys`, a `RUN` with a network
+    /// namespace of its own tries a new `sysfs` first; one sharing
+    /// ranikust's keeps the rbind, and a new one stays new.
+    #[test]
+    fn a_run_with_its_own_network_tries_a_new_sysfs_first() {
+        let sysfs = |how, own_network| {
+            let op = MountOp::Sysfs {
+                target: "/sys".into(),
+                how,
+            };
+            match child_mount(op, own_network).unwrap() {
+                ChildMount::Sysfs {
+                    rbind, fresh_first, ..
+                } => (rbind, fresh_first),
+                m => panic!("{m:?}"),
+            }
+        };
+        assert_eq!(sysfs(KernelFs::Rbind, true), (true, true));
+        assert_eq!(sysfs(KernelFs::Rbind, false), (true, false));
+        assert_eq!(sysfs(KernelFs::Fresh, true), (false, false));
+        assert_eq!(sysfs(KernelFs::Fresh, false), (false, false));
     }
 
     /// The fallback without `mount_setattr`: a mount point strictly below

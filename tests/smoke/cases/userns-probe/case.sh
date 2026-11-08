@@ -16,9 +16,9 @@ kaniko_leg() { [ "${RANIKUST_CASE_MODE:-}" = kaniko ]; }
 # one_probe_line WHAT LOG: LOG holds exactly one probe line; printed.
 one_probe_line() {
   local n
-  n="$(grep -c 'user namespace probe (reported only)' <<<"$2" || true)"
+  n="$(grep -Ec 'user namespace probe( \(reported only\))?: ' <<<"$2" || true)"
   expect "$n" 1 "$1: user namespace probe lines" || return 1
-  echo "  $CASE: $1: $(grep -o 'user namespace probe (reported only).*' <<<"$2")" >&2
+  echo "  $CASE: $1: $(grep -Eo 'user namespace probe( \(reported only\))?: .*' <<<"$2")" >&2
 }
 
 # mode_line LOG: the mode the build picked, up to the first comma.

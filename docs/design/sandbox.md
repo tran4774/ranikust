@@ -98,6 +98,10 @@ Decisions: [ADR-0003](../adr/0003-dockerfile-trust-and-default-isolation.md),
    (`--make-rslave`). From then on every build mount disappears with the
    process. In a multi-threaded process `unshare(CLONE_NEWNS)` silently moves
    only the calling thread, and `unshare(CLONE_NEWUSER)` fails with `EINVAL`.
+   Rootless overlay mode enters the build's user namespace here instead, with
+   the mount namespace it owns (`enter_build_user_namespace`), once the
+   probe of the steps has passed
+   ([modes-and-detection](modes-and-detection.md#probe-order---modeauto)).
 2. Start one **spawner thread** that lives for the whole build. Every `RUN`
    child is cloned from it, never from tokio's `spawn_blocking`:
    `PR_SET_PDEATHSIG` fires when the parent *thread* exits, and blocking-pool
@@ -125,16 +129,16 @@ The child is created with `CLONE_NEWNS`, `CLONE_NEWPID`, `CLONE_NEWUTS` and
 cloned with `CLONE_NEWUSER`: a `RUN` stays in the user namespace ranikust runs
 in, with the uid and gid of its `USER` as the image gives them. The user
 namespaces ranikust creates are the helper's for `--allow network.none-userns`
-(below), the probe's children (`--mode=auto`, reported only), and the build's
-own, which `rnk_sandbox::enter_build_user_namespace` makes for the whole
-process ([#75](https://github.com/tran4774/ranikust/issues/75)). A `RUN` in
-it runs this sequence with the fallbacks of steps 2 and 3
-([#78](https://github.com/tran4774/ranikust/issues/78)), but no build enters
-it yet ([#79](https://github.com/tran4774/ranikust/issues/79)). Rootless builds
-and `--userns` are planned for Phase 3
-([#41](https://github.com/tran4774/ranikust/issues/41)), see
+(below), the probe's children (rootless overlay mode's, and `--mode=auto`'s as
+root, reported only), and the build's own, which
+`rnk_sandbox::enter_build_user_namespace` makes for the whole process
+([#75](https://github.com/tran4774/ranikust/issues/75)) in rootless overlay
+mode ([#79](https://github.com/tran4774/ranikust/issues/79)). A `RUN` in it
+runs this sequence with the fallbacks of steps 2 and 3
+([#78](https://github.com/tran4774/ranikust/issues/78)). `--userns` is planned
+for Phase 3 ([#41](https://github.com/tran4774/ranikust/issues/41)), see
 [Hardening planned for Phase 3](#hardening-planned-for-phase-3); the parts that
-belong to them are marked *planned*.
+belong to it are marked *planned*.
 
 **`--network=none`** needs `lo` up, which needs `CAP_NET_ADMIN` over the new
 network namespace. The first such `RUN` probes once
@@ -272,22 +276,23 @@ The steps, in order:
       a user namespace of its own, the kernel refuses (`EPERM`). An rbind of
       the existing `/proc` takes its place only at the operator's request
       ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md);
-      `--allow proc.rbind`, planned with
-      [#79](https://github.com/tran4774/ranikust/issues/79)): through it a
+      `--allow proc.rbind`): through it a
       `RUN` keeps a PID namespace of its own, but sees every process of the
       PID namespace ranikust runs in, as BuildKit's
       `--oci-worker-no-process-sandbox` documents: the container's, or one
-      it shares with the host or other containers (`hostPID`,
-      `shareProcessNamespace`, `--pid=host`, `--pid container:<name>`). It
-      reads the command line, status, mount table and network tables of
+      it shares with other containers (`shareProcessNamespace`,
+      `--pid container:<name>`; the host's is refused, below). It
+      reads the files of `/proc/<pid>` not under ptrace's check, such as
+      `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, of
       each, ranikust's included (build-argument values, secret paths), but
       not their environment, files or memory: those need `CAP_SYS_PTRACE`
       in the process's user namespace (`cap_ptrace_access_check`), which a
       `RUN` in the build's user namespace lacks for every process outside
       it and the namespaces below it, whatever its kernel uid
       ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md);
-      measured on Linux 5.15 and 6.8, not yet through ranikust end to
-      end). In those are ranikust, not dumpable
+      measured on Linux 5.15 and 6.8, and through ranikust's sandbox by T1
+      tests: a `RUN` opens nothing of a process outside the build). In those
+      are ranikust, not dumpable
       ([ADR-0051](../adr/0051-kaniko-mode-on-root-keeps-state-unreachable-by-run.md)),
       and the build's other `RUN`s, each with the namespaces made during
       it (the `--network=none` helper's, its own where the seccomp profile
@@ -305,10 +310,18 @@ The steps, in order:
       ([threat model, section 6](../security/threat-model.md#6-accepted-risks));
       against it, keep no secrets in other processes' command lines,
       ranikust's included, and give the build container a PID namespace of
-      its own. With the flag, #79 also refuses a PID namespace shared with
-      a process of another mount namespace, as T21
-      ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
-      the build keeps the persistent store
+      its own. With the flag, `ranikust` also refuses, before the build's
+      user namespace, a PID namespace shared with a process, of another
+      mount namespace, that ranikust can open through `/proc` as it starts,
+      as T21
+      ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
+      and, from files with no ptrace check, one where `/proc/2/stat` shows a
+      kernel thread (the host's) or PID 1, ranikust itself where it is PID 1,
+      lists no mount of the namespace ranikust started in
+      ([ADR-0134](../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md)),
+      and warns for a `--build-arg` whose name looks like a secret's: its
+      value is on the command line a `RUN` reads; the build keeps the
+      persistent store
       ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
       The rbind's masks come along, every mount of it made read-only,
       `nosuid`, `nodev` and `noexec` with `mount_setattr(AT_RECURSIVE)`
@@ -324,7 +337,9 @@ The steps, in order:
       that allows user namespaces, where a new `proc` mounts, or in a
       container where ranikust may mount (overlay mode as root), both in
       [where environments land](modes-and-detection.md#where-environments-land);
-      or ask for the rbind. So a `RUN` never sees the container's `/proc`
+      or ask for the rbind. `ranikust` stops earlier: its user-namespace
+      probe stops at `proc`, and rootless overlay mode is refused naming the
+      flag and what it exposes. So a `RUN` never sees the container's `/proc`
       unasked, and always gets a new `proc` where one mounts. Wherever the
       probe chose a new `proc`, a refusal at a later `RUN` fails it
       (`Step::MountProc`); the choice is not tried again during the build.
@@ -341,9 +356,31 @@ The steps, in order:
       the sandbox's probe chooses once with no request, only where the
       user-namespace probe met the same refusal
       ([#74](https://github.com/tran4774/ranikust/issues/74)). A
-      `--network=none` `RUN` then sees the outer network devices in
-      `/sys/class/net`. Otherwise a refused `sysfs` mount
-      fails the `RUN` (`Step::MountSys`).
+      `--network=none` `RUN`, whose network namespace the build's user
+      namespace owns, still tries a new one first, so that
+      `/sys/class/net` shows its own devices and `/sys/fs/cgroup` is empty,
+      as for root; only `EPERM` (such as below an outer runtime's masks of
+      `/sys`) gives it the rbind, showing no more than a new one would.
+      Each directory mount the rbind copied onto its root mount (a cgroup
+      hierarchy at `fs/cgroup`, a configfs, the runtime's masks), the
+      mounts whose parent is the rbind's in the child's own
+      `/proc/self/mountinfo`, gets an empty read-only tmpfs (`nosuid`,
+      `nodev`, `noexec`), which hides the mounts below it too: its mount
+      point is found again below the rbind by descriptor, through no
+      symlink, and must not show the rbind's own mount; a file mount there
+      (a runtime's `/dev/null`) is left, and a mount point that can no
+      longer be placed, or more than 64 such mounts, fails the `RUN`
+      (`Step::MaskPath`). `/sys/fs/cgroup` is then empty, as
+      in a new `sysfs`. The network devices of the namespace it was mounted
+      in are hidden next: an empty read-only tmpfs over
+      `devices/virtual/net`, over the directory of each device a link of
+      `class/net`, `class/ieee80211`, `class/macvtap`, `class/ipvtap` or
+      `class/infiniband` names (a physical device's `net`), and over those
+      class directories, each found below the rbind by descriptor before
+      the `RUN` starts
+      (`Step::MaskPath`). Its `/sys/class/net` is then empty: its own `lo`
+      shows only in a new `sysfs`. Otherwise a refused `sysfs` mount fails
+      the `RUN` (`Step::MountSys`).
    4. A `nodev` tmpfs on `/dev`, with `null`, `zero`, `full`, `random`,
       `urandom` and `tty` bind-mounted from the outer `/dev` (`mknod` needs
       `CAP_MKNOD` in the initial user namespace). Each bind is its own mount
@@ -631,8 +668,18 @@ then only on a read-write cgroupfs, with `cgroup.kill` (Linux 5.14) and
 `cgroup.type` `domain`. A root ranikust trusts systemd's `trusted.delegate`
 alone, which only `CAP_SYS_ADMIN` in the initial user namespace can set;
 `user.delegate`, which anyone who may write `D`'s inode can set, a root
-`RUN` included, counts only for a ranikust that is not root and owns `D`
-(rootless, [#79](https://github.com/tran4774/ranikust/issues/79)). A
+`RUN` included, counts only where ranikust owns `D` and its uid in the
+initial user namespace is not 0, read before the build's user namespace
+hides it: its effective uid is root's where it is the owner that
+`/proc/sys/kernel/ostype` shows, a sysctl that root owns, which every
+level of user namespaces maps (the overflow uid where one maps root to
+nothing), else, where that file is not the sysctl, as
+`/proc/self/uid_map` maps it one level up
+([ADR-0135](../adr/0135-run-cgroups-trust-user-delegate-where-ranikusts-uid-in-the-initial-user-namespace-is-not-0.md)): a regular user, or root of rootless Podman. Rootless
+overlay mode reads no `trusted.*` mark (the kernel answers `ENODATA` to a
+process without `CAP_SYS_ADMIN` in the initial user namespace), and sees
+its own uid as 0, so it compares `D`'s owner as the build's user namespace
+shows it. A
 namespace's root counts whoever made it, delegated or not. A `D` with
 neither a mark nor a namespace's root, or on a read-only cgroupfs, is read
 no further. An unreadable mark, or an unreadable file of a marked or
@@ -645,6 +692,8 @@ means no `RUN` cgroups, logged with its errno at `warn`:
 | `docker run --privileged` (its own cgroup namespace, cgroupfs read-write) | Yes |
 | Another cgroup namespace's root on a read-write cgroupfs, delegated or not: root's own `unshare -C` with cgroup2 remounted; a systemd 257 unit with `ProtectControlGroups=private` **[inferred]** | Yes |
 | `Delegate=yes` under a systemd that sets no `trusted.delegate` | No |
+| Rootless overlay mode in a cgroup its user owns, marked `user.delegate` (a system unit or scope with `Delegate=yes` and `User=`; systemd 259 marks `user@<uid>.service` so **[measured]**) | Yes |
+| Rootless overlay mode in a `Delegate=yes` unit or scope of the user's own manager (`systemd-run --user`: no mark, systemd 259 **[measured]**) | No |
 | Root on a host, an ssh session's scope, a unit without `Delegate=` | No |
 | Docker's default options, most pods (cgroupfs read-only) | No |
 | A kernel before 5.14 (no `cgroup.kill`); `Direct` on `/`; the probe's own `RUN`s | No |
@@ -665,6 +714,9 @@ field `layout`):
   ([threat model, section 6](../security/threat-model.md#6-accepted-risks)).
 - **Single** otherwise: each `RUN` gets `D/run-<pid>-<n>`, with no
   controller, and one leaf, `command`; the init stays in `D` with ranikust.
+  So it is under root's `--mode=auto` in rootless overlay mode, whose
+  waiting parent stays in `D`
+  ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)).
 
 A process that joins `D` between its read and `+cpu` makes the kernel refuse
 `+cpu` (`EBUSY`): the probe fails, as below, and no `RUN` gets a cgroup.
@@ -685,8 +737,9 @@ container a private one on cgroup v2. So a `RUN` reads
 `RUN`'s number: a layer that records them does not depend on `--jobs` or the
 run. The `RUN` has no cgroupfs mounted and no capability in ranikust's
 user namespace to mount one. Docker's default profile refuses it a user
-namespace (ADR-0109) **[measured]**. Under `--seccomp=unconfined`, a `RUN`
-that may create one can still mount a cgroupfs of its own, rooted at the
+namespace (ADR-0109) **[measured]**. Under `--seccomp=unconfined`, or a
+profile file that allows a user namespace, a `RUN` that may create one can
+still mount a cgroupfs of its own, rooted at the
 cgroup it is in, and make cgroups below it, as on Ubuntu 22.04; Ubuntu
 24.04's AppArmor leaves it no capability in that namespace **[measured]**.
 Once the init is reaped, ranikust
@@ -740,7 +793,7 @@ ranikust never removes them, and they go with the unit or container
 |---|---|
 | Real root on a host | Every step works without a fallback |
 | `CAP_SYS_ADMIN` with Docker's seccomp profile | `MS_MOVE` instead of `pivot_root`, only where `/` is a mount root, keeping Docker's 14 capabilities: the old root stays mounted underneath, and `..` stops at the moved root only then [measured] (the `sysadmin` variant of `tests/vm/guest/smoke.sh`, kernels 5.15 and 6.8). Inside a plain `chroot` ranikust refuses before changing anything ([modes-and-detection](modes-and-detection.md#refusal-and-guidance)) |
-| Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged, its `RUN`s one at a time ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` except where the gid map gives one id and `setgroups` is denied; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the smoke check of PID 2 under `ranikust-init` is left out there ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. No build enters this namespace yet (#79); started inside one that something else made (rootless `podman run --privileged`), ranikust runs the sequence above as written (T1, `just smoke`) |
+| Rootless (the build's user namespace, #75) | The namespace's map: multi-range for root, `newuidmap`'s for a user, one id where neither ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). Chosen once per build by the probe (#78): a new `proc` where it mounts (a user on a host); else, only on request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), an rbind of `/proc`, logged, its `RUN`s one at a time ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) (a container whose `/proc` is masked: root of a default rootless `podman run`), and unasked a refusal at `Step::MountProc`; a read-only `sysfs` where the build owns the network namespace, else an rbind of `/sys`, read-only; `setgroups` except where the gid map gives one id and `setgroups` is denied; `--network=none` with no helper. With an rbind of `/proc` a `RUN`'s `/proc/1` is the container's PID 1, so the smoke check of PID 2 under `ranikust-init` is left out there ([smoke tests](../testing.md#smoke-tests-tier-t1)). `sethostname` fails where a seccomp profile refuses it without `CAP_SYS_ADMIN` (Docker's and Podman's defaults): the `RUN` goes on with the outer host name. Rootless overlay mode builds in this namespace (#79, T1 `rootless` smoke case); started inside one that something else made (rootless `podman run --privileged`), ranikust as root of it builds in overlay mode as root and runs the sequence above as written (T1, `just smoke`) |
 | kaniko mode, cannot mount | `Isolation::Direct`: no sandbox, `RUN` runs on `/` like kaniko (below) |
 | `--parallel-stages` | Refused (ADR-0060); planned: bare `chroot`, no namespaces ([kaniko-mode](kaniko-mode.md#the---parallel-stages-path-bare-chroot)) |
 
@@ -859,8 +912,8 @@ attack suite across modes ([#89](https://github.com/tran4774/ranikust/issues/89)
 in Phase 6. `--network=none` was verified end to end at
 [Phase 1's acceptance](../agents/phase-1.md#acceptance-criteria); its rootless
 form in the build's user namespace by T1 and T2
-([#78](https://github.com/tran4774/ranikust/issues/78)), and in a rootless
-build with [#79](https://github.com/tran4774/ranikust/issues/79).
+([#78](https://github.com/tran4774/ranikust/issues/78)), which rootless
+overlay mode runs ([#79](https://github.com/tran4774/ranikust/issues/79)).
 
 ## References
 

@@ -148,7 +148,7 @@ gets the code.
 | `ranikust.prune` | | The `prune` subcommand: the state directory's checks, the build's user namespace and `rnk_store.prune` inside it (ADR-0105). |
 | `ranikust.setup` | | Mount namespace, the state directory's checks (ADR-0050), the kaniko-mode root, store open, probes, spawner start: what a build pays before its first stage. |
 | `ranikust.probe` | `steps` | The probe sequence at every start, inside `ranikust.setup`; `steps` counts the crates' probes that really ran (2: the sandbox's, in forked children, and the overlay probe, in the build's namespace); `exp-03`, `exp-13`. |
-| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, inside `ranikust.setup`: the user-namespace probe, reported only (#74); `passes` when every step a `RUN` there needs and the overlay mount in the namespace worked; its start-up cost. |
+| `ranikust.probe_userns` | `passes` | `--mode=auto` as root, or a user's build (#79), inside `ranikust.setup`: the user-namespace probe, reported only for root's own modes (#74), routing for rootless overlay mode; `passes` when every step a `RUN` there needs, with an rbind of `/proc` only where `--allow proc.rbind` has it, and the overlay mount in the namespace worked; its start-up cost. |
 
 ### `rnk-dockerfile`
 
@@ -204,7 +204,7 @@ No span per HTTP request or body chunk.
 | `rnk_store.lock` | `contended` | A per-digest lock that may block; total time is lock wait; concurrent builds and stages sharing the store (`ADR-0007`). |
 | `rnk_store.fill` | `reused`, `bytes_written`, `bytes_reused` | One entry: published by this build or found ready (`bytes_reused` from its recorded size, else 0); what the store saves (`ADR-0006`). |
 | `rnk_store.cleanup` | `entries_removed` | Start-up clean-up. |
-| `rnk_store.prune` | | `ranikust prune --all` emptying the state directory (ADR-0105), `rnk_rootfs.delete` inside, whose fields count what went; Phase 5's `prune` by size and age adds `entries_removed` and `bytes_freed`. |
+| `rnk_store.prune` | | `ranikust prune --all` emptying the state directory (ADR-0105), or a set-up that fails emptying its store, where it holds no data, before kaniko mode (`Store::abandon`, `Store::open_or_abandon`, ADR-0136), or kaniko mode on `/` emptying such a store before it builds (`Store::open_anonymous`), `rnk_rootfs.delete` inside, whose fields count what went; Phase 5's `prune` by size and age adds `entries_removed` and `bytes_freed`. |
 
 ### `rnk-sandbox`
 

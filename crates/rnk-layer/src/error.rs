@@ -76,4 +76,9 @@ pub enum Error {
     /// Writing the layer or reading a blob failed.
     #[error("layer I/O failed")]
     Io(#[from] io::Error),
+    /// The caller's exporter refused the layer before or while it gave
+    /// the writer its entries, with its own error, which says why: an
+    /// entry it cannot export, say.
+    #[error(transparent)]
+    Exporter(Box<dyn std::error::Error + Send + Sync>),
 }

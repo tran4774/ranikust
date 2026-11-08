@@ -380,6 +380,28 @@ fn private_tempdir() -> tempfile::TempDir {
     tmp
 }
 
+/// The probe's directory in a setgid state directory takes the process's
+/// gid and loses the bit, so that its entries carry a gid the map holds.
+#[test]
+fn the_probe_directory_drops_a_setgid_parents_bit() {
+    let tmp = private_tempdir();
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o2700)).unwrap();
+    let root = RootPath::open(tmp.path()).unwrap();
+    root.create_sub_root("probe", 0o700).unwrap();
+    let before = fs::metadata(tmp.path().join("probe")).unwrap();
+    // A filesystem that ignores the bit leaves nothing to check.
+    if before.mode() & 0o2000 == 0 {
+        eprintln!("skipped: no setgid inheritance here");
+        return;
+    }
+    assert!(own_group(&root, "probe").unwrap());
+    let after = fs::metadata(tmp.path().join("probe")).unwrap();
+    assert_eq!(after.mode() & 0o7777, 0o700);
+    assert_eq!(after.gid(), rustix::process::getegid().as_raw());
+    // Once owned, nothing more changes.
+    assert!(!own_group(&root, "probe").unwrap());
+}
+
 /// A directory under a fresh temp dir, mode 0755, for a state directory.
 fn base() -> (tempfile::TempDir, PathBuf) {
     let tmp = private_tempdir();
@@ -795,3 +817,33 @@ fn red_team_the_user_namespace_line_never_reads_as_a_mode_line() {
 }
 
 mod userns;
+
+/// Only a probe directory named as the store's leftovers is held while the
+/// probe runs: a store removes those it can lock. One in a build's
+/// directory (kaniko mode's report) is never a leftover, and never held.
+#[test]
+fn only_a_probe_directory_a_store_would_remove_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    let lock = |name: &str| {
+        let fd = fs::File::open(dir.path().join(name)).unwrap();
+        rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive).is_ok()
+    };
+    let name = format!("{}1-2", rnk_store::USERNS_PROBE_PREFIX);
+    let (_, held) = make_probe_dir(&root, dir.path(), &name).unwrap();
+    assert!(held.is_some());
+    assert!(!lock(&name), "held");
+    drop(held);
+    // A test alongside that forks meanwhile gives its child a copy of the
+    // descriptor, which holds the lock until that child execs or exits.
+    let released = (0..500).any(|_| {
+        lock(&name) || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        }
+    });
+    assert!(released, "released");
+    let (_, held) = make_probe_dir(&root, dir.path(), "userns-probe").unwrap();
+    assert!(held.is_none());
+    assert!(lock("userns-probe"));
+}

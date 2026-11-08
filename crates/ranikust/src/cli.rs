@@ -412,7 +412,19 @@ pub(crate) struct BuildArgs {
     /// Grants an entitlement, as buildctl's `--allow`: `network.host` lets a
     /// `RUN --network=host` lift `--network=none`; `network.none-userns`
     /// lets a `RUN --network=none` get loopback through a user namespace
-    /// where ranikust lacks `CAP_NET_ADMIN` (ADR-0033). Repeat for several.
+    /// where ranikust lacks `CAP_NET_ADMIN` (ADR-0033); `proc.rbind` lets
+    /// rootless overlay mode give each `RUN` a read-only bind of `/proc`
+    /// where a new one is refused (a container's masked `/proc`): every
+    /// `RUN` then sees each process of ranikust's PID namespace and reads
+    /// the files of `/proc/<pid>` not under ptrace's check, such as
+    /// `cmdline`, `status`, `stat`, `mountinfo`, `cgroup` and `net/*`,
+    /// ranikust's included, and the `RUN`s go one at a time. Keep no secrets
+    /// in other processes' command lines, ranikust's included, and give the
+    /// build container a PID namespace of its own: ranikust refuses the
+    /// host's, one whose PID 1 is in another mount namespace, and one shared
+    /// with a process of another mount namespace that it can open as it
+    /// starts (ADR-0126, ADR-0129, ADR-0130, ADR-0134).
+    /// Repeat for several.
     #[arg(
         long = "allow",
         value_name = "ENTITLEMENT",
@@ -796,6 +808,10 @@ pub(crate) enum Entitlement {
     /// --network=none` gets loopback in a network namespace a user namespace
     /// owns, under a seccomp filter (ADR-0033). ranikust's own.
     NetworkNoneUserns,
+    /// `proc.rbind`: in rootless overlay mode, where a new `proc` is
+    /// refused, each `RUN` gets a read-only rbind of `/proc` (ADR-0126,
+    /// ADR-0132). ranikust's own.
+    ProcRbind,
 }
 
 /// An `--allow` value. BuildKit's other entitlements (`security.insecure`,
@@ -804,11 +820,12 @@ fn parse_entitlement(value: &str) -> Result<Entitlement, String> {
     match value {
         "network.host" => Ok(Entitlement::NetworkHost),
         "network.none-userns" => Ok(Entitlement::NetworkNoneUserns),
+        "proc.rbind" => Ok(Entitlement::ProcRbind),
         "security.insecure" | "device" => Err(format!(
             "--allow {value}: the RUN options it unlocks are not supported"
         )),
         _ => Err(format!(
-            "unknown entitlement {value:?} (network.host, network.none-userns)"
+            "unknown entitlement {value:?} (network.host, network.none-userns, proc.rbind)"
         )),
     }
 }

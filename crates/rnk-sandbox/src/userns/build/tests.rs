@@ -528,6 +528,109 @@ fn the_build_user_namespace_below_one_id_is_told_one_uid() {
     assert_eq!(d.passed_over, "");
 }
 
+/// Moves this (forked, single-threaded) process down one user namespace
+/// per `(uid, gid)` of `levels`, each mapping that id to the process's
+/// effective one in its parent, `setgroups` denied; then says whether
+/// ranikust counts it as the initial namespace's root (`root`), what the
+/// map one level up alone says (`by_map`), and the last map.
+fn kernel_root_below(levels: &[(u32, u32)]) -> String {
+    // A process that dropped root is not dumpable, so its own map files
+    // stay root's (ADR-0051).
+    if let Err(e) = rustix::process::set_dumpable_behavior(DumpableBehavior::Dumpable) {
+        return format!("error=PR_SET_DUMPABLE: {e}");
+    }
+    for &(uid, gid) in levels {
+        let euid = rustix::process::geteuid().as_raw();
+        let egid = rustix::process::getegid().as_raw();
+        // SAFETY: `NEWUSER` does not unshare the descriptor table; this
+        // forked child is single-threaded.
+        if let Err(e) = unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWUSER) } {
+            return format!("error=unshare: {e}");
+        }
+        let (uid_map, gid_map) = (format!("{uid} {euid} 1\n"), format!("{gid} {egid} 1\n"));
+        if let Err(e) = write_own_map(uid_map.as_bytes(), gid_map.as_bytes()) {
+            return format!("error={e}");
+        }
+    }
+    let map = fs::read_to_string("/proc/self/uid_map").unwrap_or_default();
+    let euid = rustix::process::geteuid().as_raw();
+    format!(
+        "root={} by_map={} map={}",
+        crate::cgroup::kernel_root_as_it_stands(),
+        crate::cgroup::maps_to_root(euid, &map),
+        map.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+}
+
+/// T2 (the VM, real root): root of the initial user namespace is root
+/// through any chain of user namespaces that maps it, the map one level
+/// up alone missing a chain that remaps it (ADR-0135); a regular user,
+/// and root of a namespace it made, is not.
+#[test]
+#[ignore = "T2: real root and the sudo user, through nested user namespaces"]
+fn the_kernel_root_is_told_through_nested_user_namespaces() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    // Where AppArmor restricts user namespaces (Ubuntu 24.04), a user's
+    // gets no map; root's, and one below it, do.
+    let restricted = fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim() == "1");
+    let below = |levels: &[(u32, u32)]| in_subreaper(|| kernel_root_below(levels));
+    let host = below(&[]);
+    let one = below(&[(0, 0)]);
+    // Uid 5 is root one level down, and root two levels down is that 5.
+    let remapped = below(&[(5, 5), (0, 5)]);
+    measured(&format!(
+        "kernel root as root (restricted: {restricted}): host {host}; 0 -> 0: {one}; 5 -> 0, then 0 -> 5: {remapped}"
+    ));
+    assert_eq!(host, "root=true by_map=true map=0 0 4294967295");
+    assert_eq!(one, "root=true by_map=true map=0 0 1");
+    assert_eq!(remapped, "root=true by_map=false map=0 5 1");
+
+    let var = |name: &str| std::env::var(name).ok();
+    let (Some(uid), Some(gid)) = (var("SUDO_UID"), var("SUDO_GID")) else {
+        panic!("run through sudo by a regular user, as the T2 unit suite does");
+    };
+    let (uid, gid): (u32, u32) = (uid.parse().unwrap(), gid.parse().unwrap());
+    assert_ne!(uid, 0, "run through sudo by a regular user");
+    let user = as_user(uid, gid, || {
+        format!(
+            "{}\n{}",
+            kernel_root_below(&[]),
+            kernel_root_below(&[(0, 0), (0, 0)])
+        )
+    });
+    measured(&format!(
+        "kernel root as uid {uid}: {}",
+        user.replace('\n', "; ")
+    ));
+    let (host, nested) = user.split_once('\n').unwrap();
+    assert_eq!(host, "root=false by_map=false map=0 0 4294967295");
+    if restricted {
+        assert!(nested.starts_with("error="), "{nested}");
+    } else {
+        assert_eq!(nested, "root=false by_map=true map=0 0 1");
+    }
+}
+
+/// T1: root of rootless Podman, whose uid in the initial user namespace is
+/// the user's, is not its root at any depth, though the map one level up
+/// calls root of a namespace mapped to it root.
+#[test]
+#[ignore = "T1: default: root of a rootless Podman container through nested user namespaces"]
+fn root_of_rootless_podman_is_not_the_kernel_root_at_any_depth() {
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    let below = |levels: &[(u32, u32)]| in_subreaper(|| kernel_root_below(levels));
+    let top = below(&[]);
+    let one = below(&[(0, 0)]);
+    let remapped = below(&[(5, 5), (0, 5)]);
+    measured(&format!(
+        "kernel root as root of rootless Podman: {top}; 0 -> 0: {one}; 5 -> 0, then 0 -> 5: {remapped}"
+    ));
+    assert!(top.starts_with("root=false by_map=false "), "{top}");
+    assert_eq!(one, "root=false by_map=true map=0 0 1");
+    assert_eq!(remapped, "root=false by_map=false map=0 5 1");
+}
+
 /// Binds `/dev/null` over `newuidmap` and `newgidmap` in a private mount
 /// namespace of this (forked, single-threaded, root) process: a host
 /// without `uidmap`.

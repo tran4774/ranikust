@@ -47,6 +47,7 @@ pub struct Sha256Digest;           // Display `sha256:<hex>`; sha2 (ADR-0030)
 pub struct Decoder<R: Read>;       // new(blob) sniffs gzip/zstd/plain; impl Read gives the plain tar;
                                    // diff_id() once at the end, finish() drains and returns it; tar_size()
                                    // [inferred] gzip inflate is sequential: "parallel" means pipelining inflate, hashing, writes
+pub enum Error { .., Io(io::Error), Exporter(Box<dyn Error + Send + Sync>) } // Exporter: transparent, the caller's exporter's own error (an entry it refuses, named)
 ```
 
 - `finish` sorts, looks up missing parents once each (outermost first),

@@ -10,7 +10,8 @@
 # the VM itself `--reproducible` must give one digest with `--jobs 1` and the
 # default. Each build's user-namespace probe line is printed, and a default
 # `docker run` checks where that probe stops (#74). smoke-build runs as the
-# VM's regular user too, in the build's user namespace (#78).
+# VM's regular user too, in the build's user namespace (#78), and so does
+# the ranikust binary, in rootless overlay mode (#79).
 set -euo pipefail
 cd "$HOME/rnk"
 source guest/smoke-lib.bash
@@ -453,6 +454,104 @@ else
   [[ "$got" == "hello from ranikust"$'\n'jq-* ]] ||
     { echo "error: user: the image does not run as built: $got" >&2; exit 1; }
   sudo docker rmi -f "$loaded" >/dev/null
+fi
+# #79: the ranikust binary as this user builds the rootless smoke case's
+# `content` stage (a mapped owner, a setgid directory, a symlink, a
+# whiteout) in rootless overlay mode, with a fresh proc, and the
+# --reproducible digest root's build of it gets, then tests/smoke/e2e,
+# whose `RUN --network=none` reads /sys/class/net: a new sysfs for the
+# network namespace the build owns, not the rbind of /sys; where AppArmor
+# restricts the user namespace, it refuses, naming the switch.
+ud="$dir/rootless" rc=0
+# The user's umask may leave a new directory group-writable, which a state
+# directory and every directory above it may not be (ADR-0050).
+mkdir -m 700 -p "$ud" "$ud/w"
+sudo mkdir -m 700 -p "$W/rootless-root"
+rl_args=(--context "$HOME/rnk/guest/cases/rootless" --no-push --target content --reproducible
+  --build-arg "BASE=$E2E_BASE" --destination localhost/rnk-rootless:latest)
+log="$(sudo "$RNK" "${rl_args[@]}" --state-dir "$W/rootless-root" 2>&1)" ||
+  { echo "error: user: root's build of the rootless case failed:" >&2; echo "$log" >&2; exit 1; }
+root_digest="$(smoke_digest "$log")"
+log="$("$RNK" "${rl_args[@]}" --state-dir "$ud/w" 2>&1)" || rc=$?
+printf '%s\n' "$log" >"$dir/rootless.log"
+grep -E 'user namespace probe|rootless' <<<"$log" || true
+if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
+  [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
+    grep -q 'where kernel.apparmor_restrict_unprivileged_userns is 1' <<<"$log" ||
+    { echo "error: user: expected rootless overlay mode refused, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it, as expected"
+else
+  [ "$rc" = 0 ] &&
+    grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
+    { echo "error: user: expected rootless overlay mode with a fresh proc, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  got="$(smoke_digest "$log")"
+  [ "$got" = "$root_digest" ] ||
+    { echo "error: user: --reproducible digest $got, root's $root_digest" >&2; exit 1; }
+  echo "user: ranikust builds in rootless overlay mode, with root's --reproducible digest $got"
+  ue="$ud/e2e" rc=0
+  mkdir -m 700 -p "$ue" "$ue/w" "$ue/out"
+  printf %s "$SMOKE_E2E_SECRET" >"$ue/token"
+  smoke_e2e_args "$CTX" "$ue/w" "$ue/out" "$ue/token"
+  e2e_args+=(--build-arg "BASE=$E2E_BASE")
+  log="$("$RNK" "${e2e_args[@]}" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-e2e.log"
+  [ "$rc" = 0 ] || { echo "error: user: tests/smoke/e2e failed ($rc):" >&2; echo "$log" >&2; exit 1; }
+  smoke_check_no_stub_leak "$ue/out/oci"
+  smoke_check_no_secret "$ue/out/oci" "$SMOKE_E2E_SECRET"
+  loaded="$(sudo docker load -i "$ue/out/image.tar" | sed -nE 's/^Loaded image( ID)?: //p' | tail -1)"
+  got="$(sudo docker run --rm "$loaded")"
+  [ "$got" = "$SMOKE_E2E_OUTPUT" ] ||
+    { echo "error: user: the e2e image printed: $got" >&2; exit 1; }
+  sudo docker rmi -f "$loaded" >/dev/null
+  echo "user: ranikust builds tests/smoke/e2e in rootless overlay mode; RUN --network=none sees lo alone"
+  # A set-up failing in the build's user namespace never falls back to
+  # kaniko mode for a user other than root (ADR-0136).
+  rc=0
+  log="$(RANIKUST_DEBUG_FAULT=rootless-broken "$RNK" "${rl_args[@]}" --state-dir "$ud/w" 2>&1)" ||
+    rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-broken.log"
+  [ "$rc" = 1 ] &&
+    grep -q 'rootless overlay mode: refused by RANIKUST_DEBUG_FAULT=rootless-broken' <<<"$log" &&
+    ! grep -q 'kaniko mode' <<<"$log" ||
+    { echo "error: user: expected the set-up's error, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: a set-up failing in the build's user namespace is an error, with no fallback"
+  # Red team (#79): a RUN's fresh proc shows no process outside it, and it
+  # writes no kernel, cgroup or sysfs file, where /sys/fs/cgroup is the
+  # host's, writable by this user, nor, with --network=none, sees a network
+  # device outside its own; a tree deeper than PATH_MAX it leaves
+  # in a cache mount, partly a mapped user's, goes with `prune --all` as
+  # this user, and a build in the emptied directory is not refused (T15,
+  # T17, T24).
+  ur="$ud/reach" rc=0
+  mkdir -m 700 -p "$ur" "$ur/w"
+  rr=(--context "$HOME/rnk/guest/cases/rootless-reach" --no-push --build-arg "BASE=$E2E_BASE"
+    --destination localhost/rnk-reach:latest --state-dir "$ur/w")
+  log="$("$RNK" "${rr[@]}" --target writes --tar-path "$ur/writes.tar" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-reach.log"
+  [ "$rc" = 0 ] || { echo "error: user: the rootless-reach writes failed ($rc):" >&2; echo "$log" >&2; exit 1; }
+  loaded="$(sudo docker load -i "$ur/writes.tar" | sed -nE 's/^Loaded image( ID)?: //p' | tail -1)"
+  report="$(sudo docker run --rm "$loaded" cat /report)"
+  sudo docker rmi -f "$loaded" >/dev/null
+  printf '%s\n' "$report" >"$dir/rootless-reach.report"
+  ! grep -Eq '^(write [^/]*/(proc|sys)/.*|mkdir cgroup|mount proc)=done$|^reached |^seen: [0-9]+ ranikust$' \
+    <<<"$report" && [ "$(grep -c '=refused$' <<<"$report")" = 12 ] &&
+    grep -q '^control reach=done ' <<<"$report" && grep -qx 'write /tmp/control=done' <<<"$report" &&
+    grep -Eqx 'none netdevs=(lo )?' <<<"$report" &&
+    grep -Eqx 'none addresses=(00:00:00:00:00:00 )?' <<<"$report" ||
+    { echo "error: user: a RUN wrote, saw or reached outside it:" >&2; echo "$report" >&2; exit 1; }
+  echo "user: a RUN writes no kernel, cgroup or sysfs file and sees no process outside it"
+  rc=0
+  log="$("$RNK" "${rr[@]}" --target deep-cache 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/rootless-deep.log"
+  [ "$rc" = 0 ] || { echo "error: user: the deep cache tree's build failed ($rc):" >&2; echo "$log" >&2; exit 1; }
+  rc=0
+  log="$("$RNK" prune --all --state-dir "$ur/w" 2>&1)" || rc=$?
+  [ "$rc" = 0 ] && [ -z "$(ls -A "$ur/w")" ] ||
+    { echo "error: user: prune --all after a deep cache tree ($rc): $log; left: $(ls -A "$ur/w")" >&2; exit 1; }
+  rc=0
+  log="$("$RNK" "${rr[@]}" --target userns 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || { echo "error: user: a build after prune --all ($rc):" >&2; echo "$log" >&2; exit 1; }
+  echo "user: prune --all empties a deep cache tree a RUN left; the next build runs"
 fi
 echo "user: ok"
 

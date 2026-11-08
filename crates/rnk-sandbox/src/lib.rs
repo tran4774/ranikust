@@ -14,14 +14,16 @@
 //! crate: namespaces, the uid map, `proc`, `pivot_root` or `MS_MOVE`, and
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
-//! user namespace would need, and only reports them: nothing routes on it
-//! yet. [`enter_build_user_namespace`] moves the process into the build's
-//! user namespace, each id map tried in a forked child first; no build of
-//! the binary calls it yet. There, [`probe_with_fallbacks`] lets a `RUN`
-//! get a read-only rbind of `/sys` where the user-namespace probe found a
-//! new `sysfs` refused ([`UsernsReport::fallbacks`]), and a read-only
-//! rbind of `/proc` only at the operator's request
-//! ([`Fallbacks::allow_proc_rbind`], ADR-0126, ADR-0132).
+//! user namespace would need: root only reports it, rootless overlay mode
+//! routes on it. [`enter_build_user_namespace`] moves the process into the
+//! build's user namespace, each id map tried in a forked child first.
+//! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
+//! `/sys` where the user-namespace probe found a new `sysfs` refused
+//! ([`UsernsReport::fallbacks`]), a `RUN` with a network namespace of its
+//! own still trying a new one first (the rbind with no network device
+//! where it does not mount), and a read-only rbind of `/proc` only
+//! at the operator's request ([`Fallbacks::allow_proc_rbind`], ADR-0126,
+//! ADR-0132).
 //!
 //! ADR-0014 planned a bare `chroot` per stage for `--parallel-stages` where
 //! nothing can be mounted; it is not built, and the flag is refused
@@ -48,7 +50,10 @@
 //! [`Sandbox::start_direct`] (ADR-0078). A build in its own user namespace
 //! calls [`probe_user_namespace`], then [`enter_build_user_namespace`] in
 //! place of [`enter_build_namespace`], before any thread, then
-//! [`probe_with_fallbacks`] in place of [`probe`].
+//! [`probe_with_fallbacks`] in place of [`probe`]. Where a set-up failing
+//! there may still fall back to another mode (ADR-0136), [`fork_to_wait`]
+//! comes before: the child enters the namespace and builds, the parent
+//! waits outside it.
 //!
 //! Phase 1 implements [`Isolation::Full`] as real root (`CAP_SYS_ADMIN`)
 //! with `pivot_root` or `MS_MOVE`, and [`Isolation::Direct`]. Phase 3 adds a
@@ -82,6 +87,7 @@ mod setup;
 mod spawner;
 mod spec;
 mod stop;
+mod supervise;
 mod sweep;
 mod userns;
 
@@ -97,6 +103,7 @@ pub use spec::{
     forbid_core_dumps,
 };
 pub use stop::{StopSignal, StopSignals, block_stop_signals};
+pub use supervise::{FORWARDED_STOP, Forked, Supervised, Waiting, fork_to_wait};
 pub use userns::{
     BuildUserNamespace, IdMap, IdRange, MountResult, StepFailure, StepResult, SubordinateIds,
     UsernsReport, probe_user_namespace,

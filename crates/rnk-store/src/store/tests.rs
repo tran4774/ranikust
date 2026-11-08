@@ -18,6 +18,66 @@ thread_local! {
     /// thread: a `.ranikust-state`, and the forged `layers/`.
     static MARKER_CREATE_SAW: std::cell::RefCell<Vec<(bool, bool)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Whether the next probe directory `remove_probe_dir` has seen on
+    /// this thread is removed before it opens it, as by its probe.
+    static PROBE_DIR_GOES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The hook in `remove_probe_dir`, between its `statx` and its `open`.
+pub(super) fn probe_dir_listed(state: &RootPath, rel: &Path) {
+    if PROBE_DIR_GOES.with(|g| g.replace(false)) {
+        state.remove_dir(rel).unwrap();
+    }
+}
+
+/// A probe directory removed between its `statx` and its `open` (by its
+/// probe, or by another store) is not removed again, and fails nothing.
+#[test]
+fn a_probe_directory_gone_before_it_is_opened_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = format!("{USERNS_PROBE_PREFIX}1-2");
+    fs::create_dir(dir.path().join(&name)).unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    PROBE_DIR_GOES.with(|g| g.set(true));
+    assert_eq!(
+        remove_probe_dir(&root, Path::new(&name)).unwrap(),
+        ProbeDir::NotOne
+    );
+    assert!(!dir.path().join(&name).exists());
+    // Unhooked, one is removed.
+    fs::create_dir(dir.path().join(&name)).unwrap();
+    assert_eq!(
+        remove_probe_dir(&root, Path::new(&name)).unwrap(),
+        ProbeDir::Removed
+    );
+    assert!(!dir.path().join(&name).exists());
+}
+
+/// An emptying of the state directory removes a probe directory only under
+/// its lock: one a probe holds stays, and is named; one no probe holds,
+/// and anything else of a probe's name, goes with the rest.
+#[test]
+fn an_emptying_leaves_a_probe_directory_a_probe_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = |n: &str| format!("{USERNS_PROBE_PREFIX}{n}");
+    let (used, left, file) = (name("1-1"), name("1-2"), name("1-3"));
+    for d in [&used, &left] {
+        fs::create_dir_all(dir.path().join(d).join("x")).unwrap();
+    }
+    fs::write(dir.path().join(&file), b"").unwrap();
+    fs::write(dir.path().join("other"), b"").unwrap();
+    let held = fs::File::open(dir.path().join(&used)).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let root = RootPath::open(dir.path()).unwrap();
+    let (deleted, kept) = delete_contents_but_probes(&root, &IgnoreList::new());
+    deleted.unwrap();
+    assert_eq!(kept, [OsString::from(&used)]);
+    let names: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, [OsString::from(&used)]);
+    assert!(dir.path().join(&used).join("x").is_dir());
 }
 
 /// The hook in `create_building_marker`, given the state directory:
@@ -455,4 +515,79 @@ fn a_symlink_at_a_store_directory_s_name_keeps_its_group() {
         matches!(&e, Error::Rootfs(r) if r.raw_os_error() == Some(Errno::NOTDIR.raw_os_error())),
         "{e}"
     );
+}
+
+/// An open that fails once it took the state directory as a store, its
+/// build registered, empties it again where asked and the store holds no
+/// data, after `undoing` lets go of the directory (ADR-0136), before
+/// kaniko mode on `/` follows. So it does with a store found with no
+/// data, such as one an open killed right after it wrote the marker
+/// leaves; one holding data is kept. A plain open leaves its marker.
+#[test]
+fn an_open_that_fails_empties_a_store_with_no_data_where_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let fail = |_: &RootPath| Err(Error::Cancelled);
+    let failed = |r: Result<Store>| matches!(r, Err(Error::Cancelled));
+
+    let state = dir.path().join("plain");
+    let paths = BuildPaths::new(&state, &state);
+    assert!(failed(Store::open_with(&paths, None::<fn()>, fail)));
+    assert!(state.join(STATE_MARKER).is_file());
+
+    let state = dir.path().join("made");
+    fs::create_dir(&state).unwrap();
+    fs::create_dir(state.join(format!("{USERNS_PROBE_PREFIX}1-2"))).unwrap();
+    let paths = BuildPaths::new(&state, &state);
+    let mut hold = Some(Store::check_state_dir(&state).unwrap());
+    assert!(failed(Store::open_with(
+        &paths,
+        Some(|| drop(hold.take())),
+        fail
+    )));
+    assert!(hold.is_none());
+    assert_eq!(fs::read_dir(&state).unwrap().count(), 0);
+    Store::open_anonymous(&state).unwrap().close().unwrap();
+
+    // As a killed open leaves it: the marker, part of the layout, a build.
+    let state = dir.path().join("killed");
+    let paths = BuildPaths::new(&state, &state);
+    fs::create_dir_all(state.join("builds/1-2")).unwrap();
+    fs::write(state.join(STATE_MARKER), b"").unwrap();
+    fs::write(state.join("builds/1-2.lock"), b"").unwrap();
+    fs::create_dir(state.join("blobs")).unwrap();
+    let mut undone = false;
+    assert!(failed(Store::open_with(
+        &paths,
+        Some(|| undone = true),
+        fail
+    )));
+    assert!(undone);
+    assert_eq!(fs::read_dir(&state).unwrap().count(), 0);
+    Store::open_anonymous(&state).unwrap().close().unwrap();
+
+    let state = dir.path().join("found");
+    let paths = BuildPaths::new(&state, &state);
+    Store::open(&paths).unwrap().close().unwrap();
+    fs::create_dir(state.join("caches/go")).unwrap();
+    let mut undone = false;
+    assert!(failed(Store::open_with(
+        &paths,
+        Some(|| undone = true),
+        fail
+    )));
+    assert!(undone);
+    assert!(state.join(STATE_MARKER).is_file());
+    assert!(state.join("caches/go").is_dir());
+}
+
+/// A directory the store makes either holds what later builds reuse,
+/// which keeps a failed set-up's store, or only what a build uses while it
+/// runs: a new one is sorted into one of the two.
+#[test]
+fn each_store_directory_holds_data_or_a_builds_own_files() {
+    let own = ["locks", "tmp", "builds"];
+    for dir in DIRS {
+        assert!(DATA_DIRS.contains(&dir) != own.contains(&dir), "{dir}");
+    }
+    assert_eq!(DIRS.len(), DATA_DIRS.len() + own.len());
 }

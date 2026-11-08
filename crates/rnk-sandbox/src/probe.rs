@@ -68,6 +68,16 @@ pub enum KernelFs {
     Rbind,
 }
 
+/// As the outcome line names it.
+impl std::fmt::Display for KernelFs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Fresh => "a new instance",
+            Self::Rbind => "a read-only rbind",
+        })
+    }
+}
+
 /// The kernel filesystems [`probe_with_fallbacks`] may bind where a new
 /// instance is refused. [`crate::UsernsReport::fallbacks`] allows the
 /// read-only rbind of `/sys` the user-namespace probe needed; a read-only
@@ -87,8 +97,9 @@ impl Fallbacks {
     /// writes nothing there, not even its own `oom_score_adj` as a new
     /// `proc` lets it (ADR-0132). Through it a `RUN` sees every
     /// process of the PID namespace ranikust runs in (the container's, or
-    /// one it shares with the host or other containers), and reads the
-    /// command line, status, mount table and network tables of each,
+    /// one it shares with other containers), and reads the
+    /// files of `/proc/<pid>` not under ptrace's check, such as `cmdline`,
+    /// `status`, `stat`, `mountinfo`, `cgroup` and `net/*`, of each,
     /// ranikust's included (its build arguments, its secret paths). Their
     /// environment, files and memory stay closed to it: they need
     /// `CAP_SYS_PTRACE` in the process's user namespace, which a `RUN` in
@@ -101,10 +112,12 @@ impl Fallbacks {
     /// where the seccomp profile allows one). The rest is an accepted
     /// residual; against it, keep no secrets in other processes' command
     /// lines, ranikust's included, and give the build container a PID
-    /// namespace of its own. The `ranikust` binary has no flag for it
-    /// before #79. This crate does not scan for a PID namespace shared with
-    /// a process of another mount namespace: its caller runs ADR-0101's
-    /// peer scan (ADR-0129), as the binary will with #79.
+    /// namespace of its own. The `ranikust` binary calls it for `--allow
+    /// proc.rbind`. This crate does not check for a PID namespace shared
+    /// with another mount namespace or the host: its caller runs ADR-0101's
+    /// peer scan and ADR-0134's check of PID 1 and PID 2 before it enters
+    /// the build's user namespace, as the binary does (ADR-0129, ADR-0130,
+    /// ADR-0134).
     #[must_use]
     pub fn allow_proc_rbind(self) -> Self {
         Self { proc: true, ..self }
@@ -163,11 +176,12 @@ pub fn probe_with_fallbacks(dir: &Path, allowed: Fallbacks) -> Result<Caps> {
 /// the warning alike (ADR-0127, ADR-0130, ADR-0132).
 macro_rules! proc_rbind_exposure {
     () => {
-        "each RUN sees every process of this PID namespace (the host's or other \
-         containers' too where the container shares one) and reads their command lines, \
-         status, mount tables and network tables, ranikust's included, though not their \
-         environment, files or memory; the rbind is read-only, so a RUN writes nothing \
-         there, not even its own oom_score_adj; RUNs then run one at a time"
+        "each RUN sees every process of this PID namespace (other containers' too \
+         where the container shares one) and reads the files of \
+         /proc/<pid> not under ptrace's check, such as cmdline, status, stat, mountinfo, \
+         cgroup and net/*, ranikust's included, though not their environment, files or \
+         memory; the rbind is read-only, so a RUN writes nothing there, not even its own \
+         oom_score_adj; RUNs then run one at a time"
     };
 }
 
@@ -337,8 +351,9 @@ pub(crate) fn slash_is_mount_root() -> Result<Option<bool>> {
     Ok(mount_root_attr(st.stx_attributes_mask, st.stx_attributes))
 }
 
-/// [`slash_is_mount_root`] from the raw `statx` fields.
-fn mount_root_attr(
+/// Whether a file is a mount's root, from the raw `statx` fields; `None`
+/// where the kernel does not report it.
+pub(crate) fn mount_root_attr(
     mask: rustix::fs::StatxAttributes,
     attributes: rustix::fs::StatxAttributes,
 ) -> Option<bool> {
@@ -395,6 +410,12 @@ fn remove_stale_roots(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_way_to_kernel_filesystems_has_its_name() {
+        assert_eq!(KernelFs::Fresh.to_string(), "a new instance");
+        assert_eq!(KernelFs::Rbind.to_string(), "a read-only rbind");
+    }
 
     #[test]
     fn the_mount_root_attribute_is_unknown_unless_in_the_mask() {
@@ -531,8 +552,7 @@ mod tests {
         assert!(guidance.contains("--allow proc.rbind"), "{guidance}");
         for advice in [
             "every process of this PID namespace",
-            "status",
-            "network tables",
+            "not under ptrace's check, such as cmdline, status, stat, mountinfo, cgroup and net/*",
             "not their environment, files or memory",
             "read-only, so a RUN writes nothing there, not even its own oom_score_adj",
             "one at a time",

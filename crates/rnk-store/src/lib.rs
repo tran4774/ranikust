@@ -20,6 +20,7 @@
 //! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
 //! ├── builds/<build-id>/, <build-id>.lock      one per running build
+//! ├── .ranikust-anon-userns-probe-*/ rootless overlay mode's probe, locked while in use: removed here
 //! └── sandbox/                       the RUN sandbox's own files (made by the caller)
 //! ```
 //!
@@ -54,6 +55,7 @@ pub use fence::{NamedGuard, RunGuard};
 pub use key::EntryKey;
 pub use store::{
     BUILDING_MARKER, BuildPaths, CacheLease, CacheOwner, CacheSharing, MarkerKeeper,
-    PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, Store, TmpEntry,
+    PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, StateDirHold, Store, TmpEntry,
+    USERNS_PROBE_PREFIX,
 };
 pub use userns::user_namespace_proc;

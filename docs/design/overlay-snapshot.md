@@ -124,7 +124,9 @@ would hide every lower layer.
   overlay in `builds/<id>/overlay-probe` with `lowerdir+`, then with
   `mount(2)`, writes through it (a new file, a deleted file, a directory
   made again) and checks that the upper holds the file, two whiteouts and
-  `user.overlay.opaque=y`.
+  `user.overlay.opaque=y`. Rootless overlay mode runs it again after
+  entering the build's user namespace, whose mount namespace owns the stage
+  mounts, with the same `userxattr` options.
 - Unmounting uses `MNT_DETACH`; the read-only view also sets
   `MOUNT_ATTR_RDONLY` (`MS_RDONLY` with `mount(2)`) and leaves out
   `volatile`, which needs an upper.
@@ -227,10 +229,10 @@ entry that `rnk-store` renames into place; it gets the layers below, so
 that a hardlink into one of them is copied from it
 ([rootfs](rootfs.md#extraction)).
 
-In a build's user namespace (rootless mode, #77; the rest of rootless overlay
-mode is still to come), extraction, publication and clean-up of extracted
-layers run inside the namespace as its mapped root, since the store is opened
-there, and publication stays a rename, a `0555` layer root included
+In a build's user namespace (rootless overlay mode, #77 and #79), extraction,
+publication and clean-up of extracted layers run inside the namespace as its
+mapped root, since the store is opened there, and publication stays a rename,
+a `0555` layer root included
 ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md),
 [cache-and-store](cache-and-store.md#atomic-publication)). `Overlay::new` tells
 from `/proc/self/ns/user` whether it runs in a namespace other than the

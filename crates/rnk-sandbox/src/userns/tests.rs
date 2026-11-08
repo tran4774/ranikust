@@ -6,6 +6,12 @@ use super::*;
 
 const EPERM: i32 = libc::EPERM;
 
+/// Every fallback allowed: whether the steps work at all.
+const ANY: crate::Fallbacks = crate::Fallbacks {
+    proc: true,
+    sysfs: true,
+};
+
 fn one_id(uid: u32) -> Plan {
     Plan::OneId {
         uid_map: format!("0 {uid} 1\n").into_bytes(),
@@ -305,7 +311,7 @@ fn a_ranged_map_on_ubuntu_24_04_stops_at_chown_then_the_mount_namespace() {
     assert_eq!(a.mount_ns, failed("unshare(CLONE_NEWNS)", EPERM));
     assert_eq!(a.proc, MountResult::NotRun("no mount namespace"));
     let report = report_of(vec![(IdMap::Ranges, StepResult::Ok)], Some((plan, a)));
-    assert_eq!(report.stop(), Some("chown"));
+    assert_eq!(report.stop(ANY), Some("chown"));
     assert_eq!(report.map(), Some(IdMap::Ranges));
 }
 
@@ -316,7 +322,12 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
         report_of(vec![(plan.kind(), StepResult::Ok)], Some((plan, a)))
     };
     let r = passing(ranges(), &[PROC, SYSFS, MKNOD]);
-    assert_eq!(r.stop(), None);
+    assert_eq!(r.stop(ANY), None);
+    // The rbind of /proc passes only at the operator's request; /sys's always.
+    assert_eq!(r.stop(crate::Fallbacks::default()), Some("proc"));
+    assert_eq!(r.stop(crate::Fallbacks::default().allow_proc_rbind()), None);
+    let sysfs_only = passing(ranges(), &[SYSFS]);
+    assert_eq!(sysfs_only.stop(crate::Fallbacks::default()), None);
     assert_eq!(
         r.to_string(),
         "unshare(CLONE_NEWUSER): ok; map: multi-range; chown: ok; unshare(CLONE_NEWNS): ok; \
@@ -343,11 +354,17 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
         passing(ranges(), &[]).fallbacks(),
         crate::Fallbacks::default()
     );
-    assert_eq!(passing(ranges(), &[CHOWN]).stop(), Some("chown"));
-    assert_eq!(passing(ranges(), &[NEWNS]).stop(), Some("mount namespace"));
-    assert_eq!(passing(ranges(), &[PROC, PROC_RBIND]).stop(), Some("proc"));
+    assert_eq!(passing(ranges(), &[CHOWN]).stop(ANY), Some("chown"));
     assert_eq!(
-        passing(ranges(), &[SYSFS, SYSFS_RBIND]).stop(),
+        passing(ranges(), &[NEWNS]).stop(ANY),
+        Some("mount namespace")
+    );
+    assert_eq!(
+        passing(ranges(), &[PROC, PROC_RBIND]).stop(ANY),
+        Some("proc")
+    );
+    assert_eq!(
+        passing(ranges(), &[SYSFS, SYSFS_RBIND]).stop(ANY),
         Some("sysfs")
     );
 
@@ -370,7 +387,7 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
         Some((plan, a)),
     );
     assert_eq!(r.chown, StepResult::NotRun(ONLY_ID_0));
-    assert_eq!(r.stop(), None);
+    assert_eq!(r.stop(ANY), None);
     assert!(
         r.to_string().starts_with(
             "unshare(CLONE_NEWUSER): ok; map: one uid (newuidmap: not run (no subordinate \
@@ -389,7 +406,7 @@ fn the_report_names_the_first_step_a_run_needs_that_failed() {
     );
     let r = report_of(vec![(IdMap::OneId, a.map.clone())], Some((plan, a)));
     assert_eq!(r.map(), None);
-    assert_eq!(r.stop(), Some("map"));
+    assert_eq!(r.stop(ANY), Some("map"));
     assert!(
         r.in_namespace(|_| Ok(String::new()), Path::new("/"))
             .is_none()
@@ -800,12 +817,12 @@ fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     assert_eq!(report.cut_short, None);
     if seccomp_without_sys_admin() {
-        assert_eq!(report.stop(), Some("unshare"), "{report}");
+        assert_eq!(report.stop(ANY), Some("unshare"), "{report}");
         assert!(is_eperm(&report.unshare), "{report}");
         assert_eq!(report.map(), None);
         return;
     }
-    assert_eq!(report.stop(), None, "{report}");
+    assert_eq!(report.stop(ANY), None, "{report}");
     assert_eq!(report.map(), Some(IdMap::Ranges));
     assert_eq!(report.chown, StepResult::Ok);
     assert!(is_eperm(&report.mknod), "{report}");
@@ -907,7 +924,7 @@ fn the_user_namespace_steps_as_a_regular_user_stop_where_apparmor_restricts() {
     let line = |r: Result<UsernsReport>| match r {
         Ok(r) => format!(
             "{}\t{}\t{r}\n",
-            r.stop().unwrap_or("none"),
+            r.stop(ANY).unwrap_or("none"),
             r.map().map_or("none".to_owned(), |m| m.to_string())
         ),
         Err(e) => format!("error\t\t{e}\n"),
@@ -1387,7 +1404,7 @@ fn red_team_a_prober_killed_mid_probe_leaves_no_process_or_mount() {
     assert!(!out.contains("LEFT") && !out.contains("error"), "{out}");
     // Where `unshare` is refused the probe's children end too fast to catch.
     let base = tempfile::tempdir().unwrap();
-    let stop = probe_at(base.path(), None).unwrap().stop();
+    let stop = probe_at(base.path(), None).unwrap().stop(ANY);
     assert!(
         stop == Some("unshare") || !out.contains("caught 0 of"),
         "no kill found a child: {out}"

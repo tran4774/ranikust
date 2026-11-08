@@ -11,7 +11,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
 [ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md),
 [ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)
-(the last three planned, Phase 3).
+(ADR-0098 and ADR-0100 planned, Phase 3).
 
 ## Outcomes
 
@@ -20,7 +20,7 @@ The probe ends in exactly one of these:
 | Outcome | Snapshot | Stage roots | `RUN` execution | Stages |
 |---|---|---|---|---|
 | **overlay, root** | upperdir | one overlay mount per stage in the state directory | full sandbox | parallel (DAG) |
-| **overlay, rootless** (planned, Phase 3) | upperdir, user namespace | same | full sandbox in a user namespace; `/proc` rbind on request only, if a new `proc` is refused ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)) | parallel (with the `/proc` rbind, stages parallel, their `RUN`s one at a time: [ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) |
+| **overlay, rootless** | upperdir, user namespace | same, mounts the build's user namespace owns | full sandbox in the build's user namespace; `/proc` rbind on request only (`--allow proc.rbind`), if a new `proc` is refused ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)) | parallel (with the `/proc` rbind, stages parallel, their `RUN`s one at a time: [ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)) |
 | **kaniko, can mount** | walk + hash | one directory per stage | full sandbox (bind mounts, `pivot_root`) | parallel by default |
 | **kaniko, cannot mount** | walk + hash | `/` in a container (a host is refused, ADR-0050) | directly, like kaniko (`Isolation::Direct`) | sequential on `/`; `--parallel-stages` refused (ADR-0060) |
 | **refuse** | none | none | none | exit with guidance |
@@ -29,19 +29,18 @@ The probe ends in exactly one of these:
 or FUSE, upper directory on the container's overlay root without a volume, or
 a kernel without overlay.
 
-**Built:** overlay root, both kaniko outcomes, refuse. **Planned, Phase 3**
-(tracking issue [#41](https://github.com/tran4774/ranikust/issues/41)):
-overlay rootless. The user-namespace probe it needs is built and reported
-only ([step 2](#probe-order---modeauto)). So is the entry into the build's
-user namespace, with the probe's maps in its order and the store opened
-inside, with no build calling it yet
-([#75](https://github.com/tran4774/ranikust/issues/75); how:
+**Built:** every outcome. Rootless overlay mode is `Outcome::OverlayRootless`
+([#79](https://github.com/tran4774/ranikust/issues/79)): a user other than
+root, and root that may not mount where ADR-0107 lets it, build in the build's
+user namespace, which the process enters after the probe has routed
+([step 2](#probe-order---modeauto); how:
 [rnk-sandbox](../agents/crates/rnk-sandbox.md#owns),
-[ranikust](../agents/crates/ranikust.md#owns)). Root's builds keep `enter_build_namespace`
-(`unshare(CLONE_NEWNS)` only), and `Outcome` has `OverlayRoot` alone
-(kaniko mode is set up by `set_up_kaniko`). What happens meanwhile to root without
-the privilege to mount and to a process that is not root is under
-[Refusal and guidance](#refusal-and-guidance).
+[ranikust](../agents/crates/ranikust.md#owns)). Root's builds that may mount
+keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko mode is
+set up by `set_up_kaniko`. **Planned, Phase 3** (tracking issue
+[#41](https://github.com/tran4774/ranikust/issues/41)): `--userns`, the
+refusal of an image with an owner the namespace does not map, and the
+AppArmor advice, all under [Refusal and guidance](#refusal-and-guidance).
 
 ## Where environments land
 
@@ -54,8 +53,8 @@ table per CI system in §6) and
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
-| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless (planned, Phase 3, there with `--allow proc.rbind`, the container's `/proc` being masked: [ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); today the container's root, which lacks `CAP_SYS_ADMIN`, takes kaniko mode on `/` with the ADR-0054 checks (refused on a host), and rootless podman without a volume at the state directory keeps it ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
-| Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (planned, Phase 3; full uid range only with `newuidmap` and `/etc/subuid`); today refused |
+| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless, with a volume at the state directory and `--allow proc.rbind`, the container's `/proc` being masked ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); without the flag `--mode=overlay` is refused, naming it, and `--mode=auto` takes kaniko mode on `/` with the ADR-0054 checks (refused on a host); without a volume the state directory is on overlayfs, so kaniko mode on `/` with a hint to mount one ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
+| Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (full uid range only with `newuidmap` and `/etc/subuid`) |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
 | Pod Security Standards `restricted`, OpenShift `restricted-v2` | refuse |
@@ -67,8 +66,10 @@ ranikust refuses to start on a kernel before 5.8
 
 Which of these environments the probe is tested in, and in which tier, is
 decided in
-[ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)
-(planned, Phase 3, nothing built).
+[ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md).
+Built: the T1 `rootless` smoke case (rootless Podman with a volume, row 5)
+and the T1 kaniko leg's cases (row 5b, in part); the runner, VM and k3s legs
+are planned ([testing](../testing.md#quick-smoke-cases)).
 
 ## Probe order (`--mode=auto`)
 
@@ -103,25 +104,43 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    then mount a new `proc` in a new PID namespace. With `CAP_SYS_ADMIN` this
    is the only way to get a new `proc` when `/proc` is masked: a new user
    namespace makes the kernel refuse it (`EPERM`).
-2. **Overlay in a user namespace**, reported only
-   ([#74](https://github.com/tran4774/ranikust/issues/74)): `--mode=auto`
-   as root probes it during the set-up, before the spawner starts, and
-   logs one line (whether the path passes or where it stops, each step with
-   its errno, the map, the overlay, the AppArmor switch below); nothing
-   routes on it until rootless overlay mode (Phase 3). Root's map (below)
+2. **Overlay in a user namespace**
+   ([#74](https://github.com/tran4774/ranikust/issues/74),
+   [#79](https://github.com/tran4774/ranikust/issues/79)). It decides rootless
+   overlay mode where it routes (below); where root may mount it routes
+   nothing, and `--mode=auto` as root only reports it, during the set-up,
+   before the spawner starts. It logs one line either way (whether the path
+   passes or where it stops, each step with its errno, the map, the overlay,
+   the AppArmor switch below): `user namespace probe: ...`, or `user
+   namespace probe (reported only): ...` where it routes nothing. An rbind of
+   `/proc` counts as a pass only with `--allow proc.rbind`; without it the
+   line stops at `proc`, whatever the rbind would do. Root's map (below)
    makes uid 0 in that namespace ranikust's own uid 0, host uid 0 unless
    ranikust itself runs in a user namespace: a line that passes says these
-   steps work here, not that a `RUN` may get this map. A process that is
-   not root is not probed (`report_user_namespace` checks the effective
-   uid); task 8 ([#79](https://github.com/tran4774/ranikust/issues/79))
-   routes there.
+   steps work here, not that a `RUN` may get this map.
    `rnk_sandbox::probe_user_namespace` runs the steps in forked children, in
-   a directory of the build under the state directory (`userns-probe`, or a
-   name the next start removes when the store is anonymous), removed after;
-   if a child could not be reaped, which may still work in it, it stays
-   until the build directory is removed (or the state directory emptied):
-   at the end of the run, at once when `--mode=auto` falls back to kaniko
-   mode, else at the next start (a refused set-up, a run cut short).
+   a directory made for them and removed after:
+   - for rootless overlay mode (`setup::rootless::plan`), in the state
+     directory, once the store's check, which writes nothing, takes it as one
+     (Q-111, (a)), and holds the state directory's lock until the store
+     opens; named `.ranikust-anon-userns-probe-<pid>-<nanos>`
+     (`rnk_store::USERNS_PROBE_PREFIX`) and held by its exclusive `flock`
+     while the probe uses it, so that a build cut short there leaves nothing
+     the next start counts as foreign: the store, once it opens, removes each
+     such directory whose lock it takes
+     ([cache and store](cache-and-store.md)); it takes the
+     process's gid and no setgid bit, as the store's own directories do
+     ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md));
+   - where it only reports (`report_user_namespace`, root only: it checks the
+     effective uid), in a directory of the build under the state directory
+     (`userns-probe`, or a name the next start removes when the store is
+     anonymous).
+
+   If a child could not be reaped, which may still work in it, the directory
+   stays: the report's until the build directory is removed (or the state
+   directory emptied) at the end of the run, at once when `--mode=auto`
+   falls back to kaniko mode, else at the next start (a refused set-up, a
+   run cut short); rootless overlay mode's as a leftover above.
    - `unshare(CLONE_NEWUSER)`, then write `uid_map` and `gid_map`. Root
      writes a map of every id it has, each to itself; inside a container
      that is several ranges (each must fit inside one range of the parent
@@ -162,16 +181,19 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
    refused with `EPERM` is tried again as an rbind, only where the
    user-namespace probe (step 2) found the same; a refused `proc` mount
    only at the operator's request ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md);
-   `--allow proc.rbind`, planned
-   with [#79](https://github.com/tran4774/ranikust/issues/79))
+   `--allow proc.rbind`)
    (`rnk_sandbox::probe_with_fallbacks`,
    [#78](https://github.com/tran4774/ranikust/issues/78)). Every `RUN` of
    the build then gets what worked, and an rbind of `/proc` is logged once;
    with it the `RUN`s run one at a time
    ([ADR-0127](../adr/0127-with-allow-proc-rbind-runs-go-one-at-a-time-and-the-rest-of-the-exposure-is-an-accepted-residual.md)),
-   and, once #79 brings the flag, a PID namespace shared with a process of
-   another mount namespace is refused
-   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md));
+   and a PID namespace shared with a process of another mount namespace that
+   ranikust can open as it starts is refused before the process enters the
+   namespace
+   ([ADR-0129](../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md)),
+   as is the host's, or one whose PID 1 is of another mount namespace, told
+   from files with no ptrace check
+   ([ADR-0134](../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md));
    the store stays the persistent one
    ([ADR-0130](../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md)).
    Elsewhere a refused mount fails this probe.
@@ -188,11 +210,22 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
 6. **Log the reason** for the chosen outcome, including each failed step and
    its errno.
 
-How `--mode=auto` routes today (ADR-0040, ADR-0059):
+How `--mode=auto` routes (ADR-0040, ADR-0059, ADR-0107):
 
-- `ranikust` enters the build's mount namespace first, before anything is
-  written. Root refused there for lack of privilege gets kaniko mode "cannot
-  mount", with the reason logged. Otherwise the overlay probes run.
+- A user other than root builds in rootless overlay mode, or is refused with
+  the step the probe stopped at and the way out. `--mode=overlay` routes the
+  same; `--mode=kaniko` needs root.
+- Otherwise `ranikust` enters the build's mount namespace first, before
+  anything is written. Root refused there for lack of privilege tries
+  rootless overlay mode, except where `/proc/sys` is writable or cannot be
+  told (ADR-0107, case (ii)): a `RUN` as the map's uid 0 could write it, and
+  kaniko mode on `/` is refused there for the same reason (ADR-0054); nor
+  with `--ignore-path`, which only kaniko mode honours (ADR-0049): overlay
+  mode would refuse it, and kaniko mode builds it, with a note saying so.
+  Where rootless overlay mode cannot run, its refusal is logged and root gets
+  kaniko mode "cannot mount", with the reason logged. A forced
+  `--mode=overlay` there builds rootless or is refused with both reasons.
+  Where root may mount, the overlay probes run.
 - Where they refuse because overlayfs cannot use the state directory (the
   probe's mount refused, or a state directory on overlayfs), `--mode=auto`
   outside a container builds in kaniko mode "can mount": a directory per stage
@@ -202,6 +235,57 @@ How `--mode=auto` routes today (ADR-0040, ADR-0059):
   (ADR-0054), so the overlay refusal stands, with what makes overlay mode
   work (a volume at the state directory). No refusal's guidance sends a user
   back to the mode they used.
+- Kaniko mode on `/` with the state directory on overlayfs, where the
+  user-namespace steps pass, logs a hint (ADR-0107, case (i)): a volume at
+  the state directory (`-v ranikust-state:/var/lib/ranikust`) would let
+  rootless overlay mode build here, with `--allow proc.rbind` too where the
+  `/proc` is masked.
+
+Rootless overlay mode (`setup/rootless.rs`) has two phases, since the process
+cannot leave the namespace once it is in:
+
+1. `plan`, the process unchanged: the state directory's checks, refused on
+   overlayfs (a container's own root cannot hold the upper directories: a
+   volume is the way out); the user's subordinate ids
+   (`/etc/subuid`, `/etc/subgid`); the user-namespace probe (step 2) with the
+   overlay mount in it. A step that fails, or `proc` where only an rbind
+   works and `--allow proc.rbind` is absent, ends here as "rootless overlay
+   mode cannot run here" with the way out, and routing goes on as above.
+   With the flag and an rbind of `/proc` needed, the peer scan of kaniko mode
+   on `/` runs (ADR-0101, ADR-0129; T21) and secret-looking `--build-arg`
+   names are warned about, both before the namespace, where ranikust can
+   still open the other processes.
+2. `set_up`, in the namespace: `enter_build_user_namespace` (user and mount
+   namespace), the store, the sandbox probe with the fallbacks `plan`
+   allows (step 3), the overlay probe (step 4), the spawner, then the mode
+   line. A failure here is `Kind::Broken`: no other mode follows in the
+   process. `plan`'s probe child has already run what this repeats, each
+   step a `RUN` needs and an overlay mount on the state directory's
+   filesystem, so what fails here is what that child could not see: the
+   store, the spawner's start, or a change between the two. For root's
+   `--mode=auto`, which built in kaniko mode before rootless overlay mode,
+   the process forks first (`rnk_sandbox::fork_to_wait`, ADR-0136): the
+   child runs `set_up` and the build; the parent waits outside the
+   namespace, sends the child `SIGUSR1` for each `SIGINT` or `SIGTERM` it
+   gets (the child ignores those two itself), and ends as the child ends.
+   Where the child's `set_up` fails, the child empties the state directory
+   where its store holds no data, whoever made it (`Store::abandon`, or
+   `Store::open_or_abandon` for an open that failed once it took the
+   directory; not a store with data, or one another build holds; a
+   forwarded stop is ignored until it is done) and sends the reason, and
+   the parent, with no stop received, warns `<reason>; kaniko mode
+   instead, before anything was built (ADR-0136)` and builds in kaniko
+   mode as below, which empties such a store too where a set-up killed
+   before its end left one (`Store::open_anonymous`). A user other than
+   root and `--mode=overlay` get the error.
+
+The mode line, logged once the set-up can no longer fail, so a fallback
+logs kaniko mode's alone, says what the build got: `overlay mode, rootless, in the
+build's user namespace, RUN enters its root with pivot_root, proc: a new
+instance, sysfs: a read-only rbind (for a RUN with --network=none, a new
+instance where it mounts, else the rbind with no network device), overlay
+mounts with fsconfig(lowerdir+)`;
+`proc: a read-only rbind` is the one that needs the flag.
 
 `--mode=overlay|kaniko` skips the choice but not the checks: a forced mode
 that cannot work fails with the probe's diagnosis
@@ -244,7 +328,8 @@ Phase 4 (ADR-0064), `--ignore-var-run` in both modes (ADR-0052 D4).
   container's own overlay root can be a lower layer but not the upper one,
   and overlay nests at most two deep. The probe in step 1 or 2 catches all of
   these, and the result is kaniko mode. A state directory on overlayfs is
-  refused before the probe, with the advice to mount a volume there.
+  refused before the probe, with the advice to mount a volume there, in
+  rootless overlay mode too.
 
 ## Refusal and guidance
 
@@ -252,14 +337,21 @@ kaniko mode needs root (`chown`, `chroot`, switching users). An unprivileged
 process with no usable user namespace cannot build, and ranikust says so
 instead of producing a broken image.
 
-Built today (`crates/ranikust/src/setup.rs`), until rootless mode exists:
+Built today (`crates/ranikust/src/setup.rs`, `setup/rootless.rs`):
 
 - Root lacking the privilege to mount (`Error::Privilege`,
-  `namespace_refusal`) takes kaniko mode: on `/` in a container, refused on a
-  host (`host_without_mounts`, ADR-0050). A forced `--mode=overlay` is told to
-  use kaniko mode (`NEEDS_KANIKO_MODE`).
-- A process that is not root is refused whatever its user namespaces allow,
-  with the advice to run as root or in a container (`NEEDS_ROOT`).
+  `namespace_refusal`) tries rootless overlay mode, except where `/proc/sys`
+  is writable or cannot be told (ADR-0107), then takes kaniko mode: on `/` in
+  a container, refused on a host (`host_without_mounts`, ADR-0050). A forced
+  `--mode=overlay` there builds rootless or is refused with both reasons: the
+  mount's, with the advice to use kaniko mode (`NEEDS_KANIKO_MODE`), and
+  rootless overlay mode's.
+- A process that is not root builds in rootless overlay mode or is refused
+  with the step it stopped at and the way out: the AppArmor switch, or root,
+  where `unshare` or the map failed (`NO_USER_NAMESPACE`); `--allow
+  proc.rbind`, what it exposes and the other ways, where only an rbind of
+  `/proc` would do (`PROC_RBIND`); a volume at the state directory where it
+  is on overlayfs; root or a container otherwise.
 - Kaniko mode on `/` is refused where `refuse_unsafe_slash` stops it: root may
   mount, a writable `/proc/sys` (ADR-0054), `--network=none` (ADR-0057), or
   ranikust's binary on a writable mount other than `/`'s, reached by one, or
@@ -269,7 +361,8 @@ Built today (`crates/ranikust/src/setup.rs`), until rootless mode exists:
 - A container where root may mount but overlayfs is unusable is refused
   (`Route::RefuseInContainer`).
 - A failed probe step is refused with the step, its errno and the way out
-  (`sudo` or a `--privileged` container for a process that is not root).
+  (root, or a container, `--privileged` for overlay mode, for a user whose
+  rootless probe failed).
   A host-side failure such as an unwritable state directory is reported as it
   is.
 
@@ -281,8 +374,8 @@ to bind-mount the chroot directory onto itself first. Where the kernel does
 not report whether `/` is a mount root (`STATX_ATTR_MOUNT_ROOT` missing from
 the mask), it neither refuses on that ground nor falls back to `MS_MOVE`.
 
-Planned, Phase 3, with rootless mode: refuse only where no user namespace is
-usable, and offer, in order:
+Planned, Phase 3: where no user namespace is usable, offer in place of
+`NO_USER_NAMESPACE`'s one line, in order:
 
 1. Run with `sudo`.
 2. Install the AppArmor profile, when
@@ -307,7 +400,11 @@ ranikust was started in (rootless Podman), the map is read from
 - A probe step that fails with an unexpected errno is reported verbatim; the
   probe does not guess.
 - The probe result is fixed for the whole build. A later mount failure in the
-  chosen mode is a build error, not a reason to switch modes mid-build.
+  chosen mode is a build error, not a reason to switch modes mid-build. Once
+  the process is in the build's user namespace no other mode can follow in
+  it, so a failure there ends the build (`Kind::Broken`), unless root's
+  `--mode=auto` set up in a child, whose parent then builds in kaniko mode
+  (ADR-0136).
 - When an overlay-mode `RUN` fails with `EXDEV`, ranikust suggests rerunning
   with `--mode=kaniko` ([ADR-0016](../adr/0016-overlay-mount-options.md),
   [ADR-0023](../adr/0023-mode-flag.md)).
