@@ -391,8 +391,7 @@ impl Store {
     }
 
     /// As [`Store::open`], for a set-up that falls back to kaniko mode on
-    /// `/` when it fails (ADR-0136), which takes only an empty state
-    /// directory: where this open fails once it took the directory as a
+    /// `/` when it fails (ADR-0136): where this open fails once it took the directory as a
     /// store (marked, by it or before), it calls `undoing`, for what must
     /// let go of the directory or not be cut short first, then empties the
     /// directory where [`Store::abandon`] would, logging what it cannot,
@@ -547,7 +546,10 @@ impl Store {
     /// Anything else in the state directory is refused, a persistent store
     /// first: a `Direct` `RUN` writes the state directory as root, and the
     /// builds of a persistent store reuse its entries without hashing them
-    /// again (ADR-0077). The store holds an exclusive `flock` on the state
+    /// again (ADR-0077). A store with no data, nothing in `blobs/`,
+    /// `layers/` or `caches/` (as a build killed in a set-up that falls
+    /// back here leaves it, ADR-0136), has no entry to reuse: it is emptied
+    /// first, under the lock, as [`Store::abandon`] does. The store holds an exclusive `flock` on the state
     /// directory for its life, which a persistent store's shared one
     /// excludes, and [`Store::close`] empties the directory of whatever a
     /// `RUN` left there.
@@ -556,7 +558,9 @@ impl Store {
     ///
     /// [`Error::Busy`] while another build holds the state directory,
     /// [`Error::StateNotEmpty`] for anything but this store's own marker
-    /// and leftovers in it, [`Error::Io`] when `state` cannot be resolved
+    /// and leftovers in it, unless it is a store with no data, which is
+    /// emptied first as [`Store::abandon`] does ([`Error::NotAbandoned`]
+    /// for what stays), [`Error::Io`] when `state` cannot be resolved
     /// or opened, or `/proc/self/fd` is missing; [`Error::Rootfs`] as
     /// [`Store::open`].
     pub fn open_anonymous(state: &Path) -> Result<Self> {
@@ -582,11 +586,13 @@ impl Store {
         // the lock and before anything is removed or written: a persistent
         // store's entries would be in a `Direct` `RUN`'s reach (ADR-0077).
         let own = |n: &OsString| n == BUILDING || anon::is_leftover(n);
-        let foreign: Vec<OsString> = list(&root, Path::new("."))?
-            .into_iter()
-            .filter(|n| !own(n))
-            .collect();
-        if !foreign.is_empty() {
+        let names = list(&root, Path::new("."))?;
+        let found_leftovers = names.iter().any(|n| anon::is_leftover(n));
+        let foreign: Vec<OsString> = names.into_iter().filter(|n| !own(n)).collect();
+        // A store with no data, such as a build killed in a set-up that
+        // falls back here leaves (ADR-0136), holds nothing a `RUN` could
+        // change for a later build: emptied, under this lock.
+        if !foreign.is_empty() && !empty_if_unused(&root, &state_path, &lock)? {
             return Err(Error::StateNotEmpty {
                 path: state_path,
                 found: describe_foreign(&foreign),
@@ -618,7 +624,8 @@ impl Store {
                 state_path.display()
             );
         }
-        let leftovers = anon::remove_leftovers(&root, &state_path)?;
+        // Those the emptying above removed count too.
+        let leftovers = anon::remove_leftovers(&root, &state_path)? || found_leftovers;
         // A build that did not end cleanly here may have left `RUN`
         // processes no sweep reached (ranikust killed mid-`RUN`, not PID 1):
         // they would see a name, so this build makes none (ADR-0066).
@@ -1392,9 +1399,9 @@ impl Store {
     /// Closes a store no build used, as [`Store::close`] does, then empties
     /// the state directory where it holds no data, whoever made it a store:
     /// for a set-up that fails before its build and falls back to kaniko
-    /// mode on `/` (ADR-0136), which takes only an empty state directory.
-    /// A set-up killed before it got here leaves such a store, which the
-    /// next one that fails empties. The store's shared `flock` is turned
+    /// mode on `/` (ADR-0136). A set-up killed before it got here leaves
+    /// such a store, which the next one that fails empties, as kaniko mode
+    /// on `/` does ([`Store::open_anonymous`]). The store's shared `flock` is turned
     /// exclusive without waiting, on the same descriptor (`flock(2)` drops
     /// the shared lock first, and a refused attempt leaves none), and the
     /// directory is checked under it: while another build holds it, nothing
@@ -1407,14 +1414,15 @@ impl Store {
     /// kept to the end in place of a [`PRUNING_MARKER`]: no entry a later
     /// build reuses can be left half-deleted, so an emptying cut short
     /// leaves a store with no data, which the next open takes. `false` when
-    /// nothing was emptied: an anonymous store, one another build holds, or
-    /// one that holds data.
+    /// nothing was emptied: an anonymous store, one another build holds,
+    /// one that holds data or a name the store does not make.
     ///
     /// # Errors
     ///
-    /// As [`Store::close`]; once the lock is taken, as [`Store::prune_all`]
-    /// for its checks, [`Error::Io`] or [`Error::Rootfs`] when `blobs/`,
-    /// `layers/` or `caches/` cannot be read as directories, and
+    /// As [`Store::close`]; once the lock is taken, [`Error::Io`] or
+    /// [`Error::Rootfs`] when the directory, `blobs/`, `layers/` or
+    /// `caches/` cannot be read, [`Error::Rootfs`] for this process's own
+    /// `/`, and
     /// [`Error::NotAbandoned`] where anything but [`STATE_MARKER`] stays,
     /// which then stays too; [`Error::NoFlock`] when it cannot be taken.
     pub fn abandon(self) -> Result<bool> {
@@ -1995,9 +2003,6 @@ fn refuse_cut_short_prune(state: &RootPath, state_path: &Path) -> Result<()> {
 /// holds, where [`Store::abandon`] would: `false` where another build
 /// holds it too, or it holds data.
 fn abandon_unused(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Result<bool> {
-    let span = tracing::info_span!("rnk_store.prune");
-    let _entered = span.enter();
-    rnk_rootfs::refuse_own_root(state, &state_path)?;
     // A conversion: the shared lock goes, and the exclusive one comes only
     // where no other descriptor holds the directory.
     match lock::try_lock(lock) {
@@ -2010,18 +2015,39 @@ fn abandon_unused(state: &RootPath, state_path: PathBuf, lock: &OwnedFd) -> Resu
             });
         }
     }
+    empty_if_unused(state, &state_path, lock)
+}
+
+/// Empties the state directory `state`, whose exclusive `flock` `lock`
+/// holds, where it is a store with no data: [`MARKER`] and nothing in
+/// [`DATA_DIRS`], neither [`PRUNING`] nor [`BUILDING`], and only names
+/// the store makes. [`MARKER`] goes last, after the sync. `false` where it
+/// is anything else, which is kept as found.
+fn empty_if_unused(state: &RootPath, state_path: &Path, lock: &OwnedFd) -> Result<bool> {
     // Under the lock: no build adds data or names meanwhile.
-    if prune_check(state, &state_path)? != Prunable::Marked || holds_data(state)? {
+    match prune_check(state, state_path) {
+        Ok(Prunable::Marked) => {}
+        // Not a store, or one a kaniko-mode build on `/` used: its own
+        // refusal names it.
+        Ok(Prunable::Empty | Prunable::CutShort)
+        | Err(Error::NotAStateDir { .. } | Error::UsedOnSlash { .. }) => return Ok(false),
+        Err(e) => return Err(e),
+    }
+    if holds_data(state)? {
         return Ok(false);
     }
-    empty_all_but(state, state_path, lock, MARKER, |path, left| {
+    let span = tracing::info_span!("rnk_store.prune");
+    let _entered = span.enter();
+    rnk_rootfs::refuse_own_root(state, state_path)?;
+    empty_all_but(state, state_path.to_owned(), lock, MARKER, |path, left| {
         Error::NotAbandoned { path, left }
     })?;
     Ok(true)
 }
 
 /// The store's directories whose entries builds reuse: blobs, extracted
-/// layers, cache mounts.
+/// layers, cache mounts; the rest of [`DIRS`] holds only what a build
+/// uses while it runs.
 const DATA_DIRS: [&str; 3] = ["blobs", "layers", "caches"];
 
 /// Whether the state directory `root` holds an entry in one of
@@ -2051,7 +2077,8 @@ fn log_abandoned(state_path: &Path, abandoned: Result<bool>) {
         ),
         Ok(false) => tracing::debug!(
             target: "rnk_store",
-            "state directory {}: the store is kept: it holds data, or another build holds it",
+            "state directory {}: the store is kept: it holds data or a name no store makes, or \
+             another build holds it",
             state_path.display()
         ),
         Err(e) => tracing::warn!(

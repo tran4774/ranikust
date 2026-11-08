@@ -512,13 +512,12 @@ fn abandon_empties_a_store_with_no_data_that_no_build_holds() {
         assert_eq!(tree(&state), before, "{data}");
     }
 
-    // A name the store does not make: kept, refused.
+    // A name the store does not make: kept.
     let state = dir.path().join("foreign");
     open(&state).close().unwrap();
     fs::write(state.join("mine"), b"keep").unwrap();
     let before = tree(&state);
-    let kept = open(&state).abandon();
-    assert!(matches!(kept, Err(Error::NotAStateDir { .. })), "{kept:?}");
+    assert!(!open(&state).abandon().unwrap(), "kept");
     assert_eq!(tree(&state), before);
 
     // Made, but another build holds it: closed, the rest kept.
@@ -550,11 +549,13 @@ fn abandon_keeps_the_marker_while_anything_stays() {
         fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
         return;
     }
-    let abandoned = open(&state).abandon();
+    // The mode given back before any `unwrap`: the temp dir must go even
+    // if one fails.
+    let abandoned = Store::open(&BuildPaths::new(&state, &state)).map(Store::abandon);
     let left = tree(&state);
     let opened = Store::open(&BuildPaths::new(&state, &state));
-    // Before any assertion: the temp dir must go even if one fails.
     fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+    let abandoned = abandoned.unwrap();
     let e = abandoned.unwrap_err();
     assert!(matches!(e, Error::NotAbandoned { .. }), "{e}");
     assert!(e.to_string().contains("\"tmp\""), "{e}");

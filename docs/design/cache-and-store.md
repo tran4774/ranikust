@@ -138,7 +138,9 @@ process dies (a T0 test kills with `SIGKILL`).
   - An anonymous store (kaniko mode on `/`) holds it exclusive: it never runs
     beside another build there (`Error::Busy`), because a `Direct` `RUN`
     writes the state directory as root. It refuses a persistent store
-    (`Error::StateNotEmpty`), makes `.ranikust-building` its own again after
+    (`Error::StateNotEmpty`), unless the store holds no data: that one it
+    empties first, under its lock, as `Store::abandon` does
+    ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)). It makes `.ranikust-building` its own again after
     every `RUN` and at its end, and empties the directory at its end, files
     closed first and lock released last. A close that leaves anything is
     `Error::NotEmptied`, which fails the build.
@@ -186,8 +188,7 @@ directory's shared lock until the store opens. In overlay mode an upper
 directory written under `volatile` is never trusted after a crash.
 
 A rootless set-up that fails before its build, where root's `--mode=auto`
-falls back to kaniko mode on `/`, which takes only an empty state
-directory, ends with `Store::abandon`
+falls back to kaniko mode on `/`, ends with `Store::abandon`
 ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)):
 the store closes, and the directory is emptied where the store holds no
 data, whoever made it: nothing in `blobs/`, `layers/` or `caches/`, only
@@ -196,8 +197,9 @@ without waiting, so never while another build holds it. It is emptied as
 `prune --all` empties it, but with `.ranikust-state` removed last in place
 of a `.ranikust-pruning`: with no data, nothing a later build reuses can
 be left half-deleted, and a set-up killed before or during it leaves a
-store with no data, which the next fallback empties. An open that fails
-once it took the directory empties it the same way
+store with no data, which kaniko mode on `/` empties the same way before
+it builds (`Store::open_anonymous`), as the next failed set-up does. An
+open that fails once it took the directory empties it the same way
 (`Store::open_or_abandon`). A store with data is kept, and kaniko mode
 refuses it.
 

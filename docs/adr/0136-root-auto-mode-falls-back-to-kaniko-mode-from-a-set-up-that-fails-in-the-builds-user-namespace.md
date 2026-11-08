@@ -87,9 +87,15 @@ its properties, stood for this.
   ([ADR-0110](0110-a-run-cgroup-only-in-a-marked-or-namespaced-tree-nested-with-cpu-where-ranikust-is-alone.md)).
   Probe directories are removed by the probe, by the store's open,
   and by `Store::abandon`. A set-up killed during a fallback leaves at most
-  a store with no data, which the next fallback empties. A directory whose
-  store holds data (an earlier rootless overlay build's) is kept, and
-  kaniko mode on `/` refuses it, as it did before this decision.
+  a store with no data, which the next failed set-up empties, and which
+  kaniko mode on `/` (`Store::open_anonymous`, under its exclusive lock)
+  empties before it builds, whichever way it was chosen: it holds no
+  entry a later build reuses, so the reason kaniko mode on `/` refuses a
+  persistent store
+  ([ADR-0077](0077-kaniko-mode-on-root-never-uses-a-persistent-store.md))
+  does not hold for it. A directory whose store holds data (an earlier
+  rootless overlay build's) is kept, and kaniko mode on `/` refuses it,
+  as it did before this decision.
 
 ### Consequences
 
@@ -122,8 +128,9 @@ its properties, stood for this.
 - Tests **[code]**: `rnk-sandbox` `supervise::tests` (what the parent does
   for each end of the child), `ranikust`
   `only_roots_auto_mode_falls_back_to_kaniko_mode`, `rnk-store`
-  `abandon_empties_a_store_with_no_data_that_no_build_holds` and
-  `an_open_that_fails_empties_a_store_with_no_data_where_asked`; T1 smoke
+  `abandon_empties_a_store_with_no_data_that_no_build_holds`,
+  `an_open_that_fails_empties_a_store_with_no_data_where_asked` and
+  `an_anonymous_store_empties_a_store_with_no_data_first`; T1 smoke
   case `rootless` (kaniko leg: `RANIKUST_DEBUG_FAULT=rootless-broken`, the
   set-up's last step once its sandbox started, builds in kaniko mode with
   the note and kaniko mode's line alone and leaves the state directory empty;

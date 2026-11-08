@@ -74,6 +74,11 @@ the scheduler runs one stage at a time) or a private directory per stage
     errors and locks in [cache-and-store](cache-and-store.md#locks)). A
     `Direct` `RUN` writes it as root, and persistent builds reuse their
     entries without hashing them again.
+    - A persistent store found there is refused, unless it holds no data
+      (nothing in `blobs/`, `layers/` or `caches/`, as a set-up killed
+      before a fallback leaves it): that one is emptied first, under the
+      lock
+      ([ADR-0136](../adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)).
     - Nothing is kept between builds in this mode: no layer cache, and cache
       mounts are left out (ADR-0057). A safe cache is [open: #30].
     - The `.ranikust-building` marker is made this build's again after every

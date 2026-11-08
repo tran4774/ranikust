@@ -1188,10 +1188,7 @@ fn a_refusal_names_what_the_state_directory_holds() {
     // A persistent store is named as one.
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    Store::open(&BuildPaths::new(dir.path(), &state))
-        .unwrap()
-        .close()
-        .unwrap();
+    store_with_data(dir.path(), &state);
     let e = Store::open_anonymous(&state).unwrap_err();
     assert!(
         e.to_string()
@@ -1285,20 +1282,75 @@ fn plant_as_a_run(state: &Path, outside: &Path) {
     .unwrap();
 }
 
+/// A persistent store in `state` (its build directories in `dir`) with a
+/// blob in it.
+fn store_with_data(dir: &Path, state: &Path) {
+    let store = Store::open(&BuildPaths::new(dir, state)).unwrap();
+    store
+        .fill(&EntryKey::Blob(digest(1)), |e| write_blob(e, b"blob"))
+        .unwrap();
+    store.close().unwrap();
+}
+
 #[test]
 fn an_anonymous_store_refuses_a_persistent_store() {
     // Kaniko mode on `/` builds with a temporary store only: its `RUN` could
     // change what the builds of a persistent store reuse (ADR-0077).
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    Store::open(&BuildPaths::new(dir.path(), &state))
-        .unwrap()
-        .close()
-        .unwrap();
+    store_with_data(dir.path(), &state);
     let before = names(&state);
     let e = Store::open_anonymous(&state).unwrap_err();
     assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
     assert!(e.to_string().contains("temporary store"), "{e}");
+    assert_eq!(names(&state), before);
+}
+
+/// A persistent store with no data, as a build killed in a set-up that
+/// falls back to kaniko mode on `/` leaves it (ADR-0136), is emptied by
+/// an anonymous store, which then opens; the names an earlier anonymous
+/// store left among it still count as a build cut short. One that
+/// another build holds, or that a kaniko-mode build on `/` used too, stays
+/// refused and as it was.
+#[test]
+fn an_anonymous_store_empties_a_store_with_no_data_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    let dead = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    fs::write(dead.build_dir().join("left"), b"x").unwrap();
+    drop(dead);
+    fs::create_dir_all(state.join(rnk_store::SANDBOX_DIR).join("runs")).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert_eq!(names(&state), [".ranikust-building"]);
+    drop(store.named_window().unwrap());
+    store.close().unwrap();
+    assert!(names(&state).is_empty(), "{:?}", names(&state));
+
+    Store::open(&BuildPaths::new(dir.path(), &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    fs::create_dir(state.join(format!("{}00ff", rnk_store::ANON_PREFIX))).unwrap();
+    let store = Store::open_anonymous(&state).unwrap();
+    assert!(matches!(store.named_window(), Err(Error::Anonymous { .. })));
+    store.close().unwrap();
+
+    let state = dir.path().join("held");
+    let held = Store::open(&BuildPaths::new(dir.path(), &state)).unwrap();
+    let before = names(&state);
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::Busy { .. }), "{e}");
+    assert_eq!(names(&state), before);
+    held.close().unwrap();
+
+    fs::write(state.join(".ranikust-building"), b"").unwrap();
+    let before = names(&state);
+    let e = Store::open_anonymous(&state).unwrap_err();
+    assert!(matches!(e, Error::StateNotEmpty { .. }), "{e}");
     assert_eq!(names(&state), before);
 }
 

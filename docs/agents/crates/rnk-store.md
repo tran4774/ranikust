@@ -60,7 +60,7 @@ pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send 
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, build lock, clean-up
     pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker and BUILDING checks, writing nothing: before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
-    pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous)
+    pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
     pub fn anonymous_file(&self) -> Result<(File, PathBuf)>; // a nameless file kept as long as the store
@@ -82,7 +82,7 @@ impl Store {
         cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
     pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it fails once it took the directory as a store, undoing() then the directory emptied where abandon would (logged where it cannot be), the error returned
-    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER (Error::NotAbandoned names what stays, the marker kept); true: emptied; false: another build holds it, or it holds data
+    pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER (Error::NotAbandoned names what stays, the marker kept); true: emptied; false: another build holds it, or it holds data or a name the store does not make
     pub fn prune_all(state: &Path) -> Result<bool>;     // ranikust prune --all (ADR-0105): the caller checked state as a build's; own / refused, EX flock without waiting (Error::InUse), check_prune's checks, marker renamed PRUNING_MARKER and synced, empty by descriptor, PRUNING_MARKER last; false: was empty
     pub fn check_prune(state: &Path) -> Result<PruneCheck>; // prune_all's checks, read-only and without its lock, on state as given with no symlink followed: else prune_all's error; ranikust's prune runs it before the namespace and pins the commands it prints with it
     // prune(&PrunePolicy) -> PruneReport: [design] Phase 5, not built (ADR-0032)
@@ -163,6 +163,10 @@ Design: [locks](../../design/cache-and-store.md#locks),
   makes the marker this build's, closes the files, empties the state directory
   through descriptors, removes the marker only if nothing is left and the
   build was clean, and unlocks last (`Error::NotEmptied` fails the build).
+  A persistent store it finds is refused, unless it holds no data: then
+  it is emptied first, under the exclusive lock, as `abandon` empties it,
+  and the anonymous names found with it still count as a build cut short
+  (ADR-0136).
 - `prune_all` removes nothing a running build uses: it takes the state
   directory's `flock` exclusive without waiting, which every build's store
   holds shared for its life, and keeps it to the end, so it is refused
@@ -221,7 +225,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   before the open reaches it skipped
   (`a_probe_directory_gone_before_it_is_opened_is_skipped`); the hold of
   `check_state_dir` keeps a prune out until dropped
-  (`check_state_dir_holds_the_directory_until_dropped`).
+  (`check_state_dir_holds_the_directory_until_dropped`); an anonymous
+  store refuses a persistent store with a blob and leaves it as it was
+  (`an_anonymous_store_refuses_a_persistent_store`), and empties one with
+  no data, a dead build's and the sandbox's directories included, then
+  opens, the anonymous names found with it making it a build cut short;
+  one another build holds, or that holds `.ranikust-building` too, stays
+  refused and as it was
+  (`an_anonymous_store_empties_a_store_with_no_data_first`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a

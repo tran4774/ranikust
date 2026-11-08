@@ -316,7 +316,8 @@ Each step before the next; design in
    (ADR-0078); then the `flock` on `/` itself (one build per container), the
    state directory checks, `Store::open_anonymous` (a state directory holding
    a persistent store or held by another build is refused with the store's
-   own message, `store_refusal`, ADR-0077) and `Sandbox::start_direct`
+   own message, `store_refusal`, ADR-0077; a persistent store with no data
+   is emptied first, ADR-0136) and `Sandbox::start_direct`
    (ADR-0051); after the trim, `exposure::warn_credential_holders`. Off `/`:
    the state directory, `Store::open`, the sandbox probe and
    `Sandbox::start` (`RUN` in the full sandbox, `--jobs` honoured). On `/`

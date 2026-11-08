@@ -245,9 +245,10 @@ in_fallback() {
 # Kaniko leg only: ranikust sent SIGKILL, SIGTERM or SIGINT at points of
 # a set-up made to fail (RANIKUST_DEBUG_FAULT=rootless-broken), before,
 # during and after its store's open and abandon, leaves no store that
-# stops the next fallback: it builds in kaniko mode and leaves the state
-# directory with no store marker (ADR-0136). Its log goes to the outputs,
-# which kaniko mode on / keeps, unlike /tmp.
+# stops a build in kaniko mode on /, here one that never tries rootless
+# overlay mode (--ignore-path): it builds and leaves the state directory
+# with no store marker (ADR-0136). Its log goes to the outputs, which
+# kaniko mode on / keeps, unlike /tmp.
 killed_in_fallback() {
   [ "${RANIKUST_CASE_MODE:-}" = kaniko ] || return 0
   state fallback-sweep
@@ -268,18 +269,19 @@ for sig in KILL TERM INT; do
 done
 i=0
 while foreign >/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+echo "found: $(ls -A /var/lib/ranikust | tr "\n" " ")"
 rc=0
-"$0" "$@" >"${0%/bin/ranikust}/out/last.log" 2>&1 || rc=$?
+"$0" "$@" --ignore-path=/var/cache/rnk-none >"${0%/bin/ranikust}/out/last.log" 2>&1 || rc=$?
 echo "status=$rc"
-grep -q "ranikust: kaniko mode on /, RUN directly" "${0%/bin/ranikust}/out/last.log" && echo "fell back"
+grep -q "ranikust: kaniko mode on /, RUN directly" "${0%/bin/ranikust}/out/last.log" && echo "kaniko mode"
 echo "left: $(ls -A /var/lib/ranikust | tr "\n" " ")"
 [ "$rc" = 0 ] || cat "${0%/bin/ranikust}/out/last.log"' \
     "$SMOKE_CASES_DIR/$CASE" "$o" --build-arg "BASE=$BASE" --target userns \
     --allow proc.rbind 2>&1)"
   PODMAN_ARGS=()
   printf '%s\n' "$got" >"$o/sweep.log"
-  grep -qx 'status=0' <<<"$got" && grep -qx 'fell back' <<<"$got" ||
-    fail "the fallback after those killed in one: $got"
+  grep -qx 'status=0' <<<"$got" && grep -qx 'kaniko mode' <<<"$got" ||
+    fail "kaniko mode on / after fallbacks killed: $got"
   ! grep -Eq '^left: .*\.ranikust-(state|pruning)' <<<"$got" ||
     fail "a store left by fallbacks killed: $got"
 }

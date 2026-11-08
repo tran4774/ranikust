@@ -272,10 +272,12 @@ cannot leave the namespace once it is in:
    where its store holds no data, whoever made it (`Store::abandon`, or
    `Store::open_or_abandon` for an open that failed once it took the
    directory; not a store with data, or one another build holds; a
-   forwarded stop is ignored until it is done) and sends the reason, and the parent, with no stop received,
-   warns `<reason>; kaniko mode instead, before anything was built
-   (ADR-0136)` and builds in kaniko mode as below. A user other than root and
-   `--mode=overlay` get the error.
+   forwarded stop is ignored until it is done) and sends the reason, and
+   the parent, with no stop received, warns `<reason>; kaniko mode
+   instead, before anything was built (ADR-0136)` and builds in kaniko
+   mode as below, which empties such a store too where a set-up killed
+   before its end left one (`Store::open_anonymous`). A user other than
+   root and `--mode=overlay` get the error.
 
 The mode line, logged once the set-up can no longer fail, so a fallback
 logs kaniko mode's alone, says what the build got: `overlay mode, rootless, in the
