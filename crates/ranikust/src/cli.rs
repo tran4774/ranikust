@@ -386,8 +386,8 @@ pub(crate) struct BuildArgs {
     /// or such a namespace is missing, never building without it. The
     /// state directory must be its own: owned by that uid (ranikust makes
     /// a missing one), below directories only root owns and that uid may
-    /// search. A user other than root builds in a user namespace anyway.
-    /// Refused with --mode=kaniko.
+    /// search. Refused with --mode=kaniko, and for a user other than root,
+    /// whose build already runs in a user namespace of its own.
     #[arg(long, help_heading = "ranikust")]
     pub(crate) userns: bool,
 

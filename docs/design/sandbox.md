@@ -910,6 +910,9 @@ with another map:
   would refuse root's own builds there. Every refusal comes before anything is
   written, with guidance. Extracted layers are keyed by the namespace's id map,
   as in every user namespace ([cache-and-store](cache-and-store.md)).
+- **Root only.** From a user other than root, `--userns` is a usage error
+  before anything is written: only root may map the range, and that user's
+  build already runs in a user namespace of its own.
 - **Never another mode.** `--userns` is refused with `--mode=kaniko`; where a
   set-up step fails it refuses, never falling back to a mode without the user
   namespace, unlike root's `--mode=auto`

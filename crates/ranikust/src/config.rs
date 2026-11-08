@@ -321,6 +321,11 @@ impl BuildConfig {
     ///
     /// [`Invalid`] with a message for the user.
     pub(crate) fn from_args(args: &BuildArgs) -> Result<Self, Invalid> {
+        Self::from_args_as(args, rustix::process::geteuid().as_raw())
+    }
+
+    /// [`BuildConfig::from_args`] for the effective uid `euid`.
+    fn from_args_as(args: &BuildArgs, euid: u32) -> Result<Self, Invalid> {
         let compression = args.compression.unwrap_or_default();
         // kaniko `cmd/executor/cmd/root.go:200-202`.
         if !args.no_push && args.destinations.is_empty() {
@@ -415,6 +420,16 @@ impl BuildConfig {
                     .to_owned(),
             ));
         }
+        // Only root may map the `ranikust` range (ADR-0104); any other
+        // user's build is in a user namespace of its own already.
+        if args.userns && euid != 0 {
+            return Err(Invalid(
+                "--userns needs root: it maps the ranikust range of /etc/subuid and /etc/subgid, \
+                 which only root may map; a build as a user other than root already runs in a \
+                 user namespace of its own; drop --userns"
+                    .to_owned(),
+            ));
+        }
         // One stage per build (ADR-0049): kaniko's list builds the stages
         // after the first and throws them away.
         if args.targets.len() > 1 {
@@ -490,10 +505,7 @@ impl BuildConfig {
             userns: args.userns,
             state_dir: match args.state_dir.as_deref() {
                 Some(dir) => absolute(dir),
-                None => default_state_dir(
-                    rustix::process::geteuid().as_raw(),
-                    std::env::var_os("HOME").as_deref(),
-                )?,
+                None => default_state_dir(euid, std::env::var_os("HOME").as_deref())?,
             },
             jobs: args.jobs,
             network: args.network,

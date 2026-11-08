@@ -307,21 +307,41 @@ fn meta_options_hold_no_names_paths_or_arguments() {
 }
 
 /// `--userns` builds in overlay mode in a user namespace (ADR-0104):
-/// refused with `--mode=kaniko` before anything runs, else kept, and
-/// counted in the run's options.
+/// refused with `--mode=kaniko` before anything runs, else kept for root,
+/// and counted in the run's options.
 #[test]
 fn userns_is_refused_with_kaniko_mode_only() {
-    let err = config(&["--no-push", "--userns", "--mode=kaniko"]).expect_err("kaniko mode");
+    let root = |flags: &[&str]| BuildConfig::from_args_as(&args(flags), 0);
+    let err = root(&["--no-push", "--userns", "--mode=kaniko"]).expect_err("kaniko mode");
     assert!(err.0.contains("--userns"), "{}", err.0);
     assert!(err.0.contains("--mode=kaniko"), "{}", err.0);
     for mode in ["--mode=auto", "--mode=overlay"] {
-        let ok = config(&["--no-push", "--userns", mode]).expect(mode);
+        let ok = root(&["--no-push", "--userns", mode]).expect(mode);
         assert!(ok.userns, "{mode}");
         assert_eq!(ok.meta_options()["userns"], true, "{mode}");
     }
-    let off = config(&["--no-push"]).expect("config");
+    let off = root(&["--no-push"]).expect("config");
     assert!(!off.userns);
     assert_eq!(off.meta_options()["userns"], false);
+}
+
+/// `--userns` from a user other than root is a usage error naming why: the
+/// range is root's to map, and that user's build has a user namespace.
+#[test]
+fn userns_is_refused_for_a_user_other_than_root() {
+    for mode in ["--mode=auto", "--mode=overlay"] {
+        let err = BuildConfig::from_args_as(&args(&["--no-push", "--userns", mode]), 1000)
+            .expect_err(mode);
+        for part in [
+            "--userns needs root",
+            "ranikust range",
+            "only root may map",
+            "already runs in a user namespace",
+        ] {
+            assert!(err.0.contains(part), "{mode}: {}", err.0);
+        }
+    }
+    BuildConfig::from_args_as(&args(&["--no-push"]), 1000).expect("without --userns");
 }
 
 #[test]

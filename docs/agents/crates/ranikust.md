@@ -67,9 +67,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   comes while a failed set-up abandons its store is ignored
   (`Supervised::undoing`) until the child exits, and the parent then ends
   by it. Only the mode that builds is logged as the outcome. The
-  probe's directory takes the process's gid and no setgid bit, as the
-  store's own directories do (ADR-0099), so a setgid state directory does
-  not stop its `chown`.
+  probe's directory takes the process's gid and no setgid bit, through its
+  own descriptor, as the store's own directories do (ADR-0099), so a setgid
+  state directory does not stop its `chown`.
 - `--userns` as root (#83, ADR-0104;
   [sandbox](../../design/sandbox.md#--userns)): `main.rs`'s `build` sends
   it to `rootless` (`Via::Userns`) before any mode is picked, whether or not
@@ -154,7 +154,7 @@ Modules of `crates/ranikust/src/` (all crate-private):
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling, `rootless` and `rootless_kept_off` (the route to rootless overlay mode) |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
 | `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
-| `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
+| `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O; `--userns` refused with `--mode=kaniko` and for a user other than root), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
 | `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `set_up_kaniko`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `probe_in_dir` (its `BuildIds`), `give_dir`, `volume_hint`; `setup/rootless.rs`: `plan` (`userns` for `--userns`), `NotHere`, `set_up`, `refused_by_hook`, `USERNS_UNUSABLE` |
 | `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `prepare_for` and `Owner` (`Me`, or `Mapped`: `--userns`'s range's first ids own the state directory, parents only root's, not writable even sticky, searchable by those ids; a missing one made and given to them, missing parents `0711`; an existing one of root's, and one at, below or above root's default, refused), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; `root_range`, `ROOT_ENTRY`, `ROOT_RANGE_GUIDANCE`: root's `ranikust` range for `--userns`; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
@@ -263,7 +263,7 @@ Each step before the next; design in
    `/proc/sys` is writable or cannot be told (`rootless_kept_off`,
    ADR-0107), and `--mode=overlay` there is refused with both reasons.
    Root's `--userns` goes to rootless overlay mode before all of it
-   (`Via::Userns`).
+   (`Via::Userns`); any other user's is a usage error (`config`).
 5. **Overlay mode** (`setup::set_up`): `enter_namespace`
    (`rnk_sandbox::enter_build_namespace`: refuses in a plain `chroot`, then
    `unshare(CLONE_NEWNS)`, `/` rslave) → `statedir::prepare`, refused on
@@ -446,8 +446,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `meta_options` leaking no destination, path or argument, the overlay-mode
   refusals and warnings, whole-root `--ignore-path` refused, `--seccomp`
   values and files refused for each reason, a FIFO given as the file never
-  opened, under an inotify watch; `--userns` refused with `--mode=kaniko`
-  only, `userns_is_refused_with_kaniko_mode_only`), `statedir`
+  opened, under an inotify watch; `--userns` refused with `--mode=kaniko`,
+  `userns_is_refused_with_kaniko_mode_only`, and for a user other than
+  root, `userns_is_refused_for_a_user_other_than_root`), `statedir`
   (`a_userns_state_directory_is_the_mapped_root_s_below_parents_it_may_search`,
   `a_userns_state_directory_is_never_at_below_or_above_root_s_default`),
   `subids`
@@ -463,7 +464,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   only then, a store refusal naming its state directory once, and a
   build's refusal of a prune cut short giving a user and root the next
   step; the probe's directory taking the process's gid and losing a
-  setgid parent's bit, `the_probe_directory_drops_a_setgid_parents_bit`;
+  setgid parent's bit, `the_probe_directory_drops_a_setgid_parents_bit`,
+  through its descriptor,
+  `the_probe_directory_s_group_is_set_through_its_descriptor`;
   a lock taken only on a directory a store's open would remove as the
   probe's, `only_a_probe_directory_a_store_would_remove_is_held`;
   `setup/tests/userns.rs`: the store opened inside the build's
@@ -590,7 +593,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   runs it with `RANIKUST_DEBUG_FAULT=no-userns`, so that no T0 test makes a
   user namespace: a user's build stops at "rootless overlay mode cannot run
   here" (a test that sets a fault of its own, or builds `--mode=kaniko`, stops
-  at "kaniko mode needs root"); exit codes of
+  at "kaniko mode needs root"); `--userns` from a user other than root a
+  usage error that writes nothing
+  (`userns_as_a_user_other_than_root_is_a_usage_error`); exit codes of
   `--help`, `version`, refusals and validation; the kernel refusal, the
   seccomp message and the emulator message (Rosetta) through
   `RANIKUST_DEBUG_FAULT=kernel-missing|kernel-blocked|kernel-hidden`;

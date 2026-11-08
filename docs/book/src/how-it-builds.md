@@ -163,7 +163,8 @@ before anything is written.
   outputs.
 - **No other mode.** Where a step of the user namespace fails, the build is
   refused; it never falls back to a mode without it. `--mode=kaniko` with
-  `--userns` is a usage error.
+  `--userns` is a usage error, and so is `--userns` from a user other than
+  root, whose build already runs in a user namespace of its own.
 
 ## kaniko mode
 
