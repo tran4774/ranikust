@@ -199,10 +199,11 @@ pub enum Error {
     /// subordinate ids) or the owners of files in the state directory
     /// changed. Also a layer published under these maps with no canary.
     #[error(
-        "the state directory {} holds layers extracted under other ids than this user namespace \
-         gives: {why}; the subordinate ids of an enclosing container, or the owners of files in \
-         the state directory, changed since, and those layers would give the image other \
-         owners (ADR-0128); empty it with ranikust prune --all, or pass another --state-dir",
+        "the state directory {} holds layers extracted under other ids than the build's user \
+         namespace gives: {why}; the subordinate ids of an enclosing container, or the owners \
+         of files in the state directory, changed since, and those layers would give the image \
+         other owners (ADR-0128); empty it with ranikust prune --all, or pass another \
+         --state-dir",
         path.display()
     )]
     IdMapChanged {

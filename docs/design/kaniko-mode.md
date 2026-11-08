@@ -802,12 +802,15 @@ layer is.
   too;
   per stage a layer is extracted as it arrives (ADR-0055). In a user
   namespace the same pass, base layers' and cached ones' alike, refuses an
-  owner the namespace does not map once the layer is verified, just before
-  that layer is extracted
-  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)).
+  owner the namespace does not map, on a path the ignore list does not
+  skip, once the layer is verified, just before that layer is extracted
+  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md),
+  [ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md));
+  a cached blob's owners are read the same way before it is applied.
   Per stage, in a user namespace, no layer, base or cached, is streamed:
-  the blobs are pulled and every owner of every layer is checked before any
-  is extracted
+  the blobs are pulled and every owner of every base layer is checked
+  before any is extracted, a cached blob's just before its own
+  `apply_layer`
   ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
   [modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
 - **The walk catches up lazily.** Applying a layer marks the walk's record
@@ -819,8 +822,9 @@ layer is.
   a warm or partial build walks no more than a cold one, toward
   [ADR-0117](../adr/0117-warm-and-partial-builds-are-no-slower-than-kanikos-cache.md)'s target.
 - **No step goes on from a half-applied layer.** A failure before the layer's
-  extraction began (the source refuses the request; on `/`, the spool pass)
-  leaves the root as it was, usable. A later one leaves it
+  extraction began (the source refuses the request; in a user namespace,
+  the owner check; on `/`, the spool pass) leaves the root as it was,
+  usable. A later one leaves it
   broken: no layer, applied layer, view, keep or child stage (`FROM`,
   squashed or handed over) goes on from it, so no later layer is computed
   over part of a cached one. A broken stage directory is only released, and

@@ -40,7 +40,8 @@ extract the same digest at once.
   (`IdMaps`), read once by `open`.
 - The canary of each id map (ADR-0128, #183): made with the map's first
   layer, checked by `open`, `check_state_dir` and the reuse of a layer of
-  the map ([design](../../design/cache-and-store.md#the-canary-of-an-id-map)).
+  the map, and from the parent by `check_state_dir_for` before the
+  build's user namespace exists ([design](../../design/cache-and-store.md#the-canary-of-an-id-map)).
 - `BuildPaths`, the paths handed down to every crate.
 
 ## Must not
@@ -59,13 +60,13 @@ Boundaries: `crates/rnk-store/src/lib.rs`. In short:
 ```rust
 pub struct BuildPaths { pub root: PathBuf, pub state: PathBuf }  // root = `/` (kaniko mode in a container) or the state dir; state = --state-dir (ADR-0050)
 pub fn user_namespace_proc() -> Result<Option<OwnedFd>>; // /proc/self (procfs checked) in a user namespace other than the initial one, told by the inode of ns/user (nsfs checked), not by the map; None in the initial one
-pub struct IdMaps;  // a user namespace's uid_map and gid_map, canonical (lines sorted, single spaces): current() reads them there (None in the initial one), parse(uid, gid) -> Option; uid_map(), gid_map() -> &str; a line reaching past u32::MAX is refused
+pub struct IdMaps;  // a user namespace's uid_map and gid_map, parsed by rnk_rootfs::MappedIds::parse (ADR-0144) and kept canonical (lines sorted, single spaces): current() reads them there, read once by open (None in the initial one; Error::Io naming uid_map or gid_map), parse(uid, gid) -> Option; uid_map(), gid_map() -> &str, ids() -> &MappedIds; a range reaching u32::MAX on either side is refused, as the kernel does
 impl BuildPaths { pub fn new(root: impl Into<PathBuf>, state: impl Into<PathBuf>) -> Self; }
 pub struct Store { /* state dir RootPath, build id, build lock fd */ }  // Send + Sync
 impl Store {
     pub fn open(paths: &BuildPaths) -> Result<Store>;   // mkdir -p, canonicalize, marker check, store directories real ones, the id maps read and their canary checked (IdMapChanged), build lock, clean-up
-    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING, store-directory and canary checks, writing nothing: before overlay mode sets the state directory's mode and before rootless overlay mode's probe (Q-111, (a)); the hold keeps the shared lock until the caller's Store::open has its own
-    pub fn check_state_dir_for(state: &Path, children: &[IdMaps]) -> Result<StateDirHold>; // check_state_dir, then the canary of each child's map checked from here (owners the ids each map gives outside; IdMapChanged): rootless overlay mode before its probe and the build's user namespace
+    pub fn check_state_dir(state: &Path) -> Result<StateDirHold>; // open's lock, marker, BUILDING, PRUNING, store-directory and canary checks, writing nothing; the hold keeps the shared lock until the caller's Store::open has its own
+    pub fn check_state_dir_for(state: &Path, children: &[IdMaps]) -> Result<StateDirHold>; // check_state_dir, then the canary of each child's map checked from here (owners the ids each map gives outside; IdMapChanged): ranikust's, before overlay mode sets the state directory's mode (no child as root) and before rootless overlay mode's probe and the build's user namespace (Q-111, (a))
     pub fn open_anonymous(state: &Path) -> Result<Store>; // kaniko mode on /: nothing on disk (ADR-0051); layers and cache mounts refused (Error::Anonymous); a persistent store refused (StateNotEmpty, ADR-0077) unless it holds no data, then emptied first under the lock as abandon does (ADR-0136)
     pub fn is_anonymous(&self) -> bool;
     pub fn files_in_memory(&self) -> bool;              // the anonymous files made now are memfds (can turn true, never back); kaniko mode on / then keeps no spool for later stages (ADR-0081)
@@ -86,7 +87,7 @@ impl Store {
               E: Into<Box<dyn std::error::Error + Send + Sync>>;      //   -> fsync a blob -> rename
     pub fn cache_dir(&self, id: &str) -> Result<PathBuf>;  // caches/<sha256(id)>, created if missing
     pub fn cache_lease(&self, key: &str, sharing: CacheSharing, owner: Option<CacheOwner>,
-        cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed; an owner the user namespace does not map: Error::Rootfs(Unmapped) naming caches/<name> (ADR-0098)
+        target: &Path, cancelled: &dyn Fn() -> bool) -> Result<CacheLease>;  // held for one RUN, as BuildKit's sharing=: flock + an in-process hold; a new cache made under a temporary name, owner set, renamed; an owner the user namespace does not map: Error::Rootfs(Unmapped) naming `target`, the mount's target in the root (ADR-0098)
     pub fn close(self) -> Result<()>;                   // removes builds/<id> and tmp/<id>; anonymous: see Invariants; Error::NotEmptied fails the build (ADR-0077)
     pub fn open_or_abandon(paths: &BuildPaths, undoing: impl FnOnce()) -> Result<Self>; // ADR-0136: open; where it fails once it took the directory as a store, undoing() then the directory emptied where abandon would (logged where it cannot be), the error returned
     pub fn abandon(self) -> Result<bool>;               // ADR-0136, before a fallback to kaniko mode on /: close, then the shared state lock turned exclusive without waiting on the same descriptor and, under it, the directory emptied where the store holds no data, whoever made it: blobs/, layers/, caches/ empty, prune_all's names only, no PRUNING_MARKER or BUILDING_MARKER; emptied with STATE_MARKER last, no PRUNING_MARKER (Error::NotAbandoned names what stays, the marker kept); true: emptied; false: another build holds it, or it holds data or a name the store does not make
@@ -240,7 +241,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   concurrent `fill` from threads runs `f` once, leftovers of a dead build
   removed and a running build's kept, `close`, `cache_dir`; a new cache's
   owner, and an id of `u32::MAX` left the process's
-  (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`); a directory
+  (`a_new_cache_owned_by_u32_max_keeps_the_processs_id`), an owner refused
+  with `EINVAL` named by the mount's target (`src/store/tests.rs`,
+  `a_cache_owner_refused_with_einval_names_the_mount_s_target`); a directory
   holding only the probe's directories is marked and they are removed, and
   anything else with them still refused
   (`open_marks_a_directory_holding_only_ranikusts_leftovers`); each store
@@ -355,7 +358,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   layer; stores that opened with none make one between them; a layer of
   the map without a canary is never reused; none outside a user namespace.
   `src/userns.rs`: `IdMaps` canonical however padded or ordered, a line
-  past `u32::MAX` refused, an id inside given its parent's.
+  past `u32::MAX` refused and a map that does not parse named, an id
+  inside given its parent's.
 - **T0** `tests/prune.rs` (`prune_all`, the test user's own files): every
   kind of entry a build leaves emptied, marker last; refused while a build
   holds the store, nothing removed; a directory without a regular marker

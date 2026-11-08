@@ -205,7 +205,7 @@ fn scanned(form: Form, tar: &[u8]) -> Seen {
     let mut found = Unmapped::owners(own_map());
     let r = match form {
         Form::Overlay => scan_owners(tar, &mut found),
-        Form::Live => check_headers_and_owners(tar, &mut found),
+        Form::Live => check_headers_and_owners(tar, &IgnoreList::new(), &mut found),
     };
     match r {
         Err(e) => Seen::Refused(e.to_string()),
@@ -619,21 +619,47 @@ fn red_team_hostile_headers_never_pass_the_owner_scan_where_the_extraction_chown
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// An ignored path of a far owner: the scan of a live root does not know
-/// the ignore list and names it, while `extract_live` skips the entry.
-/// Stricter than the extraction, never laxer.
+/// An ignored path of a far owner: the scan of a live root, given the
+/// ignore list, skips it as `extract_live` skips the entry. One reached
+/// through a symlink of the layer is still named, though the extraction
+/// skips it too: a header does not show where it lands. Stricter than the
+/// extraction, never laxer.
 #[test]
-fn red_team_an_ignored_path_s_owner_is_still_named() {
+fn red_team_an_ignored_path_s_owner_is_skipped_as_the_extraction_skips_it() {
     let o = own();
-    let tar = Tar::new().dir("proc/", o).file("proc/x", F).bytes();
+    let mut keep = IgnoreList::new();
+    keep.insert("/proc").unwrap();
+    let live = |tar: &[u8], keep: &IgnoreList| {
+        let mut found = Unmapped::owners(own_map());
+        check_headers_and_owners(tar, keep, &mut found).unwrap();
+        found
+    };
+    let tar = Tar::new()
+        .dir("proc/", F)
+        .file("proc/x", F)
+        .file("./proc/../proc/y", F)
+        .bytes();
+    let found = live(&tar, &keep);
+    assert!(found.is_empty(), "{found}");
+    // The control: without the ignore list, the same layer is refused.
     assert!(
-        matches!(scanned(Form::Live, &tar), Seen::Unmapped(t) if t.contains("uid 3000000000 (/proc/x)"))
+        matches!(scanned(Form::Live, &tar), Seen::Unmapped(t) if t.contains("uid 3000000000 (/proc)"))
+    );
+    let through = Tar::new()
+        .link(EntryType::Symlink, "p", o, "proc")
+        .file("p/z", F)
+        .bytes();
+    let found = live(&through, &keep);
+    assert!(
+        found.to_string().contains("uid 3000000000 (/p/z)"),
+        "{found}"
     );
     if !rustix::process::geteuid().is_root() {
-        let r = root();
-        let mut keep = IgnoreList::new();
-        keep.insert("/proc").unwrap();
-        extract_live(&r.root, tar.as_slice(), &keep).unwrap();
+        for tar in [&tar, &through] {
+            let r = root();
+            r.root.create_dir("proc", 0o755).unwrap();
+            extract_live(&r.root, tar.as_slice(), &keep).unwrap();
+        }
     }
 }
 
@@ -675,4 +701,412 @@ fn red_team_a_refusal_names_a_bounded_number_of_hostile_names() {
         found.highest_uid(None),
         Some(u32::try_from(FAR + n - 1).unwrap())
     );
+}
+
+/// A live root's ignore list as kaniko mode builds it on `/`: fixed paths,
+/// a mount-point file, the below-only entry, and `--ignore-path`s, one over
+/// a symlink of the root and two globs.
+fn ignored_keep() -> IgnoreList {
+    let mut keep = IgnoreList::new();
+    for p in ["/proc", "/ranikust", "/etc/mtab", "/etc/hosts", "/var/run"] {
+        keep.insert(p).unwrap();
+    }
+    keep.insert_below("/tmp/apt-key-gpghome").unwrap();
+    keep.insert_glob("/var/cache/*").unwrap();
+    keep.insert_glob("/opt/*/secret").unwrap();
+    keep
+}
+
+/// A fresh live root holding what [`ignored_keep`] names, with symlinks of
+/// its own: `var/run -> ../run`, as an image has it, and `lnk -> proc`.
+fn ignored_root() -> Root {
+    let r = root();
+    for d in [
+        "proc",
+        "ranikust",
+        "etc",
+        "run",
+        "var",
+        "var/cache",
+        "tmp",
+        "tmp/apt-key-gpghome",
+        "opt",
+        "opt/a",
+    ] {
+        r.root.create_dir(d, 0o755).unwrap();
+    }
+    r.root.symlink("../run", "var/run").unwrap();
+    r.root.symlink("proc", "lnk").unwrap();
+    r
+}
+
+fn scanned_ignored(tar: &[u8], map: &MappedIds) -> Seen {
+    let mut found = Unmapped::owners(map.clone());
+    match check_headers_and_owners(tar, &ignored_keep(), &mut found) {
+        Err(e) => Seen::Refused(e.to_string()),
+        Ok(()) if found.is_empty() => Seen::Pass,
+        Ok(()) => Seen::Unmapped(found.to_string()),
+    }
+}
+
+/// [`extract_live`] into [`ignored_root`] with [`ignored_keep`]: a refused
+/// `chown` is `EPERM` for a regular user, `EINVAL` in a user namespace.
+fn extracted_ignored(tar: &[u8]) -> Seen {
+    let r = ignored_root();
+    match extract_live(&r.root, tar, &ignored_keep()) {
+        Ok(()) => Seen::Pass,
+        Err(Error::Io {
+            op: "chown", path, ..
+        }) => Seen::Chown(path),
+        Err(Error::Unmapped(u)) => Seen::Chown(PathBuf::from(u.to_string())),
+        Err(e) => Seen::Refused(e.to_string()),
+    }
+}
+
+/// Hostile names of entries of a far owner on and around ignored paths:
+/// what the scan given the ignore list must say of each.
+fn ignored_cases() -> Vec<(&'static str, Vec<u8>, Expect)> {
+    let o = own();
+    let long = |dir: &str| format!("{dir}/{}", "a".repeat(150));
+    let skip = Expect::Pass;
+    let mut v = vec![
+        (
+            "an ignored path",
+            Tar::new().file("proc/x", F).bytes(),
+            skip,
+        ),
+        ("a ./ prefix", Tar::new().file("./proc/x", F).bytes(), skip),
+        (
+            "an absolute name",
+            Tar::new().file("/proc/x", F).bytes(),
+            skip,
+        ),
+        (
+            "doubled slashes",
+            Tar::new().file("//proc//x", F).bytes(),
+            skip,
+        ),
+        (
+            "a . component",
+            Tar::new().file("proc/./x", F).bytes(),
+            skip,
+        ),
+        ("a trailing /.", Tar::new().dir("proc/.", F).bytes(), skip),
+        (
+            ".. into an ignored path",
+            Tar::new().file("etc/../proc/x", F).bytes(),
+            skip,
+        ),
+        (
+            ".. out of an ignored path",
+            Tar::new().file("proc/../etc/x", F).bytes(),
+            Expect::Owners("uid 3000000000 (/etc/x)"),
+        ),
+        (
+            ".. out of an ignored path to the root",
+            Tar::new().dir("proc/..", F).bytes(),
+            Expect::Owners("uid 3000000000 (/)"),
+        ),
+        (
+            "the ignored path as a file",
+            Tar::new().file("proc", F).bytes(),
+            skip,
+        ),
+        (
+            "the ignored path as a symlink, then below it",
+            Tar::new()
+                .link(EntryType::Symlink, "proc", F, "etc")
+                .file("proc/y", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "another case",
+            Tar::new().file("PROC/x", F).bytes(),
+            Expect::Owners("uid 3000000000 (/PROC/x)"),
+        ),
+        (
+            "a sibling the ignored name prefixes",
+            Tar::new().file("proc.d", F).bytes(),
+            Expect::Owners("uid 3000000000 (/proc.d)"),
+        ),
+        (
+            "a GNU long name in an ignored path",
+            Tar::new()
+                .long(EntryType::GNULongName, &long("proc"), o)
+                .file("etc/short", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "a GNU long name out of the ignored ustar name",
+            Tar::new()
+                .long(EntryType::GNULongName, &long("etc"), o)
+                .file("proc/x", F)
+                .bytes(),
+            Expect::Owners("uid 3000000000 (/etc/aaaa"),
+        ),
+        (
+            "a PAX path out of the ignored ustar name",
+            Tar::new()
+                .pax(&[("path", b"etc/y")])
+                .file("proc/x", F)
+                .bytes(),
+            Expect::Owners("uid 3000000000 (/etc/y)"),
+        ),
+        (
+            "a PAX path into an ignored path",
+            Tar::new()
+                .pax(&[("path", b"proc/x")])
+                .file("etc/y", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "a PAX path through .. into an ignored path",
+            Tar::new()
+                .pax(&[("path", b"etc/../proc/z")])
+                .file("etc/y", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "a PAX path through .. out of an ignored path",
+            Tar::new()
+                .pax(&[("path", b"proc/../etc/z")])
+                .file("proc/y", F)
+                .bytes(),
+            Expect::Owners("uid 3000000000 (/etc/z)"),
+        ),
+        (
+            // The GNU long name stands over the PAX path, for both.
+            "a PAX path out of an ignored GNU long name",
+            Tar::new()
+                .long(EntryType::GNULongName, &long("proc"), o)
+                .pax(&[("path", b"etc/p")])
+                .file("etc/x", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "a hardlink of a far owner into an ignored path",
+            Tar::new()
+                .file("proc/x", F)
+                .link(EntryType::Link, "etc/h", F, "proc/x")
+                .bytes(),
+            skip,
+        ),
+        (
+            "a hardlink in an ignored path",
+            Tar::new()
+                .file("etc/f", o)
+                .link(EntryType::Link, "proc/h", F, "etc/f")
+                .bytes(),
+            skip,
+        ),
+        (
+            "a symlink of a far owner to an ignored path",
+            Tar::new()
+                .link(EntryType::Symlink, "etc/s", F, "/proc/x")
+                .bytes(),
+            Expect::Owners("uid 3000000000 (/etc/s)"),
+        ),
+        (
+            "a symlink of the root into an ignored path",
+            Tar::new().file("lnk/z", F).bytes(),
+            Expect::Owners("uid 3000000000 (/lnk/z)"),
+        ),
+        (
+            "an ignored path over a symlink of the root",
+            Tar::new().file("var/run/x", F).bytes(),
+            skip,
+        ),
+        (
+            "the target of an ignored symlink of the root",
+            Tar::new().file("run/x", F).bytes(),
+            Expect::Owners("uid 3000000000 (/run/x)"),
+        ),
+        (
+            "an ignored mount-point file, and out of it",
+            Tar::new()
+                .file("etc/hosts", F)
+                .file("etc/hosts/../hostname", far_gid())
+                .bytes(),
+            Expect::Owners("gid 3000000000 (/etc/hostname)"),
+        ),
+        (
+            "below-only: the entry itself",
+            Tar::new().dir("tmp/apt-key-gpghome/", F).bytes(),
+            Expect::Owners("uid 3000000000 (/tmp/apt-key-gpghome)"),
+        ),
+        (
+            "below-only: below it",
+            Tar::new().file("tmp/apt-key-gpghome/k", F).bytes(),
+            skip,
+        ),
+        (
+            "below-only: the entry by a trailing /.",
+            Tar::new().dir("tmp/apt-key-gpghome/.", F).bytes(),
+            Expect::Owners("uid 3000000000 (/tmp/apt-key-gpghome)"),
+        ),
+        (
+            "below-only: the entry by ..",
+            Tar::new().dir("tmp/apt-key-gpghome/k/..", F).bytes(),
+            Expect::Owners("uid 3000000000 (/tmp/apt-key-gpghome)"),
+        ),
+        (
+            "a glob: the directory",
+            Tar::new().dir("var/cache/", F).bytes(),
+            Expect::Owners("uid 3000000000 (/var/cache)"),
+        ),
+        (
+            "a glob: in the directory, a dot name too",
+            Tar::new()
+                .file("var/cache/apt", F)
+                .file("var/cache/.hidden", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "a glob in the middle",
+            Tar::new().file("opt/a/secret", F).bytes(),
+            skip,
+        ),
+        (
+            "a glob in the middle, a level deeper",
+            Tar::new().file("opt/a/b/secret", F).bytes(),
+            Expect::Owners("uid 3000000000 (/opt/a/b/secret)"),
+        ),
+        (
+            "whiteouts of a far owner of and in ignored paths",
+            Tar::new()
+                .file(".wh.proc", F)
+                .dir("proc/.wh..wh..opq", F)
+                .bytes(),
+            skip,
+        ),
+        (
+            "the layer's root",
+            Tar::new().dir("./", F).bytes(),
+            Expect::Owners("uid 3000000000 (/)"),
+        ),
+        (
+            "a PAX path into an ignored path with a NUL, passed over",
+            Tar::new()
+                .pax(&[("path", b"proc/x\0/../../etc/y")])
+                .file("etc/y", F)
+                .bytes(),
+            Expect::Owners("uid 3000000000 (/etc/y)"),
+        ),
+    ];
+    // Two PAX paths: whichever stands, the scan and the extraction read
+    // the same one.
+    v.push((
+        "two PAX paths, the first into an ignored path",
+        Tar::new()
+            .pax(&[("path", b"proc/x"), ("path", b"etc/y")])
+            .file("etc/z", F)
+            .bytes(),
+        skip,
+    ));
+    v
+}
+
+fn far_gid() -> (u64, u64) {
+    (own().0, FAR)
+}
+
+/// Runs [`ignored_cases`] against `map`: the scan must say what each case
+/// expects, and never pass where the extraction fails at a `chown`.
+/// Stricter than the extraction is allowed (a symlink's route, which a
+/// header does not show).
+fn ignored_failures(map: &MappedIds, extract: bool) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (what, tar, expect) in ignored_cases() {
+        let scan = scanned_ignored(&tar, map);
+        let ok = match (expect, &scan) {
+            (Expect::Pass, Seen::Pass) => true,
+            (Expect::Owners(names), Seen::Unmapped(text))
+            | (Expect::Refused(names), Seen::Refused(text)) => text.contains(names),
+            _ => false,
+        };
+        if !ok {
+            failures.push(format!("{what}: scan {scan:?}, expected {expect:?}"));
+        }
+        if !extract {
+            continue;
+        }
+        let extraction = extracted_ignored(&tar);
+        if matches!(extraction, Seen::Chown(_)) && !matches!(scan, Seen::Unmapped(_)) {
+            failures.push(format!("{what}: scan {scan:?}, extraction {extraction:?}"));
+        }
+    }
+    failures
+}
+
+/// Hostile names on and around the ignored paths of a live root (ADR-0144;
+/// T15, T16): the scan, given the ignore list, never passes an entry the
+/// extraction with that list chowns. T0: the map is this user's own ids.
+#[test]
+fn red_team_hostile_names_of_ignored_paths_never_pass_the_live_scan_where_the_extraction_chowns() {
+    let unprivileged = !rustix::process::geteuid().is_root();
+    let failures = ignored_failures(&own_map(), unprivileged);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// As above as root of a rootless Podman container, whose map holds a far
+/// owner out: the extraction's `chown` fails with `EINVAL`, as a build's
+/// in a user namespace does (ADR-0098, ADR-0144).
+#[test]
+#[ignore = "T1: default: chown to unmapped ids fails with EINVAL in a user namespace"]
+fn red_team_ignored_paths_in_a_user_namespace_never_pass_the_live_scan_where_the_extraction_chowns()
+{
+    let read = |p: &str| fs::read_to_string(p).unwrap();
+    let map = MappedIds::parse(&read("/proc/self/uid_map"), &read("/proc/self/gid_map")).unwrap();
+    let far = u32::try_from(FAR).unwrap();
+    assert!(!map.maps_uid(far) && !map.maps_gid(far), "{map}");
+    assert!(rustix::process::geteuid().is_root());
+    let failures = ignored_failures(&map, true);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Hostile id maps (ADR-0098; T16): malformed, overflowing or zero-count
+/// lines are refused in either map; padding, blank lines and line endings
+/// change nothing.
+#[test]
+fn red_team_hostile_id_maps_are_refused() {
+    let good = "0 0 1\n";
+    for bad in [
+        " \t \n\n",
+        "0 0 0\n",
+        "0 0 4294967296\n",
+        "0 0 18446744073709551617\n",
+        "2 0 4294967295\n",
+        "4294967295 0 2\n",
+        "0 0 1\0\n",
+        "0\u{a0}0 1\n",
+        "\u{660} 0 1\n",
+        "0x0 0 1\n",
+        "0 0 1e3\n",
+        "0 0 1.0\n",
+        "0,0,1\n",
+        "0 0 1 # comment\n",
+        "0 0 1\n1 1\n",
+        "-0 0 1\n",
+    ] {
+        assert_eq!(MappedIds::parse(bad, good), None, "{bad:?}");
+        assert_eq!(MappedIds::parse(good, bad), None, "{bad:?}");
+    }
+    let plain = MappedIds::parse("0 1000 1\n1 100000 65536\n", good).unwrap();
+    for same in [
+        "\t0\t1000\t1\r\n\n   1   100000   65536   \r\n",
+        "1 100000 65536\n\n0 1000 1",
+        "00 01000 01\n1 100000 65536\n",
+    ] {
+        let read = MappedIds::parse(same, good).unwrap();
+        assert_eq!(read, plain, "{same:?}");
+    }
+    // The initial namespace's map, as the kernel prints it.
+    let all = MappedIds::parse("         0          0 4294967295\n", good).unwrap();
+    assert!(all.maps_uid(0) && all.maps_uid(u32::MAX - 1) && !all.maps_uid(u32::MAX));
 }

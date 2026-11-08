@@ -187,7 +187,12 @@ pub trait Snapshotter {
     /// image order), before any is made a base layer, when an entry of one
     /// would get an owner the user namespace this process runs in does not
     /// map (ADR-0098): the refusal names every such id of them all, and
-    /// nothing is written. Outside a user namespace, every id is mapped.
+    /// nothing is written. Kaniko mode skips the ignored paths only on `/`
+    /// with the stages kept as tars
+    /// ([`crate::Kaniko::keep_in_anonymous_files`]); elsewhere every entry
+    /// is checked
+    /// (design/modes-and-detection.md#owners-the-user-namespace-does-not-map).
+    /// Outside a user namespace, every id is mapped.
     ///
     /// # Errors
     ///
@@ -276,13 +281,11 @@ impl Overlay {
     /// # Errors
     ///
     /// [`Error::UnsafePath`] when the state directory's path holds overlay
-    /// option syntax; [`Error::Rootfs`] when it cannot be opened;
-    /// [`Error::State`] when the store's maps give no ids, which
-    /// [`rnk_store::IdMaps`] rules out.
+    /// option syntax; [`Error::Rootfs`] when it cannot be opened.
     pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self> {
         mount::check_path(store.state_dir())?;
         let state = Arc::new(RootPath::open(store.state_dir())?);
-        let userns = store.id_maps().map(UserNamespace::new).transpose()?;
+        let userns = store.id_maps().map(UserNamespace::new);
         Ok(Self {
             store,
             state,

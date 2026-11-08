@@ -1217,13 +1217,16 @@ impl Store {
     ///
     /// [`Error::Cancelled`] when `cancelled` turns true while waiting;
     /// [`Error::Rootfs`] or [`Error::Io`] when a directory or lock file
-    /// cannot be made or locked; [`Error::BadEntry`] when one is not what
-    /// the store made.
+    /// cannot be made or locked, an owner the user namespace does not map
+    /// being [`rnk_rootfs::Error::Unmapped`] naming `target`, the mount's
+    /// target in the root; [`Error::BadEntry`] when one is not what the
+    /// store made.
     pub fn cache_lease(
         &self,
         key: &str,
         sharing: CacheSharing,
         owner: Option<CacheOwner>,
+        target: &Path,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<CacheLease> {
         if self.anon.is_some() {
@@ -1280,7 +1283,7 @@ impl Store {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             };
-            self.make_cache(&name(n), owner)?;
+            self.make_cache(&name(n), owner, target)?;
             return Ok(lease);
         }
     }
@@ -1318,13 +1321,13 @@ impl Store {
 
     /// Makes `caches/<name>`: a new directory under a temporary name, its
     /// owner and mode set through its descriptor, then renamed into place.
-    fn make_cache(&self, name: &str, owner: Option<CacheOwner>) -> Result<()> {
+    fn make_cache(&self, name: &str, owner: Option<CacheOwner>, target: &Path) -> Result<()> {
         let tmp = Path::new("caches").join(format!(".{name}.new-{}", self.id));
         if self.state.statx(&tmp).is_ok() {
             remove_tree(&self.state, &tmp)?;
         }
         self.state.create_dir_all(&tmp, 0o700)?;
-        let made = self.fill_cache(&tmp, name, owner);
+        let made = self.fill_cache(&tmp, name, owner, target);
         if made.is_err() {
             // Whatever failed, the temporary directory goes; the error to
             // report is the first one.
@@ -1337,7 +1340,13 @@ impl Store {
 
     /// Gives the new cache `tmp` its owner and mode through its descriptor,
     /// then renames it to `caches/<name>`, never over an existing entry.
-    fn fill_cache(&self, tmp: &Path, name: &str, owner: Option<CacheOwner>) -> Result<()> {
+    fn fill_cache(
+        &self,
+        tmp: &Path,
+        name: &str,
+        owner: Option<CacheOwner>,
+        target: &Path,
+    ) -> Result<()> {
         let fd = self
             .state
             .open_at(tmp, &OpenHow::read().directory().no_follow())?;
@@ -1354,17 +1363,7 @@ impl Store {
                 chown_id(owner.uid).map(rustix::fs::Uid::from_raw),
                 chown_id(owner.gid).map(rustix::fs::Gid::from_raw),
             )
-            .map_err(|e| match e {
-                // An owner the user namespace does not map (ADR-0098).
-                rustix::io::Errno::INVAL => {
-                    Error::Rootfs(rnk_rootfs::Error::Unmapped(rnk_rootfs::Unmapped::chown(
-                        &Path::new("caches").join(name),
-                        Some(owner.uid),
-                        Some(owner.gid),
-                    )))
-                }
-                e => self.io_err("chown", tmp, e.into()),
-            })?;
+            .map_err(|e| self.cache_chown_err(e, tmp, owner, target))?;
         }
         rustix::fs::fchmod(&fd, rustix::fs::Mode::from_raw_mode(owner.mode & 0o1777))
             .map_err(|e| self.io_err("chmod", tmp, e.into()))?;
@@ -1372,6 +1371,22 @@ impl Store {
         self.state
             .rename_noreplace(tmp, Path::new("caches").join(name))?;
         Ok(())
+    }
+
+    /// The error of the new cache `tmp`'s `chown` to `owner` that failed
+    /// with `e`: `EINVAL`, which `fchown` returns for nothing else, is an
+    /// owner the user namespace does not map (ADR-0098), named by the
+    /// mount's `target`, which the user knows, not by the store's name.
+    fn cache_chown_err(&self, e: Errno, tmp: &Path, owner: CacheOwner, target: &Path) -> Error {
+        if e == Errno::INVAL {
+            Error::Rootfs(rnk_rootfs::Error::Unmapped(rnk_rootfs::Unmapped::chown(
+                target,
+                Some(owner.uid),
+                Some(owner.gid),
+            )))
+        } else {
+            self.io_err("chown", tmp, e.into())
+        }
     }
 
     /// Whether `caches/<name>` exists, as a directory of the state

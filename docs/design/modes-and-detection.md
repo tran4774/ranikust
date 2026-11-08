@@ -370,8 +370,10 @@ Phase 4 (ADR-0064), `--ignore-var-run` in both modes (ADR-0052 D4).
   (`setup::hold_state_dir`): overlayfs first, told from the nearest
   directory that exists, where a missing one would be made; then the
   owner and chain checks, which make a missing one; then the store's own
-  refusals (`Store::check_state_dir`, writing nothing); only then is its
-  mode set.
+  refusals (`Store::check_state_dir_for`, writing nothing), the canary of
+  each map the build's namespace may get among them
+  ([cache-and-store](cache-and-store.md#the-canary-of-an-id-map)); only
+  then is its mode set.
 
 ## Refusal and guidance
 
@@ -444,32 +446,31 @@ refusal's guidance line gives, in order
 
 1. Run ranikust as root, with `sudo`.
 2. Only where `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads
-   `1`, where ranikust runs unconfined (AppArmor's label `unconfined`), in
-   the host's user namespace (`/proc/self/uid_map` reads `0 0 4294967295`)
-   and in no container `container::detect` finds (`no_userns::Here`), and
-   where AppArmor may be what refused (`no_userns::Stop`): the user
-   namespace was made and a later step failed (the map, `chown`, the mount
-   namespace), or `unshare` failed with `EACCES`, AppArmor's errno. A
-   confined program's own profile decides its user namespaces, and
-   ranikust's would not attach to it; in a container or a user's own user
-   namespace the tree ranikust sees, and the owners it reads, are not the
-   host's, so no path checked there is the one a profile loaded on the host
-   attaches to. Another errno of `unshare` (`EPERM` from a seccomp filter or
-   `kernel.unprivileged_userns_clone`, `ENOSPC` from
-   `user.max_user_namespaces`), none, a step that did not run, any stop
-   where the capability check found the namespace's capabilities, or a
-   refusal once the probe passed gets items 1 and 3 alone. Have root load
-   ranikust's AppArmor profile,
-   [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three
-   lines granting `userns,` with `flags=(unconfined)`, bound to
+   `1`, where ranikust runs unconfined (AppArmor's label `unconfined`), in the
+   host's user namespace (the initial one, told by its inode,
+   `rnk_snapshot::UserNamespace::current`) and in no container
+   `container::detect` finds (`no_userns::Here`), and where AppArmor may be
+   what refused (`no_userns::Stop`): the user namespace was made and a later
+   step failed (the map, `chown`, the mount namespace), or `unshare` failed
+   with `EACCES`, AppArmor's errno. A confined program's own profile decides
+   its user namespaces, and ranikust's would not attach to it; in a container
+   or a user's own user namespace the tree ranikust sees, and the owners it
+   reads, are not the host's, so no path checked there is the one a profile
+   loaded on the host attaches to. Another errno of `unshare` (`EPERM` from a
+   seccomp filter or `kernel.unprivileged_userns_clone`, `ENOSPC` from
+   `user.max_user_namespaces`), none, a step that did not run, any stop where
+   the capability check found the namespace's capabilities, or a refusal once
+   the probe passed gets items 1 and 3 alone. Have root load ranikust's
+   AppArmor profile,
+   [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three lines
+   granting `userns,` with `flags=(unconfined)`, bound to
    `/usr/local/bin/ranikust` (as podman's profile is to podman), into
    `/etc/apparmor.d/ranikust` with `apparmor_parser -r`. A profile gives a
    user namespace to whatever is at its path, so it is offered for the
-   binary's own path only where root alone may change it and it holds
-   ranikust itself: as shipped for `/usr/local/bin/ranikust`; with the
-   path changed for another such path made only of letters, digits and
-   `._+-/`, which AppArmor reads as no pattern; otherwise after installing
-   the binary, owned by root
+   binary's own path only where root alone may change it and it holds ranikust
+   itself: as shipped for `/usr/local/bin/ranikust`; with the path changed for
+   another such path made only of letters, digits and `._+-/`, which AppArmor
+   reads as no pattern; otherwise after installing the binary, owned by root
    (`install -o root -g root -m 0755`), as `/usr/local/bin/ranikust`, or,
    where `/usr/local/bin` fails the same check, in a directory that passes,
    naming the first part of the path that failed and why.
@@ -524,8 +525,10 @@ the namespace does not map, whether it maps one id or ranges; no flag lets a
 failed `chown` pass
 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
 The map is the process's own `/proc/self/uid_map` and `gid_map`: the one
-ranikust wrote (probe step 2), or the container's. In the initial namespace
-every id maps and nothing is checked.
+ranikust wrote (probe step 2), or the container's, read by
+`rnk_store::IdMaps` for `rnk_snapshot::UserNamespace`. In the initial
+namespace every id maps and
+nothing is checked.
 
 - **Base layers, before extraction.** `Snapshotter::check_owners`
   decompresses each base layer once more and reads its tar headers as the
@@ -537,17 +540,22 @@ every id maps and nothing is checked.
   user namespace: it pulls the blobs, which are checked the same way
   before any is extracted. On `/`, where no blob is kept, a streamed layer
   is checked in the pass that spools and verifies it, before that layer is
-  extracted, so a base image's earlier layers may be on `/` already
+  extracted, its paths the ignore list keeps skipped as the extraction
+  skips them, so a base image's earlier layers may be on `/` already
   ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md));
-  a `COPY --from=<image>` spools and checks all its layers before any is
-  unpacked.
+  a `COPY --from=<image>` spools and checks all its layers, the ignored
+  paths too, before any is unpacked: a spool or kept blob checked for a
+  base is read again for it. Off `/` every path is checked, the ignored
+  ones too; a cached layer is checked as a base layer is, before
+  `apply_layer` extracts it
+  ([ADR-0144](../adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md)).
 - **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
-  entry, `COPY --chown`, a cache mount's owner) refuses at once, naming the
-  file. So does a `RUN`'s switch to its user (`setgroups`, `setgid`,
-  `setuid`, for `USER`), naming the ids, where nothing else explains the
-  `EINVAL`: in a user namespace other than the initial one, with no more
-  supplementary groups than the kernel's `NGROUPS_MAX` (65536); otherwise
-  the step's error stays.
+  entry, `COPY --chown`, a cache mount's owner, a secret file's) refuses at
+  once, naming the file (a mount by its target). So does a `RUN`'s switch to
+  its user (`setgroups`, `setgid`, `setuid`, for `USER`), naming the ids,
+  where nothing else explains the `EINVAL`: in a user namespace other than the
+  initial one, with no more supplementary groups than the kernel's
+  `NGROUPS_MAX` (65536); otherwise the step's error stays.
 - **The message** names up to eight uids and eight gids, each with the first
   path that has it, counts the other entries, and gives the map; a `RUN`'s
   switch names its uid, gid and up to eight supplementary groups, counting

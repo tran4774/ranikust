@@ -588,8 +588,9 @@ The steps, in order:
 
 Between `clone` and `execve` the child of a multi-threaded process only makes
 system calls on arguments built before the clone: no allocation, no lock. A
-failing step writes the step and the errno to a close-on-exec pipe and exits
-127; the parent reads end-of-file once `execve` succeeded.
+failing step writes the step, the item it failed on (which secret file, for
+its owner) and the errno to a close-on-exec pipe and exits 127; the parent
+reads end-of-file once `execve` succeeded.
 
 **Waiting.** The parent waits for the child, in the full sandbox the init. When
 the command exits, the init reports its status and exits, and the kernel kills

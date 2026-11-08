@@ -196,7 +196,10 @@ below it, or there unless it is delegated (ADR-0110).
 
 Per-stage roots and per-instruction diffs: the `StageRootfs` and `Snapshotter`
 traits ([ADR-0046](docs/adr/0046-snapshotter-signature.md)) with two
-implementations, and the probe of the overlay capabilities.
+implementations, the probe of the overlay capabilities, and
+`UserNamespace`, the user namespace the build runs in and its id maps as
+`rnk-store` reads them (the layer keys, the owner checks and the binary's
+guidance, ADR-0098).
 
 - **Overlay**: mounts with the
   [ADR-0016](docs/adr/0016-overlay-mount-options.md) options, one upper
@@ -276,7 +279,8 @@ anything but the report, start a thread, or keep state per file.
 (`rnk-layer`, `rnk-store`) -> (`rnk-rootfs`, `rnk-oci`). Lower crates never
 depend on higher ones. Besides the chain:
 
-- `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes, and
+- `ranikust` calls `rnk-sandbox` and `rnk-snapshot` for the probes (and
+  `rnk-snapshot` for the user namespace's maps, in its guidance), and
   builds the registry client, the context and the outputs (its edge to
   `rnk-registry` is settled by
   [ADR-0115](docs/adr/0115-rnk-cache-holds-keys-and-transport-and-https-downloads-live-in-rnk-registry.md)).
