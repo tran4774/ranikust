@@ -13,9 +13,10 @@
 # with the step and errno ranikust prints:
 #
 #   7a  a default pod: AppArmor's cri-containerd.apparmor.d profile, a
-#       masked /proc with /proc/sys read-only: kaniko mode on /, which
-#       builds; root may not make a mount namespace, and the user namespace
-#       probe line names the step it stops at
+#       masked /proc with /proc/sys read-only, no seccomp filter (k3s's
+#       default): kaniko mode on /, which builds; root may not make a mount
+#       namespace, and the user namespace probe, reported only, stops at
+#       proc with EACCES (the profile denies mount)
 #   7b  hostUsers: false, procMount: Unmasked, AppArmor unconfined, a volume
 #       at the state directory: refused, rootless overlay mode not tried for
 #       the writable /proc/sys (ADR-0107), kaniko mode on / refused for it
@@ -128,6 +129,9 @@ cp bin/ranikust "$root/ranikust/bin/ranikust"
 cp guest/k8s/pod.sh "$root/pod.sh"
 cp /bin/busybox "$root/ctx/busybox"
 printf 'FROM scratch\nCOPY busybox /bin/busybox\nRUN ["/bin/busybox", "true"]\n' >"$root/ctx/Dockerfile"
+# Whatever this user's umask: ranikust refuses a state directory below a
+# directory others may write (/var/lib here, ADR-0050).
+chmod -R u=rwX,go=rX "$root"
 chmod 1777 "$root/tmp"
 tar -C "$root" --owner=0 --group=0 --numeric-owner -cf - . | sudo docker import - "$IMAGE" >/dev/null
 sudo docker save "$IMAGE" | sudo "$K3S" ctr -n k8s.io images import - >/dev/null
@@ -208,7 +212,7 @@ pod_line() { sed -n "s|^pod: $1 ||p" <<<"$LOG" | head -1; }
 probe_line() { grep -o 'user namespace probe[^:]*: .*' <<<"$LOG" | head -1; }
 show() {
   echo "--- $1: exit $RC"
-  grep -E '^pod: |user namespace probe|rootless overlay mode|kaniko mode|^ranikust: error|^  |built image' <<<"$LOG" || true
+  sed 's/\x1b\[[0-9;]*m//g' <<<"$LOG"
 }
 
 ROOT_ENV='      env:
@@ -224,11 +228,14 @@ show 7a
 [ "$(pod_line apparmor)" = "cri-containerd.apparmor.d (enforce)" ] || fail "7a: AppArmor label '$(pod_line apparmor)', not containerd's profile"
 [[ "$(pod_line /proc/sys)" == "on /proc/sys ro,"* ]] || fail "7a: /proc/sys is not a read-only mount: $(pod_line /proc/sys)"
 [ "$(pod_line uid_map)" = "0 0 4294967295;" ] || fail "7a: not the host's users: $(pod_line uid_map)"
+# No seccomp filter: k3s's kubelet sets no default profile (seccompDefault).
+[ "$(pod_line seccomp)" = "0 no_new_privs 0 CapEff 00000000a80425fb" ] || fail "7a: seccomp or capabilities: $(pod_line seccomp)"
 expect_rc 7a 0
 expect 7a "kaniko mode, because root may not mount here: a private mount namespace needs privileges this process does not have"
-expect 7a "user namespace probe (reported only): stops at "
+expect 7a "user namespace probe (reported only): stops at proc; unshare(CLONE_NEWUSER): ok;"
+expect 7a "proc: make / a recursive slave mount: EACCES;"
+expect 7a "ranikust: kaniko mode on /, RUN directly, as kaniko"
 expect 7a "built image sha256:"
-echo "7a: $(probe_line)"
 
 echo "== 7b: hostUsers: false, procMount: Unmasked, AppArmor unconfined"
 pod_yaml row-7b "$NS" "  hostUsers: false" "$USERNS_UNMASKED
@@ -287,8 +294,8 @@ expect 7d "ranikust: error: rootless overlay mode cannot run here: the user name
 masked() {
   pod_yaml "$1" "$NS" "  hostUsers: false" "      securityContext:
         appArmorProfile: { type: Unconfined }" "$ROOT_ENV" "work state" "$NO_ARGS" | run_pod "$1" "$NS"
+  show "$1"
   echo "measured: $2: exit $RC; $(probe_line)"
-  grep -E 'rootless overlay mode|kaniko mode, because' <<<"$LOG" | sed "s/^/measured: $2: /" || true
 }
 switch="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)"
 echo "== measured: hostUsers: false, AppArmor unconfined, a masked /proc"
