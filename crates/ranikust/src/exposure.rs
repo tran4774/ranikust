@@ -936,13 +936,26 @@ mod tests {
         assert_eq!(probed, [me]);
     }
 
+    /// In a process of its own, started again from this test binary, with
+    /// no thread of another test: not dumpable, as `main` makes ranikust,
+    /// and with a second thread, its own entry passes. The child's result
+    /// is its exit status.
     #[test]
-    fn ranikusts_own_entry_passes_the_peer_scan() {
+    fn ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable() {
+        let name = "ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable";
+        if !crate::setup::tests::userns::alone_in(module_path!(), name) {
+            return;
+        }
         let now = mount_namespace().unwrap().id;
         let entry = own_entry().expect("/proc shows this process");
-        // A second thread at least, whichever thread runs the test.
         let (stop, parked) = std::sync::mpsc::channel::<()>();
         let second = std::thread::spawn(move || parked.recv());
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+            .unwrap();
+        assert_eq!(
+            rustix::process::dumpable_behavior().unwrap(),
+            rustix::process::DumpableBehavior::NotDumpable
+        );
         let found = scan(
             names(&["self", "thread-self", &entry]),
             PEER_SCAN_LIMIT,

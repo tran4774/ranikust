@@ -722,7 +722,9 @@ Exceptions, all from emulation (the native CI job runs them all):
   install them in the x86_64 host kernel. The same profiles still run on the
   tests' interpreter there.
 - The tests that spawn an aarch64 binary themselves (ranikust's `cli` and
-  `metrics`, rnk-store's `processes`, rnk-sandbox's
+  `metrics`,
+  `exposure::tests::ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable`,
+  which starts its test binary again, rnk-store's `processes`, rnk-sandbox's
   `seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`
   and
   `userns::tests::a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent`,

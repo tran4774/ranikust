@@ -531,7 +531,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `exposure` (`scan_peers`' decisions on a fake probe: the first process
   reached, the entry named by ranikust's own pid probed as any other, what
   cannot be told, the bound counted in threads; ranikust's own entry, as
-  `/proc/self` names it, passing the real probe; `walk`'s
+  `/proc/self` names it, passing the real probe in a process of its own,
+  not dumpable, with a second thread; `walk`'s
   on fake threads: a later thread reached, threads passed over or gone, a
   process whose threads may not be listed; the real probe on each of
   ranikust's own threads and a missing pid; one thread, or the process
