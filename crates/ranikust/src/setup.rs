@@ -135,8 +135,9 @@ pub(crate) enum Kind {
     Broken,
     /// The state directory holds layers extracted under other ids than the
     /// build's user namespace gives (ADR-0128): routed as [`Kind::Other`],
-    /// but the operator must empty it or pass another, so root's
-    /// `--mode=auto` warns before kaniko mode.
+    /// but the operator must empty it or pass another, so where root's
+    /// `--mode=auto` passes rootless overlay mode over for kaniko mode, it
+    /// warns.
     IdMapChanged,
 }
 
@@ -459,8 +460,9 @@ pub(crate) fn set_up(
 ///
 /// # Errors
 ///
-/// `on_overlayfs()` where the state directory would be on overlayfs; any
-/// other refusal is of [`Kind::Other`].
+/// `on_overlayfs()` where the state directory would be on overlayfs; a
+/// changed id map is of [`Kind::IdMapChanged`], any other refusal of
+/// [`Kind::Other`].
 pub(crate) fn hold_state_dir(
     state_dir: &Path,
     euid: u32,

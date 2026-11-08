@@ -144,8 +144,8 @@ const CHANGED: &str = "holds layers extracted under other ids";
 /// Asserts that rootless overlay mode's plan under the range from `first`,
 /// before the build's user namespace exists, and the store's open in that
 /// namespace each refuse the state directory `state` for its canary's
-/// `uid-1` owned by `owner`, with the way out, the plan's a warning on
-/// fallback, and that `state` is still as it was.
+/// `uid-1` owned by `owner`, with the way out, the plan's refusal one that
+/// warns on fallback, and that `state` is still as it was.
 fn assert_refused(
     run: impl Fn(u32, fn(&Path) -> String) -> String,
     first: u32,
