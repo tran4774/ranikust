@@ -73,11 +73,14 @@ Which of these environments the probe is tested in, and in which tier, is
 decided in
 [ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md).
 Built: the T1 `rootless` smoke case (rootless Podman with a volume, row 5),
-the T1 kaniko leg's cases (row 5b, in part) and the k3s leg, the T2 `k8s`
+the T1 kaniko leg's cases (row 5b, in part), the k3s leg, the T2 `k8s`
 suite (rows 7a to 7d, measured;
-[testing](../testing.md#privilege-matrix-in-kubernetes)); the runner and VM
-legs are planned ([testing](../testing.md#quick-smoke-cases)), but for row
-9e: the T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
+[testing](../testing.md#privilege-matrix-in-kubernetes)), and the runner
+jobs: row 5 in the runner's rootless Podman (the T1 `matrix-podman` case)
+and rows 6 and 6b as its user on Ubuntu 24.04 (the T2 `matrix-user` suite),
+each asserting ADR-0100's rows
+([testing](../testing.md#privilege-matrix-on-the-runner)). The VM legs are
+planned (#85), but for row 9e: the T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
 AlmaLinux 9.8 (kernel 5.14, SELinux enforcing, policy `targeted`). Measured
 there, as expected: root gets overlay mode as root and a regular user with
 ranges rootless overlay mode, with a new `proc` and a read-only rbind of

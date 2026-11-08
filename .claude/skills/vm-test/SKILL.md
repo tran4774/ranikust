@@ -10,7 +10,8 @@ user, runs the suites as root inside it and deletes it again; the full
 description is in `docs/testing.md#the-vm-harness-tier-t2`.
 
 On a pull request, CI also runs `unit`, `smoke`, `quick`, `secrets`, `k8s` and
-the T2c `unit-c` as root on GitHub-hosted runners (`.github/workflows/t2.yml`,
+the T2c `unit-c` as root on GitHub-hosted runners, and there, as the runner's
+user, `matrix-user` and the T1 case `matrix-podman` (`.github/workflows/t2.yml`,
 ADR-0090): read them with `gh pr checks` and `gh run view --log-failed`.
 They do not replace the VM for `e2e`, `ultra`, `push`, kernel 5.15 or an
 acceptance run, and `tests/vm/runner.sh` never runs outside CI.

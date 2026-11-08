@@ -16,8 +16,8 @@ from that.
 | Tier | Contents | Privileges | Runs on | Command | Status |
 |---|---|---|---|---|---|
 | T0 | Unit and in-process tests: parsing, matching, encoding, path resolution on temp dirs | None | Any Linux machine, CI | `just test` | In use |
-| T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, rootless Podman | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine; on Ubuntu 24.04 an AppArmor restriction leaves an unconfined binary's user namespace without capabilities **[measured]** ([ADR-0099](adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)), and later releases probably the same **[inferred]**; which legs run in which tier is in [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned) | `just test-rootless` ([below](#the-rootless-lane-tier-t1)); `just smoke`, `just smoke-case` ([below](#smoke-tests-tier-t1)) | The rootless lane (profiles `default`, `privileged`); smoke tests |
-| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, rootful Docker, kaniko mode on `/`, host-safety attacks | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | Suites `unit`, `smoke`, `quick`, `secrets`, `k8s`, `e2e`, `push`, `ultra` |
+| T1 | Rootless integration: user namespaces, rootless overlay (`userxattr`), the `RUN` sandbox in a user namespace, rootless Podman | Regular user with entries in `/etc/subuid` and `/etc/subgid` | Developer machine; on Ubuntu 24.04 an AppArmor restriction leaves an unconfined binary's user namespace without capabilities **[measured]** ([ADR-0099](adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md#evidence)), and later releases probably the same **[inferred]**; which legs run in which tier is in [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (the runner's built, [below](#privilege-matrix-on-the-runner); the VM's planned) | `just test-rootless` ([below](#the-rootless-lane-tier-t1)); `just smoke`, `just smoke-case` ([below](#smoke-tests-tier-t1)) | The rootless lane (profiles `default`, `privileged`); smoke tests |
+| T2 | Privileged integration: overlay as real root, `pivot_root`, `mknod`, rootful Docker, kaniko mode on `/`, host-safety attacks | root | A disposable VM, never the host: the local VM, and on a full CI run ([CI lanes](#ci-lanes)) a GitHub-hosted runner ([below](#t2-on-github-hosted-runners)) | `just test-vm` ([below](#the-vm-harness-tier-t2)); CI's `.github/workflows/t2.yml` | Suites `unit`, `smoke`, `quick`, `secrets`, `k8s`, `e2e`, `push`, `ultra`; on the runner only, `matrix-user` |
 | T2c | The root tests that mean the same in a container ([ADR-0063](adr/0063-root-tests-that-mean-the-same-in-a-container-run-in-rootful-docker-on-the-test-machine.md)): `mknod`, `chown`, `setgroups`, Direct `RUN` on a container's `/`, mounts in a private mount namespace, overlay mounts | root in a throwaway rootful Docker container (profile `default`, `sysadmin` or `netadmin`), never `--privileged`, no host volume | The disposable test machine (the VPS), and in CI a GitHub-hosted runner; never a developer's machine; also the VM's `unit` suite | `just test-container` ([below](#the-container-lane-tier-t2c)); CI's `t2.yml` | Suite `unit-c` |
 | T3 | CI, in lanes chosen by what a pull request changes ([below](#ci-lanes)): rustfmt, clippy, T0 on x86_64, cargo-deny, rustdoc, mdBook and docs-lint; a full run adds the static musl build and the native aarch64 T0 (the T2 and T2c jobs are in their rows). The `Release` workflow dry-runs on a pull request that changes how a release is made ([CONTRIBUTING](../CONTRIBUTING.md#releasing)) | None | GitHub Actions (`.github/workflows/ci.yml`, `t2.yml`, `release.yml`) | `just ci` (everything `ci.yml` runs on a full run); `just test-release` (the release scripts) | In use |
 
@@ -70,6 +70,7 @@ from that.
 | A branch's correctness | `just check`; T1 smoke cases in both modes (`rnk-vps-lane run <branch> 'RANIKUST_SMOKE_REGISTRY=mirror.gcr.io just smoke-case'`, and with `RANIKUST_CASE_MODE=kaniko`); VM `unit` and `quick` (`sg kvm -c 'just test-vm unit quick'`, `RANIKUST_QUICK_MODE=kaniko` for kaniko mode) | host or the VPS lane; the local VM | minutes |
 | The root tests of a branch that touches no VM-only path, or while the VM is busy | `just test-container unit-c` (T2c, three Docker profiles); the VM's `unit` still runs them too and is the reference before a merge that touches `rnk-sandbox`, `rnk-snapshot` mounts or `rnk-rootfs` deletion | the VPS lane (rootful Docker) | minutes |
 | The Kubernetes rows of the privilege matrix (a change to the probe's routing or its messages) | `sg kvm -c 'just test-vm k8s'` ([k3s](#privilege-matrix-in-kubernetes)) | the local VM | a few minutes |
+| The rootless Podman and Ubuntu 24.04 user rows of the privilege matrix (the same) | `just smoke-case matrix-podman` (row 5); rows 6 and 6b only in CI, `ci:full` on a draft ([the runner](#privilege-matrix-on-the-runner)) | host; a GitHub-hosted runner | a minute; a few minutes |
 | A change to the e2e harness or to how builders are compared | the light e2e: `sg kvm -c 'just test-vm e2e'` (W0, every builder) | the local VM | a few minutes |
 | Performance numbers | the ultra benchmark: `sg kvm -c 'just test-vm ultra'` (nextjs-kaniko's W1–W3), only when the maintainer asks | the local VM, nothing else running on the host | tens of minutes per round |
 | Acceptance of a phase | the ultra benchmark with rounds: `RANIKUST_E2E_ROUNDS=5 sg kvm -c 'just test-vm ultra'`, only when the maintainer asks | the same | an hour or more |
@@ -91,16 +92,15 @@ The plan comes from the verification plan of
 | Property and fuzz tests | Parser, ignore matcher, tar write/read round trips, cache-key determinism | proptest in several crates (each [crate card](agents/README.md)'s `## Tests`); `cargo fuzz` on `extract` is planned (Phase 6) |
 | Image content vs kaniko | Each image flattened to `(path, type, mode, uid, gid, size, sha256, link target, xattrs)` plus its config, compared with kaniko's | T2, done: `e2e` and `ultra` |
 | Mode equivalence | Overlay and kaniko mode give the same flattened content, apart from the accepted differences of [ADR-0012](adr/0012-accept-divergence-between-modes.md); `--jobs 1` and the default give identical digests | T1/T2, done: `e2e`, `ultra`, the `reproducible` and `par-stages` cases |
-| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags` and `userns-probe` cases) and the VM's regular user T2 (the `smoke` suite's user leg). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`). Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned. Gaps: [below](#not-covered-yet) |
+| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags`, `userns-probe` and `matrix-podman` cases; CI runs the last, row 5, in a GitHub-hosted runner's Podman) and a regular user T2 (the `smoke` suite's user leg, in the VM and on the runner; on the runner, rows 6 and 6b: the `matrix-user` suite, [below](#privilege-matrix-on-the-runner)). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`). Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the VM legs of rows 6 and 6b and the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned (#85). Gaps: [below](#not-covered-yet) |
 | Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; a `--state-dir` at `/`, below `/home/<user>` and in a directory others may write. After each case: the host is unchanged, and no mount or process is left | T2, partly: the red-team cases of `quick`, the `secrets` suite and the `rnk-sandbox` and `rnk-rootfs` attack tests |
 
 ## Not covered yet
 
 - Environments of the privilege matrix that need another host or setup:
-  cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a reboot), Docker with
-  `--cap-add SYS_ADMIN` alone (no suite runs it: the `smoke` suite and the
-  container lane's `sysadmin` profile always add `apparmor=unconfined`) and
-  a regular user on Ubuntu 24.04 or later (needs that distribution).
+  cgroup v1 (`systemd.unified_cgroup_hierarchy=0` and a reboot) and Docker
+  with `--cap-add SYS_ADMIN` alone (no suite runs it: the `smoke` suite and
+  the container lane's `sysadmin` profile always add `apparmor=unconfined`).
   [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)
   decides which of these Phase 3 covers (planned) and which wait for Phase 6.
 - Kubernetes beyond the k3s rows ([below](#privilege-matrix-in-kubernetes)):
@@ -633,7 +633,7 @@ What runs, by event:
 | `docs (rustdoc, mdBook)` | rustdoc when `rust`, mdBook when `book` | the same |
 | `docs-lint` | always | always |
 | `static release build (x86_64 musl)`, `test (aarch64 musl, native)` | no | when `rust` |
-| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets`, `T2 k8s` | no | when `t2` |
+| `T2 unit`, `T2c unit-c`, `T2 smoke, quick, secrets`, `T2 k8s`, `T1 matrix-podman`, `T2 matrix-user` | no | when `t2` |
 
 - **A full run** is a pull request that is ready for review (marking a draft
   ready starts one), a draft labelled `ci:full`, a manual run ("Run
@@ -693,8 +693,9 @@ harness, `.github/workflows/t2.yml` runs the T2 suites `unit`, `smoke`,
 GitHub-hosted `ubuntu-24.04` runners
 ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)): a
 runner is a fresh VM GitHub makes for one job and deletes after it, with
-passwordless `sudo`, so it takes the VM's place there. Four jobs, each its
-own runner, in parallel:
+passwordless `sudo`, so it takes the VM's place there. As the runner's
+user, it runs the T2 suite `matrix-user` and the T1 case `matrix-podman`
+too. Six jobs, each its own runner, in parallel:
 
 | Check | Suites |
 |---|---|
@@ -702,6 +703,8 @@ own runner, in parallel:
 | `T2 smoke, quick, secrets (root on the runner)` | `smoke`, `quick`, `secrets` |
 | `T2c unit-c (rootful Docker on the runner)` | `unit-c` |
 | `T2 k8s (k3s on the runner)` | `k8s` ([below](#privilege-matrix-in-kubernetes)) |
+| `T1 matrix-podman (rootless Podman on the runner)` | `matrix-podman` ([below](#privilege-matrix-on-the-runner)) |
+| `T2 matrix-user (the runner's user)` | `matrix-user` ([below](#privilege-matrix-on-the-runner)) |
 
 - `tests/vm/runner.sh <suite>...` is the entry point (its header has the
   details). Before anything else it refuses (exit 2) unless GitHub Actions
@@ -723,7 +726,8 @@ own runner, in parallel:
   `lane.sh` then runs on the runner's rootful Docker: ADR-0063's profiles and
   control checks as on the VPS.
 - The runner gets what the VM's base image adds (`busybox-static`, `zstd`,
-  `pigz`, `uidmap`; the k8s job only `busybox-static`) and, for the smoke
+  `pigz`, `uidmap`; the k8s job only `busybox-static`, the matrix jobs only
+  `uidmap`) and, for the smoke
   job, Docker with containerd's image store, as in the VM, whose
   `docker load` reads the OCI layout `smoke-build` writes.
   Images the guest scripts name come from `mirror.gcr.io`
@@ -732,12 +736,13 @@ own runner, in parallel:
   Hub directly, since the runner's Docker has no registry mirror.
 - `env.txt`, `summary.txt` and `suite-times.txt` go to `~/rnk/out` and the
   job's summary page; on failure, `~/rnk/out` (and `target/container/results`
-  for T2c) is kept as an artifact for 7 days. Each job times out after 30
-  minutes.
+  for T2c, the case's outputs for `matrix-podman`) is kept as an artifact for
+  7 days. Each job times out after 30 minutes.
 - The Rust caches of these jobs follow the rules of
   [CI lanes](#ci-lanes) and share the repository's 10 GB cache limit with
   `ci.yml`; `unit` and `unit-c` build the same test binaries and share one
-  entry (`t2-tests`), as `smoke` and `k8s` do (`t2-smoke`).
+  entry (`t2-tests`), as `smoke`, `k8s` and the matrix jobs do
+  (`t2-smoke`).
 - The runner is not the VM (another kernel and Docker, AppArmor's
   `apparmor_restrict_unprivileged_userns=1`, an image GitHub updates
   weekly). The local VM stays the reference: `e2e`, `ultra`, `push`, kernel
@@ -751,6 +756,37 @@ own runner, in parallel:
   collaborators).
 - No `just` recipe runs this workflow: it is CI's alone, a deliberate
   exception to "`justfile` and `ci.yml` run the same commands".
+
+### Privilege matrix on the runner
+
+CI's `T1 matrix-podman` and `T2 matrix-user` jobs run rows 5, 6 and 6b of
+[ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md)'s
+privilege matrix (#84): the runner's Podman is row 5's, and its user
+`runner`, with `kernel.apparmor_restrict_unprivileged_userns` at 1, is the
+regular user of rows 6 and 6b. Each build runs with `--mode=auto`; the job
+asserts the mode or the refusal, and the user-namespace probe's line step by
+step, each errno included. Each first checks that the environment is the
+row's, and prints what the row leaves open (`sysfs`, `mknod`, the overlay
+API, the AppArmor labels) as `measured:` lines, which the job's summary
+shows.
+
+| Row | Environment | ADR-0100 expects | Asserted |
+|---|---|---|---|
+| 5 | The case `tests/smoke/cases/matrix-podman` (T1; `just smoke-case matrix-podman` runs it on a developer machine too) in rootless Podman with its default options, checked: root there is the invoking user outside, with a range of ids; Podman's seccomp filter; no `CAP_SYS_ADMIN`; `/proc/sys` read-only. A volume at the state directory, `--allow proc.rbind` | overlay, rootless, `/proc` rbind | Rootless overlay mode with a read-only rbind of `/proc`. The probe passes: map `multi-range`, `chown` ok, the mount namespace ok, `proc` an rbind (`mount proc: EPERM`), overlay ok. A `RUN` sees the container's PID 1, from a PID namespace below the container's, and the owner it sets is in the image |
+| 6 | `tests/vm/guest/matrix-user.sh` as `runner`, on Ubuntu 24.04, unconfined, with `uidmap` and the runner's ranges, no ranikust profile loaded | refused, with the AppArmor hint | Refused (exit 1), the probe stopping at the mount namespace (`unshare(CLONE_NEWNS): EPERM`), nothing written. From the user's own copy, the advice is `sudo`, the profile after an install as `/usr/local/bin/ranikust` (naming the user's path), then a container; from root's copy at `/usr/local/bin/ranikust`, the profile as shipped |
+| 6b | The same, root's copy with `contrib/apparmor/ranikust` loaded | overlay, rootless, fresh `proc` | Rootless overlay mode with a new `proc`. The probe passes through `newuidmap`, `proc` a new instance. A `RUN` sees its own PID namespace alone, under ranikust's init, and the owner it sets is in the image Docker loads; no mount or ranikust process is left |
+
+- GitHub's image makes `/usr/local/bin` world-writable, which takes the
+  profile as shipped out of the advice
+  ([no usable user namespace](design/modes-and-detection.md#no-usable-user-namespace)):
+  the suite makes it root's `0755`, as Ubuntu ships it, for the legs, and
+  restores it after with the profile and root's copy. The `smoke` suite's
+  user leg, on the runner too, asserts the advice for the directory as
+  GitHub ships it.
+- Results: `out/matrix-user/` (`env.txt`, each leg's log) and
+  `out/matrix-podman.log`, with the case's outputs, in a failed job's
+  artifact.
+- The VM legs of rows 6 and 6b are planned (#85).
 
 ## aarch64 under qemu-user
 
@@ -953,6 +989,7 @@ are in `tests/vm/guest/quick.sh`.
 | `pid-peers` | ADR-0101's refusal of a PID namespace shared with a process of another mount namespace that ranikust reaches as it starts (T21), in containers the case starts itself, under podman or Docker: a default container with `--pid container:<peer>` and the binary bound `:ro`, from a directory no peer binds, is refused with the PID-namespace guidance before its state directory exists and before any `RUN` when the peer is root with a writable bind of its own (the red team's configuration, with a `RUN` that only looks); with a peer run as uid 1000, or with no peer, it builds; and in a container given `CAP_SYS_ADMIN` whose seccomp profile refuses `mount`, where the set-up fails after its `unshare` (`half_entered`), it builds with no peer and is refused with a root peer, ranikust started from `sh` or exec'd. In every build with `RUN`s that goes ahead (with a root peer that has a capability ranikust lacks and a writable bind, or `half_entered` with no peer), one `RUN` goes through every process and, with the root peer, sees its `sleep` as PID 1 and does not reach it; another holds only its standard streams. No `RUN` runs in a refused build. With no peer, a `sleep` of the container itself unshared into a mount namespace of its own just before ranikust starts is refused |
 | `userns-probe` | Red team of the user-namespace probe of `--mode=auto` (#74; T4, T7, T8, T9), the build without `--mode` in every leg: one probe line per build, in either form of the line, and a `RUN` (`seen.sh`) sees nothing of the probe: no process in another user namespace, no mount named for it in its own or PID 1's table, no descriptor of its directory, no `RANIKUST_*` variable and no probe directory in the state directory. T1 only: with `RANIKUST_DEBUG_FAULT=overlay-refused`, a `--privileged` container is refused for overlay mode (exit 1, ADR-0054, one probe line, no image) and a default one builds in kaniko mode as without it; a state directory on tmpfs lands in the mode the volume does; ranikust started from `sh` and sent `SIGKILL`, `SIGINT` or `SIGINT` to its group as soon as a probe child shows (the case fails if none is caught in eight tries) leaves no process in another user namespace and no probe mount; once a later build has started, no probe directory is left in the state directory |
 | `rootless` | Rootless overlay mode end to end (#79, [ADR-0107](adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md), [ADR-0126](adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)), T1, Podman only, both legs, each mode with a state directory of its own. Without `--allow proc.rbind`, `--mode=overlay` is refused (exit 1) and the refusal names the flag; with it, `--pid=host` is refused (exit 1, no image) as the host's PID namespace, a kernel thread in sight ([ADR-0134](adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md)), and otherwise the build runs in rootless overlay mode with a read-only rbind of `/proc`. Its `--reproducible` digest equals overlay mode as root's (`--privileged`), also at `--jobs 1`. In the image: ownership by a mapped user, a setgid directory and a symlink; a `setcap` file capability is exported. ranikust sent `SIGKILL`, `SIGINT`, `SIGTERM` or `SIGINT` to its group during a `RUN` leaves no process of another user namespace and exits 137 for `SIGKILL`, else 1 (one stop cancels the build), and the next build finds no directory of the killed builds in the state directory. In the kaniko leg (root that may not mount), a set-up made to fail in the build's user namespace (`RANIKUST_DEBUG_FAULT=rootless-broken`) at its last step, once the sandbox started, without `--mode` falls back to kaniko mode on `/` with a note and kaniko mode's line alone ([ADR-0136](adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)), builds the image and leaves its fresh state directory empty, while with `--mode=overlay` it is refused (exit 1, no image, no kaniko mode) |
+| `matrix-podman` | Row 5 of ADR-0100's privilege matrix (#84), T1, Podman only, both legs: rootless Podman with its default options and a volume at the state directory, checked first, where a build without `--mode` must take rootless overlay mode with a read-only rbind of `/proc`, the probe's line step by step; CI runs it on a GitHub-hosted runner ([the runner](#privilege-matrix-on-the-runner)) |
 | `rootless-reach` | Red team of rootless overlay mode (#79), T1, Podman only, both legs, with `--allow proc.rbind`. A `RUN` writes no kernel, cgroup or sysfs file (`core_pattern`, `modprobe`, `sysrq-trigger`, `drop_caches`, `uevent_helper`, `cgroup.procs` and others, `lo`'s `mtu` also from `--network=none`), makes no cgroup, mounts nothing over `/proc`, sees the cgroup root alone, and reads neither the root nor the environment of any process outside its PID namespace, while it reads its own (the control; T17, T21, T24). A `RUN --network=none` lists no network device in `/sys/class/net` but its own `lo` (none under the rbind of `/sys`) and reads no address but `lo`'s; `/sys/fs/cgroup`, Podman's cgroup2 mount, lists nothing, nor does any directory a mount below `/sys` names. A tree past `PATH_MAX`, partly a mapped user's and unsearchable, is exported or refused by the exporter, and the build's directories go (T15). Processes a `RUN` leaves (`setsid`, a double fork, `nohup`) stop writing to a cache mount before the next `RUN` and are gone when ranikust exits (T8); a `RUN`'s exit 75 fails the build (exit 1) with no fallback ([ADR-0136](adr/0136-root-auto-mode-falls-back-to-kaniko-mode-from-a-set-up-that-fails-in-the-builds-user-namespace.md)). `--pid container:` a root peer, or a regular user's (PID 1 there), and ranikust started by `podman exec` where a root peer joined are refused (exit 1, no image; ADR-0129, [ADR-0134](adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md)); under `--init` it builds. ranikust sent `SIGKILL`, `SIGTERM` or `SIGINT` at points of its set-up leaves nothing that stops the next build, which succeeds and leaves no build, `tmp` or probe directory. In the kaniko leg, the fallback's `RUN` runs in the container's user namespace and the rootless build's in another; ranikust sent `SIGKILL`, `SIGTERM` or `SIGINT` at points of a set-up made to fail (`RANIKUST_DEBUG_FAULT=rootless-broken`), its store opened or abandoned or not yet, leaves no store that stops kaniko mode on `/`, even chosen with no fallback (`--ignore-path`), which builds a stage copied from with `COPY --from` (only a build not taken for one cut short does) and leaves no marker (a kill after kaniko mode's own store opened is ADR-0066's case and is reported apart); a probe directory a killed kaniko-mode `RUN` planted in the state directory, with links out, is removed by the next rootless build, nothing they name touched (T4, T21) |
 | `userns` | Root's `--userns` (#83, [ADR-0104](adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)), T2 only (the VM's `sudo docker` engine), with a `ranikust` range it adds to `/etc/subuid` and `/etc/subgid` and restores after. Refused before anything is written without the range, with a range another line of `/etc/subuid` overlaps, below a directory the range's first uid cannot search, with a state directory of root's, at root's default and below it, each left as it was, and with `--ignore-path` (a usage error naming `--userns`); missing parents made root's `0711`, the mode line naming `--userns` and no probe or unnamed directory left; a `RUN`'s `uid_map`, `gid_map` and ids read from the host are the range's, and a file it makes is owned there by its first ids; the `--reproducible` digest equals the same build's without `--userns`, and the image keeps its owners and its setgid and setuid bits. A host account with a non-root, dumpable `RUN`'s ids, and one with the ids they map to on the host, reach none of its `/proc/<pid>/environ` and root (ADR-0074), the latter's reach of a process of its own the control; the line `measured (ADR-0074)` prints them. In the kaniko leg, `--userns --mode=kaniko` is a usage error |
 | `userns-reach` | Red team of root's `--userns` (#83, ADR-0104, ADR-0139; T4, T8, T17, T21, T24), T2 only, with a `ranikust` range it adds and restores as `userns` does. A `RUN` holds only its standard streams, its `uid_map` is the range's, it writes no kernel, cgroup or sysfs file (`core_pattern`, `modprobe`, `sysrq-trigger`, `drop_caches`, `protected_hardlinks`, `uevent_helper`, cgroup files, a sysfs net file), makes no cgroup, mounts nothing over `/proc` and reaches no process outside its PID namespace; processes a `RUN` leaves (`setsid`, a double fork, `nohup`) are gone when the build ends, a cache mount one wrote no longer growing. While a `RUN` waits, a host account with the range's first ids reaches no environment, root, descriptor or working directory of ranikust's processes in the host's PID namespace (its reach of a process of its own the control), and their descriptors name nothing of root's under `/root`, `/etc` or `/var/lib/ranikust`; `measured:` lines print each one's ids and descriptors. ranikust sent `SIGKILL` while a `RUN` waits leaves no process of the range within ten seconds, and the next `--userns` build in that state directory succeeds, leaving no entry of root's and no probe directory there |

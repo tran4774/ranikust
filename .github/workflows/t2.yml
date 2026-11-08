@@ -1,15 +1,16 @@
 name: T2
 
-# The privileged tiers on GitHub-hosted runners (ADR-0090): each job is a
+# The privileged tiers on GitHub-hosted runners (ADR-0090), with the
+# privilege matrix's runner rows, T1 and T2 (ADR-0100): each job is a
 # fresh VM GitHub deletes afterwards, with passwordless sudo, so it stands in
 # for the local QEMU VM (`just test-vm`) and the VPS container lane (`just
 # test-container`). tests/vm/runner.sh refuses to run anywhere else.
 #
-# Separate from ci.yml: these jobs run as root and take longer; ci.yml stays
-# what `just ci` runs. No secrets, a read-only token, never
-# pull_request_target: a fork's pull request runs its own code as root on a
-# machine of GitHub's, which is what the runner is for. Benchmarks (e2e,
-# ultra) and the push suite stay local.
+# Separate from ci.yml: these jobs run with root, through sudo, and take
+# longer; ci.yml stays what `just ci` runs. No secrets, a read-only token,
+# never pull_request_target: a fork's pull request runs its own code as
+# root on a machine of GitHub's, which is what the runner is for.
+# Benchmarks (e2e, ultra) and the push suite stay local.
 #
 # Lanes (ADR-0095): the jobs run only on a full run (a pull request that is
 # ready for review, a draft labelled `ci:full`, a manual run with "Run
@@ -303,13 +304,131 @@ jobs:
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 
+  matrix-podman:
+    # Row 5 of the privilege matrix (ADR-0100, #84): the smoke case
+    # tests/smoke/cases/matrix-podman in the runner's rootless Podman, with
+    # its default options, as the runner's user (T1: no root).
+    name: T1 matrix-podman (rootless Podman on the runner)
+    needs: changes
+    if: needs.changes.outputs.t2 == 'true' && needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      # Shared with `smoke`, which builds the same binaries.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: t2-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      # Rootless Podman maps the user's ranges with newuidmap and newgidmap.
+      - name: Install uidmap
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends uidmap
+      - name: T1 matrix-podman
+        env:
+          RANIKUST_T2_ON_RUNNER: "1"
+        run: tests/vm/runner.sh matrix-podman
+      # On failure or cancellation (a timeout), the suite's log and the
+      # case's outputs for a week (public, as the job log is; no secrets
+      # reach them).
+      - name: Keep the results
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t1-matrix-podman
+          path: |
+            ~/rnk/out
+            ~/rnk/t1/smoke/cases/matrix-podman
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### T1 matrix-podman'
+            echo '```'
+            cat ~/rnk/out/env.txt 2>/dev/null || true
+            grep -hE '^(podman |  matrix-podman: env: |measured: |case )' ~/rnk/out/matrix-podman.log 2>/dev/null || true
+            cat ~/rnk/out/summary.txt ~/rnk/out/suite-times.txt 2>/dev/null || echo "no results"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  matrix-user:
+    # Rows 6 and 6b of the privilege matrix (ADR-0100, #84): the runner's own
+    # user under Ubuntu's AppArmor restriction of user namespaces, refused
+    # without ranikust's AppArmor profile, then building with it
+    # (tests/vm/guest/matrix-user.sh; sudo installs the binary and the
+    # profile).
+    name: T2 matrix-user (the runner's user)
+    needs: changes
+    if: needs.changes.outputs.t2 == 'true' && needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      # Shared with `smoke`, which builds the same binaries.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: t2-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+          use-cache: false
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-zigbuild@0.24.0
+      # Rows 6 and 6b: newuidmap and newgidmap.
+      - name: Install uidmap
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends uidmap
+      - name: T2 matrix-user
+        env:
+          RANIKUST_T2_ON_RUNNER: "1"
+        run: tests/vm/runner.sh matrix-user
+      # On failure or cancellation, each leg's log for a week (public, as
+      # the job log is; no secrets reach them).
+      - name: Keep the results
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t2-matrix-user
+          path: |
+            ~/rnk/out
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### T2 matrix-user'
+            echo '```'
+            cat ~/rnk/out/env.txt ~/rnk/out/matrix-user/env.txt 2>/dev/null || true
+            grep -hE '^(--- |measured: |FAIL: )' ~/rnk/out/matrix-user.log 2>/dev/null || true
+            cat ~/rnk/out/summary.txt ~/rnk/out/suite-times.txt 2>/dev/null || echo "no results"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
   # On a push to `main`, after the jobs that save Rust caches: delete each
   # of their cache entries that a newer entry with the same restore key
   # supersedes, as ci.yml's `caches` job does for its own. `main`'s entries
   # only; the names are these jobs' rust-cache names (tests/ci checks them).
   caches:
     name: prune superseded Rust caches
-    needs: [unit, unit-c, smoke, k8s]
+    needs: [unit, unit-c, smoke, k8s, matrix-podman, matrix-user]
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -346,7 +465,7 @@ jobs:
   # leaves a failing gate, never a skipped one.
   result:
     name: ${{ needs.changes.outputs.label_only == 'true' && 'T2 result (label change, nothing run)' || github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && 'T2 result (manual run)' || needs.changes.outputs.full == 'false' && 'T2 result (draft, not run)' || 'T2 result' }}
-    needs: [changes, unit, unit-c, smoke, k8s]
+    needs: [changes, unit, unit-c, smoke, k8s, matrix-podman, matrix-user]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

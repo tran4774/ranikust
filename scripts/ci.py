@@ -94,11 +94,14 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("scripts/check-static.sh", frozenset({"rust"})),
     ("deny.toml", frozenset({"deny"})),
     ("docs/book/**", frozenset({"book"})),
-    # What tests/vm/runner.sh stages and runs on the T2 runners.
+    # What tests/vm/runner.sh stages and runs on the T2 runners (the T1
+    # matrix-podman job among them; the probe is the rust lane's, which
+    # runs t2 too).
     ("tests/vm/**", frozenset({"t2"})),
     ("tests/container/**", frozenset({"t2"})),
     ("tests/smoke/**", frozenset({"t2"})),
-    # The AppArmor profile: T2's smoke suite loads it, the book shows it.
+    # The AppArmor profile: T2's smoke and matrix-user suites load it, the
+    # book shows it.
     ("contrib/apparmor/**", frozenset({"t2", "book"})),
     # No job of ci.yml or t2.yml reads these. docs-lint runs on every pull
     # request whatever changed, and the `changes` job runs tests/ci itself.
