@@ -96,9 +96,13 @@ pub(crate) fn refused_by_hook(env: &str, euid: u32) -> NotHere {
 /// directory's check for the namespace's root ([`state_dir_for_probe`]),
 /// then the steps and the overlay mount in a user namespace, in a
 /// directory made for them in the state directory, named as the leftovers
-/// an anonymous store removes, and removed after. Logs the probe's line,
-/// whose verdict counts an rbind of `/proc` only with `proc_rbind`
-/// (`--allow proc.rbind`, ADR-0126). Call while single-threaded.
+/// a store removes: removed after, or, with `userns`, left to the build's
+/// store, which removes it from inside the namespace, as it does an
+/// earlier build's; this process removes only an earlier build's it had
+/// not yet given away ([`super::remove_own_probe_leftovers`]). Logs the
+/// probe's line, whose verdict counts an rbind of `/proc` only with
+/// `proc_rbind` (`--allow proc.rbind`, ADR-0126). Call while
+/// single-threaded.
 ///
 /// # Errors
 ///
@@ -142,6 +146,10 @@ pub(crate) fn plan(state_dir: &Path, proc_rbind: bool, userns: bool) -> Result<P
         (BuildIds::Own(subordinate), crate::statedir::Owner::me())
     };
     let held = state_dir_for_probe(state_dir, euid, owner, what).map_err(unprobed)?;
+    if userns {
+        // The store, in the namespace, removes those it was given.
+        super::remove_own_probe_leftovers(state_dir);
+    }
     let span = tracing::debug_span!("ranikust.probe_userns", passes = tracing::field::Empty);
     let _entered = span.enter();
     let name = format!("{}{}", rnk_store::USERNS_PROBE_PREFIX, unique());
@@ -597,9 +605,9 @@ mod tests {
         let open = tmp.path().join("open");
         std::fs::create_dir(&open).unwrap();
         set(&open, 0o755);
-        let alone = std::fs::File::open(&open).unwrap();
-        rustix::fs::flock(&alone, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
-        let refusal = state_dir_for_probe(&open, 1000, me, "rootless").unwrap_err();
+        let euid = rustix::process::geteuid().as_raw();
+        let alone = crate::setup::tests::LockedElsewhere::new(&open);
+        let refusal = state_dir_for_probe(&open, euid, me, "rootless").unwrap_err();
         assert!(
             refusal.reason.contains("another build is using"),
             "{}",
@@ -608,7 +616,7 @@ mod tests {
         assert_eq!(mode(&open), 0o755);
         drop(alone);
         std::fs::write(open.join(rnk_store::BUILDING_MARKER), "").unwrap();
-        let refusal = state_dir_for_probe(&open, 1000, me, "rootless").unwrap_err();
+        let refusal = state_dir_for_probe(&open, euid, me, "rootless").unwrap_err();
         assert!(
             refusal.reason.contains("kaniko-mode build on /"),
             "{}",
@@ -617,7 +625,7 @@ mod tests {
         assert_eq!(mode(&open), 0o755);
         // Taken, it is made private.
         std::fs::remove_file(open.join(rnk_store::BUILDING_MARKER)).unwrap();
-        drop(state_dir_for_probe(&open, 1000, me, "rootless").unwrap());
+        drop(state_dir_for_probe(&open, euid, me, "rootless").unwrap());
         assert_eq!(mode(&open), 0o700);
     }
 }
