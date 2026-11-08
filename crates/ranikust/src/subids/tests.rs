@@ -321,16 +321,210 @@ fn root_s_range_shares_no_id_with_an_account_or_another_range() {
     );
     let w = why();
     assert!(w.contains("uid 600001 of plus in"), "{w}");
-    // Lines that give no range or id are passed over.
-    write(
-        SUBGID,
-        "ranikust:800000:65536\nx:800001\nx:800001:0\nx:800001:1:2\nx:-1:5\n",
-    );
+    // Lines that give no range or id are passed over: fewer than three
+    // fields, an empty range, an id glibc does not read in base 10.
+    write(SUBGID, "ranikust:800000:65536\nx:800001\nx:800001:0\n");
     write(
         PASSWD,
         "root:x:0:0::/:/bin/sh\nneg:x:-600001:0::/:/bin/sh\nhex:x:0x927c1:0::/:/bin/sh\n",
     );
     assert!(root_range_in(etc.path()).is_ok());
+    // A field more is counted, and a sign refuses.
+    write(SUBGID, "ranikust:800000:65536\nx:800001:1:2\n");
+    let w = why();
+    assert!(w.contains("overlaps line 2 of"), "{w}");
+    write(SUBGID, "ranikust:800000:65536\nx:-1:5\n");
+    let w = why();
+    assert!(w.contains("line 2 of"), "{w}");
+    assert!(w.contains("(a sign)"), "{w}");
+}
+
+/// `newuidmap` and `newgidmap` give a line to the account its owner names,
+/// so an account named `ranikust` in `/etc/passwd` refuses root's range,
+/// whichever its ids; a group of that name, or another name, does not.
+#[test]
+fn an_account_named_ranikust_refuses_root_s_range() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| fs::write(etc.path().join(name), text).unwrap();
+    write(SUBUID, "ranikust:600000:65536\n");
+    write(SUBGID, "ranikust:800000:65536\n");
+    write(GROUP, "root:x:0:\nranikust:x:1500:\n");
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nranikustx:x:1501:1501::/:/bin/sh\nxranikust:x:1502:1502::/:/bin/sh\n",
+    );
+    assert!(root_range_in(etc.path()).is_ok());
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nranikust:x:1500:1500::/home/ranikust:/bin/sh\n",
+    );
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains("line 2 of"), "{why}");
+    assert!(why.contains("passwd"), "{why}");
+    assert!(why.contains("account named ranikust"), "{why}");
+    assert!(ROOT_RANGE_GUIDANCE.contains("no account named ranikust"));
+    // Its fields need not be well-formed, and glibc passes over the white
+    // space before its name.
+    for passwd in ["ranikust\n", " \tranikust:x:1500:1500::/:/bin/sh\n"] {
+        write(PASSWD, passwd);
+        let why = root_range_in(etc.path()).unwrap_err();
+        assert!(why.contains("account named ranikust"), "{why}");
+    }
+}
+
+/// Lines shadow's versions read differently are counted (ADR-0139): the
+/// first three fields of a line with more, a start or count in another
+/// base, a count past 32 bits.
+#[test]
+fn lines_shadow_reads_as_overlapping_are_counted() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| fs::write(etc.path().join(name), text).unwrap();
+    write(PASSWD, "root:x:0:0::/:/bin/sh\n");
+    write(GROUP, "root:x:0:\n");
+    write(SUBGID, "ranikust:800000:65536\n");
+    let mut accepted = Vec::new();
+    for other in [
+        "u:0x927c0:10",
+        "u:02223700:10",
+        "u:600000:10:junk",
+        "u:600000:10:",
+        "u:500000:4294967296",
+        "u:0:99999999999",
+    ] {
+        write(SUBUID, &format!("ranikust:600000:65536\n{other}\n"));
+        if root_range_in(etc.path()).is_ok() {
+            accepted.push(other);
+        }
+    }
+    assert!(
+        accepted.is_empty(),
+        "taken beside an overlapping line: {accepted:?}"
+    );
+}
+
+/// Each reading of a line's numbers counts: `strtoul`'s in base 0 (C
+/// white space and `+` before, `0x` hex, a leading 0 octal) and, for a
+/// leading 0, the decimal one; a count of 0 from 0, which shadow's
+/// arithmetic makes every id, and a count up to 64 bits. A line whose
+/// numbers are not read so is refused, naming it; a trailing `\r` is
+/// trimmed and the line counted.
+#[test]
+fn every_reading_of_a_line_s_numbers_counts() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &[u8]| fs::write(etc.path().join(name), text).unwrap();
+    write(PASSWD, b"root:x:0:0::/:/bin/sh\n");
+    write(GROUP, b"root:x:0:\n");
+    write(SUBGID, b"ranikust:800000:65536\n");
+    let with = |ours: &str, other: &[u8]| {
+        let mut text = format!("{ours}\n").into_bytes();
+        text.extend_from_slice(other);
+        text.push(b'\n');
+        write(SUBUID, &text);
+        root_range_in(etc.path())
+    };
+    let ours = "ranikust:600000:65536";
+    for overlapping in [
+        &b"u:0X927C0:1"[..],
+        b"u:+0x927c1:1",
+        b"u: \t\x0b\x0c\r600001:1",
+        b"u:600001:+1",
+        b"u:0:0",
+        b"u:00:0",
+        b"u:1:18446744073709551615",
+        b"u:600001:1\r",
+        b"#u:600001:1",
+        b"-u:600001:1",
+        b":600001:1",
+        b"u\xff:600001:1",
+    ] {
+        let why = with(ours, overlapping).unwrap_err();
+        assert!(
+            why.contains("overlaps line 2 of"),
+            "{}: {why}",
+            String::from_utf8_lossy(overlapping)
+        );
+    }
+    // A leading 0: octal for shadow, decimal for others; both count.
+    assert!(with("ranikust:100000:65536", b"u:0100000:1").is_err());
+    assert!(with("ranikust:32768:1000", b"u:0100000:1").is_err());
+    assert!(with("ranikust:40000:1000", b"u:0100000:1").is_ok());
+    for apart in [
+        &b"u:0x10:5"[..],
+        b"u:5:0",
+        b"u:600000:0",
+        b"u:665536:1",
+        b"u:900000:1\r",
+        b"u:0",
+        b"u",
+        b"",
+    ] {
+        assert!(
+            with(ours, apart).is_ok(),
+            "{}",
+            String::from_utf8_lossy(apart)
+        );
+    }
+    for (unread, why) in [
+        (&b"u:-600001:1"[..], "(a sign)"),
+        (b"u:600001:-0", "(a sign)"),
+        (b"u:600001:1x", "(not a number)"),
+        (b"u:600001:1 ", "(not a number)"),
+        (b"u:600001:1\r\r", "(not a number)"),
+        (b"u:0x:1", "(not a number)"),
+        (b"u:0x927c0g:1", "(not a number)"),
+        (b"u:0800000:1", "(not a number)"),
+        (b"u:+ 600001:1", "(not a number)"),
+        (b"u::1", "(not a number)"),
+        (b"u: :1", "(not a number)"),
+        (b":::", "(not a number)"),
+        (b"# old u:900000:1 line", "(not a number)"),
+        (b"u:1:18446744073709551616", "(past 64 bits)"),
+        (b"u:0x10000000000000000:1", "(past 64 bits)"),
+        (b"u:02000000000000000000000:1", "(past 64 bits)"),
+        (b"u\x00:900000:1", "NUL byte"),
+        (b"u:9\x00", "NUL byte"),
+    ] {
+        let w = with(ours, unread).unwrap_err();
+        assert!(
+            w.contains("line 2 of") && w.contains("subuid") && w.contains(why),
+            "{}: {w}",
+            String::from_utf8_lossy(unread)
+        );
+    }
+    // In `/etc/subgid` too.
+    write(SUBUID, b"ranikust:600000:65536\n");
+    write(SUBGID, b"u:0xc3500:1\nranikust:800000:65536\n");
+    let w = root_range_in(etc.path()).unwrap_err();
+    assert!(w.contains("overlaps line 1 of"), "{w}");
+    assert!(w.contains("subgid"), "{w}");
+}
+
+/// The module `/etc/nsswitch.conf` names for subordinate ids, as libsubid
+/// finds it: the first token of the first `subid:` line that has one, at
+/// column 0, in any case, `#` lines passed over; `files` is none.
+#[test]
+fn the_subid_module_is_libsubid_s_reading_of_nsswitch() {
+    for (text, module) in [
+        (&b""[..], None),
+        (b"passwd: files sss\ngroup: files\n", None),
+        (b"subid: sss\n", Some("sss")),
+        (b"SubId:\t  sss files\n", Some("sss")),
+        (b"subid: files sss\n", None),
+        (b"subid:\nsubid: freeipa\n", Some("freeipa")),
+        (b"#subid: sss\n", None),
+        (b" subid: sss\n", None),
+        (b"subids: sss\n", None),
+        (b"subid: sss", Some("sss")),
+        (b"subid: s\xffs\n", Some("s\u{fffd}s")),
+        (b"subid:\x0b\x0c\r sss\n", Some("sss")),
+    ] {
+        assert_eq!(
+            subid_module(text).as_deref(),
+            module,
+            "{}",
+            String::from_utf8_lossy(text)
+        );
+    }
 }
 
 /// Red team (ADR-0104, ADR-0139): a `ranikust` line whose end passes
@@ -401,9 +595,10 @@ fn red_team_root_s_range_takes_no_overflowing_or_padded_ranikust_line() {
 
 /// Red team (ADR-0139): a second `ranikust` line, the same or not, a
 /// commented or non-UTF-8 line and one whose count reaches every id all
-/// count as another range where their numbers overlap root's, so
-/// `--userns` is refused; a line whose numbers say nothing (a comment
-/// with words, no count) does not.
+/// count as another range where their numbers overlap root's, and a line
+/// with a NUL byte or with words where a number goes is refused, so
+/// `--userns` is refused, naming the line; a line with fewer than three
+/// fields does not.
 #[test]
 fn red_team_duplicates_comments_and_binary_lines_still_overlap_root_s_range() {
     let etc = tempfile::tempdir().unwrap();
@@ -428,7 +623,7 @@ fn red_team_duplicates_comments_and_binary_lines_still_overlap_root_s_range() {
         write(SUBUID, &text);
         let why = root_range_in(etc.path()).unwrap_err();
         assert!(
-            why.contains(&format!("overlaps line {line} of")),
+            why.contains(&format!("line {line} of")),
             "{}: {why}",
             String::from_utf8_lossy(other)
         );
@@ -437,17 +632,30 @@ fn red_team_duplicates_comments_and_binary_lines_still_overlap_root_s_range() {
     write(SUBUID, b"x:600001:1\nranikust:600000:65536\n");
     let why = root_range_in(etc.path()).unwrap_err();
     assert!(why.contains("overlaps line 1 of"), "{why}");
+    for (other, line) in [(&b"# old ranikust:600000:65536 line"[..], 2), (b":::", 2)] {
+        let mut text = b"ranikust:600000:65536\n".to_vec();
+        text.extend_from_slice(other);
+        text.push(b'\n');
+        write(SUBUID, &text);
+        let why = root_range_in(etc.path()).unwrap_err();
+        assert!(
+            why.contains(&format!("line {line} of")),
+            "{}: {why}",
+            String::from_utf8_lossy(other)
+        );
+    }
     write(
         SUBUID,
-        b"ranikust:600000:65536\n# old ranikust:600000:65536 line\n#\n\n:::\nx:600001\n",
+        b"ranikust:600000:65536\n#\n\nx:600001\n# ranikust\n",
     );
     assert!(root_range_in(etc.path()).is_ok());
 }
 
 /// Red team (ADR-0098, ADR-0139): huge id files, 200000 accounts, groups
-/// and ranges with an 8 MiB line of junk and NULs among them, are read in
-/// full without a panic; root's range, last, is taken, and an account or
-/// a range at the very end that holds one of its ids still refuses it.
+/// and ranges with an 8 MiB line of junk among them, are read in full
+/// without a panic; root's range, last, is taken, and an account or a
+/// range at the very end that holds one of its ids still refuses it. The
+/// ranges' junk line is refused where it has NULs or fields of words.
 #[test]
 fn red_team_huge_id_files_are_read_whole_and_fail_closed() {
     const N: u32 = 200_000;
@@ -461,10 +669,18 @@ fn red_team_huge_id_files_are_read_whole_and_fail_closed() {
         sub.extend_from_slice(format!("a{n}:{}:10\n", 1_000_000 + 10 * n).as_bytes());
     }
     let junk: Vec<u8> = (0..(8 << 20)).map(|i| b"9:\x00\xff"[i % 4]).collect();
-    for f in [&mut passwd, &mut group, &mut sub] {
+    let mut refused = sub.clone();
+    for f in [&mut passwd, &mut group, &mut refused] {
         f.extend_from_slice(&junk);
         f.push(b'\n');
     }
+    refused.extend_from_slice(b"ranikust:600000000:65536\n");
+    // One field: no range.
+    sub.extend(
+        junk.iter()
+            .map(|b| if *b == b':' || *b == 0 { b'9' } else { *b }),
+    );
+    sub.push(b'\n');
     sub.extend_from_slice(b"ranikust:600000000:65536\n");
     let write = |name: &str, text: &[u8]| fs::write(etc.path().join(name), text).unwrap();
     write(PASSWD, &passwd);
@@ -493,4 +709,8 @@ fn red_team_huge_id_files_are_read_whole_and_fail_closed() {
     write(GROUP, &late);
     let why = root_range_in(etc.path()).unwrap_err();
     assert!(why.contains("gid 600000000 of last in"), "{why}");
+    write(GROUP, &group);
+    write(SUBUID, &refused);
+    let why = root_range_in(etc.path()).unwrap_err();
+    assert!(why.contains(&format!("line {} of", N + 1)), "{why}");
 }

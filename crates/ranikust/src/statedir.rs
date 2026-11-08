@@ -477,6 +477,8 @@ fn make_given(
         .map_or(0, |d| d.as_nanos());
     let new = format!("{NEW_PREFIX}{}-{nanos}", std::process::id());
     let cannot = |what: &str, e: Errno| Refused(format!("cannot {what} {}: {e}", path.display()));
+    // A kill before the rename leaves this name, empty, in a parent only
+    // root may write, for the admin to remove; nothing is left at `name`.
     rustix::fs::mkdirat(at, new.as_str(), Mode::from_raw_mode(0o700))
         .map_err(|e| cannot("create the state directory", e))?;
     let moved = open_beneath(at, new.as_ref(), path, true).and_then(|fd| {

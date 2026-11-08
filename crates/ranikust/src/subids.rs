@@ -52,38 +52,86 @@ fn read_in(etc: &std::path::Path, name: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The owner of root's range for `--userns` in `/etc/subuid` and
-/// `/etc/subgid` (ADR-0104): an entry of ranikust's own, which neither
-/// podman, which allocates its containers' ranges from `containers`, nor
-/// the tools that use `root` know of.
+/// `/etc/subgid` (ADR-0104): an entry of ranikust's own. Podman allocates
+/// its containers' ranges from `containers`, other tools from `root`, but
+/// `newuidmap` and `newgidmap` give a line to the account its owner names,
+/// so [`root_range`] refuses where `/etc/passwd` has one of this name.
 pub(crate) const ROOT_ENTRY: &str = "ranikust";
 
 /// What to do where root has no range for `--userns` (ADR-0104): the
 /// lines to add, the start left to the admin.
 pub(crate) const ROOT_RANGE_GUIDANCE: &str = "add the line ranikust:<start>:65536 to both \
      /etc/subuid and /etc/subgid, with a <start> above 0 that no account and no other range \
-     uses, such as one past the last range of those files (ADR-0104)";
+     uses, such as one past the last range of those files, and no account named ranikust \
+     (ADR-0104)";
 
 /// Root's range for `--userns` (ADR-0104): in each of `/etc/subuid` and
 /// `/etc/subgid`, the first well-formed range whose owner is
 /// [`ROOT_ENTRY`], by that name only, never a uid, sharing no id with the
-/// host's accounts or other ranges (ADR-0139): the uid range none of
-/// `/etc/passwd`'s uids, the gid range none of `/etc/group`'s gids or of
-/// `/etc/passwd`'s primary gids, and neither another well-formed line of
-/// its file. Those local files only: a static binary has no NSS, so an id
-/// only a directory service knows is not seen. Lines end at `\n` alone, as
-/// shadow's own parser reads them: a `ranikust` line ending in `\r` is not
-/// well-formed, so not found, unlike [`lookup`], which takes `\r\n` as a
-/// line end too. Read on the host before anything is written.
+/// host's accounts or other ranges (ADR-0139): no account named
+/// [`ROOT_ENTRY`] in `/etc/passwd`, which `newuidmap` and `newgidmap` would
+/// let map the range; the uid range none of `/etc/passwd`'s uids, the gid
+/// range none of `/etc/group`'s gids or of `/etc/passwd`'s primary gids;
+/// and neither any range another line of its file may give, as
+/// [`ranges_shadow_may_read`] counts them. Those local files only: a static
+/// binary has no NSS, so an account or id only a directory service (LDAP,
+/// SSSD) knows is not seen, nor are the ranges another allocator hands out
+/// (an NSS `subid:` module, which `newuidmap` then reads instead of the
+/// files and of which a warning is logged; the kubelet's for pods; systemd's
+/// `DynamicUser` and `systemd-nspawn --private-users=pick`). Lines end at
+/// `\n` alone, as shadow's own parser reads them: a `ranikust` line ending
+/// in `\r` is not well-formed, so not found, unlike [`lookup`], which takes
+/// `\r\n` as a line end too. Read on the host before anything is written.
 ///
 /// # Errors
 ///
 /// Why there is none to use: a file without one (a file that does not
 /// exist has none), one whose range starts at 0, which would map the
-/// host's root, one that holds an account's id or overlaps another line,
-/// naming it, or a file that cannot be read. [`ROOT_RANGE_GUIDANCE`]
-/// says what to do.
+/// host's root, an account named [`ROOT_ENTRY`], one that holds an
+/// account's id, overlaps another line or sits beside a line whose numbers
+/// cannot be read as shadow's tools may read them, naming it, or a file
+/// that cannot be read. [`ROOT_RANGE_GUIDANCE`] says what to do.
 pub(crate) fn root_range() -> Result<SubordinateIds, String> {
-    root_range_in(std::path::Path::new("/etc"))
+    let etc = std::path::Path::new("/etc");
+    let ids = root_range_in(etc)?;
+    match read_in(etc, NSSWITCH) {
+        Ok(text) => {
+            if let Some(module) = subid_module(&text) {
+                tracing::warn!(
+                    "ranikust: {} names the subid module {module}: newuidmap and newgidmap \
+                     take ranges from it, not from /etc/subuid and /etc/subgid, so --userns \
+                     cannot tell whether it hands out ids of the ranikust range; give that \
+                     range a <start> it does not use",
+                    etc.join(NSSWITCH).display()
+                );
+            }
+        }
+        Err(e) => tracing::warn!(
+            "ranikust: cannot tell whether an NSS subid module hands out ids of the ranikust \
+             range: {e}"
+        ),
+    }
+    Ok(ids)
+}
+
+/// The NSS configuration, whose `subid:` line libsubid reads.
+const NSSWITCH: &str = "nsswitch.conf";
+
+/// The module the first `subid:` line of `nsswitch` that names one names
+/// first, where it is not `files`, as libsubid reads the file: from column
+/// 0, in any case, `#` lines passed over.
+fn subid_module(nsswitch: &[u8]) -> Option<String> {
+    nsswitch.split(|b| *b == b'\n').find_map(|line| {
+        let rest = line
+            .get(..6)
+            .filter(|key| key.eq_ignore_ascii_case(b"subid:"))
+            .map(|_| &line[6..])?;
+        let module = without_c_space(rest)
+            .split(|b| matches!(b, b' ' | b'\t'))
+            .next()
+            .filter(|t| !t.is_empty())?;
+        Some((module != b"files").then(|| String::from_utf8_lossy(module).into_owned()))
+    })?
 }
 
 /// [`root_range`] with the files in `etc`.
@@ -92,6 +140,17 @@ fn root_range_in(etc: &std::path::Path) -> Result<SubordinateIds, String> {
     let group = read_in(etc, GROUP)?;
     let path = |name: &str| etc.join(name).display().to_string();
     let (passwd_path, group_path) = (path(PASSWD), path(GROUP));
+    // glibc passes over white space before a line's name.
+    let named = passwd.split(|b| *b == b'\n').position(|line| {
+        without_c_space(line).split(|b| *b == b':').next() == Some(ROOT_ENTRY.as_bytes())
+    });
+    if let Some(i) = named {
+        return Err(format!(
+            "line {} of {passwd_path} is an account named {ROOT_ENTRY}, to which newuidmap and \
+             newgidmap would give root's {ROOT_ENTRY} range",
+            i + 1
+        ));
+    }
     let uids = ids_of(&passwd, 2, "uid", &passwd_path).collect::<Vec<_>>();
     let gids = ids_of(&group, 2, "gid", &group_path)
         .chain(ids_of(&passwd, 3, "gid", &passwd_path))
@@ -117,16 +176,26 @@ fn root_range_in(etc: &std::path::Path) -> Result<SubordinateIds, String> {
             ));
         }
         let ours = format!("the {ROOT_ENTRY} range {}:{} of {path}", r.start, r.count);
-        let (start, end) = (u64::from(r.start), u64::from(r.start) + u64::from(r.count));
-        let other = lines.iter().find(|(i, line)| {
-            *i != at && loose_range(line).is_some_and(|(s, e)| start < e && s < end)
-        });
-        if let Some((i, line)) = other {
-            return Err(format!(
-                "{ours} overlaps line {} of {path}, {}: the build's ids would be another's",
-                i + 1,
-                String::from_utf8_lossy(line)
-            ));
+        let (start, end) = (
+            u128::from(r.start),
+            u128::from(r.start) + u128::from(r.count),
+        );
+        for (i, line) in lines.iter().filter(|(i, _)| *i != at) {
+            let n = i + 1;
+            let ranges = ranges_shadow_may_read(line).map_err(|why| {
+                format!(
+                    "line {n} of {path}, {}, is one that versions of newuidmap and newgidmap may \
+                     read differently ({why}), so whether it overlaps {ours} is not known: write \
+                     its start and count in decimal, or remove it",
+                    shown(line)
+                )
+            })?;
+            if ranges.iter().any(|&(s, e)| start < e && s < end) {
+                return Err(format!(
+                    "{ours} overlaps line {n} of {path}, {}: the build's ids would be another's",
+                    shown(line)
+                ));
+            }
         }
         if let Some(h) = held.iter().find(|h| (start..end).contains(&h.id.into())) {
             return Err(format!(
@@ -152,6 +221,15 @@ struct Held {
     file: String,
 }
 
+/// `line` for a message: lossy UTF-8, cut after 80 characters.
+fn shown(line: &[u8]) -> String {
+    let text = String::from_utf8_lossy(line);
+    match text.char_indices().nth(80) {
+        Some((cut, _)) => format!("{}...", &text[..cut]),
+        None => text.into_owned(),
+    }
+}
+
 /// The ids in field `field` (from 0) of each line of `bytes`, a
 /// `/etc/passwd` or `/etc/group` (`name:x:id:...`), with the line's name,
 /// each read as [`loose`] reads it.
@@ -174,24 +252,115 @@ fn ids_of<'a>(
     })
 }
 
-/// The ids, from the first to one past the last, that a line of
-/// `/etc/subuid` or `/etc/subgid` gives whatever its owner, its numbers
-/// read as [`loose`] reads them: for the overlap check, a range another
-/// tool may take counts even where it is not well-formed here.
-fn loose_range(line: &[u8]) -> Option<(u64, u64)> {
-    let mut f = line.split(|b| *b == b':');
-    let (_, start, count) = (f.next()?, f.next()?, f.next()?);
-    if f.next().is_some() {
-        return None;
+/// The ids, from the first to one past the last, that some version of
+/// shadow's tools may take a line of `/etc/subuid` or `/etc/subgid` to
+/// give, whatever its owner, for the overlap check: a range another tool
+/// may honour counts even where it is not well-formed here, and so does
+/// each reading of it. Shadow 4.13 and 4.17 honour the first three fields
+/// of a line with more, a trailing `:` and a count past 32 bits, which
+/// later versions refuse; all read the numbers as `strtoul` in base 0. So
+/// the first three fields of a line with at least three count, a trailing
+/// `\r` trimmed (no version honours such a line, so counting it is the
+/// stricter reading), each number read by [`readings`], and the ids in
+/// 128 bits, never cut. A count of 0 from 0 is every id, as shadow's
+/// `start + count - 1` makes it. A line of fewer fields gives none: every
+/// version skips it.
+///
+/// # Errors
+///
+/// What makes the line one shadow's versions read differently: a NUL byte
+/// (where it ends a line differs), or a start or count [`readings`] cannot
+/// read.
+fn ranges_shadow_may_read(line: &[u8]) -> Result<Vec<(u128, u128)>, &'static str> {
+    if line.contains(&0) {
+        return Err("a NUL byte");
     }
-    let (start, count) = (u64::from(loose(start)?), u64::from(loose(count)?));
-    (count >= 1).then_some((start, start + count))
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let mut f = line.split(|b| *b == b':');
+    let (Some(_), Some(start), Some(count)) = (f.next(), f.next(), f.next()) else {
+        return Ok(Vec::new());
+    };
+    let (starts, counts) = (readings(start)?, readings(count)?);
+    Ok(starts
+        .iter()
+        .flat_map(|&s| counts.iter().map(move |&c| (s, c)))
+        .filter_map(|(s, c)| match (s, c) {
+            (0, 0) => Some((0, u128::MAX)),
+            (_, 0) => None,
+            _ => Some((s, s.saturating_add(c))),
+        })
+        .collect())
 }
 
-/// A decimal `u32` as `strtoul` reads one in base 10 where the whole field
-/// must be the number: white space and a `+` before it allowed.
+/// The values a start or count of a subordinate id line may be read as:
+/// as `strtoul` reads one in base 0 where the whole field must be the
+/// number (C white space and a `+` before it, `0x` or `0X` for hex, a
+/// leading 0 for octal), and, for a leading 0, in decimal too, as other
+/// tools read it. Each fits in 64 bits but a decimal reading, which may be
+/// more.
+///
+/// # Errors
+///
+/// Why it is not such a number: a sign, which `strtoul` takes and the
+/// versions read differently; anything else in the field, an empty one
+/// included; a value past 64 bits, which `strtoul` refuses.
+fn readings(field: &[u8]) -> Result<Vec<u128>, &'static str> {
+    const NOT: &str = "not a number";
+    let s = without_c_space(field);
+    let s = match s.first() {
+        Some(b'+') => &s[1..],
+        Some(b'-') => return Err("a sign"),
+        _ => s,
+    };
+    let digits = |s: &[u8], radix: u32| -> Result<u128, &'static str> {
+        let mut v: u128 = 0;
+        for b in s {
+            let d = char::from(*b).to_digit(radix).ok_or(NOT)?;
+            v = v * u128::from(radix) + u128::from(d);
+            if v > u128::from(u64::MAX) {
+                return Err("past 64 bits");
+            }
+        }
+        Ok(v)
+    };
+    if s.is_empty() {
+        return Err(NOT);
+    }
+    if let Some(hex) = s.strip_prefix(b"0x").or_else(|| s.strip_prefix(b"0X")) {
+        // `strtoul` reads `0x` with no hex digit after it as 0 and the rest as junk.
+        return if hex.is_empty() {
+            Err(NOT)
+        } else {
+            digits(hex, 16).map(|v| vec![v])
+        };
+    }
+    if s.len() > 1 && s[0] == b'0' {
+        let octal = digits(s, 8)?;
+        let decimal = s.iter().fold(0u128, |v, b| {
+            v.saturating_mul(10).saturating_add(u128::from(b - b'0'))
+        });
+        return Ok(vec![octal, decimal]);
+    }
+    digits(s, 10).map(|v| vec![v])
+}
+
+/// `bytes` without the white space before it, as `isspace` takes it in
+/// the C locale, which `newuidmap` and `newgidmap` keep.
+fn without_c_space(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+        .unwrap_or(bytes.len());
+    &bytes[start..]
+}
+
+/// A `/etc/passwd` or `/etc/group` id as glibc reads one: `strtoul` in base
+/// 10 where the whole field must be the number, C white space and a `+`
+/// before it allowed. None for a `-` or a value past 32 bits: glibc makes
+/// either `u32::MAX` (`-0` aside, which is 0), and neither id is ever in
+/// root's range.
 fn loose(field: &[u8]) -> Option<u32> {
-    let s = std::str::from_utf8(field).ok()?.trim_start();
+    let s = std::str::from_utf8(without_c_space(field)).ok()?;
     decimal(s.strip_prefix('+').unwrap_or(s))
 }
 

@@ -883,9 +883,11 @@ fn make_probe_dir(
     parent: &Path,
     name: &str,
 ) -> Result<Option<(RootPath, Option<OwnedFd>)>, String> {
-    let scratch = root
-        .create_sub_root(name, 0o700)
-        .map_err(|e| e.to_string())?;
+    let scratch = match root.create_sub_root(name, 0o700) {
+        Ok(scratch) => scratch,
+        Err(e) if removed_once_made(&e) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
     if !name.starts_with(rnk_store::USERNS_PROBE_PREFIX) {
         return Ok(Some((scratch, None)));
     }
@@ -903,11 +905,20 @@ fn make_probe_dir(
     }
 }
 
+/// Whether `e`, from [`RootPath::create_sub_root`], says the directory it
+/// made was gone when it opened it: another build's start may remove it
+/// for a leftover ([`remove_own_probe_leftovers`]) right after `mkdirat`.
+fn removed_once_made(e: &rnk_rootfs::Error) -> bool {
+    matches!(e, rnk_rootfs::Error::Io { op: "open", source, .. }
+        if source.raw_os_error() == Some(Errno::NOENT.raw_os_error()))
+}
+
 /// Removes each directory of the user namespace probe in `parent`
 /// ([`rnk_store::USERNS_PROBE_PREFIX`]) that this process's user made and
 /// had not yet given away when its build was killed: the store, in the
 /// build's user namespace under `--userns`, cannot open it. Only an empty
-/// directory of this user's, mode `0700`, on `parent`'s mount and no
+/// directory of this user's, mode `0700` (with the setgid bit a setgid
+/// `parent` gives it before [`own_group`] clears it), on `parent`'s mount and no
 /// mount point, that no probe holds (its `flock`), told through its
 /// descriptor; then its name alone is removed, which fails where it is no
 /// longer empty. Nothing inside a directory is ever deleted. A failure is
@@ -965,7 +976,7 @@ fn remove_if_own_and_empty(root: &RootPath, name: &std::ffi::OsStr) -> Result<bo
         && !st.mount_root
         && st.mnt_id == root.mnt_id()
         && st.uid == euid
-        && st.mode & 0o7777 == 0o700;
+        && st.mode & 0o7777 & !SETGID == 0o700;
     if !own {
         return Ok(false);
     }
@@ -977,7 +988,7 @@ fn remove_if_own_and_empty(root: &RootPath, name: &std::ffi::OsStr) -> Result<bo
     let held = rustix::fs::fstat(&fd).map_err(|e| e.to_string())?;
     let listed = rustix::fs::makedev(st.dev_major, st.dev_minor);
     if (held.st_dev, held.st_ino, held.st_uid) != (listed, st.ino, euid)
-        || held.st_mode & 0o7777 != 0o700
+        || held.st_mode & 0o7777 & !SETGID != 0o700
     {
         return Ok(false);
     }
@@ -1053,12 +1064,14 @@ fn give_dir(root: &RootPath, name: &str, owner: (u32, u32)) -> Result<(), String
     }
 }
 
+/// A mode's setgid bit, which a directory made in a setgid one gets.
+const SETGID: u32 = 0o2000;
+
 /// Gives the directory `dir` the process's gid and no setgid bit, through
 /// its own descriptor, as the store's own directories get (ADR-0099): a
 /// setgid parent's gid, which no map holds, would stop the probe's `chown`
 /// in the user namespace.
 fn own_group(dir: &RootPath) -> rnk_rootfs::Result<bool> {
-    const SETGID: u32 = 0o2000;
     let egid = rustix::process::getegid().as_raw();
     dir.set_meta_if(".", |st| {
         (st.mode & SETGID != 0 || st.gid != egid).then(|| rnk_rootfs::Meta {

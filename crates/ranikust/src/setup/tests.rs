@@ -94,6 +94,25 @@ fn a_probe_directory_taken_before_it_is_held_is_made_again() {
     assert!(names().is_empty());
 }
 
+/// A probe directory removed between its `mkdirat` and its open was taken
+/// by another build's start: its name is made again, as when it is taken
+/// before it is held. Another failure, or the `mkdirat`'s own, is not.
+#[test]
+fn a_probe_directory_gone_once_made_is_taken_not_an_error() {
+    let io = |op, errno: Errno| rnk_rootfs::Error::Io {
+        op,
+        path: "p".into(),
+        source: std::io::Error::from_raw_os_error(errno.raw_os_error()),
+    };
+    assert!(removed_once_made(&io("open", Errno::NOENT)));
+    assert!(!removed_once_made(&io("open", Errno::ACCESS)));
+    assert!(!removed_once_made(&io("mkdir", Errno::NOENT)));
+    assert!(!removed_once_made(&rnk_rootfs::Error::InvalidPath {
+        path: "p".into(),
+        reason: "the directory just made is not empty",
+    }));
+}
+
 /// Linux's `EACCES`, without a dependency on `libc` for one constant.
 const EACCES: i32 = 13;
 
@@ -520,9 +539,9 @@ fn the_probe_directory_s_group_is_set_through_its_descriptor() {
 }
 
 /// A probe directory a build killed before it gave it away is removed,
-/// only where it is this user's own, empty, mode 0700, a real directory
-/// no probe holds; anything else of a probe's name, and any other name,
-/// is left as found.
+/// only where it is this user's own, empty, mode 0700 (setgid too, as a
+/// setgid state directory makes it), a real directory no probe holds;
+/// anything else of a probe's name, and any other name, is left as found.
 #[test]
 fn only_an_empty_private_probe_directory_of_one_s_own_is_removed() {
     let tmp = private_tempdir();
@@ -534,7 +553,9 @@ fn only_an_empty_private_probe_directory_of_one_s_own_is_removed() {
     };
     let probe = |s: &str| format!("{}{s}", rnk_store::USERNS_PROBE_PREFIX);
     dir(&probe("empty"), 0o700);
+    dir(&probe("setgid"), 0o2700);
     dir(&probe("open"), 0o755);
+    dir(&probe("setuid"), 0o4700);
     let full = dir(&probe("full"), 0o700);
     fs::write(full.join("f"), "x").unwrap();
     let held = dir(&probe("held"), 0o700);
@@ -552,7 +573,7 @@ fn only_an_empty_private_probe_directory_of_one_s_own_is_removed() {
         n
     };
     let mut kept = names();
-    kept.retain(|n| *n != probe("empty"));
+    kept.retain(|n| *n != probe("empty") && *n != probe("setgid"));
     remove_own_probe_leftovers(tmp.path());
     assert_eq!(names(), kept);
     assert!(full.join("f").exists());
