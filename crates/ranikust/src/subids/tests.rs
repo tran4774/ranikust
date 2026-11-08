@@ -249,3 +249,86 @@ fn root_s_range_is_the_ranikust_entry_of_both_files_and_nothing_else() {
     // Root's own lookup maps its own ids, the ranikust entry or not.
     assert_eq!(lookup_in(etc.path(), 0), Ok(None));
 }
+
+/// Root's range for `--userns` shares no id with the host's accounts or
+/// other ranges (ADR-0139): a uid range holding a uid of `/etc/passwd`, a
+/// gid range holding a gid of `/etc/group` or a primary gid of
+/// `/etc/passwd`, or either overlapping another line of its file, its
+/// numbers read as `strtoul` reads them, is refused, naming the id or the
+/// line; ranges that only touch, and lines that give no id, are not.
+#[test]
+fn root_s_range_shares_no_id_with_an_account_or_another_range() {
+    let etc = tempfile::tempdir().unwrap();
+    let write = |name: &str, text: &str| fs::write(etc.path().join(name), text).unwrap();
+    let why = || root_range_in(etc.path()).unwrap_err();
+    let uids = "u:100000:65536\nranikust:600000:65536\nv:700000:10\n";
+    write(SUBUID, uids);
+    write(SUBGID, "u:100000:65536\nranikust:800000:65536\n");
+    // Accounts and groups outside the ranges, and ranges that touch them.
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nedge:x:599999:865536::/:/bin/sh\n",
+    );
+    write(GROUP, "root:x:0:\nedge:x:865536:\n");
+    assert!(root_range_in(etc.path()).is_ok());
+
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nsvc:x:665535:10::/:/bin/sh\n",
+    );
+    let w = why();
+    assert!(w.contains("uid 665535 of svc in"), "{w}");
+    assert!(w.contains("passwd"), "{w}");
+    assert!(w.contains("ranikust range 600000:65536 of"), "{w}");
+    // A primary gid with no group line is a gid in use too.
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nsvc:x:10:800000::/:/bin/sh\n",
+    );
+    let w = why();
+    assert!(w.contains("gid 800000 of svc in"), "{w}");
+    write(PASSWD, "root:x:0:0::/:/bin/sh\n");
+    write(GROUP, "root:x:0:\nstaff:x:865535:\n");
+    let w = why();
+    assert!(w.contains("gid 865535 of staff in"), "{w}");
+    assert!(w.contains("group"), "{w}");
+    write(GROUP, "root:x:0:\n");
+
+    // Another range: by any overlap, not only the same start.
+    write(
+        SUBUID,
+        "u:100000:65536\nranikust:600000:65536\nv:665535:10\n",
+    );
+    let w = why();
+    assert!(w.contains("overlaps line 3 of"), "{w}");
+    assert!(w.contains("subuid, v:665535:10"), "{w}");
+    write(SUBUID, "w:500000:100001\nranikust:600000:65536\n");
+    let w = why();
+    assert!(w.contains("overlaps line 1 of"), "{w}");
+    write(SUBUID, uids);
+    write(SUBGID, "ranikust:800000:65536\nranikust:800001:1\n");
+    let w = why();
+    assert!(w.contains("overlaps line 2 of"), "{w}");
+    assert!(w.contains("subgid, ranikust:800001:1"), "{w}");
+    // A sign or spaces, which `strtoul` takes, still name an id in use.
+    write(SUBGID, "ranikust:800000:65536\nx: +800001: 1\n");
+    let w = why();
+    assert!(w.contains("overlaps line 2 of"), "{w}");
+    write(SUBGID, "ranikust:800000:65536\n");
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nplus:x: +600001:0::/:/bin/sh\n",
+    );
+    let w = why();
+    assert!(w.contains("uid 600001 of plus in"), "{w}");
+    // Lines that give no range or id are passed over.
+    write(
+        SUBGID,
+        "ranikust:800000:65536\nx:800001\nx:800001:0\nx:800001:1:2\nx:-1:5\n",
+    );
+    write(
+        PASSWD,
+        "root:x:0:0::/:/bin/sh\nneg:x:-600001:0::/:/bin/sh\nhex:x:0x927c1:0::/:/bin/sh\n",
+    );
+    assert!(root_range_in(etc.path()).is_ok());
+}
