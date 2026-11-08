@@ -920,10 +920,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   swapped, probe directories moved, removed or their entries swapped for
   hard links and links out; root's set-up never blocks, nothing of
   root's or a third user's outside the state directories changes, and
-  root's directory gets no name of the range's); the quick case
-  `userns-reach` (a `--userns` `RUN`'s descriptors, writes and reach,
-  processes it leaves, ranikust's own processes as the range's first ids
-  see them, ranikust killed while a `RUN` waits:
+  root's directory gets no name of the range's); `setup/tests.rs`
+  `red_team_root_refuses_system_directories_and_device_nodes_unchanged`
+  (unit suite: root's overlay set-up on `/` and each listed system
+  directory, and root's and the range's check of a state directory whose
+  `blobs`, `builds` or `tmp` is a real device node, a FIFO, a socket or a
+  link out: each refused, unopened, owner, mode and names unchanged); the
+  quick case `userns-reach` (a `--userns` `RUN`'s descriptors, writes and
+  reach, processes it leaves, ranikust's own processes as the range's
+  first ids see them, ranikust killed while a `RUN` waits:
   [testing](../../testing.md#quick-smoke-cases));
   `slash_lock_refuses_a_second_build`, whose first build on `/` must run
   from a sealed memfd (ADR-0101);

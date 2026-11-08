@@ -1039,6 +1039,169 @@ fn red_team_a_planted_state_directory_is_refused_unchanged_by_each_set_up() {
     assert_eq!(fs::metadata(&state).unwrap().mode() & 0o7777, 0o700);
 }
 
+/// A directory below `/var/lib`, root's and `0755` so that a `--userns`
+/// range may search it, removed when dropped.
+struct VarLib(PathBuf);
+
+impl VarLib {
+    fn new(what: &str) -> Self {
+        let p = PathBuf::from(format!(
+            "/var/lib/rnk-red-team-{what}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir(&p).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        Self(p)
+    }
+}
+
+impl Drop for VarLib {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// T2, as real root: root's overlay mode refuses `/` and each system
+/// directory there is, its owner and mode kept and no name of the store
+/// made in it; root's overlay mode, and the check `--userns` runs for its
+/// range, refuse a state directory whose store directory is a real device
+/// node, a FIFO, a socket or a link out, unopened and with nothing changed
+/// (T4).
+#[test]
+#[ignore = "T2: real root's overlay set-up on system directories and device nodes; one taken would change the machine"]
+fn red_team_root_refuses_system_directories_and_device_nodes_unchanged() {
+    use rustix::fs::{CWD, FileType, Mode, makedev, mknodat};
+    use std::os::unix::fs::{lchown, symlink};
+    assert!(rustix::process::geteuid().is_root(), "run as root");
+    // A FIFO or a device opened by mistake may block: the process ends instead.
+    // SAFETY: `alarm` only arms this process's timer.
+    unsafe { libc::alarm(300) };
+    let store_names = [
+        rnk_store::STATE_MARKER,
+        "blobs",
+        "layers",
+        "caches",
+        "locks",
+        "tmp",
+        "builds",
+    ];
+    let present = |dir: &Path| -> Vec<bool> {
+        store_names
+            .iter()
+            .map(|n| fs::symlink_metadata(dir.join(n)).is_ok())
+            .collect()
+    };
+    let mut system: Vec<&str> = crate::statedir::SYSTEM_DIRS.to_vec();
+    system.push("/");
+    let mut tried = 0;
+    for sys in system {
+        let dir = Path::new(sys);
+        let Ok(before) = fs::symlink_metadata(dir) else {
+            continue;
+        };
+        let had = present(dir);
+        let refused = set_up(dir, false, &Seccomp::Unset, &mut false, false, false).map(drop);
+        assert!(refused.is_err(), "{sys} taken");
+        let after = fs::symlink_metadata(dir).unwrap();
+        let ids = |m: &fs::Metadata| (m.mode(), m.uid(), m.gid());
+        assert_eq!(ids(&after), ids(&before), "{sys}");
+        assert_eq!(present(dir), had, "{sys}");
+        tried += 1;
+    }
+    assert!(tried >= 10, "{tried} system directories");
+
+    let base = VarLib::new("set-up");
+    let b = base.0.as_path();
+    let node = |p: &Path, kind: FileType, dev| {
+        mknodat(CWD, p, kind, Mode::from_raw_mode(0o600), dev).unwrap();
+    };
+    let plant = |at: &Path, what: &str| match what {
+        "a FIFO" => node(at, FileType::Fifo, 0),
+        "a socket" => drop(std::os::unix::net::UnixListener::bind(at).unwrap()),
+        "a character device" => node(at, FileType::CharacterDevice, makedev(1, 3)),
+        "a block device" => node(at, FileType::BlockDevice, makedev(7, 0)),
+        "a link to /etc" => symlink("/etc", at).unwrap(),
+        _ => symlink("/dev/zero", at).unwrap(),
+    };
+    let plants = [
+        "a FIFO",
+        "a socket",
+        "a character device",
+        "a block device",
+        "a link to /etc",
+        "a link to a device",
+    ];
+    let etc = fs::symlink_metadata("/etc").unwrap().mode();
+    for d in ["blobs", "builds", "tmp"] {
+        for what in plants {
+            let case = format!("{d} as {what}");
+            let state = b.join(case.replace(' ', "-").replace('/', ""));
+            Store::open(&BuildPaths::new(&state, &state))
+                .unwrap()
+                .close()
+                .unwrap();
+            for p in [&state, &state.join("builds")] {
+                fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            fs::remove_dir_all(state.join(d)).unwrap();
+            plant(&state.join(d), what);
+            let before = snapshot(b);
+            let refusal = set_up_refusal(&state);
+            let says = format!("holds {d}, which is");
+            assert!(refusal.reason.contains(&says), "{case}: {refusal}");
+            assert_eq!(snapshot(b), before, "{case}");
+        }
+    }
+    assert_eq!(fs::symlink_metadata("/etc").unwrap().mode(), etc);
+
+    // `--userns`: the state directory and what is planted in it are the range's.
+    let (uid, gid) = (310_000, 410_000);
+    let range = crate::statedir::Owner::Mapped { uid, gid };
+    let give = |p: &Path| lchown(p, Some(uid), Some(gid)).unwrap();
+    let ranged = |name: &str| {
+        let state = b.join(name);
+        fs::create_dir(&state).unwrap();
+        fs::write(state.join(rnk_store::STATE_MARKER), "").unwrap();
+        give(&state.join(rnk_store::STATE_MARKER));
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+        give(&state);
+        state
+    };
+    for d in ["blobs", "builds"] {
+        for what in plants {
+            let case = format!("the range's {d} as {what}");
+            let state = ranged(&case.replace(' ', "-").replace(['/', '\''], ""));
+            plant(&state.join(d), what);
+            give(&state.join(d));
+            let before = snapshot(b);
+            let Err(refusal) = hold_state_dir(&state, 0, range, || unreachable!("on overlayfs"))
+            else {
+                panic!("{case}: taken");
+            };
+            let says = format!("holds {d}, which is");
+            assert!(refusal.reason.contains(&says), "{case}: {refusal}");
+            assert_eq!(snapshot(b), before, "{case}");
+        }
+    }
+
+    // The controls: root's store and the range's are taken, made private.
+    let state = b.join("root-s");
+    Store::open(&BuildPaths::new(&state, &state))
+        .unwrap()
+        .close()
+        .unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+    let me = crate::statedir::Owner::me();
+    drop(hold_state_dir(&state, 0, me, || unreachable!("on overlayfs")).unwrap());
+    assert_eq!(fs::metadata(&state).unwrap().mode() & 0o7777, 0o700);
+    let state = ranged("the-range-s");
+    drop(hold_state_dir(&state, 0, range, || unreachable!("on overlayfs")).unwrap());
+    assert_eq!(fs::metadata(&state).unwrap().mode() & 0o7777, 0o700);
+    // SAFETY: as above, cancelled.
+    unsafe { libc::alarm(0) };
+}
+
 #[test]
 fn kaniko_mode_on_a_host_without_mounts_is_refused() {
     // Q-330: never a bare chroot on the host; in a container, or with mount
