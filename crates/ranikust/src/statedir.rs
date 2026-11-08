@@ -107,20 +107,14 @@ pub(crate) fn prepare(state_dir: &Path) -> Result<(), Refused> {
 /// to it: the state directory, made `0700` and owned by its uid and gid,
 /// and each missing directory above it, root's with mode `0711`, so that
 /// it may search them. An existing state directory is never given, nor
-/// root's default ([`crate::config::DEFAULT_STATE_DIR`]), missing or not.
+/// one at, below or above root's default ([`refuse_roots_default`]),
+/// missing or not.
 ///
 /// # Errors
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused> {
-    if matches!(owner, Owner::Mapped { .. }) && in_roots_default(state_dir) {
-        return Err(Refused(format!(
-            "the state directory {} is root's default, {}, or below it: {}",
-            state_dir.display(),
-            crate::config::DEFAULT_STATE_DIR,
-            owner.advice()
-        )));
-    }
+    refuse_roots_default(state_dir, owner)?;
     let existing = state_dir
         .ancestors()
         .find(|p| std::fs::symlink_metadata(p).is_ok())
@@ -152,12 +146,34 @@ pub(crate) fn prepare_for(state_dir: &Path, owner: Owner) -> Result<(), Refused>
     }
 }
 
-/// Whether `state_dir`, absolute, is root's default state directory or
-/// below it, however its path is spelt: made for the mapped ids, either
-/// would refuse root's own builds there. `..` is taken as written, since
-/// the walk refuses symlinks on the way.
-fn in_roots_default(state_dir: &Path) -> bool {
-    crate::config::clean(state_dir).starts_with(crate::config::DEFAULT_STATE_DIR)
+/// Refuses, for [`Owner::Mapped`], a state directory, absolute, at, below
+/// or above root's default ([`crate::config::DEFAULT_STATE_DIR`]),
+/// however its path is spelt: made for the mapped ids, any of them would
+/// refuse root's own builds there. Checks the path alone.
+fn refuse_roots_default(state_dir: &Path, owner: Owner) -> Result<(), Refused> {
+    match owner {
+        Owner::Me(_) => Ok(()),
+        Owner::Mapped { .. } => {
+            let default = Path::new(crate::config::DEFAULT_STATE_DIR);
+            // `..` is resolved lexically: no symlink is followed on the way
+            // (`open_dir`), so that is where it leads.
+            let clean = crate::config::clean(state_dir);
+            let how = if clean == default {
+                "is root's default".to_owned()
+            } else if clean.starts_with(default) {
+                format!("is below root's default {}", default.display())
+            } else if default.starts_with(&clean) {
+                format!("is above root's default {}", default.display())
+            } else {
+                return Ok(());
+            };
+            Err(Refused(format!(
+                "the state directory {} {how}: {}",
+                state_dir.display(),
+                owner.advice()
+            )))
+        }
+    }
 }
 
 /// What [`check`] found at the state directory's path.

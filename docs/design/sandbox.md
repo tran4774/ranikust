@@ -899,11 +899,11 @@ with another map:
   read). A missing one is made for it, `0700`, the missing directories above
   it root's with mode `0711`. An existing one of root's is refused, never given
   away: root's own builds keep layers extracted with real ids, setuid-root
-  files among them. Root's default, `/var/lib/ranikust`, and anything below it
-  are refused too, missing or not: made for the range, they would refuse
-  root's own builds there. Every refusal comes before anything is written, with
-  guidance. Extracted layers are keyed by the namespace's id map, as in every
-  user namespace ([cache-and-store](cache-and-store.md)).
+  files among them. A state directory at, below or above root's default,
+  `/var/lib/ranikust`, is refused too, missing or not: made for the range, it
+  would refuse root's own builds there. Every refusal comes before anything is
+  written, with guidance. Extracted layers are keyed by the namespace's id map,
+  as in every user namespace ([cache-and-store](cache-and-store.md)).
 - **Never another mode.** `--userns` is refused with `--mode=kaniko`; where a
   set-up step fails it refuses, never falling back to a mode without the user
   namespace, unlike root's `--mode=auto`

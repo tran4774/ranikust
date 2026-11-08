@@ -416,8 +416,8 @@ fn abandon(store: rnk_store::Store) {
 }
 
 /// Why the build's user namespace was not entered, for the effective uid
-/// `euid`: with `--userns` (`shifted`), a namespace no map of its range
-/// passed in is guided as its probe's stop is.
+/// `euid`: with `--userns` (`shifted`), `NoUserNamespace` gets
+/// [`USERNS_UNUSABLE`], as the probe's stop does.
 fn entry_refusal(e: rnk_sandbox::Error, euid: u32, shifted: bool) -> Refusal {
     let no_map = matches!(e, rnk_sandbox::Error::NoUserNamespace { .. });
     let mut refusal = super::userns_refusal(e, euid, super::NO_USER_NAMESPACE.into());

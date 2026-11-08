@@ -3,7 +3,7 @@
 # /etc/subuid and /etc/subgid, both restored after. Refused before
 # anything is written without the range, with a state directory below a
 # directory the range's first uid cannot search, with an existing state
-# directory of root's or root's default, and with a flag of kaniko mode
+# directory of root's, at or below root's default, and with a flag of kaniko mode
 # alone; missing parents are made root's 0711; a RUN's uid 0 is the
 # range's first uid on the host, by its uid_map, gid_map and status read
 # from the host and by the owner there of a file it makes; the
@@ -85,10 +85,17 @@ case_run() {
   rc=0
   log="$(urun default --target content 2>&1)" || rc=$?
   expect "$rc" 1 "--userns with root's default state directory"
-  grep -qF "/var/lib/ranikust is root's default, /var/lib/ranikust, or below it" <<<"$log" ||
+  grep -qF "the state directory /var/lib/ranikust is root's default:" <<<"$log" ||
     fail "--userns with root's default state directory: $log"
   expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
     "root's default state directory after --userns was refused"
+  rc=0
+  log="$(urun below --target content --state-dir /var/lib/ranikust/userns 2>&1)" || rc=$?
+  expect "$rc" 1 "--userns below root's default state directory"
+  grep -qF "/var/lib/ranikust/userns is below root's default /var/lib/ranikust:" <<<"$log" ||
+    fail "--userns below root's default state directory: $log"
+  expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
+    "root's default state directory after --userns below it was refused"
 
   # Missing parents are root's, searchable only.
   rc=0

@@ -47,28 +47,39 @@ const MAPPED: Owner = Owner::Mapped {
     gid: 200_000,
 };
 
-/// `--userns` never makes or takes root's default state directory or a
-/// directory below it, however the path is spelt; a sibling is fine.
+/// `--userns` never makes or takes a state directory at, below or above
+/// root's default, however the path is spelt, and says which with the
+/// way out; a sibling is fine, and so is any of them for the user's own.
 #[test]
-fn a_userns_build_is_refused_root_s_default_state_directory() {
-    for dir in [
-        crate::config::DEFAULT_STATE_DIR,
-        "/var/lib/ranikust/",
-        "/var//lib/./ranikust",
-        "/var/lib/../lib/ranikust",
-        "/var/lib/ranikust/userns",
+fn a_userns_state_directory_is_never_at_below_or_above_root_s_default() {
+    let below = "is below root's default /var/lib/ranikust:";
+    let above = "is above root's default /var/lib/ranikust:";
+    for (dir, how) in [
+        (crate::config::DEFAULT_STATE_DIR, "is root's default:"),
+        ("/var/lib/ranikust/", "is root's default:"),
+        ("/var//lib/./ranikust", "is root's default:"),
+        ("/var/lib/../lib/ranikust", "is root's default:"),
+        ("/var/lib/ranikust/userns", below),
+        ("/var/lib/ranikust/../ranikust/a", below),
+        ("/var/lib", above),
+        ("/var", above),
     ] {
-        assert!(in_roots_default(Path::new(dir)), "{dir}");
+        let why = refuse_roots_default(Path::new(dir), MAPPED).unwrap_err().0;
+        assert!(
+            why.starts_with(&format!("the state directory {dir} {how}")),
+            "{why}"
+        );
+        assert!(why.contains("/var/lib/ranikust-userns"), "{why}");
+        refuse_roots_default(Path::new(dir), Owner::Me(0)).unwrap();
     }
     for dir in [
         "/var/lib/ranikust-userns",
         "/var/lib/ranikustx",
-        "/var/lib",
         "/srv/ranikust",
+        "/var/lib/ranikust/../ranikust-userns",
     ] {
-        assert!(!in_roots_default(Path::new(dir)), "{dir}");
+        refuse_roots_default(Path::new(dir), MAPPED).unwrap();
     }
-    assert!(MAPPED.advice().contains("/var/lib/ranikust-userns"));
 }
 
 /// `--userns` (ADR-0104): the state directory is the mapped root's; every

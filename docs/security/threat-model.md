@@ -421,15 +421,14 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   without user-namespace remapping behaves the same **[inferred]**. A `RUN`
   as root is reachable only by host root, who is trusted; in kaniko mode on
   `/` the `RUN` is an ordinary process of the container, and the container
-  runtime's boundary applies (section 3). With `--userns` no host account
-  but root reaches a `RUN`: for a dumpable `USER 1234:1234` `RUN`, neither an account
-  `1234:1234` nor one with the ids they map to on the host reads its
-  `/proc/<pid>/environ` or its root, though the latter reads both of a
-  process of its own **[measured]** (2026-11-08, kernel 6.8, the `userns`
-  quick case, which asserts it). The capability check of the same access
-  mode asks a caller outside the target's user namespace for
-  `CAP_SYS_PTRACE` over it, which only the host's root has
-  **[inferred]**.
+  runtime's boundary applies (section 3). With `--userns` no host account but
+  root reaches a `RUN`: for a dumpable `USER 1234:1234` `RUN`, neither an
+  account `1234:1234` nor one with the ids they map to on the host reads its
+  `/proc/<pid>/environ` or its root, though the latter reads both of a process
+  of its own **[measured]** (2026-11-08, kernel 6.8, the `userns` quick case,
+  which asserts it). The capability check of the same access mode asks a caller
+  outside the target's user namespace for `CAP_SYS_PTRACE` over it, which only
+  the host's root has **[inferred]**.
 - `RUN` shares the host network by default
   ([ADR-0010](../adr/0010-run-network-host-or-none.md)), as kaniko's does; it
   can reach services that listen on the host and the cloud metadata
