@@ -549,8 +549,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (out, dead, to a FIFO), a directory that is no store, a marker that is
   not a file, and a path at or below a FIFO, a regular file, a dead link,
   a socket or a character device, each refused without blocking, the
-  special files never opened under an inotify watch, nothing below the
-  temporary directory changed,
+  FIFOs never opened under an inotify watch, nothing below the temporary
+  directory changed, its times included,
   `red_team_a_planted_state_directory_is_refused_unchanged_by_overlay_mode_s_check`;
   the probe's directory:
   `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
@@ -927,11 +927,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_root_refuses_system_directories_and_device_nodes_unchanged`
   (unit suite: root's overlay check, `hold_state_dir`, on `/` and each
   listed system directory, each refused for the first rule it breaks, and
-  root's and the range's check of a state directory whose `blobs`,
-  `builds` or `tmp` is a real device node, a FIFO, a socket or a link to
-  `/etc` or `/dev/zero`: each refused, the special files never opened
-  under an inotify watch, owner, mode and names unchanged, those of
-  `/etc` and `/dev/zero` too); the
+  `set_up` and root's and the range's `hold_state_dir` on a state
+  directory whose `blobs`, `builds` or `tmp` is a real device node, a
+  FIFO, a socket or a link to `/etc` or `/dev/zero`: each refused, the
+  FIFOs and the device nodes never opened under an inotify watch, nothing
+  below the test's directory changed, its times included, the owner and
+  mode of `/etc` and `/dev/zero` kept); the
   quick case `userns-reach` (a `--userns` `RUN`'s descriptors, writes and
   reach, processes it leaves, ranikust's own processes as the range's
   first ids see them, ranikust killed while a `RUN` waits:

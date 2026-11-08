@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::*;
 use super::{BEFORE_RENAME, private_tempdir};
-use crate::setup::tests::red_team::{Base, snapshot};
+use crate::test_util::{Base, snapshot};
 
 /// A range of the host's ids, as `--userns` gives its state directory to.
 const RANGE: Owner = Owner::Mapped {
@@ -240,10 +240,10 @@ fn red_team_what_the_range_plants_before_the_rename_reaches_nothing_of_root_s() 
         ["victim", "vdir", "far"]
             .iter()
             .flat_map(|n| snapshot(&b.join(n)))
-            // A hard link the range made adds to the count only.
+            // A hard link the range made changes the count and the ctime only.
             .map(|l| {
                 let mut f: Vec<&str> = l.split(' ').collect();
-                f[3] = "-";
+                (f[3], f[6]) = ("-", "-");
                 f.join(" ")
             })
             .collect()

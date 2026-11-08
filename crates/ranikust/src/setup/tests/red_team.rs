@@ -1,9 +1,9 @@
-//! Red team of overlay mode's check of its state directory (#213, #184),
-//! and the helpers the state directory's red teams share (T4).
+//! Red team of overlay mode's check of its state directory (#213, #184)
+//! (T4).
 
 use std::fs;
 use std::os::unix::fs::{lchown, symlink};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
@@ -11,67 +11,7 @@ use rustix::fs::{CWD, FileType, Mode, OFlags, makedev, mknodat};
 
 use super::*;
 use crate::statedir::{Owner, SYSTEM_DIRS};
-
-/// Every entry below `dir`, `dir` included, never following a symlink:
-/// its path, type, owner, mode, link count and content (a file's bytes, a
-/// symlink's target).
-pub(crate) fn snapshot(dir: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        let m = fs::symlink_metadata(&p).unwrap();
-        let ft = m.file_type();
-        let content = if ft.is_file() {
-            String::from_utf8_lossy(&fs::read(&p).unwrap()).into_owned()
-        } else if ft.is_symlink() {
-            fs::read_link(&p).unwrap().display().to_string()
-        } else {
-            String::new()
-        };
-        out.push(format!(
-            "{} {:o} {}:{} {} {content}",
-            p.display(),
-            m.mode(),
-            m.uid(),
-            m.gid(),
-            m.nlink()
-        ));
-        if ft.is_dir() {
-            for e in fs::read_dir(&p).unwrap() {
-                stack.push(e.unwrap().path());
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// A fresh directory for a test's state directories, root's, mode
-/// `0755`, below `/var/lib`, whose parents root alone owns and writes
-/// (a temporary directory is below a sticky `/tmp`, which `--userns`
-/// refuses); removed after.
-pub(crate) struct Base(pub(crate) PathBuf);
-
-impl Base {
-    pub(crate) fn new(what: &str) -> Self {
-        let p = PathBuf::from(format!(
-            "/var/lib/rnk-red-team-{what}-{}",
-            std::process::id()
-        ));
-        // What an earlier run of this process id left, if anything.
-        let _ = fs::remove_dir_all(&p);
-        fs::create_dir(&p).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-        Self(p)
-    }
-}
-
-impl Drop for Base {
-    fn drop(&mut self) {
-        // A failed removal leaves only a test's own directory.
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use crate::test_util::{Base, snapshot};
 
 /// Runs `f` on a thread of its own, since a FIFO opened by mistake blocks.
 fn unblocked<T: Send + 'static>(case: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -87,7 +27,8 @@ fn unblocked<T: Send + 'static>(case: &str, f: impl FnOnce() -> T + Send + 'stat
     }
 }
 
-/// An inotify watch for opens of some paths; `O_PATH`, which looks without opening, is not seen.
+/// An inotify watch for opens of some paths; `O_PATH`, which looks without opening, is not seen,
+/// nor is an open that fails, as a socket's or a `0:0` whiteout's does with `ENXIO`.
 struct Opens(std::os::fd::OwnedFd);
 
 impl Opens {
@@ -120,7 +61,16 @@ impl Opens {
     }
 }
 
-/// Root's overlay mode's check of `state`, as `--userns` runs it for `owner`, on a thread.
+/// Root's overlay mode's set-up of `state`, on a thread.
+fn set_up_on(case: &str, state: &Path) -> Result<(), Refusal> {
+    let s = state.to_owned();
+    unblocked(case, move || {
+        set_up(&s, false, &Seccomp::Unset, &mut false, false, false).map(drop)
+    })
+}
+
+/// `hold_state_dir` of `state` for `owner`, on a thread: rootless overlay mode's check with
+/// `Owner::me()` in T0, root's in T2, and `--userns`'s with a range.
 fn held(case: &str, state: &Path, owner: Owner) -> Result<(), Refusal> {
     let s = state.to_owned();
     unblocked(case, move || {
@@ -169,12 +119,8 @@ fn red_team_a_planted_state_directory_is_refused_unchanged_by_overlay_mode_s_che
     let mut check = |state: &Path, case: &str, says: &str, watched: Option<&Path>| {
         let before = snapshot(t);
         let opens = watched.map(|w| Opens::watch(&[w]));
-        let s = state.to_owned();
-        let set_up = unblocked(case, move || {
-            set_up(&s, false, &Seccomp::Unset, &mut false, false, false).map(drop)
-        });
         for (how, r) in [
-            ("set_up", set_up),
+            ("set_up", set_up_on(case, state)),
             ("hold_state_dir", held(case, state, Owner::me())),
         ] {
             let Err(refusal) = r else {
@@ -223,9 +169,9 @@ fn red_team_a_planted_state_directory_is_refused_unchanged_by_overlay_mode_s_che
                 _ => symlink(&fifo_out, &at).unwrap(),
             }
             let watched = match plant {
+                "a FIFO" => Some(at.as_path()),
                 "a link to a FIFO" => Some(fifo_out.as_path()),
-                "a link out" | "a dead link" => None,
-                _ => Some(at.as_path()),
+                _ => None,
             };
             let says = format!("holds {d}, which is");
             check(&state, &format!("{d} as {plant}"), &says, watched);
@@ -269,8 +215,7 @@ fn red_team_a_planted_state_directory_is_refused_unchanged_by_overlay_mode_s_che
     }
     for name in at_or_below {
         let says = "as a directory without following a symlink";
-        let watched = matches!(name, "fifo-out" | "sock" | "chardev").then(|| t.join(name));
-        let watched = watched.as_deref();
+        let watched = (name == "fifo-out").then_some(fifo_out.as_path());
         check(&t.join(name), &format!("at {name}"), says, watched);
         let below = t.join(name).join("state");
         check(&below, &format!("below {name}"), says, watched);
@@ -360,8 +305,10 @@ fn red_team_root_refuses_system_directories_and_device_nodes_unchanged() {
         "a link to a device",
     ];
     // Links' targets are the machine's: their owner and mode are checked, not their opens.
-    let watched =
-        |at: &Path, what: &str| (!what.starts_with("a link")).then(|| Opens::watch(&[at]));
+    let watched = |at: &Path, what: &str| {
+        matches!(what, "a FIFO" | "a character device" | "a block device")
+            .then(|| Opens::watch(&[at]))
+    };
     let targets = || -> Vec<_> {
         ["/etc", "/dev/zero"]
             .iter()
@@ -384,11 +331,16 @@ fn red_team_root_refuses_system_directories_and_device_nodes_unchanged() {
             plant(&state.join(d), what);
             let opens = watched(&state.join(d), what);
             let before = snapshot(b);
-            let Err(refusal) = held(&case, &state, Owner::me()) else {
-                panic!("{case}: taken");
-            };
             let says = format!("holds {d}, which is");
-            assert!(refusal.reason.contains(&says), "{case}: {refusal}");
+            for (how, r) in [
+                ("set_up", set_up_on(&case, &state)),
+                ("hold_state_dir", held(&case, &state, Owner::me())),
+            ] {
+                let Err(refusal) = r else {
+                    panic!("{case} ({how}): taken");
+                };
+                assert!(refusal.reason.contains(&says), "{case} ({how}): {refusal}");
+            }
             assert_eq!(snapshot(b), before, "{case}");
             assert!(!opens.is_some_and(|o| o.seen()), "{case}: opened");
         }
@@ -415,11 +367,18 @@ fn red_team_root_refuses_system_directories_and_device_nodes_unchanged() {
             give(&state.join(d));
             let opens = watched(&state.join(d), what);
             let before = snapshot(b);
-            let Err(refusal) = held(&case, &state, range) else {
-                panic!("{case}: taken");
-            };
+            // Root's overlay mode takes no directory of the range's: refused for its owner.
+            let owner = format!("is owned by uid {uid}");
             let says = format!("holds {d}, which is");
-            assert!(refusal.reason.contains(&says), "{case}: {refusal}");
+            for (how, r, says) in [
+                ("set_up", set_up_on(&case, &state), &owner),
+                ("hold_state_dir", held(&case, &state, range), &says),
+            ] {
+                let Err(refusal) = r else {
+                    panic!("{case} ({how}): taken");
+                };
+                assert!(refusal.reason.contains(says), "{case} ({how}): {refusal}");
+            }
             assert_eq!(snapshot(b), before, "{case}");
             assert!(!opens.is_some_and(|o| o.seen()), "{case}: opened");
         }
