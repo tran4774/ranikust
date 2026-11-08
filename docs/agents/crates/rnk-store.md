@@ -255,8 +255,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`a_probe_directory_left_tells_no_build_cut_short`). `src/store/tests.rs`:
   every directory the store makes is one that holds data or a build's
   own (`each_store_directory_holds_data_or_a_builds_own_files`); the
-  warning for a probe directory not removed names no earlier build
-  (`a_probe_directory_not_removed_is_named_by_what_the_store_tells`).
+  warning for a probe directory not removed names both builds it may
+  belong to (`a_probe_directory_not_removed_is_named_by_what_the_store_tells`).
   `tests/processes.rs`: four processes filling one digest run `f` once, a
   build killed by `SIGKILL` inside `f` leaves nothing and frees the lock,
   `prune_all` in a process whose hard `RLIMIT_NOFILE` is 256 empties a
@@ -280,11 +280,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `chmod`, or `EPERM` from a step before them, is an error everywhere
   (`a_refused_group_change_is_a_warning_only_outside_a_user_namespace`); a
   symlink of another group at a store directory's name keeps its group and
-  the open refuses it
+  the open refuses it, and `own_group` leaves it alone
   (`a_symlink_at_a_store_directory_s_name_keeps_its_group`); a symlink out
   of the state directory at each store directory's name, absolute or
-  climbing, is refused at open and leaves what it leads to, setgid and of
-  another group, unchanged
+  climbing, is refused at open, resolves in the state directory when
+  planted while the store is open, and leaves what it leads to, setgid
+  and of another group, unchanged
   (`red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed`).
 - **T2c** (`sysadmin`, `just test-container unit-c`):
   `a_mount_where_clean_up_deletes_is_not_emptied` (a bind mount on a dead

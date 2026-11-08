@@ -537,11 +537,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `setup/rootless.rs` (refusals before anything is made or changed:
   `a_missing_state_directory_on_overlayfs_is_refused_unmade`, run only
   where the temporary directory is on overlayfs, and
-  `a_state_directory_the_store_refuses_keeps_its_mode`; root's overlay
-  mode's order through `setup::set_up`, run unprivileged and skipped as
-  root: `overlay_mode_refuses_its_state_directory_unchanged` and
-  `overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade`),
-  `setup` (the probe's
+  `a_state_directory_the_store_refuses_keeps_its_mode`), `setup` (root's
+  overlay mode's refusal order through `setup::set_up`, run unprivileged
+  and skipped as root: `overlay_mode_refuses_its_state_directory_unchanged`
+  and `overlay_mode_refuses_a_missing_state_directory_on_overlayfs_unmade`;
+  the probe's
   directory: `only_an_empty_private_probe_directory_of_one_s_own_is_removed`,
   `a_probe_directory_for_a_range_bears_a_name_the_store_removes`,
   `a_probe_directory_taken_before_it_is_held_is_made_again`,

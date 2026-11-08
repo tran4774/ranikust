@@ -335,13 +335,9 @@ fn stop_for(step: &str, capable: bool, steps: &Steps<'_>) -> Stop {
     })
 }
 
-/// The state directory the probe may write in, made if missing: private
-/// (ADR-0050) and `owner`'s ([`crate::statedir::prepare_for`]), not on
-/// overlayfs, as for overlay mode as root, and one the store would take,
-/// checked without writing (Q-111, (a)); its shared lock held from then
-/// on, `euid` naming what to do with a prune cut short. Each refusal comes
-/// before anything is made or changed, in overlay mode as root's order
-/// ([`super::hold_state_dir`]). `what` names the mode in messages.
+/// The state directory the probe may write in: [`super::hold_state_dir`]
+/// with rootless mode's overlayfs refusal. `what` names the mode in
+/// messages.
 fn state_dir_for_probe(
     state_dir: &Path,
     euid: u32,

@@ -2616,18 +2616,21 @@ fn check_dirs(state: &RootPath, state_path: &Path) -> Result<()> {
             path: state_path.join(d),
             source: e.into(),
         })?;
-        let what = match rustix::fs::FileType::from_raw_mode(st.st_mode) {
+        let (what, or_move) = match rustix::fs::FileType::from_raw_mode(st.st_mode) {
             rustix::fs::FileType::Directory => continue,
-            rustix::fs::FileType::Symlink => "a symlink",
-            rustix::fs::FileType::RegularFile => "a regular file",
-            _ => "a special file",
+            rustix::fs::FileType::Symlink => (
+                "a symlink",
+                ", or move the directory it stands for to its name",
+            ),
+            rustix::fs::FileType::RegularFile => ("a regular file", ""),
+            _ => ("a special file", ""),
         };
         return Err(Error::NotAStateDir {
             path: state_path.to_owned(),
             why: format!(
                 "holds {d}, which is {what}, where the store keeps a directory of its own; \
                  refusing to use it as the state directory (remove {d}, and ranikust makes it \
-                 again, or move the directory it stands for to its name)"
+                 again{or_move})"
             ),
         });
     }

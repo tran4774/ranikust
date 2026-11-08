@@ -363,7 +363,7 @@ Phase 4 (ADR-0064), `--ignore-var-run` in both modes (ADR-0052 D4).
   refused before the probe, with the advice to mount a volume there, in
   rootless overlay mode too.
 - Overlay mode, as root, rootless or under `--userns`, refuses its state
-  directory before it makes or changes anything there
+  directory before it changes anything in it
   (`setup::hold_state_dir`): overlayfs first, told from the nearest
   directory that exists, where a missing one would be made; then the
   owner and chain checks, which make a missing one; then the store's own

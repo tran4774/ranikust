@@ -1659,7 +1659,8 @@ fn tree(dir: &Path) -> Vec<(PathBuf, u32, u32, u32, i64, i64, u64)> {
 }
 
 /// Red team: a store directory planted as a symlink out never has its target changed (T13):
-/// the open refuses it.
+/// the open refuses one planted before it, and one planted while the store is open resolves
+/// in the state directory.
 #[test]
 fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never_changed() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1670,47 +1671,51 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
         .map(rustix::process::Gid::as_raw)
         .find(|&g| g != egid)
         .unwrap_or(egid);
-    let mut opened = 0;
+    let mut filled = 0;
     for d in ["blobs", "layers", "caches", "locks", "tmp", "builds"] {
         for absolute in [false, true] {
             for twin in [false, true] {
-                // Not under /tmp: the twin of an absolute target would be in
-                // the store's own tmp/.
-                let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-                let base = fs::canonicalize(dir.path()).unwrap();
-                let state = base.join(".ranikust");
-                Store::open(&paths(&base)).unwrap().close().unwrap();
-                let outside = base.join("outside");
-                fs::create_dir_all(outside.join("sub")).unwrap();
-                fs::write(outside.join("sub/file"), b"kept").unwrap();
-                for p in [outside.join("sub"), outside.clone()] {
-                    std::os::unix::fs::chown(&p, None, Some(group)).unwrap();
-                    // The bit and gid `own_group` takes off a store directory.
-                    fs::set_permissions(&p, fs::Permissions::from_mode(0o2750)).unwrap();
-                }
-                let (target, inside) = if absolute {
-                    (
-                        outside.clone(),
-                        state.join(outside.strip_prefix("/").unwrap()),
-                    )
-                } else {
-                    (PathBuf::from("../outside"), state.join("outside"))
-                };
-                if twin {
-                    fs::create_dir_all(&inside).unwrap();
-                }
-                fs::remove_dir_all(state.join(d)).unwrap();
-                std::os::unix::fs::symlink(&target, state.join(d)).unwrap();
-                let before = tree(&outside);
+                for while_open in [false, true] {
+                    // Not under /tmp: the twin of an absolute target would be in
+                    // the store's own tmp/.
+                    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+                    let base = fs::canonicalize(dir.path()).unwrap();
+                    let state = base.join(".ranikust");
+                    Store::open(&paths(&base)).unwrap().close().unwrap();
+                    let outside = base.join("outside");
+                    fs::create_dir_all(outside.join("sub")).unwrap();
+                    fs::write(outside.join("sub/file"), b"kept").unwrap();
+                    for p in [outside.join("sub"), outside.clone()] {
+                        std::os::unix::fs::chown(&p, None, Some(group)).unwrap();
+                        // The bit and gid `own_group` takes off a store directory.
+                        fs::set_permissions(&p, fs::Permissions::from_mode(0o2750)).unwrap();
+                    }
+                    let (target, inside) = if absolute {
+                        (
+                            outside.clone(),
+                            state.join(outside.strip_prefix("/").unwrap()),
+                        )
+                    } else {
+                        (PathBuf::from("../outside"), state.join("outside"))
+                    };
+                    if twin {
+                        fs::create_dir_all(&inside).unwrap();
+                    }
+                    let case = format!(
+                        "{d} -> {} (twin {twin}, while open {while_open})",
+                        target.display()
+                    );
+                    let open = while_open.then(|| Store::open(&paths(&base)).unwrap());
+                    fs::remove_dir_all(state.join(d)).unwrap();
+                    std::os::unix::fs::symlink(&target, state.join(d)).unwrap();
+                    let before = tree(&outside);
 
-                let case = format!("{d} -> {} (twin {twin})", target.display());
-                let mut seen = Vec::new();
-                let open = Store::open(&paths(&base));
-                if let Err(e) = &open {
-                    assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {e}");
-                }
-                if let Ok(store) = open {
-                    opened += 1;
+                    let Some(store) = open else {
+                        let e = Store::open(&paths(&base)).expect_err(&case);
+                        assert!(matches!(e, Error::NotAStateDir { .. }), "{case}: {e}");
+                        assert_eq!(tree(&outside), before, "{case}");
+                        continue;
+                    };
                     let layer = store.fill(
                         &EntryKey::Layer(digest(1)),
                         |e| -> rnk_rootfs::Result<u64> {
@@ -1722,25 +1727,29 @@ fn red_team_a_store_directory_planted_as_a_symlink_out_of_the_state_dir_is_never
                     let cache = store
                         .cache_lease("c", CacheSharing::Shared, None, &never)
                         .map(|l| l.path().to_owned());
-                    seen.extend([layer, blob, cache].into_iter().filter_map(Result::ok));
+                    let seen: Vec<_> = [layer, blob, cache]
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .collect();
+                    filled += usize::from(!seen.is_empty());
                     let _ = store.close();
-                }
-                assert_eq!(tree(&outside), before, "{case}");
-                // What the store hands out never resolves out of it.
-                for p in &seen {
-                    if let Ok(real) = fs::canonicalize(p) {
-                        assert!(real.starts_with(&state), "{case}: {}", real.display());
+                    assert_eq!(tree(&outside), before, "{case}");
+                    // What the store hands out never resolves out of it.
+                    for p in &seen {
+                        if let Ok(real) = fs::canonicalize(p) {
+                            assert!(real.starts_with(&state), "{case}: {}", real.display());
+                        }
                     }
-                }
-                // The twin, in the root, is what the symlink led to.
-                if twin && d == "layers" && !seen.is_empty() {
-                    assert!(
-                        inside.join("v3/sha256").join(digest(1).encoded()).is_dir(),
-                        "{case}"
-                    );
+                    // The twin, in the root, is what the symlink led to.
+                    if twin && d == "layers" && !seen.is_empty() {
+                        assert!(
+                            inside.join("v3/sha256").join(digest(1).encoded()).is_dir(),
+                            "{case}"
+                        );
+                    }
                 }
             }
         }
     }
-    assert_eq!(opened, 0, "the store opened on {opened} plants");
+    assert!(filled >= 8, "the store filled on {filled} plants only");
 }
