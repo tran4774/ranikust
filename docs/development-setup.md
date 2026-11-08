@@ -120,6 +120,9 @@ just test-vm unit                 # first run downloads the Ubuntu cloud image
 ```
 
 - `socat` is for the `push` suite only.
+- `gpg` and `gpgv` (packages `gnupg`, `gpgv`) are for
+  `RANIKUST_VM_RELEASE=alma9` only: they check the signature of AlmaLinux's
+  checksums.
 - The verified cloud images are cached in `tests/e2e/_vm-image/` of the main
   checkout (gitignored) and shared by every git worktree; only one VM runs
   at a time, a second run waits for the first. The first run after a new

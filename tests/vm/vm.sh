@@ -22,8 +22,8 @@
 # of a provisioned base image (the verified Ubuntu cloud image with Docker
 # installed, or AlmaLinux's with Podman, built once and cached:
 # cloud-init/provision, provision-el9), copies in static musl binaries and
-# the guest scripts, runs the suites over SSH, copies the
-# results out to target/vm/results/<release>/ and deletes the VM, its disk
+# the guest scripts, runs the suites over SSH, copies the results out to
+# target/vm/results/<release>/ and deletes the VM, its disk
 # and its key whatever the outcome.
 #
 # Environment:
@@ -418,7 +418,7 @@ if [ "$RELEASE" = alma9 ]; then
   keydir="$CACHE/.$RELEASE-key"
   rm -rf "$keydir" && mkdir -m 0700 "$keydir"
   gpg --batch --quiet --homedir "$keydir" --dearmor <"$HERE/keys/RPM-GPG-KEY-AlmaLinux-9" >"$keydir/key.gpg"
-  IMG_URL= want=
+  IMG_URL= want= verified=
   for place in "${ALMA_PLACES[@]}"; do
     rm -f "$SUMS" "$SUMS.asc"
     if ! curl -fsSL "$place/CHECKSUM" -o "$SUMS" || ! curl -fsSL "$place/CHECKSUM.asc" -o "$SUMS.asc"; then
@@ -433,6 +433,7 @@ if [ "$RELEASE" = alma9 ]; then
       rm -rf "$keydir" && rm -f "$SUMS" "$SUMS.asc"
       die "$place/CHECKSUM has no good signature by AlmaLinux 9's key ($ALMA_KEY_FPR): gpgv: $err"
     fi
+    verified=1
     want="$(awk -v f="$IMG_NAME" '$2 == f { print $1 }' "$SUMS")"
     if [[ "$want" =~ ^[0-9a-f]{64}$ ]]; then
       IMG_URL=$place
@@ -442,6 +443,7 @@ if [ "$RELEASE" = alma9 ]; then
     want=
   done
   rm -rf "$keydir"
+  [ -n "$verified" ] || die "could not fetch CHECKSUM and CHECKSUM.asc from ${ALMA_PLACES[*]}"
   [ -n "$IMG_URL" ] || die "no CHECKSUM signed by AlmaLinux 9's key lists $IMG_NAME at ${ALMA_PLACES[*]}"
 else
   IMG_NAME="$RELEASE-server-cloudimg-amd64.img"
@@ -821,8 +823,8 @@ check_free_gib() { # <dir> <GiB>
 # installation (and snapd's first-boot seeding). The provisioned base image
 # is that boot done once: cloud-init/provision (provision-el9 for alma9)
 # installs the packages, removes what is per machine (SSH host keys, machine
-# ID) and powers the VM off;
-# the disk is then flattened into one qcow2 in the cache, read-only, with its
+# ID) and powers the VM off; the disk is then flattened into one qcow2 in
+# the cache, read-only, with its
 # SHA-256 beside it. Its name holds a hash of what it is made from (release,
 # the cloud image's SHA-256, the package list, the provisioning seed), so a
 # new cloud image or a changed seed builds a new one, and the old one of the

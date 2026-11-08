@@ -10,8 +10,8 @@
 # Each builds one RUN per in-sandbox check of `just smoke`, the rootless
 # case's `content` stage (one --reproducible digest for both legs: no
 # SELinux label reaches a layer) and tests/smoke/e2e; Podman runs what they
-# built. Each RUN must keep the SELinux context of the process that started
-# ranikust. SELinux denials (AVC) logged while they build are printed, and
+# built. The checks build's last RUN must keep the SELinux context of the
+# process that started ranikust. SELinux denials (AVC) logged while they build are printed, and
 # none may be; Podman's bind of a home directory, which SELinux denies, is
 # the control that the audit log shows them.
 set -euo pipefail
@@ -163,7 +163,7 @@ if [ -n "$avcs" ]; then
   echo "$avcs"
   fail "SELinux denied something while the legs built ($(grep -c . <<<"$avcs") records)"
 fi
-echo "selinux: no denial while the legs built"
+echo "selinux: no denial logged while the legs built"
 
 # --- What they built, run by Podman --------------------------------------------
 
@@ -204,7 +204,9 @@ echo "control: the audit log shows SELinux's denial"
 
 echo "=== the VM after the legs"
 ! grep -qE " ($W|$ROOT_STATE|$USER_STATE)" /proc/self/mountinfo || fail "mounts left by a build"
-! pgrep -x ranikust >/dev/null && ! pgrep -x ranikust-init >/dev/null || fail "ranikust processes left"
+# The sandbox's processes carry its spawner thread's name until they exec or
+# rename themselves.
+! pgrep -x 'ranikust|ranikust-init|rnk-sandbox-spa' >/dev/null || fail "ranikust processes left"
 sudo rm -rf --one-file-system "$W"
 rm -rf "$U"
 echo "el9: ok"

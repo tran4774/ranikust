@@ -108,7 +108,7 @@ The plan comes from the verification plan of
   variants, `--allow proc.rbind`) runs on Ubuntu only, and Fedora or another
   policy than `targeted` nowhere. A base layer carrying a `security.selinux`
   xattr is built under SELinux by no suite (the `unit` suite's case for it
-  skips where SELinux runs, and the `el9` image runs no `unit`).
+  skips where SELinux runs, and `RANIKUST_VM_RELEASE=alma9` runs no `unit`).
 - A `--network=none` `RUN` under the rbind of `/sys` below a cgroup v1
   hierarchy (`net_cls,net_prio`) or a configfs mounted in the outer `/sys`:
   only Podman's cgroup2 mount is checked covered (`rootless-reach`, T1),
