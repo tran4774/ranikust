@@ -2046,24 +2046,22 @@ fn execute(
     // what it wrote, if it lived to write it; without it, `status` is the
     // init's own, which `ending` never returns as the command's.
     let mut unreported = false;
-    let status = match command_status {
-        Some(fd) => match read_status(&fd)? {
-            Some(raw) => ExitStatus::from_raw(raw),
-            // 0 only after the status write: none read leaves the end unknown.
-            None if status.code() == Some(0) => {
-                return Err(sys_err(
-                    "read the RUN's exit status",
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "the RUN's init exited without the command's status",
-                    ),
-                ));
-            }
-            None => {
-                unreported = true;
-                status
-            }
-        },
+    let status = match command_status.map(|fd| read_status(&fd)) {
+        Some(Ok(Some(raw))) => ExitStatus::from_raw(raw),
+        Some(Ok(None)) => {
+            unreported = true;
+            status
+        }
+        // The read's error fails the `RUN`; the rest of its end is logged, not dropped.
+        Some(Err(e)) => {
+            tracing::debug!(
+                record = ?failure,
+                init = %status,
+                cancelled,
+                "rnk-sandbox: a RUN's exit status could not be read"
+            );
+            return Err(e);
+        }
         None => status,
     };
     if cancelled {
@@ -2085,12 +2083,13 @@ fn execute(
 
 /// How a reaped `RUN` that was not cancelled ended: its status, the
 /// failure the child recorded before `execve`, or, where the full sandbox's
-/// init ended before it wrote the command's status (`unreported`: `status`
-/// is then the init's own), [`Error::SetupKilled`] for a signal, which
-/// names a profile behind a `SIGSYS`, or [`Error::InitExited`] for a code.
-/// A record wins over the init's code, which is logged; between a record
-/// and the init's signal, the more precise one is returned and the other
-/// logged.
+/// init ended without the command's status (`unreported`: `status` is then
+/// the init's own), [`Error::SetupKilled`] for a signal, which names a
+/// profile behind a `SIGSYS`, [`Error::InitExited`] for a code, or, for
+/// code 0, which the init exits with only after its status write, that
+/// write's loss as a status that could not be read. A record wins over the
+/// init's code, 0 included, which is logged; between a record and the
+/// init's signal, the more precise one is returned and the other logged.
 fn ending(
     status: ExitStatus,
     unreported: bool,
@@ -2104,10 +2103,17 @@ fn ending(
     };
     let init_killed_by = status.signal().filter(|_| unreported);
     match (failure, init_killed_by) {
-        (None, None) if unreported => Err(Error::InitExited {
-            // Not killed, so exited: `reap` waits for nothing else.
-            code: libc::WEXITSTATUS(status.into_raw()),
-        }),
+        // Not killed, so exited: `reap` waits for nothing else.
+        (None, None) if unreported => match libc::WEXITSTATUS(status.into_raw()) {
+            0 => Err(sys_err(
+                "read the RUN's exit status",
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the RUN's init exited without the command's status",
+                ),
+            )),
+            code => Err(Error::InitExited { code }),
+        },
         (None, None) => Ok(status),
         (None, Some(signal)) => Err(killed(signal)),
         // The init's end ends the go pipe, which a command still waiting
@@ -2485,7 +2491,8 @@ mod tests {
     /// signal is `SetupKilled`, naming the profile only for `SIGSYS` under
     /// one, which wins over a record of `Step::Init`, which its end may
     /// cause, and loses to any other, which is more precise; a code is
-    /// `InitExited`, which every record wins over.
+    /// `InitExited`, 0 a status that could not be read (the init exits 0
+    /// only after its status write), which every record wins over.
     #[test]
     fn a_runs_end_is_its_status_its_record_or_its_inits_end() {
         let exited = |code: i32| ExitStatus::from_raw(code << 8);
@@ -2530,7 +2537,18 @@ mod tests {
                 "{code}: {r:?}"
             );
         }
-        for (status, unreported) in [(exited(3), false), (sigsys, true), (exited(127), true)] {
+        let r = end(exited(0), true, None, true);
+        assert!(
+            matches!(&r, Err(Error::Sys { op: "read the RUN's exit status", source })
+                if source.kind() == io::ErrorKind::InvalidData),
+            "{r:?}"
+        );
+        for (status, unreported) in [
+            (exited(3), false),
+            (sigsys, true),
+            (exited(127), true),
+            (exited(0), true),
+        ] {
             let r = end(
                 status,
                 unreported,
@@ -2548,7 +2566,7 @@ mod tests {
                 "{status:?}: {r:?}"
             );
         }
-        for (status, unreported) in [(exited(3), false), (exited(127), true)] {
+        for (status, unreported) in [(exited(3), false), (exited(127), true), (exited(0), true)] {
             let r = end(status, unreported, Some((Step::Init, libc::EPIPE)), true);
             assert!(
                 matches!(
@@ -2601,6 +2619,170 @@ mod tests {
         rustix::io::write(&w, &stopped.to_le_bytes()).unwrap();
         drop(w);
         assert!(read_status(&r).is_err());
+    }
+
+    /// How [`execute`] reads a full-sandbox `RUN`'s end, with a child forked
+    /// here standing in for the init: it ends as the wait status `end` says
+    /// (an exit code, or a signal it sends itself), leaving `record` on the
+    /// error pipe and `written` on the status pipe. With `cancel`, the
+    /// `RUN` is cancelled once the child has exited, so its end stays.
+    fn full_runs_end(
+        end: i32,
+        record: Option<(Step, i32)>,
+        written: &[u8],
+        cancel: bool,
+    ) -> Result<ExitStatus> {
+        let pipe = || rustix::pipe::pipe_with(PipeFlags::CLOEXEC).unwrap();
+        let (failures, err_w) = pipe();
+        if let Some((step, errno)) = record {
+            rustix::io::write(&err_w, &child::encode_failure(step, errno)).unwrap();
+        }
+        drop(err_w);
+        let (status, status_w) = pipe();
+        rustix::io::write(&status_w, written).unwrap();
+        drop(status_w);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let runner = Runner::new(&root.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+        let spec = RunSpec::new(&root, vec!["/prog".into()]);
+        let user = User {
+            uid: 0,
+            gid: 0,
+            supplementary_gids: Vec::new(),
+            home: "/".into(),
+        };
+        let job = runner
+            .job(
+                &spec,
+                &user,
+                Vec::new(),
+                None,
+                Default::default(),
+                RootEntry::PivotRoot,
+                None,
+            )
+            .unwrap();
+        // SAFETY: the child only makes async-signal-safe calls and ends.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // SAFETY: as above.
+            unsafe {
+                if libc::WIFSIGNALED(end) {
+                    libc::kill(libc::getpid(), libc::WTERMSIG(end));
+                }
+                libc::_exit(libc::WEXITSTATUS(end));
+            }
+        }
+        let pid = Pid::from_raw(pid).unwrap();
+        let running = Running::default();
+        let spawn = |_| {
+            wait_exited(pid).unwrap();
+            if cancel {
+                running.cancel();
+            }
+            Ok(Spawned {
+                pid,
+                failures,
+                status: Some(status),
+                netns: None,
+            })
+        };
+        execute(job, spawn, "prog", Some(&running), false, None).map(|(s, _)| s)
+    }
+
+    /// An init that exited 0 has written the command's status, unless that
+    /// write failed: without it, the `RUN` fails as a status it could not
+    /// read, after a cancel and any failure record, which are more precise
+    /// and win. Another code is `InitExited`.
+    #[test]
+    fn a_record_or_a_cancel_wins_over_an_init_that_exited_0_without_the_status() {
+        let exited = |code: i32| code << 8;
+        let r = full_runs_end(exited(0), None, &exited(3).to_le_bytes(), false);
+        assert_eq!(r.unwrap().code(), Some(3));
+        let r = full_runs_end(exited(0), None, &[], false);
+        assert!(
+            matches!(&r, Err(Error::Sys { op: "read the RUN's exit status", source })
+                if source.kind() == io::ErrorKind::InvalidData),
+            "{r:?}"
+        );
+        let r = full_runs_end(exited(0), Some((Step::Seccomp, libc::EINVAL)), &[], false);
+        assert!(
+            matches!(&r, Err(Error::Setup { step: Step::Seccomp, source })
+                if source.raw_os_error() == Some(libc::EINVAL)),
+            "{r:?}"
+        );
+        let r = full_runs_end(exited(0), Some((Step::Exec, libc::ENOENT)), &[], false);
+        assert!(
+            matches!(&r, Err(Error::Exec { program, source })
+                if program == "prog" && source.raw_os_error() == Some(libc::ENOENT)),
+            "{r:?}"
+        );
+        let r = full_runs_end(exited(0), None, &[], true);
+        assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
+        let r = full_runs_end(exited(125), None, &[], false);
+        assert!(matches!(r, Err(Error::InitExited { code: 125 })), "{r:?}");
+    }
+
+    /// Every event's fields, one `name=value ` string per event, while it
+    /// is the default.
+    struct Logged(std::sync::Arc<Mutex<Vec<String>>>);
+
+    impl tracing::Subscriber for Logged {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                    self.0.push_str(&format!("{}={v:?} ", f.name()));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(fields.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// A status record that cannot be read fails the `RUN` with that read's
+    /// error, a cancel and a failure record included; the record, the
+    /// init's end (here its signal) and the cancel are logged. The only
+    /// test here that reaches that log, so no other can cache it as
+    /// unwanted.
+    #[test]
+    fn an_unreadable_status_is_the_error_and_the_rest_is_logged() {
+        let seen = std::sync::Arc::default();
+        let dispatch = tracing::Dispatch::new(Logged(std::sync::Arc::clone(&seen)));
+        let record = (Step::MountProc, libc::EPERM);
+        let r = tracing::dispatcher::with_default(&dispatch, || {
+            full_runs_end(libc::SIGKILL, Some(record), &[1, 2], true)
+        });
+        assert!(
+            matches!(&r, Err(Error::Sys { op: "read the RUN's exit status", source })
+                if source.kind() == io::ErrorKind::UnexpectedEof),
+            "{r:?}"
+        );
+        let want = [
+            format!("record={:?}", Ok::<_, Error>(Some(record))),
+            format!("init={}", ExitStatus::from_raw(libc::SIGKILL)),
+            "cancelled=true".to_owned(),
+        ];
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            seen.iter()
+                .any(|e| want.iter().all(|w| e.contains(w.as_str()))),
+            "{want:?} in {seen:?}"
+        );
     }
 
     #[test]
@@ -4278,6 +4460,80 @@ mod tests {
                 };
                 if !ok {
                     wrong.push(format!("{name}: {st:?}, mark {marked:?}, output {text:?}"));
+                }
+            }
+            assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        });
+    }
+
+    /// T2 (ADR-0080): an init that ends without the command's status never
+    /// gives its own as the command's. Under a profile refusing `wait4`, the
+    /// init's wait fails and it exits 125, which fails the `RUN` as
+    /// `Error::InitExited`; under one refusing its status write, it exits 0,
+    /// which fails the `RUN` as a status that could not be read, unless the
+    /// command left a failure record, which wins. A control profile lets
+    /// the `RUN` end with its command's status.
+    #[test]
+    #[ignore = "T2: mounts as real root in a private mount namespace; run in the test VM only"]
+    fn an_init_that_ends_without_the_commands_status_fails_the_run_as_such() {
+        in_private_mount_namespace(|| {
+            let mut mounts = TestMounts::new(tempfile::tempdir().unwrap());
+            let top = mounts.path().canonicalize().unwrap();
+            let root = top.join("root");
+            root_with_usr(&mut mounts, &root);
+            let parent = ParentPid::new().unwrap();
+            let mut runner = Runner::new(&top.join("sandbox"), Some(RootEntry::PivotRoot)).unwrap();
+            // The init's status write is its only write of four bytes after
+            // its filters; `/bin/true` and a command that fails to start
+            // make none.
+            let status_write = format!(
+                r#"{{"names": ["write"], "action": "SCMP_ACT_ERRNO", "errnoRet": {},
+                    "args": [{{"index": 2, "value": {}, "op": "SCMP_CMP_EQ"}}]}}"#,
+                libc::EPERM,
+                child::STATUS_LEN
+            );
+            let cases = [
+                ("control", String::new(), "/bin/true"),
+                (
+                    "wait refused",
+                    errno_rule("wait4", libc::EPERM, None),
+                    "/bin/true",
+                ),
+                ("status write refused", status_write.clone(), "/bin/true"),
+                ("status write refused, no command", status_write, "/missing"),
+            ];
+            let mut got = Vec::new();
+            for (name, rules, program) in cases {
+                runner.seccomp = Some(allow_but(&rules));
+                let spec = RunSpec::new(&root, vec![program.into()]);
+                let r = runner.run(spec, None, |job| clone_child(job, parent));
+                println!("{name}: {r:?}");
+                got.push((name, r));
+            }
+            drop(mounts);
+            let mut wrong = Vec::new();
+            for (name, r) in &got {
+                let ok = match *name {
+                    "control" => r.as_ref().is_ok_and(ExitStatus::success),
+                    "wait refused" => matches!(
+                        r,
+                        Err(e @ Error::InitExited { code: 125 }) if !e.ran_no_command()
+                    ),
+                    "status write refused" => matches!(
+                        r,
+                        Err(Error::Sys { op: "read the RUN's exit status", source })
+                            if source.kind() == io::ErrorKind::InvalidData
+                    ),
+                    _ => matches!(
+                        r,
+                        Err(e @ Error::Exec { program, source })
+                            if program == "/missing"
+                                && source.raw_os_error() == Some(libc::ENOENT)
+                                && e.ran_no_command()
+                    ),
+                };
+                if !ok {
+                    wrong.push(format!("{name}: {r:?}"));
                 }
             }
             assert!(wrong.is_empty(), "{}", wrong.join("\n"));
