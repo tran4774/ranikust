@@ -361,6 +361,14 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   layer and removes only what it made; one found in place of a new one is
   checked; stores that opened with none make one between them; a layer of
   the map without a canary is never reused; none outside a user namespace.
+  Its red team, `src/store/tests/canaries/red_team.rs`: a `layers/v3`, a
+  `layers/v3/canary` or a canary lock that links out never reads or makes
+  anything outside the state directory; a FIFO, a socket or a whiteout as
+  the canary, an entry or `layers/v3/canary` refused without blocking, and
+  as the canary's lock fails the layer, unblocked; a link loop, a file
+  above the canary and an unreadable canary refused, unchanged; a wrong
+  canary made after the open refuses reuse and publication; stores racing
+  for the first layer make one canary.
   `src/userns.rs`: `IdMaps` canonical however padded or ordered, a line
   past `u32::MAX` refused and a map that does not parse named, an id
   inside given its parent's.

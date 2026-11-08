@@ -302,3 +302,5 @@ fn outside_a_user_namespace_there_is_no_canary() {
     assert_eq!(store.get(&key(1)).unwrap(), Some(first));
     store.close().unwrap();
 }
+
+mod red_team;
