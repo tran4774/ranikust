@@ -86,7 +86,10 @@ writer) before `unshare`, the probes and the state directory's checks.
   forwarded `SIGUSR1` (`build::Stops::Forwarded`); a forwarded stop that
   comes while a failed set-up abandons its store is ignored
   (`Supervised::undoing`) until the child exits, and the parent then ends
-  by it. Only the mode that builds is logged as the outcome. The
+  by it. A `NotHere` before the namespace sends root's `--mode=auto` to
+  kaniko mode too, logged as information, or as a warning for a state
+  directory whose canary refuses the build's ids (`Kind::IdMapChanged`,
+  ADR-0128). Only the mode that builds is logged as the outcome. The
   probe's directory takes the process's gid and no setgid bit, through its
   own descriptor, as the store's own directories do (ADR-0099), so a setgid
   state directory does not stop its `chown`.
@@ -590,7 +593,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   kept when a child of the steps or of the overlay probe was left, and
   only then, a store refusal naming its state directory once, and a
   build's refusal of a prune cut short giving a user and root the next
-  step; the probe's directory taking the process's gid and losing a
+  step; a changed id map the one store refusal that warns on fallback, with
+  its way out (`a_changed_id_map_warns_on_fallback_with_its_way_out`); the
+  probe's directory taking the process's gid and losing a
   setgid parent's bit, `the_probe_directory_drops_a_setgid_parents_bit`,
   through its descriptor,
   `the_probe_directory_s_group_is_set_through_its_descriptor`;

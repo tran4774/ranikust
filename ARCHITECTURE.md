@@ -150,7 +150,11 @@ namespace (by the inode of `/proc/self/ns/user`), for its own directories'
 group and `rnk-snapshot`'s layer keys and device nodes, reads that
 namespace's id maps (`IdMaps`, which `rnk-snapshot` keys layers by), and
 guards the layers extracted under each map with a canary that refuses them
-once the ids above it changed (ADR-0128). `prune` by size and
+once the ids above it changed (ADR-0128). `IdMaps` is the only reader and
+parser of `/proc/self/{uid,gid}_map` (with `rnk_rootfs::MappedIds::parse`):
+the others take the maps from it (ADR-0098), except `rnk-sandbox`, which
+does not depend on `rnk-store` and reads the maps of the namespaces it
+makes and enters. `prune` by size and
 age comes in Phase 5. **Must not** decide what
 an entry contains (the caller fills a temporary entry, `rnk-store` publishes
 it), transfer blobs, decode layers, mount, or delete except through

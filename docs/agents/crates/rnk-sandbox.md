@@ -70,7 +70,10 @@ them for both.
   (reported only, no subordinate ids) and as the user for rootless overlay
   mode, with the subordinate ids it reads (`subids.rs`), which the build's
   user namespace below takes too, and as root with `--userns`, with root's
-  `ranikust` range.
+  `ranikust` range. Reading `/proc/self/{uid,gid}_map` for the maps it
+  mirrors, measures and checks is this crate's own, the one exception to
+  `rnk_store::IdMaps` being their only reader (ADR-0098;
+  [ARCHITECTURE](../../../ARCHITECTURE.md#rnk-store)).
 - The build's user namespace (`userns/build.rs`, #75): moves the process
   into a user namespace of its own and a mount namespace that namespace
   owns, `/` a recursive slave. Each map of the probe's order is first tried

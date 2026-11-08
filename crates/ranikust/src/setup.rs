@@ -133,6 +133,11 @@ pub(crate) enum Kind {
     /// so no mode may follow in this process (ADR-0136: in a child, kaniko
     /// mode may in the parent).
     Broken,
+    /// The state directory holds layers extracted under other ids than the
+    /// build's user namespace gives (ADR-0128): routed as [`Kind::Other`],
+    /// but the operator must empty it or pass another, so root's
+    /// `--mode=auto` warns before kaniko mode.
+    IdMapChanged,
 }
 
 /// What `--mode=auto` does after overlay mode's set-up refused, once root
@@ -158,9 +163,14 @@ pub(crate) fn route(refusal: &Refusal, in_container: bool) -> Route {
     match (refusal.kind, in_container) {
         (Kind::OverlayUnusable, false) => Route::KanikoStages,
         (Kind::OverlayUnusable, true) => Route::RefuseInContainer,
-        (Kind::Other | Kind::NoMountPrivilege | Kind::SandboxBlocked | Kind::Broken, _) => {
-            Route::Refuse
-        }
+        (
+            Kind::Other
+            | Kind::NoMountPrivilege
+            | Kind::SandboxBlocked
+            | Kind::Broken
+            | Kind::IdMapChanged,
+            _,
+        ) => Route::Refuse,
     }
 }
 
@@ -169,6 +179,13 @@ impl Refusal {
     /// or cannot use overlay, what `--mode=auto` turns into kaniko mode.
     pub(crate) fn needs_kaniko_mode(&self) -> bool {
         self.kind == Kind::NoMountPrivilege
+    }
+
+    /// Whether a fallback to another mode after this refusal is logged as a
+    /// warning rather than as information: the state directory needs the
+    /// operator (ADR-0128).
+    pub(crate) fn warns_on_fallback(&self) -> bool {
+        self.kind == Kind::IdMapChanged
     }
 }
 
@@ -481,7 +498,8 @@ fn open_store(root: &Path, state_dir: &Path, euid: u32) -> Result<Store, Refusal
 /// `euid` (outside any user namespace of the build), as a [`Refusal`]. An
 /// error that names the state directory itself says so alone; a directory
 /// a `prune --all` did not finish emptying gets what `euid` does with it
-/// ([`crate::prune::cut_short`]).
+/// ([`crate::prune::cut_short`]). A changed id map is of
+/// [`Kind::IdMapChanged`], any other of [`Kind::Other`].
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
     use rnk_store::Error;
     let reason = match e {
@@ -509,7 +527,10 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
         | Error::Fill { .. } => format!("cannot open the store in {}: {e}", state_dir.display()),
     };
     Refusal {
-        kind: Kind::Other,
+        kind: match e {
+            Error::IdMapChanged { .. } => Kind::IdMapChanged,
+            _ => Kind::Other,
+        },
         reason,
         guidance: match crate::prune::unfinished_prune(e) {
             Some((crate::prune::Unfinished::CutShort, dir)) => {

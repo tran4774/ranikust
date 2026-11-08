@@ -259,6 +259,7 @@ fn route_sends_only_an_unusable_overlay_outside_a_container_to_kaniko_stages() {
         Kind::NoMountPrivilege,
         Kind::Other,
         Kind::Broken,
+        Kind::IdMapChanged,
     ] {
         for in_container in [false, true] {
             assert_eq!(route(&of(kind), in_container), Route::Refuse, "{kind:?}");
@@ -1026,6 +1027,40 @@ fn a_store_refusal_names_its_state_directory_once() {
         refusal.reason,
         format!("cannot open the store in /home/u/state: {e}")
     );
+}
+
+/// A state directory whose canary refuses the build's id map (ADR-0128) is
+/// the one store refusal whose fallback to kaniko mode under root's
+/// `--mode=auto` warns, and the warning carries the way out.
+#[test]
+fn a_changed_id_map_warns_on_fallback_with_its_way_out() {
+    use rnk_store::Error;
+    let dir = Path::new("/home/u/state");
+    let changed = store_refusal(
+        &Error::IdMapChanged {
+            path: dir.to_owned(),
+            why: "x".to_owned(),
+        },
+        dir,
+        1000,
+    );
+    assert_eq!(changed.kind, Kind::IdMapChanged);
+    assert!(changed.warns_on_fallback());
+    let shown = changed.to_string();
+    assert!(
+        shown.contains("ranikust prune --all") && shown.contains("another --state-dir"),
+        "{shown}"
+    );
+    let busy = store_refusal(
+        &Error::Busy {
+            path: dir.to_owned(),
+        },
+        dir,
+        1000,
+    );
+    assert!(!busy.warns_on_fallback());
+    // Inside the build's user namespace it ends the process instead.
+    assert_eq!(inside_userns(changed).kind, Kind::Broken);
 }
 
 /// A build refused by a `prune --all` that did not finish is shown the
