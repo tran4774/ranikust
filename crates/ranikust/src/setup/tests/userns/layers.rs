@@ -938,7 +938,7 @@ fn root_deletes_nothing_in_a_probe_directory_it_gave_away() {
         let moved = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
         let seen = std::rc::Rc::clone(&moved);
         crate::setup::tests::on_probes_ran(Box::new(move || {
-            // What an escaped RUN could do while root removes the directory.
+            // The range's uid may change what it was given at any time.
             *seen.borrow_mut() = in_child(Some(SHIFTED), || match fs::rename(&from, &to) {
                 Ok(()) => "moved".to_owned(),
                 Err(e) => format!("error: {e}"),
