@@ -15,7 +15,8 @@
 //! `sysfs`. The binary runs these probes, with those of `rnk-snapshot`, and
 //! picks the mode. [`probe_user_namespace`] tries the steps a `RUN` in a
 //! user namespace would need: root only reports it, rootless overlay mode
-//! routes on it. [`enter_build_user_namespace`] moves the process into the
+//! routes on it, after [`probe_user_namespace_capabilities`], which tells
+//! with nothing written whether a user namespace here has capabilities. [`enter_build_user_namespace`] moves the process into the
 //! build's user namespace, each id map tried in a forked child first.
 //! There, [`probe_with_fallbacks`] lets a `RUN` get a read-only rbind of
 //! `/sys` where the user-namespace probe found a new `sysfs` refused

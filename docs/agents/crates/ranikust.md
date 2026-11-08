@@ -42,21 +42,21 @@ writer) before `unshare`, the probes and the state directory's checks.
 - Rootless overlay mode (`setup/rootless.rs`, #79; routing and the mode
   line: [modes-and-detection](../../design/modes-and-detection.md#probe-order---modeauto)),
   in two phases. `plan`, before the build's user namespace and with the
-  process unchanged: the state directory's checks (refused on overlayfs),
+  process unchanged: for a user other than root, whether a user namespace
+  has capabilities, with nothing written
+  (`rnk_sandbox::probe_user_namespace_capabilities`; a refusal there is
+  logged as the probe's line and refused at once); the state directory's
+  checks (refused on overlayfs),
   the user's subordinate ids, then the user-namespace probe and an overlay
   mount in it, in a `.ranikust-anon-userns-probe-*` directory of the state
   directory. Its line is logged without "(reported only)", and its verdict
   counts an rbind of `/proc` only with `--allow proc.rbind`
   (`setup::allowed`). A stop is `NotHere`, with guidance: for a user
   stopped at `unshare`, the map, `chown` or the mount namespace (and the
-  test hook's `no-userns`), `setup::no_userns`'s advice, in order: `sudo`;
-  where `kernel.apparmor_restrict_unprivileged_userns` reads 1, ranikust's
-  AppArmor profile (`contrib/apparmor/ranikust`), as shipped for
-  `/usr/local/bin/ranikust`, bound to the binary's own path where root
-  alone may change it (`/` down to the file walked `O_PATH` without
-  following a symlink, each root's, written by neither group nor others,
-  none on FUSE), else after installing the binary there first; a
-  container. The path is the one the binary started from
+  test hook's `no-userns`), `setup::no_userns`'s advice
+  ([No usable user namespace](../../design/modes-and-detection.md#no-usable-user-namespace)):
+  `sudo`, the AppArmor profile where the switch reads 1, a container. The
+  path it weighs is the one the binary started from
   (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
   `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
   rbind works. With the rbind, `main.rs` then runs the peer scan, the check
@@ -284,7 +284,8 @@ Each step before the next; design in
    `builds/<id>/overlay-probe` → `Sandbox::start` → the mode line.
    `RANIKUST_DEBUG_FAULT=no-userns` refuses it before `plan`, with the
    process unchanged and the advice where no user namespace is usable: the
-   T0 tests of the binary set it, so none makes a user namespace. Root's
+   T0 tests of the binary set it, so none makes a user namespace (nor runs
+   `plan`'s check of one with capabilities). Root's
    `--mode=auto` forks before `set_up` (ADR-0136);
    `RANIKUST_DEBUG_FAULT=rootless-broken` fails `set_up` at its last step,
    once the sandbox started, so that the T1 smoke case `rootless` sees the
@@ -464,12 +465,15 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   or by the test hook, `--allow proc.rbind` for a refused new `proc` whose
   rbind works, else running as root; `setup/no_userns/tests.rs`: the
   advice's wording and order in each case (the switch at 1 or not; the
-  shipped path, another root-only one, a user's, none), the root-only rule
-  on synthetic nodes (a user's, group- or others-writable, `/tmp`'s sticky
-  bit, a symlink, a non-regular file, FUSE), the walk on a temporary
-  directory (no symlink followed; a relative path, `..`, a missing or
-  removed file refused) and on system binaries, against the standard
-  library's view), `prune` (`--all` and `--state-dir` parsed, `--kaniko-dir`
+  shipped path, another root-only one, the install as
+  `/usr/local/bin/ranikust` or, where that directory fails, elsewhere),
+  the plain characters a profile may name, the root-only rule on synthetic
+  nodes with the first one that fails named (a user's, group- or
+  others-writable, `/tmp`'s sticky bit, a symlink, a non-regular file,
+  FUSE), the walk on a temporary directory (no symlink followed; a
+  relative path, `..`, a missing or removed file refused, where it
+  stopped named) and on system binaries, against the standard library's
+  view), `prune` (`--all` and `--state-dir` parsed, `--kaniko-dir`
   refused; without `--all` a usage error naming Phase 5; root refused
   before anything, a missing directory left missing, an empty one left as
   it is, one without the marker or holding a name the store does not make

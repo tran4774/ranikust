@@ -58,12 +58,17 @@ apparmor_parser -r /etc/apparmor.d/ranikust
   path, and gives a user namespace to whatever binary is there. Bind it only
   to a path no user other than root can change: root owns the file and every
   directory above it, and none is writable by group or others. ranikust's
-  refusal offers the profile only for such a path, and otherwise says to
-  install the binary under `/usr/local/bin` first. For another such path,
-  change the path in the profile.
+  refusal offers the profile only for such a path, and otherwise names the
+  part of the path that fails and says to install the binary under
+  `/usr/local/bin` first (or, where that directory fails too, in one that
+  passes). For another such path, change the path in the profile.
 - It confines nothing (`flags=(unconfined)`): every user who may run that
   binary, and every program a build runs, gets the user namespaces that the
-  switch at `0` gives every program. The rest of the host keeps the
+  switch at `0` gives every program. Where
+  `kernel.apparmor_restrict_unprivileged_unconfined` is `0`, Ubuntu 24.04's
+  default, any user's unconfined program may also ask for the profile with
+  `aa-exec -p ranikust` and get them (measured on 24.04), as with every
+  profile that allows `userns`. Programs that do neither keep the
   restriction.
 - To remove it: `apparmor_parser -R /etc/apparmor.d/ranikust`, then delete
   the file.

@@ -4,6 +4,9 @@
 # than root needs, as podman's profile does for podman. It confines nothing
 # (flags=(unconfined)); it gives every user who may run that binary, and the
 # programs a build runs, the user namespaces the switch at 0 gives everyone.
+# Where kernel.apparmor_restrict_unprivileged_unconfined is 0, Ubuntu 24.04's
+# default, any user's unconfined program may also ask for it with
+# aa-exec -p ranikust and get them, as with every profile that allows userns.
 #
 # Bind it only to a path no user other than root can change: root owns the
 # file and every directory above it, and none is writable by group or

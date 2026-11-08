@@ -57,9 +57,14 @@ them for rootless overlay mode.
   an rbind of `/proc`; read-only `sysfs`, else an rbind of `/sys`;
   `mknod` (reported, never needed). `UsernsReport::in_namespace` runs a
   closure as root of a namespace with the map that worked, for the overlay
-  probe. `ranikust` probes as root in root's own modes (reported only,
-  no subordinate ids) and as the user for rootless overlay mode, with the
-  subordinate ids it reads (`subids.rs`), which the build's user namespace
+  probe. `probe_user_namespace_capabilities` (#81) tries, in one child
+  with no directory, `unshare(CLONE_NEWUSER)` and, unmapped,
+  `unshare(CLONE_NEWNS)`, so that `ranikust` refuses a user whose user
+  namespace has no capabilities before it writes anything; a child cut
+  short is no refusal. `ranikust` probes as root in root's own modes
+  (reported only, no subordinate ids) and as the user for rootless overlay
+  mode, with the subordinate ids it reads (`subids.rs`), which the build's
+  user namespace
   below takes too.
 - The build's user namespace (`userns/build.rs`, #75): moves the process
   into a user namespace of its own and a mount namespace that namespace
@@ -140,6 +145,8 @@ pub enum KernelFs { Fresh, Rbind }              // #[non_exhaustive]; Display: "
 pub struct Fallbacks { .. }                    // Default: none; UsernsReport::fallbacks(): the /sys rbind the user-namespace probe needed, never /proc's
 impl Fallbacks { pub fn allow_proc_rbind(self) -> Self; } // the operator's request (ADR-0126; `ranikust` calls it for --allow proc.rbind): Sandbox then runs RUNs one at a time (ADR-0127); a RUN reads every process's files of /proc/<pid> not under ptrace's check (cmdline, status, stat, mountinfo, cgroup, net/*…), not the environment, files or memory of one outside the build's user namespace and those below it (ADR-0130; threat model section 6), and writes nothing there: the bind is read-only (ADR-0132); this crate does not scan for a shared PID namespace: `ranikust` runs the peer scan (ADR-0129) and the check of ADR-0134 before it enters the build's user namespace
 pub enum RootEntry { PivotRoot, MoveMount }
+pub fn probe_user_namespace_capabilities() -> Result<UsernsCapabilities>; // #81, single-threaded caller, nothing on disk: a forked child's unshare(CLONE_NEWUSER), then, unmapped, unshare(CLONE_NEWNS), which needs CAP_SYS_ADMIN in it
+pub struct UsernsCapabilities { pub unshare: StepResult, pub mount_ns: StepResult, pub cut_short: Option<String> } // stop(): "unshare" or "mount namespace" where refused, None where both worked or the child was cut short; Display: the two steps for the log line
 pub fn probe_user_namespace(dir: &RootPath, subordinate: Option<SubordinateIds>) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(allowed: Fallbacks): the first step a RUN needs that failed, an rbind of /proc passing `proc` only where allowed has allow_proc_rbind (ADR-0126), one of /sys always; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId }    // #[non_exhaustive]; "multi-range", "newuidmap", "one uid"
@@ -516,8 +523,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   order (a new `proc` and `sysfs` or their rbinds), the probe's next
   attempt (an rbind only after an allowed `EPERM`; `/proc`'s only on
   request, `/sys`'s without one), `setgroups` (skipped only where
-  denied in a one-id map) and the tty gid read from `/proc/self`
-  (`src/userns/tests.rs`),
+  denied in a one-id map), the capability check's step and line from its
+  records, a child cut short no refusal, and the tty gid read from
+  `/proc/self` (`src/userns/tests.rs`),
   environment defaults, `PATH` candidates, `/etc/hosts`, capability lists,
   failure records, what the parent outside the build's user namespace
   does once its child ended (`supervise.rs`: a stop signal wins over the
@@ -533,7 +541,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the binary's mount against `/` (a zero id: `NoMountId`), measured on
   files and carried in the marker, the binary's path carried there too
   (any byte, a malformed spelling refused), a marker that does not check
-  not believed about either, a writable mount reaching the binary by sample mountinfo,
+  not believed about either, a writable mount reaching the binary by
+  sample mountinfo,
   a binary in a root that is not an overlay weighed (by sample values and
   on `/`), a fuse-overlayfs root counted as an overlay, a FUSE root the
   table does not type unplaced, the root mount not counted, FUSE told
@@ -877,7 +886,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (`src/userns/tests.rs`, profile `default`, also in the T2 unit suite on the
   VM: every step passes with root's own ranges on a host, `unshare` is
   refused under Docker's defaults, and nothing is left in the probe's
-  directory); the probe's red team as root (`red_team_as_root_*`, profile
+  directory), and likewise
+  `the_capability_check_as_root_passes_on_a_host_and_stops_at_unshare_in_docker`;
+  the probe's red team as root (`red_team_as_root_*`, profile
   `sysadmin`: the T0 attacks with the whole path, `proc` and `sysfs`
   mounts and `mknodat` reached, and the probe on a tmpfs, one that runs
   out of inodes part-way, a read-only one and a ramfs, each leaving

@@ -378,18 +378,25 @@ to bind-mount the chroot directory onto itself first. Where the kernel does
 not report whether `/` is a mount root (`STATX_ATTR_MOUNT_ROOT` missing from
 the mask), it neither refuses on that ground nor falls back to `MS_MOVE`.
 
-Planned, Phase 3: the refusal of an image with an owner the user namespace does not
-map (probe step 2) names the owners found and the ways out: with one id, install
-`uidmap` and add ranges to `/etc/subuid` and `/etc/subgid`, run as root, or use
-a container; with ranges, widen them to the range needed. In a user namespace
-ranikust was started in (rootless Podman), the map is read from
-`/proc/self/uid_map` and `gid_map` and the fix is to widen the container's range
-([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+Planned, Phase 3: the refusal of an image with an owner the user namespace
+does not map (probe step 2) names the owners found and the ways out: with one
+id, install `uidmap` and add ranges to `/etc/subuid` and `/etc/subgid`, run as
+root, or use a container; with ranges, widen them to the range needed. In a
+user namespace ranikust was started in (rootless Podman), the map is read from
+`/proc/self/uid_map` and `gid_map` and the fix is to widen the container's
+range ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
 
 ### No usable user namespace
 
-Where a user other than root gets no usable user namespace, the refusal's
-guidance line gives, in order
+Where a user other than root gets no usable user namespace, ranikust refuses
+before it writes anything, the state directory included: before the probe, a
+forked child makes a user namespace and, with no id map, a mount namespace in
+it, which needs `CAP_SYS_ADMIN` there
+(`rnk_sandbox::probe_user_namespace_capabilities`). Either refused (`unshare`
+under a seccomp filter, the mount namespace in a namespace without
+capabilities, as the AppArmor switch gives) stops the build at that step;
+otherwise the probe runs as before, and its later stops come after the state
+directory is made. The refusal's guidance line gives, in order
 ([#81](https://github.com/tran4774/ranikust/issues/81)):
 
 1. Run ranikust as root, with `sudo`.
@@ -401,9 +408,12 @@ guidance line gives, in order
    `/etc/apparmor.d/ranikust` with `apparmor_parser -r`. A profile gives a
    user namespace to whatever is at its path, so it is offered for the
    binary's own path only where root alone may change it: as shipped for
-   `/usr/local/bin/ranikust`, with the path changed for another such path,
-   and otherwise after installing the binary under `/usr/local/bin` first,
-   naming the path that failed.
+   `/usr/local/bin/ranikust`; with the path changed for another such path
+   made only of letters, digits and `._+-/`, which AppArmor reads as no
+   pattern; otherwise after installing the binary, owned by root
+   (`install -o root -g root -m 0755`), as `/usr/local/bin/ranikust`, or,
+   where `/usr/local/bin` fails the same check, in a directory that passes,
+   naming the first part of the path that failed and why.
 3. Run ranikust in a container.
 
 The path is the one `/proc/self/exe` named before the sealed copy ran
@@ -419,8 +429,11 @@ does any error, a removed binary (`(deleted)`) included. Any value of the
 switch but `1`, or none (Ubuntu 22.04, other distributions), offers no
 profile. With the profile loaded the binary keeps it through the sealed
 copy's `execveat`, which no other profile attaches to, and so does a `RUN`
-(T2 smoke). The test hook `RANIKUST_DEBUG_FAULT=no-userns` gives the same
-advice.
+(T2 smoke). Where `kernel.apparmor_restrict_unprivileged_unconfined` is 0,
+24.04's default, any user's unconfined program may also enter the profile
+with `aa-exec -p ranikust` (measured, T2 smoke), as it may any profile that
+allows `userns`; the book and the profile say so. The test hook
+`RANIKUST_DEBUG_FAULT=no-userns` gives the same advice.
 
 ## Failure handling
 
