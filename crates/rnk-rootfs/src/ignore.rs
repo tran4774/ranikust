@@ -145,12 +145,12 @@ impl IgnoreList {
     /// It reads only as many leading names as the longest entry has, and
     /// one more, so a walk asking about each entry takes time linear in its
     /// entries however deep they lie, where cleaning each whole path would
-    /// take the square of the depth. A `..` among those names, or right
-    /// after them, is cleaned as `covers` cleans it. One further on breaks
-    /// the precondition: a debug build panics (each name checked in a path
-    /// within `PATH_MAX`, the last one past it); a release build does not
-    /// see it, and its answer may let a caller remove or copy what the list
-    /// holds. Give any other path to `covers`.
+    /// take the square of the depth. A path that breaks the precondition
+    /// with a `..` among those names, or right after them, is still
+    /// answered as `covers` answers it; one further on is not seen: a debug
+    /// build panics (each name checked in a path within `PATH_MAX`, the last
+    /// one past it), and a release build's answer may let a caller remove or
+    /// copy what the list holds. Give any other path to `covers`.
     #[must_use]
     pub fn covers_walked(&self, p: impl AsRef<Path>) -> bool {
         if self.is_empty() {

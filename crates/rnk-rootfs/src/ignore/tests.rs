@@ -189,6 +189,35 @@ fn has_below_by_every_entry(l: &IgnoreList, p: &Path) -> bool {
     l.globs.iter().any(|g| g.has_below(&names))
 }
 
+/// `p` with a `..` before its name number `at` (counting neither `.` nor
+/// empty names), or after the last; its slashes and leading `/` or `.`
+/// kept.
+fn with_parent_before(p: &str, at: usize) -> String {
+    let mut out = String::new();
+    let mut seen = 0;
+    let mut put = false;
+    for (i, name) in p.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        if !put && !name.is_empty() && name != "." {
+            if seen == at {
+                out.push_str("../");
+                put = true;
+            }
+            seen += 1;
+        }
+        out.push_str(name);
+    }
+    if !put {
+        if !out.is_empty() && !out.ends_with('/') {
+            out.push('/');
+        }
+        out.push_str("..");
+    }
+    out
+}
+
 /// A list of `lit`, `below` and `globs`, skipping what each refuses.
 fn list_of(lit: &[String], below: &[String], globs: &[String]) -> IgnoreList {
     let mut l = IgnoreList::new();
@@ -238,14 +267,13 @@ proptest::proptest! {
             let below = has_below_by_every_entry(&l, p);
             proptest::prop_assert_eq!(l.has_below_walked(p), below, "has_below_walked {}", p.display());
             // A `..` after each count of names the walk's forms read.
-            let names: Vec<&OsStr> = p.iter().filter(|n| *n != "/" && *n != ".").collect();
+            let names = p.iter().filter(|n| *n != "/" && *n != ".").count();
             let reach = l.max_parts.max(l.glob_parts);
-            for at in 0..=reach.min(names.len()) {
-                let mut q: PathBuf = names[..at].iter().collect();
-                q.push("..");
-                q.extend(&names[at..]);
-                proptest::prop_assert_eq!(l.covers_walked(&q), l.covers(&q), "covers_walked {}", q.display());
-                proptest::prop_assert_eq!(l.has_below_walked(&q), l.has_below(&q), "has_below_walked {}", q.display());
+            for at in 0..=reach.min(names) {
+                let q = with_parent_before(p.to_str().unwrap(), at);
+                let q = Path::new(&q);
+                proptest::prop_assert_eq!(l.covers_walked(q), l.covers(q), "covers_walked {}", q.display());
+                proptest::prop_assert_eq!(l.has_below_walked(q), l.has_below(q), "has_below_walked {}", q.display());
             }
         }
     }
@@ -259,10 +287,20 @@ proptest::proptest! {
 fn a_walked_path_with_a_parent_past_the_names_read_panics_in_a_debug_build() {
     let l = list(&["a/b"], &["c"], &["d*/e"]);
     let deep: String = (0..1000).map(|i| format!("/d{i}")).collect();
+    let refused = |r: std::thread::Result<bool>| {
+        r.err()
+            .and_then(|e| e.downcast::<String>().ok())
+            .is_some_and(|m| m.contains("a `..` past the names read"))
+    };
     for p in ["x/y/z/../../../a/b", "a/b/c/..", &format!("{deep}/..")] {
-        let covers = std::panic::catch_unwind(|| l.covers_walked(p));
-        let below = std::panic::catch_unwind(|| l.has_below_walked(p));
-        assert!(covers.is_err() && below.is_err(), "{p}");
+        assert!(
+            refused(std::panic::catch_unwind(|| l.covers_walked(p))),
+            "{p}"
+        );
+        assert!(
+            refused(std::panic::catch_unwind(|| l.has_below_walked(p))),
+            "{p}"
+        );
     }
 }
 
