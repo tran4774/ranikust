@@ -1,9 +1,10 @@
 # Row 5 of ADR-0100's privilege matrix (#84), Podman only (T1, both legs):
 # rootless Podman with its default options and a volume at the state
-# directory. The container is checked against the row first (root there
-# another uid outside, with a range of ids; a seccomp filter; no
-# CAP_SYS_ADMIN; /proc/sys read-only; the state directory a mount of its
-# own). Then a build without --mode, with --allow proc.rbind, must run in
+# directory. The container is checked against the row (root there another
+# uid outside, with a range of ids; a seccomp filter; no CAP_SYS_ADMIN;
+# /proc/sys read-only; the state directory a mount of its own), from what
+# it prints before ranikust starts. A build without --mode, with
+# --allow proc.rbind, must run in
 # rootless overlay mode with a read-only rbind of /proc: one user namespace
 # probe line, passing, each step up to proc as expected (proc's own mount
 # refused with EPERM), a RUN that sees the container's PID namespace
@@ -18,6 +19,7 @@ env_script() {
   cat <<'EOF'
 st() { awk -v k="$1:" '$1 == k { print $2 }' /proc/self/status; }
 echo "env: uid $(id -u)"
+echo "env: root outside $(awk '$1 == 0 { print $2 }' /proc/self/uid_map)"
 echo "env: uid_map $(awk '{ printf "%s %s %s;", $1, $2, $3 }' /proc/self/uid_map)"
 echo "env: ids mapped $(awk '{ n += $3 } END { print n }' /proc/self/uid_map)"
 echo "env: seccomp $(st Seccomp)"
@@ -51,6 +53,8 @@ case_run() {
   grep '^env: ' <<<"$log" | sed "s/^/  $CASE: /" >&2 || true
 
   expect "$(env_line uid)" 0 "row 5: root in the container"
+  [[ "$(env_line 'root outside')" =~ ^[1-9][0-9]*$ ]] ||
+    fail "row 5: root in the container is root outside it, not rootless Podman: $(env_line uid_map)"
   [ "$(env_line 'ids mapped')" -gt 1 ] 2>/dev/null ||
     fail "row 5: a range of ids mapped, got $(env_line uid_map)"
   expect "$(env_line seccomp)" 2 "row 5: Podman's seccomp filter"

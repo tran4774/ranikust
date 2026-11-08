@@ -1,6 +1,7 @@
 name: T2
 
-# The privileged tiers on GitHub-hosted runners (ADR-0090): each job is a
+# The privileged tiers on GitHub-hosted runners (ADR-0090), with the
+# privilege matrix's runner rows, T1 and T2 (ADR-0100): each job is a
 # fresh VM GitHub deletes afterwards, with passwordless sudo, so it stands in
 # for the local QEMU VM (`just test-vm`) and the VPS container lane (`just
 # test-container`). tests/vm/runner.sh refuses to run anywhere else.

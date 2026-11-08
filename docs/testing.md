@@ -92,7 +92,7 @@ The plan comes from the verification plan of
 | Property and fuzz tests | Parser, ignore matcher, tar write/read round trips, cache-key determinism | proptest in several crates (each [crate card](agents/README.md)'s `## Tests`); `cargo fuzz` on `extract` is planned (Phase 6) |
 | Image content vs kaniko | Each image flattened to `(path, type, mode, uid, gid, size, sha256, link target, xattrs)` plus its config, compared with kaniko's | T2, done: `e2e` and `ultra` |
 | Mode equivalence | Overlay and kaniko mode give the same flattened content, apart from the accepted differences of [ADR-0012](adr/0012-accept-divergence-between-modes.md); `--jobs 1` and the default give identical digests | T1/T2, done: `e2e`, `ultra`, the `reproducible` and `par-stages` cases |
-| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags`, `userns-probe` and `matrix-podman` cases; CI runs the last, row 5, in a GitHub-hosted runner's Podman) and a regular user T2 (the VM's: the `smoke` suite's user leg; the runner's user on Ubuntu 24.04, rows 6 and 6b: the `matrix-user` suite, [below](#privilege-matrix-on-the-runner)). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`). Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the VM legs of rows 6 and 6b and the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned (#85). Gaps: [below](#not-covered-yet) |
+| Privilege matrix | In each environment of [Where environments land](design/modes-and-detection.md#where-environments-land), ranikust picks the expected mode or refuses with guidance | Partly. Rootful environments are T2: the `smoke` (`--privileged`, `SYS_ADMIN`), `e2e` (`rk-kaniko` in a default container) and `secrets` suites. Rootless ones: rootless Podman is T1 (the `rootless`, `kaniko-flags`, `userns-probe` and `matrix-podman` cases; CI runs the last, row 5, in a GitHub-hosted runner's Podman) and a regular user T2 (the `smoke` suite's user leg, in the VM and on the runner; on the runner, rows 6 and 6b: the `matrix-user` suite, [below](#privilege-matrix-on-the-runner)). AlmaLinux 9 with SELinux enforcing (row 9e) is T2 in the local VM: the `el9` suite's root and regular-user legs (`RANIKUST_VM_RELEASE=alma9`). Kubernetes (rows 7a to 7d) is T2, the `k8s` suite in k3s ([below](#privilege-matrix-in-kubernetes)); the VM legs of rows 6 and 6b and the Docker-variant legs of [ADR-0100](adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) are planned (#85). Gaps: [below](#not-covered-yet) |
 | Host safety | Layers with `../etc/passwd`, symlinks and hardlinks pointing out; `RUN mount`, `setsid sleep 1000 &`, a fork bomb under a cgroup limit, writes to `/etc/resolv.conf`; a `--state-dir` at `/`, below `/home/<user>` and in a directory others may write. After each case: the host is unchanged, and no mount or process is left | T2, partly: the red-team cases of `quick`, the `secrets` suite and the `rnk-sandbox` and `rnk-rootfs` attack tests |
 
 ## Not covered yet
@@ -689,13 +689,13 @@ What runs, by event:
 
 On a full CI run ([above](#ci-lanes)) that touches the Rust code or the T2
 harness, `.github/workflows/t2.yml` runs the T2 suites `unit`, `smoke`,
-`quick`, `secrets`, `k8s` and `matrix-user` and the T2c lane `unit-c` as
-root directly on GitHub-hosted `ubuntu-24.04` runners
+`quick`, `secrets` and `k8s` and the T2c lane `unit-c` as root directly on
+GitHub-hosted `ubuntu-24.04` runners
 ([ADR-0090](adr/0090-t2-also-runs-as-root-on-github-hosted-runners.md)): a
 runner is a fresh VM GitHub makes for one job and deletes after it, with
-passwordless `sudo`, so it takes the VM's place there. With them, the T1
-case `matrix-podman` in the runner's rootless Podman. Six jobs, each its
-own runner, in parallel:
+passwordless `sudo`, so it takes the VM's place there. As the runner's
+user, it runs the T2 suite `matrix-user` and the T1 case `matrix-podman`
+too. Six jobs, each its own runner, in parallel:
 
 | Check | Suites |
 |---|---|
@@ -777,9 +777,12 @@ shows.
 | 6b | The same, root's copy with `contrib/apparmor/ranikust` loaded | overlay, rootless, fresh `proc` | Rootless overlay mode with a new `proc`. The probe passes through `newuidmap`, `proc` a new instance. A `RUN` sees its own PID namespace alone, under ranikust's init, and the owner it sets is in the image Docker loads; no mount or ranikust process is left |
 
 - GitHub's image makes `/usr/local/bin` world-writable, which takes the
-  profile as shipped out of the advice (#215); the suite makes it root's
-  `0755`, as Ubuntu ships it, for the legs, and restores it after with the
-  profile and root's copy.
+  profile as shipped out of the advice
+  ([no usable user namespace](design/modes-and-detection.md#no-usable-user-namespace)):
+  the suite makes it root's `0755`, as Ubuntu ships it, for the legs, and
+  restores it after with the profile and root's copy. The `smoke` suite's
+  user leg, on the runner too, asserts the advice for the directory as
+  GitHub ships it.
 - Results: `out/matrix-user/` (`env.txt`, each leg's log) and
   `out/matrix-podman.log`, with the case's outputs, in a failed job's
   artifact.

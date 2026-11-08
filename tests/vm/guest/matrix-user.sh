@@ -57,7 +57,9 @@ subuid="$(grep "^$me:" /etc/subuid || true)" subgid="$(grep "^$me:" /etc/subgid 
 [ -n "$subuid" ] && [ -n "$subgid" ] || die "no subordinate ranges for $me in /etc/subuid and /etc/subgid"
 newuidmap="$(command -v newuidmap)" || die "no newuidmap: install uidmap"
 [ ! -e "$AA_BINARY" ] && [ ! -e "$AA_PROFILE" ] || die "$AA_BINARY or $AA_PROFILE is there already"
-! sudo grep -q '^ranikust ' /sys/kernel/security/apparmor/profiles || die "a ranikust profile is loaded already"
+rc=0
+sudo grep -q '^ranikust ' /sys/kernel/security/apparmor/profiles || rc=$?
+[ "$rc" = 1 ] || die "a ranikust profile is loaded already, or AppArmor's profiles cannot be read ($rc)"
 mkdir -p "$OUT"
 bin_was="$(stat -c '%u:%g %a' "$LOCAL_BIN")"
 {
@@ -84,15 +86,21 @@ trap teardown EXIT
 # Ubuntu's /usr/local/bin is root's 0755: the profile the refusal offers
 # hangs on it.
 sudo chown root:root "$LOCAL_BIN" && sudo chmod 0755 "$LOCAL_BIN" || die "cannot make $LOCAL_BIN root's"
+# As ranikust checks it, but for the filesystem's type: no symlink, root's,
+# written by no one else, no nosuid.
 d="$LOCAL_BIN"
 while :; do
-  [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] ||
-    die "$d is not root's alone: $(stat -c '%U %a' "$d")"
+  [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] &&
+    [[ ",$(findmnt -no OPTIONS -T "$d")," != *,nosuid,* ]] ||
+    die "$d is not root's alone: $(stat -c '%U %a' "$d"), mount options $(findmnt -no OPTIONS -T "$d")"
   [ "$d" = / ] && break
   d="$(dirname "$d")"
 done
 
 ! grep -qF " $U" /proc/self/mountinfo || die "mounts left under $U by an earlier run"
+# The job's umask may have left ~/rnk group-writable, which no directory
+# above a state directory may be (ADR-0050).
+chmod go-w "$HOME/rnk"
 sudo rm -rf --one-file-system "$U" && mkdir -m 700 "$U"
 
 # --- The legs ----------------------------------------------------------------------

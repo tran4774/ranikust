@@ -78,7 +78,7 @@ suite (rows 7a to 7d, measured;
 [testing](../testing.md#privilege-matrix-in-kubernetes)), and the runner
 jobs: row 5 in the runner's rootless Podman (the T1 `matrix-podman` case)
 and rows 6 and 6b as its user on Ubuntu 24.04 (the T2 `matrix-user` suite),
-each asserting the rows above
+each asserting ADR-0100's rows
 ([testing](../testing.md#privilege-matrix-on-the-runner)). The VM legs are
 planned (#85), but for row 9e: the T2 `el9` suite ([testing](../testing.md#the-vm-harness-tier-t2)) boots
 AlmaLinux 9.8 (kernel 5.14, SELinux enforcing, policy `targeted`). Measured
