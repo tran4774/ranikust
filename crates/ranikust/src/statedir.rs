@@ -501,8 +501,7 @@ fn make_given(
         }
     });
     if !matches!(moved, Ok(Some(_))) {
-        // Unused or failed, it goes; `moved` says why, and a failure here
-        // leaves one empty directory: `rmdir` takes nothing put in it.
+        // `moved` says why; `rmdir` takes only an empty directory.
         let _ = rustix::fs::unlinkat(at, new.as_str(), AtFlags::REMOVEDIR);
     }
     moved

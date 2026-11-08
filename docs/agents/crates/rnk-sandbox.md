@@ -489,14 +489,13 @@ What a change here must keep, with where it lives:
   child waits for them, so an attempt can run past its 10 s: it is then
   killed as soon as they are done, reaped, and reported as killed after
   10 s. Its mount namespace makes `/` a recursive slave before any mount.
-  The files the steps need are made by the caller in the probe's
-  directory through `RootPath` and removed before it returns, except under
-  a shifted range, where they are left to the caller. `newuidmap`
-  is looked for in `/usr/bin` and `/bin` only, run with an empty
-  environment. A child of a user other than root is dumpable only around
-  its map write, which the kernel's owner check of `/proc/<pid>/uid_map`
-  needs: made dumpable after `unshare`, not dumpable again right after the
-  map, before `chown`. `ranikust` probes as root, whose children never
+  The files the steps need are made by the probe in its directory through
+  `RootPath` and removed before it returns, except under a shifted range,
+  where they are left to the caller. `newuidmap` is looked for in
+  `/usr/bin` and `/bin` only, run with an empty environment. A child of a
+  user other than root is dumpable only around its map write, which the
+  kernel's owner check of `/proc/<pid>/uid_map` needs: made dumpable after
+  `unshare`, not dumpable again right after the map, before `chown`. `ranikust` probes as root, whose children never
   change it.
 
 ## Refs

@@ -144,13 +144,12 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      (Q-111, (a)), and holds the state directory's lock until the store
      opens; named `.ranikust-anon-userns-probe-<pid>-<nanos>`
      (`rnk_store::USERNS_PROBE_PREFIX`; `-again` added once where another
-     build's start took the first for a leftover before it was held) and
-     held by its exclusive `flock`
-     while the probe uses it, so that a build cut short there leaves nothing
-     the next start counts as foreign: the store, once it opens, removes each
-     such directory whose lock it takes
-     ([cache and store](cache-and-store.md)); it takes the
-     process's gid and no setgid bit, as the store's own directories do
+     build's start took the first for a leftover before it was held) and held
+     by its exclusive `flock` while the probe uses it, so that a build cut
+     short there leaves nothing the next start counts as foreign: the store,
+     once it opens, removes each such directory whose lock it takes
+     ([cache and store](cache-and-store.md)); it takes the process's gid and
+     no setgid bit, as the store's own directories do
      ([ADR-0099](../adr/0099-rootless-publishes-extracted-layers-by-rename-from-inside-the-user-namespace.md)).
      Under root's `--userns` it is given to the range, so root deletes
      nothing in it: it is left, unlocked, to the build's store, which

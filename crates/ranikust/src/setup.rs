@@ -853,7 +853,8 @@ pub(crate) fn probe_in_dir(
 
 /// [`make_probe_dir`] with `name`, then once more with a name of its own
 /// where another build took the first for a leftover before it was held
-/// ([`remove_own_probe_leftovers`]): the name made.
+/// (removed it, [`remove_own_probe_leftovers`], or locked it to remove
+/// it, as a store does): the name made.
 fn make_probe_dir_again(
     root: &RootPath,
     parent: &Path,
@@ -866,7 +867,8 @@ fn make_probe_dir_again(
         }
     }
     Err(format!(
-        "{} was removed by another build before it could be held",
+        "{} was taken by another build (removed, or locked to be removed) before it could \
+         be held",
         parent.join(again).display()
     ))
 }
@@ -874,7 +876,8 @@ fn make_probe_dir_again(
 /// Makes the directory `name` in `root` (at `parent`) for the probe, and
 /// holds it where the store would take it for a leftover: one named
 /// [`rnk_store::USERNS_PROBE_PREFIX`]. Others (in a build's directory) are
-/// never held. `None` where it was removed before it was held.
+/// never held. `None` where another build took it before it was held
+/// (removed it, or locked it to remove it).
 fn make_probe_dir(
     root: &RootPath,
     parent: &Path,
@@ -892,8 +895,8 @@ fn make_probe_dir(
         Ok(Some(held)) => Ok(Some((scratch, Some(held)))),
         Ok(None) => Ok(None),
         Err(e) => {
-            // The lock's error is the one to report; an empty directory
-            // left is one the store removes.
+            // This error is the one to report; an empty directory left is a
+            // leftover the next start removes.
             let _ = root.remove_dir(name);
             Err(format!("cannot hold {}: {e}", parent.join(name).display()))
         }

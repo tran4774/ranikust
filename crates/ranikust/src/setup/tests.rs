@@ -90,7 +90,7 @@ fn a_probe_directory_taken_before_it_is_held_is_made_again() {
     let Err(e) = make_probe_dir_again(&root, tmp.path(), &name) else {
         panic!("a probe directory removed twice before it was held");
     };
-    assert!(e.contains("removed by another build"), "{e}");
+    assert!(e.contains("taken by another build"), "{e}");
     assert!(names().is_empty());
 }
 
@@ -610,7 +610,12 @@ impl LockedElsewhere {
         drop(w);
         let mut locked = [0];
         assert_eq!(rustix::io::read(&r, &mut locked).unwrap(), 1);
-        assert_eq!(locked, [1], "the child cannot lock {}", path.display());
+        assert_eq!(
+            locked,
+            [1],
+            "the child cannot close its other descriptors or lock {}",
+            path.display()
+        );
         held
     }
 }

@@ -93,8 +93,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   `rnk_sandbox::probe_user_namespace` deletes anything in a directory
   given away, and `probe_in_dir` refuses a name without
   `USERNS_PROBE_PREFIX`: it releases its lock and the store removes it
-  inside the namespace. A probe directory another build's start removed
-  before it was held is made again once under another name
+  inside the namespace. A probe directory another build's start removed,
+  or a store locked, before it was held is made again once under another
+  name
   (`make_probe_dir_again`). `set_up` enters the namespace with the same ids;
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names
   `--userns`. Its messages name `--userns`, its guidance

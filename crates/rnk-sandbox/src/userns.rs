@@ -416,11 +416,10 @@ impl fmt::Display for UsernsReport {
 /// made; what this makes there is removed before it returns, except for a
 /// shifted range ([`BuildIds::shifted_root`]): `dir` is then given to the
 /// range's first ids, and nothing in it is deleted here, so the caller
-/// removes it with the range's rights alone. Root gets a map of every id
-/// it has ([`IdMap::Ranges`]), else one id; another user
-/// gets `newuidmap` with `subordinate`, else one id. Each map is one
-/// attempt, in its own child, until one works or `unshare` itself is
-/// refused.
+/// removes it with the range's rights alone. Root gets a map of every id it
+/// has ([`IdMap::Ranges`]), else one id; another user gets `newuidmap` with
+/// `subordinate`, else one id. Each map is one attempt, in its own child,
+/// until one works or `unshare` itself is refused.
 ///
 /// Call in the single-threaded start-up window, before any credential is
 /// read: each child is a copy of this process's memory. Reported only:

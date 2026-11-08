@@ -901,12 +901,12 @@ fn the_user_namespace_steps_as_root_pass_on_a_host_and_stop_at_unshare_in_docker
 }
 
 /// T2: as root with a shifted range (`--userns`, ADR-0104): every step a
-/// `RUN` needs passes, the probe's directory and its mount points are
-/// given to the range's first ids (the file the `chown` step gave to the
+/// `RUN` needs passes, the probe's directory and its mount points are given
+/// to the range's first ids (the file the `chown` step gave to the
 /// namespace's id 1 is the range's second ids') and nothing in it is
 /// deleted from outside the namespace, and a closure runs as root of the
-/// namespace with no supplementary group, a file it makes owned on the
-/// host by the range's first ids.
+/// namespace with no supplementary group, a file it makes owned on the host
+/// by the range's first ids.
 #[test]
 #[ignore = "T2: real root probes a shifted range"]
 fn the_user_namespace_steps_of_a_shifted_range_pass_as_its_first_ids() {

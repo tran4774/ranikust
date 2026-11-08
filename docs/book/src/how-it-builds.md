@@ -163,10 +163,10 @@ other.
   root's default, `/var/lib/ranikust`, whether it exists or not ([ADR-0139]).
   A build killed while it makes a missing one, or a missing directory
   above it, may leave an empty `.ranikust-new-*` directory in the parent of
-  the one it was making, and one killed during its probe a
-  `.ranikust-anon-userns-probe-*` directory of root's in the state
-  directory, which the next builds warn of: ranikust removes neither, so
-  remove them as root.
+  the one it was making. One killed while its probe's files were being made
+  may leave a `.ranikust-anon-userns-probe-*` directory of root's, not
+  empty, in the state directory, which the next builds warn of. ranikust
+  removes neither: remove them by hand, as root.
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the
