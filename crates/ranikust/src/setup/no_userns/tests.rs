@@ -1,5 +1,7 @@
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+use rnk_sandbox::{StepFailure, StepResult};
+
 use super::*;
 
 /// Where each of `parts` starts in `text`, in order, or a panic naming the
@@ -105,6 +107,75 @@ fn the_advice_gives_sudo_then_the_profile_then_a_container() {
     );
 }
 
+/// The profile is offered only where AppArmor may be what refused: a step
+/// in a user namespace that was made, or `unshare` refused with `EACCES`.
+/// `unshare` refused otherwise (a seccomp filter's or
+/// `kernel.unprivileged_userns_clone`'s `EPERM`,
+/// `user.max_user_namespaces`' `ENOSPC`), or a stop whose cause is not
+/// known, gets `sudo` then a container, whatever the switch reads.
+#[test]
+fn only_a_stop_apparmor_may_cause_offers_the_profile() {
+    let refused = |errno| {
+        StepResult::Failed(StepFailure {
+            op: "unshare(CLONE_NEWUSER)",
+            errno,
+            detail: None,
+        })
+    };
+    let eacces = Errno::ACCESS.raw_os_error();
+    let not_run = StepResult::NotRun("the probe's child stopped before it");
+    let offers = [
+        (
+            Stop::at("unshare", &refused(Some(eacces))),
+            Stop::Unshare(eacces),
+        ),
+        (Stop::at("map", &StepResult::Ok), Stop::InNamespace),
+        (Stop::at("chown", &StepResult::Ok), Stop::InNamespace),
+        (
+            Stop::at("mount namespace", &StepResult::Ok),
+            Stop::InNamespace,
+        ),
+    ];
+    for (got, want) in offers {
+        assert_eq!(got, want);
+        assert!(got.offers_profile(), "{got:?}");
+    }
+    let shown = Path::new("/usr/local/bin/ranikust");
+    let others = [
+        (
+            Stop::at("unshare", &refused(Some(libc::EPERM))),
+            Stop::Unshare(libc::EPERM),
+        ),
+        (
+            Stop::at("unshare", &refused(Some(libc::ENOSPC))),
+            Stop::Unshare(libc::ENOSPC),
+        ),
+        (
+            Stop::at("unshare", &refused(Some(libc::EINVAL))),
+            Stop::Unshare(libc::EINVAL),
+        ),
+        (Stop::at("unshare", &refused(None)), Stop::Unknown),
+        (Stop::at("unshare", &not_run), Stop::Unknown),
+        (Stop::at("unshare", &StepResult::Ok), Stop::Unknown),
+        (Stop::at("mount namespace", &not_run), Stop::Unknown),
+        (Stop::at("map", &refused(Some(eacces))), Stop::Unknown),
+        (Stop::at("proc", &StepResult::Ok), Stop::Unknown),
+        (Stop::at("overlay", &StepResult::Ok), Stop::Unknown),
+    ];
+    for (got, want) in others {
+        assert_eq!(got, want);
+        assert!(!got.offers_profile(), "{got:?}");
+        assert_eq!(guidance(Some(shown), got), advice(None), "{got:?}");
+    }
+    // The profile itself only where the switch reads 1 here.
+    let in_namespace = guidance(Some(shown), Stop::InNamespace);
+    assert_eq!(
+        in_namespace.contains(PROFILE),
+        restricted(),
+        "{in_namespace}"
+    );
+}
+
 /// A profile names only a path of plain characters as it is: no glob,
 /// alternation, variable, comment or space.
 #[test]
@@ -131,12 +202,16 @@ fn only_a_plain_path_is_pasted_into_a_profile() {
     }
 }
 
+/// ext2, ext3 and ext4's `f_type`.
+const EXT4: FsWord = 0xEF53;
+
 fn node(kind: FileType, uid: u32, mode: u32) -> Node {
     Node {
         kind,
         uid,
         mode,
-        fuse: false,
+        fs_type: EXT4,
+        nosuid: false,
     }
 }
 
@@ -156,8 +231,9 @@ fn at(nodes: &[Node]) -> Vec<(PathBuf, Node)> {
 }
 
 /// Only root may change a path whose every node is root's, written by no
-/// one else, none on FUSE, its directories directories and its last node
-/// of the kind asked for; the first node that fails is named, with why.
+/// one else, on a local filesystem mounted without `nosuid`, its
+/// directories directories and its last node of the kind asked for; the
+/// first node that fails is named, with why.
 #[test]
 fn only_root_s_nodes_written_by_no_one_else_pass() {
     let dir = |uid, mode| node(FileType::Directory, uid, mode);
@@ -170,8 +246,29 @@ fn only_root_s_nodes_written_by_no_one_else_pass() {
         Ok(())
     );
     assert_eq!(verdict(&at(&good[..2]), FileType::Directory), Ok(()));
+    // ext2/3/4, xfs, btrfs, squashfs, erofs, tmpfs, overlayfs, zfs.
+    for local in [
+        0xEF53,
+        0x5846_5342,
+        0x9123_683E,
+        0x7371_7368,
+        0xE0F5_E1E2,
+        0x0102_1994,
+        0x794C_7630,
+        0x2FC1_2FC1,
+    ] {
+        let mut on = good;
+        on[1].fs_type = local;
+        assert_eq!(verdict(&at(&on), file_kind), Ok(()), "{local:#x}");
+    }
     let mut fused = good;
-    fused[1].fuse = true;
+    fused[1].fs_type = 0x6573_5546;
+    let mut nfs = good;
+    nfs[2].fs_type = 0x6969;
+    let mut nosuid = good;
+    nosuid[1].nosuid = true;
+    let mut nosuid_file = good;
+    nosuid_file[2].nosuid = true;
     for (nodes, why) in [
         (vec![], "nothing was found"),
         (vec![dir(0, 0o755)], "/ is not a regular file"),
@@ -217,7 +314,19 @@ fn only_root_s_nodes_written_by_no_one_else_pass() {
         ),
         (
             fused.to_vec(),
-            "/a is on FUSE, whose server reports its owners",
+            "/a is not on a local filesystem ranikust knows (f_type 0x65735546)",
+        ),
+        (
+            nfs.to_vec(),
+            "/a/b is not on a local filesystem ranikust knows (f_type 0x6969)",
+        ),
+        (
+            nosuid.to_vec(),
+            "/a is on a nosuid mount, as a mount a user may make is",
+        ),
+        (
+            nosuid_file.to_vec(),
+            "/a/b is on a nosuid mount, as a mount a user may make is",
         ),
     ] {
         assert_eq!(verdict(&at(&nodes), file_kind), Err(why.to_owned()));
@@ -271,6 +380,18 @@ fn the_walk_follows_no_symlink() {
     assert!(only_root_changes(&tmp.join("ranikust (deleted)"), file_kind).is_err());
 }
 
+/// The walk reads each node's filesystem: `/proc` is on `proc`, no local
+/// disk's, so a path through it is refused there.
+#[test]
+fn the_walk_reads_each_node_s_filesystem() {
+    const PROC_SUPER_MAGIC: FsWord = 0x9FA0;
+    let nodes = walk(Path::new("/proc/sys")).unwrap();
+    assert_eq!(nodes[1].0, Path::new("/proc"));
+    assert_eq!(nodes[1].1.fs_type, PROC_SUPER_MAGIC);
+    let why = only_root_changes(Path::new("/proc/sys"), FileType::Directory).unwrap_err();
+    assert!(why.starts_with("/proc is "), "{why}");
+}
+
 /// On system binaries, the check agrees with the standard library's view
 /// of each node up from the file, and passes the regular files only root
 /// may change.
@@ -289,7 +410,11 @@ fn the_check_agrees_on_system_binaries() {
             continue;
         }
         let file = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
+        // The standard library shows no mount: the walk's own view of those.
+        let mounts =
+            walk(&path).is_ok_and(|nodes| nodes.iter().all(|(_, n)| !n.nosuid && local(n.fs_type)));
         let by_std = file
+            && mounts
             && path.ancestors().all(|p| {
                 std::fs::symlink_metadata(p).is_ok_and(|m| {
                     !m.file_type().is_symlink() && m.uid() == 0 && m.mode() & 0o022 == 0

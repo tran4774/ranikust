@@ -1,14 +1,16 @@
 //! The advice for a user other than root who gets no usable user namespace
 //! (`design/modes-and-detection.md#no-usable-user-namespace`), in order:
-//! `sudo`; where `kernel.apparmor_restrict_unprivileged_userns` is 1,
-//! ranikust's AppArmor profile (`contrib/apparmor/ranikust`), for the
-//! binary's own path where only root may change it, else after installing
-//! the binary where only root may; a container.
+//! `sudo`; where `kernel.apparmor_restrict_unprivileged_userns` is 1 and
+//! AppArmor may be what refused, ranikust's AppArmor profile
+//! (`contrib/apparmor/ranikust`), for the binary's own path where only root
+//! may change it, else after installing the binary where only root may; a
+//! container.
 
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 
-use rustix::fs::{CWD, FileType, FsWord, Mode, OFlags};
+use rnk_sandbox::{StepFailure, StepResult};
+use rustix::fs::{CWD, FileType, FsWord, Mode, OFlags, StatVfsMountFlags};
 use rustix::io::Errno;
 
 /// The path the repository's profile binds.
@@ -21,16 +23,71 @@ const PROFILE_DIR: &str = "/usr/local/bin";
 const PROFILE: &str = "ranikust's AppArmor profile (contrib/apparmor/ranikust in its \
      repository; the book's \"Choosing where to run it\" shows it)";
 
-/// FUSE's `f_type`: its server, which any user may run, reports the owners
-/// and modes.
-const FUSE_SUPER_MAGIC: FsWord = 0x6573_5546;
+/// The `f_type`s of the local filesystems whose owners and modes only what
+/// root mounted sets: ext2/3/4, xfs, btrfs, squashfs, erofs, tmpfs,
+/// overlayfs and zfs. Any other (FUSE, NFS, SMB, 9p, Ceph, AFS…) may show
+/// what its server, or the user who mounted it, says.
+const LOCAL: [u32; 8] = [
+    0xEF53,
+    0x5846_5342,
+    0x9123_683E,
+    0x7371_7368,
+    0xE0F5_E1E2,
+    0x0102_1994,
+    0x794C_7630,
+    0x2FC1_2FC1,
+];
+
+/// What stopped a user other than root, as the advice weighs it: AppArmor's
+/// switch leaves a user namespace without capabilities, and a profile
+/// without `userns` refuses `unshare` with `EACCES`; what else refuses
+/// `unshare` (a seccomp filter, `kernel.unprivileged_userns_clone`,
+/// `user.max_user_namespaces`) no profile lifts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// `unshare(CLONE_NEWUSER)` refused, with this errno.
+    Unshare(i32),
+    /// A step in the user namespace `unshare` made: the map, `chown`, the
+    /// mount namespace.
+    InNamespace,
+    /// Not known: `unshare` refused with no errno, a step not reported, or
+    /// a refusal after the probe passed.
+    Unknown,
+}
+
+impl Stop {
+    /// The stop named `step`, as [`rnk_sandbox::UsernsReport::stop`] names
+    /// it, where `unshare` is how `unshare(CLONE_NEWUSER)` went: a later
+    /// step counts only once `unshare` is known to have worked.
+    pub(crate) fn at(step: &str, unshare: &StepResult) -> Self {
+        match (step, unshare) {
+            (
+                "unshare",
+                StepResult::Failed(StepFailure {
+                    errno: Some(errno), ..
+                }),
+            ) => Self::Unshare(*errno),
+            ("map" | "chown" | "mount namespace", StepResult::Ok) => Self::InNamespace,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Whether AppArmor may be what refused.
+    fn offers_profile(self) -> bool {
+        match self {
+            Self::InNamespace => true,
+            Self::Unshare(errno) => errno == Errno::ACCESS.raw_os_error(),
+            Self::Unknown => false,
+        }
+    }
+}
 
 /// The advice for this host, for `binary`, the path ranikust started from
-/// (`None` where it could not be read): the profile only where AppArmor
-/// restricts user namespaces, for that path only where root alone may
-/// change it.
-pub(crate) fn guidance(binary: Option<&Path>) -> String {
-    if !restricted() {
+/// (`None` where it could not be read), stopped by `stop`: the profile only
+/// where AppArmor restricts user namespaces and may be what refused, for
+/// that path only where root alone may change it.
+pub(crate) fn guidance(binary: Option<&Path>, stop: Stop) -> String {
+    if !(stop.offers_profile() && restricted()) {
         return advice(None);
     }
     let bound = match binary {
@@ -121,7 +178,9 @@ fn advice(profile: Option<Checked<'_>>) -> String {
 /// to it gives a user namespace to no one else's program: `path` absolute,
 /// with no `..`; `/`, each directory below it and the node itself, of kind
 /// `leaf`, owned by root and not writable by group or others (an ACL that
-/// grants writing shows in the group bits), none a symlink or on FUSE.
+/// grants writing shows in the group bits), none a symlink, each on a
+/// mount without `nosuid` of a local filesystem ([`LOCAL`]): elsewhere the
+/// owners and modes are what a user or a server says.
 ///
 /// # Errors
 ///
@@ -139,7 +198,10 @@ struct Node {
     uid: u32,
     /// The permission bits, sticky included.
     mode: u32,
-    fuse: bool,
+    /// Its filesystem's `f_type`.
+    fs_type: FsWord,
+    /// Whether its mount is `nosuid`.
+    nosuid: bool,
 }
 
 /// `/` and each component of `path` below it, each with the path it is
@@ -179,12 +241,19 @@ fn walk(path: &Path) -> Result<Vec<(PathBuf, Node)>, (PathBuf, Errno)> {
 fn node(fd: &OwnedFd) -> rustix::io::Result<Node> {
     let st = rustix::fs::fstat(fd)?;
     let fs = rustix::fs::fstatfs(fd)?;
+    let mount = rustix::fs::fstatvfs(fd)?;
     Ok(Node {
         kind: FileType::from_raw_mode(st.st_mode),
         uid: st.st_uid,
         mode: st.st_mode & 0o7777,
-        fuse: fs.f_type == FUSE_SUPER_MAGIC,
+        fs_type: fs.f_type,
+        nosuid: mount.f_flag.contains(StatVfsMountFlags::NOSUID),
     })
+}
+
+/// Whether `fs_type` is one of [`LOCAL`].
+fn local(fs_type: FsWord) -> bool {
+    u32::try_from(fs_type).is_ok_and(|t| LOCAL.contains(&t))
 }
 
 /// [`only_root_changes`]'s rule on what [`walk`] found, `/` first: the
@@ -216,8 +285,17 @@ fn verdict(nodes: &[(PathBuf, Node)], leaf: FileType) -> Result<(), String> {
                 n.mode
             ));
         }
-        if n.fuse {
-            return Err(format!("{at} is on FUSE, whose server reports its owners"));
+        // A user's mount (udisks2, fstab `user`, fusermount) is `nosuid`.
+        if n.nosuid {
+            return Err(format!(
+                "{at} is on a nosuid mount, as a mount a user may make is"
+            ));
+        }
+        if !local(n.fs_type) {
+            return Err(format!(
+                "{at} is not on a local filesystem ranikust knows (f_type {:#x})",
+                n.fs_type
+            ));
         }
     }
     Ok(())

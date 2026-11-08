@@ -261,7 +261,9 @@ pub(crate) fn enter_user_namespace(state_dir: &Path) -> Result<UsernsSetup, Refu
     prepare_state_dir(state_dir)?;
     // The user's, for the guidance: root of the namespace once in it.
     let euid = rustix::process::geteuid().as_raw();
-    let userns = enter_build_userns(no_userns::guidance(None).into())?;
+    // No capability check came first: what refuses is not known.
+    let no_userns = no_userns::guidance(None, no_userns::Stop::Unknown);
+    let userns = enter_build_userns(no_userns.into())?;
     let store = open_store(state_dir, state_dir, euid).map_err(inside_userns)?;
     Ok(UsernsSetup { userns, store })
 }

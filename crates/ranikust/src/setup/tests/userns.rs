@@ -305,7 +305,8 @@ fn the_store_opens_inside_the_user_namespace_or_not_at_all() {
                 reason.starts_with("no user namespace for the build: "),
                 "{out}"
             );
-            let advice = crate::setup::no_userns::guidance(None);
+            let advice =
+                crate::setup::no_userns::guidance(None, crate::setup::no_userns::Stop::Unknown);
             let want = if euid == 0 { "" } else { &advice };
             assert_eq!((guidance, kind), (want, "Other"), "{out}");
             assert!(!marker, "the store opened outside the namespace: {out}");
@@ -374,7 +375,8 @@ fn a_regular_user_s_store_removes_a_dead_build_of_subordinate_ids() {
             dead.starts_with("refused\tno user namespace for the build: "),
             "{dead}"
         );
-        let advice = crate::setup::no_userns::guidance(None);
+        let advice =
+            crate::setup::no_userns::guidance(None, crate::setup::no_userns::Stop::Unknown);
         assert!(dead.ends_with(&advice), "{dead}");
         assert!(!state.join(rnk_store::STATE_MARKER).exists(), "{dead}");
         return;
