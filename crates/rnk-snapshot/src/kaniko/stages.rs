@@ -47,7 +47,7 @@ use rnk_rootfs::{
 use rnk_store::Store;
 
 use super::root::{
-    BROKEN, KanikoLayer, check_live_owners, extract_blob, extract_checked,
+    BROKEN, KanikoLayer, check_cached_owners, check_live_owners, extract_blob, extract_checked,
     in_initial_user_namespace,
 };
 use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
@@ -465,7 +465,9 @@ impl KanikoStage {
     /// # Errors
     ///
     /// [`Error::State`], with nothing changed, while a layer is open, when
-    /// the root was handed over, or when an earlier layer broke it. A
+    /// the root was handed over, or when an earlier layer broke it. In a
+    /// user namespace, [`Error::Rootfs`] wrapping `Unmapped` for an owner
+    /// it does not map, found before the root changes (ADR-0098). A
     /// failure to open the layer leaves the root as it was. Any later
     /// failure (a digest or diff ID found wrong at the end, an entry
     /// refused) breaks the root: no layer, view or child stage goes on from
@@ -477,6 +479,12 @@ impl KanikoStage {
         self.usable()?;
         let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
+        // Off `/` every owner is checked, the ignored paths too (ADR-0144).
+        check_cached_owners(
+            layer,
+            UserNamespace::once(&self.shared.userns)?,
+            &IgnoreList::new(),
+        )?;
         let tar = layer.open()?;
         self.walked = false;
         self.broken = true;

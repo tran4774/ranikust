@@ -1057,6 +1057,25 @@ pub(crate) fn check_live_owners(
     }
 }
 
+/// Refuses the cached `layer` an `apply_layer` is about to extract when its
+/// owners are not all mapped in `ns`, the paths `keep` covers skipped: a
+/// base layer's blobs went through [`Snapshotter::check_owners`] when they
+/// were pulled, a cached layer's did not (ADR-0098, ADR-0144). A streamed
+/// layer is not read here: on `/` its spool pass checks it, and elsewhere a
+/// user namespace takes no streamed layer ([`Snapshotter::streamed_layer`]).
+pub(crate) fn check_cached_owners(
+    layer: &KanikoLayer,
+    ns: Option<&UserNamespace>,
+    keep: &IgnoreList,
+) -> Result<()> {
+    match &layer.source {
+        LayerSource::Blob(blob) => {
+            check_live_owners(&[(layer.diff_id.clone(), blob.clone())], ns, keep)
+        }
+        LayerSource::Stream(_) => Ok(()),
+    }
+}
+
 /// Extracts one base layer into the shared root ([`open_for_root`]).
 fn extract_base_layer(shared: &Shared, layer: &KanikoLayer) -> Result<()> {
     let tar = open_for_root(shared, layer)?;
@@ -1186,6 +1205,12 @@ impl Spooled {
     /// `keep` covers skipped: for a use that extracts paths the check of
     /// [`Spooled::of`] skipped (ADR-0098).
     fn check_owners(&self, ids: &MappedIds, keep: &IgnoreList) -> Result<()> {
+        let span = tracing::debug_span!(
+            "rnk_snapshot.check_owners",
+            layers = 1_u64,
+            layers_scanned = 1_u64,
+        );
+        let _entered = span.enter();
         let mut found = Unmapped::owners(ids.clone());
         let mut tar = rnk_layer::Decoder::new(self.reader()?)?;
         rnk_rootfs::check_headers_and_owners(&mut tar, keep, &mut found)?;
@@ -1616,8 +1641,9 @@ impl KanikoRoot {
     /// [`Error::State`], with nothing changed, while a layer is open, when
     /// the stage no longer holds the root, or when an earlier layer broke
     /// it. A failure before any entry can reach the root (the source
-    /// refused; on `/`, a streamed layer's digest, diff ID or tar headers)
-    /// leaves the root as it was. Any later failure breaks the root: until
+    /// refused; in a user namespace, an owner it does not map; on `/`, a
+    /// streamed layer's digest, diff ID or tar headers) leaves the root as
+    /// it was. Any later failure breaks the root: until
     /// it is emptied, no layer, view, keep or child stage goes on from it.
     pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
         if self.open {
@@ -1631,6 +1657,14 @@ impl KanikoRoot {
         clear_views(&shared)?;
         let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
+        let none = IgnoreList::new();
+        // Checked with what the extraction skips, on `/` only (ADR-0144).
+        let keep = if shared.is_slash() {
+            &shared.ignore
+        } else {
+            &none
+        };
+        check_cached_owners(layer, shared.user_namespace()?, keep)?;
         let tar = open_for_root(&shared, layer)?;
         hold.walked = false;
         hold.broken = true;

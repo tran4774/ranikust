@@ -1887,3 +1887,33 @@ fn off_slash_the_owner_check_covers_the_ignored_paths() {
         "{e}"
     );
 }
+
+/// A cached blob's owners are checked before `apply_layer` extracts it,
+/// the ignored paths too: one the namespace lacks is refused with the
+/// stage root untouched and still usable (ADR-0098, ADR-0144).
+#[test]
+fn a_cached_blob_with_an_owner_the_namespace_lacks_is_refused_before_the_root_changes() {
+    let f = Fixture::new();
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entries.
+    let one = format!("{} 0 1\n", uid.max(gid).wrapping_add(1));
+    let ns = UserNamespace::from_maps(&one, &one).unwrap();
+    f.stages.shared.userns.set(Some(ns)).unwrap();
+    let mut s = f.stages.prepare(Base::Scratch).unwrap();
+    for (name, path) in [("cached", "a"), ("ignored", "proc/b")] {
+        let cached = f.layer(name, &[(path, b"cached")], false);
+        let e = s.apply_layer(&cached).unwrap_err();
+        assert!(
+            matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+            "{e:?}"
+        );
+        assert!(
+            e.to_string().contains(&format!("uid {uid} (/{path})")),
+            "{e}"
+        );
+        assert!(s.view().unwrap().statx(path).is_err(), "{path}");
+    }
+}
