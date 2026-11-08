@@ -181,7 +181,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   whiteouts, hardlinks, special files, framing and entries past the end,
   each scanned as both extraction forms `chown`, or refused alike; an
   ignored path skipped by the live scan as `extract_live` skips it, one
-  reached through a symlink still named; a
+  reached through a symlink still named; hostile names on and around the
+  ignored paths (`./`, `//`, `..`, hardlinks and symlinks in and out,
+  globs, below-only entries, GNU long names, PAX paths) never passing the
+  live scan where the extraction `chown`s; malformed, overflowing or
+  zero-count id maps refused; a
   refusal of 5,000 owners under hostile names names 16;
   `tests/red_team_owners_memory.rs`: 200,000 owners and PAX sets near the
   `tar-header` limit scanned in under 4 MiB);
@@ -334,7 +338,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   refuses it. As root of the container, on its tmpfs (`default`), the
   kernel sets no form of `security.capability` the check refuses
   (`red_team_root_of_a_user_namespace_sets_the_file_capabilities_the_check_takes`,
-  a `measured:` line per form).
+  a `measured:` line per form), and the hostile names around the ignored
+  paths never pass the live scan where the extraction's `chown` fails with
+  `EINVAL`
+  (`red_team_ignored_paths_in_a_user_namespace_never_pass_the_live_scan_where_the_extraction_chowns`).
 - **T2c** (rootful Docker, `just test-container unit-c`): `mounts_inside_the_root_survive`
   and `prune_refuses_a_mount_below_the_root` (`sysadmin`: a bind mount of a
   directory on the same filesystem and a tmpfs inside a root, with links to
