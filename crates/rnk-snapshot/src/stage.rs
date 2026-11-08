@@ -197,7 +197,10 @@ pub trait Snapshotter {
 
     /// A base layer whose compressed bytes `open` yields each time a stage
     /// is prepared on it, its blob never kept (ADR-0055); `None` when this
-    /// snapshotter keeps base layers itself (overlay mode). Default: `None`.
+    /// snapshotter keeps base layers itself (overlay mode), or must check
+    /// every owner of an image's layers before any is extracted (kaniko
+    /// mode off `/` in a user namespace, ADR-0098): the caller then pulls
+    /// the blobs and calls [`Snapshotter::check_owners`]. Default: `None`.
     fn streamed_layer(&self, _diff_id: &Digest, _open: Arc<dyn LayerOpen>) -> Option<Self::Layer> {
         None
     }

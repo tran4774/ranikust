@@ -292,6 +292,46 @@ impl std::io::Read for FailingReader {
     }
 }
 
+/// Whether this test runs in the initial user namespace, by the inode
+/// `/proc/self/ns/user` names.
+fn in_initial_user_namespace() -> bool {
+    fs::read_link("/proc/self/ns/user").unwrap() == Path::new("user:[4026531837]")
+}
+
+/// In a user namespace, a root other than `/` takes no streamed base layer:
+/// `streamed_layer` declines, so the builder pulls the blobs and checks
+/// every owner of every layer before any is extracted (ADR-0098). On `/`
+/// each streamed layer is checked as it is spooled (ADR-0137).
+#[test]
+fn in_a_user_namespace_only_slash_takes_a_streamed_base_layer() {
+    let off = Fixture::new();
+    let (on, _store) = Fixture::tars();
+    let kept = off.layer("l1", &[("a", b"a")]);
+    let open = || {
+        Arc::new(Streamed {
+            blob: kept.blob().unwrap().to_owned(),
+            fail_at_end: false,
+            opens: std::sync::atomic::AtomicUsize::new(0),
+        }) as Arc<dyn LayerOpen>
+    };
+    assert_eq!(off.kaniko.shared.initial_ns, in_initial_user_namespace());
+    let streams = |f: &Fixture| f.kaniko.streamed_layer(kept.diff_id(), open()).is_some();
+    let in_userns = |mut f: Fixture| {
+        Arc::get_mut(&mut f.kaniko.shared).unwrap().initial_ns = false;
+        f
+    };
+    let initial = |mut f: Fixture| {
+        Arc::get_mut(&mut f.kaniko.shared).unwrap().initial_ns = true;
+        f
+    };
+    let off = initial(off);
+    let on = initial(on);
+    assert!(streams(&off) && streams(&on));
+    let (off, on) = (in_userns(off), in_userns(on));
+    assert!(!streams(&off));
+    assert!(streams(&on));
+}
+
 #[test]
 fn a_streamed_base_layer_is_read_anew_for_each_stage_and_never_kept() {
     let f = Fixture::new();

@@ -58,7 +58,8 @@ fn images() -> [Image; 3] {
 /// `state`, each of [`images`] written to `blobs`, checked, then extracted
 /// layer by layer all the same: `map\t<map>`, then for each image
 /// `<name> check\t<ok or the refusal>`, `<name> ways\t<guidance>` and
-/// `<name> extract\t<ok or the error>`, then `published\t<layers>`.
+/// `<name> extract\t<ok or the error>`, then kaniko mode's line
+/// ([`kaniko_stages_in_namespace`]) and `published\t<layers>`.
 fn check_in_namespace(state: &Path, blobs: &Path) -> String {
     let set_up = match enter_user_namespace(state) {
         Ok(s) => s,
@@ -106,6 +107,7 @@ fn check_in_namespace(state: &Path, blobs: &Path) -> String {
         ]);
     }
     drop(overlay);
+    out.push(kaniko_stages_in_namespace(&store, blobs));
     let closed = Arc::into_inner(store).map(Store::close);
     let layers = state.join("layers/v3/sha256");
     out.push(format!(
@@ -116,6 +118,48 @@ fn check_in_namespace(state: &Path, blobs: &Path) -> String {
         out.push(format!("error\tclosing the store: {closed:?}"));
     }
     out.join("\n")
+}
+
+/// Kaniko mode per stage in the same namespace: `kaniko\t<streams>;
+/// <the far image's check>`. It must stream no base layer, so the builder
+/// pulls the blobs and its check refuses the far owner before any layer is
+/// extracted (ADR-0098).
+fn kaniko_stages_in_namespace(store: &Store, blobs: &Path) -> String {
+    #[derive(Debug)]
+    struct Empty;
+    impl rnk_snapshot::LayerOpen for Empty {
+        fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+            Ok(Box::new(std::io::empty()))
+        }
+    }
+    let walk = rnk_snapshot::WalkOptions {
+        workers: std::num::NonZeroUsize::MIN,
+        mode: rnk_snapshot::SnapshotMode::Full,
+    };
+    let stages = match rnk_snapshot::KanikoStages::new(store, rnk_rootfs::IgnoreList::new(), walk) {
+        Ok(s) => s,
+        Err(e) => return format!("error\tkaniko mode per stage: {e}"),
+    };
+    let (_, far) = images().into_iter().last().unwrap();
+    let streams = stages
+        .streamed_layer(&far[0].1, Arc::new(Empty))
+        .map_or("streams none", |_| "streams");
+    let layers = [(far[0].1.clone(), blobs.join("far-0"))];
+    let check = stages
+        .check_owners(&layers)
+        .map_or_else(|e| e.to_string(), |()| "ok".to_owned());
+    format!("kaniko\t{streams}; {check}")
+}
+
+/// Kaniko mode per stage streamed no base layer, and its check refused
+/// the far owner.
+fn check_kaniko(out: &str) {
+    assert!(
+        field(out, "kaniko").starts_with(
+            "streams none; owners this user namespace does not map: uid 3000000000 (/far)"
+        ),
+        "{out}"
+    );
 }
 
 /// The value of `key` in [`check_in_namespace`]'s output.
@@ -174,6 +218,7 @@ fn check_one_id(out: &str) {
             "{out}"
         );
     }
+    check_kaniko(out);
     assert_eq!(field(out, "published"), "1", "{out}");
 }
 
@@ -251,6 +296,7 @@ fn an_owner_past_the_container_s_ranges_is_refused_before_extraction() {
     );
     assert!(ways.contains("in a rootful container"), "{out}");
     assert!(field(&out, "far extract").ends_with(UNMAPPED), "{out}");
+    check_kaniko(&out);
     assert_eq!(field(&out, "published"), "3", "{out}");
 }
 
@@ -370,5 +416,6 @@ fn an_owner_past_a_user_s_ranges_is_refused_before_extraction() {
     );
     assert!(!ways.contains("widen"), "{out}");
     assert!(field(&out, "far extract").ends_with(UNMAPPED), "{out}");
+    check_kaniko(&out);
     assert_eq!(field(&out, "published"), "3", "{out}");
 }

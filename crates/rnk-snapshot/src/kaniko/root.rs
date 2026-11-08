@@ -196,6 +196,10 @@ struct Shared {
     /// On `/`: the verified spool of each streamed layer, by diff ID, kept
     /// while stages made on the layer are still to extract it (ADR-0081).
     spools: Mutex<HashMap<Digest, SpoolUse>>,
+    /// This process runs in the initial user namespace
+    /// ([`in_initial_user_namespace`]): a root other than `/` takes
+    /// streamed base layers only then.
+    initial_ns: bool,
 }
 
 /// The uses of one streamed layer on `/` ([`Shared::spool`]).
@@ -276,6 +280,7 @@ impl Kaniko {
                 views: Mutex::new(Vec::new()),
                 view_epoch: AtomicU64::new(0),
                 spools: Mutex::new(HashMap::new()),
+                initial_ns: in_initial_user_namespace(),
             }),
         }
     }
@@ -572,6 +577,12 @@ impl Snapshotter for Kaniko {
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
+        // Off `/` a layer streams into the root as it arrives, so in a user
+        // namespace it comes as a blob, its owners checked first (ADR-0098);
+        // on `/` the spool pass checks each one (ADR-0137).
+        if !self.shared.is_slash() && !self.shared.initial_ns {
+            return None;
+        }
         if self.shared.is_slash() {
             // One more stage or image of the build to extract it: its spool
             // waits for that use ([`Shared::spool`]).
@@ -986,6 +997,17 @@ fn physical(root: &RootPath, p: &Path) -> Result<PathBuf> {
         }
     }
     Ok(out)
+}
+
+/// Whether this process runs in the initial user namespace, where every
+/// owner maps. Only there may a base layer be streamed into a root other
+/// than `/`, where it is extracted as it arrives (ADR-0055): in another,
+/// the builder pulls the blobs so that [`check_live_owners`] reads every
+/// owner of every layer before any is extracted (ADR-0098). Where the
+/// namespace cannot be told, the blobs are pulled too, and the check says
+/// why.
+pub(crate) fn in_initial_user_namespace() -> bool {
+    matches!(rnk_store::user_namespace_proc(), Ok(None))
 }
 
 /// [`Snapshotter::check_owners`] of the kaniko-mode snapshotters, in the

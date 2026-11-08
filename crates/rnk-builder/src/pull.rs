@@ -3,7 +3,9 @@
 //! (extracted lower layers in overlay mode, the blobs in kaniko mode). In
 //! kaniko mode, when no output needs a base layer's bytes, no blob is
 //! pulled at all: each layer is streamed from the registry into the root
-//! when a stage is prepared on it (ADR-0055).
+//! when a stage is prepared on it (ADR-0055), unless the snapshotter
+//! declines, as kaniko mode off `/` in a user namespace does so that the
+//! owners are checked first (ADR-0098).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,8 +44,10 @@ pub struct PulledImage<L = LayerDir> {
 ///
 /// Unless `keep_blobs` (an output written to a file needs the bytes), a
 /// snapshotter that streams base layers ([`Snapshotter::streamed_layer`],
-/// kaniko mode) gets each layer as a stream from the registry instead, and
-/// no blob is pulled or kept: the image's layers are then
+/// kaniko mode on `/`, or off it outside a user namespace) gets each layer
+/// as a stream from the registry instead, and no blob is pulled or kept
+/// (on `/` in a user namespace, each layer's owners are checked as it is
+/// spooled, ADR-0137). The image's layers are then
 /// [`LayerBytes::Registry`](crate::LayerBytes::Registry), which a push mounts or streams
 /// from their source.
 ///
