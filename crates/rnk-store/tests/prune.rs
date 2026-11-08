@@ -56,7 +56,13 @@ fn used_store(state: &Path) {
         })
         .unwrap();
     let lease = store
-        .cache_lease("go-build", CacheSharing::Shared, None, &|| false)
+        .cache_lease(
+            "go-build",
+            CacheSharing::Shared,
+            None,
+            Path::new("/cache"),
+            &|| false,
+        )
         .unwrap();
     fs::write(lease.path().join("c"), b"c").unwrap();
     drop(lease);
