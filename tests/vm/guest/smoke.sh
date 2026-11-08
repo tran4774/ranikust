@@ -425,6 +425,120 @@ echo "=== default: a default docker run, --mode=auto"
 default_userns
 echo "default: ok"
 
+# Whether each argument after the first comes in $1, after the one before.
+in_order() {
+  local rest="$1" part
+  shift
+  for part in "$@"; do
+    [[ "$rest" == *"$part"* ]] || return 1
+    rest="${rest#*"$part"}"
+  done
+}
+
+# The guidance line of a refusal in the log $1: ranikust indents it.
+advice_of() { grep '^  ' <<<"$1" || true; }
+
+AA_SWITCH=kernel.apparmor_restrict_unprivileged_userns
+AA_PROFILE=/etc/apparmor.d/ranikust
+AA_BINARY=/usr/local/bin/ranikust
+# Undoes apparmor_profile's changes; its EXIT trap runs it too.
+apparmor_undo() {
+  if [ -e "$AA_PROFILE" ]; then
+    sudo apparmor_parser -R "$AA_PROFILE" >/dev/null 2>&1 || true
+    sudo rm -f "$AA_PROFILE"
+  fi
+  sudo rm -f "$AA_BINARY"
+}
+
+# Whether root alone may change what is in /usr/local/bin, as ranikust
+# checks it (no FUSE here).
+usr_local_bin_root_only() {
+  local d
+  for d in / /usr /usr/local /usr/local/bin; do
+    [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] ||
+      return 1
+  done
+}
+
+# #81: root's copy of the binary at /usr/local/bin/ranikust is refused as
+# this user with the profile as shipped (or, where /usr/local/bin is not
+# root's alone, with the install there first); with ranikust's profile
+# loaded, it builds the rootless case in rootless overlay mode, with a fresh
+# proc and root's --reproducible digest, and a RUN keeps the profile. Uses
+# rl_args, root_digest, ud and dir from the user section.
+apparmor_profile() {
+  local log rc=0 got aa="$ud/aa"
+  command -v apparmor_parser >/dev/null ||
+    { echo "error: user: no apparmor_parser where AppArmor restricts user namespaces" >&2; exit 1; }
+  [ ! -e "$AA_BINARY" ] && [ ! -e "$AA_PROFILE" ] ||
+    { echo "error: user: $AA_BINARY or $AA_PROFILE is there already" >&2; exit 1; }
+  trap 'sudo rm -f "$MARKER"; apparmor_undo' EXIT
+  sudo install -m 0755 -o root -g root "$RNK" "$AA_BINARY"
+  mkdir -m 700 -p "$aa" "$aa/w" "$aa/ctx"
+  log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/w" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/apparmor-before.log"
+  local advice
+  advice="$(advice_of "$log")"
+  if usr_local_bin_root_only; then
+    [ "$rc" = 1 ] && in_order "$advice" 'run ranikust as root, with sudo; ' \
+      "or, as root, copy ranikust's AppArmor profile" \
+      'to /etc/apparmor.d/ranikust and run apparmor_parser -r /etc/apparmor.d/ranikust; ' \
+      'or run ranikust in a container' && ! grep -q 'first' <<<"$advice" ||
+      { echo "error: user: expected the profile as shipped for $AA_BINARY, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  else
+    [ "$rc" = 1 ] && in_order "$advice" 'run ranikust as root, with sudo; ' \
+      'install ranikust as /usr/local/bin/ranikust first' \
+      "$AA_BINARY is not a path only root can change" 'or run ranikust in a container' ||
+      { echo "error: user: expected the install under a root-only /usr/local/bin first, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  fi
+  echo "user: $AA_BINARY, root's, without the profile: refused; advice: sudo, the profile, a container"
+  sudo cp "$HOME/rnk/guest/apparmor-ranikust" "$AA_PROFILE"
+  sudo apparmor_parser -r "$AA_PROFILE"
+  rc=0
+  log="$("$AA_BINARY" "${rl_args[@]}" --state-dir "$aa/w" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/apparmor.log"
+  [ "$rc" = 0 ] &&
+    grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
+    { echo "error: user: expected rootless overlay mode with a fresh proc under the profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  got="$(smoke_digest "$log")"
+  [ "$got" = "$root_digest" ] ||
+    { echo "error: user: under the profile, --reproducible digest $got, root's $root_digest" >&2; exit 1; }
+  echo "user: with the profile, $AA_BINARY builds in rootless overlay mode, with root's --reproducible digest $got"
+  # shellcheck disable=SC2016 # expanded by the RUN's shell
+  printf 'FROM %s\nRUN echo "label: $(cat /proc/self/attr/current)"\n' "$E2E_BASE" >"$aa/ctx/Dockerfile"
+  rc=0
+  log="$("$AA_BINARY" --context "$aa/ctx" --no-push --state-dir "$aa/w" 2>&1)" || rc=$?
+  printf '%s\n' "$log" >"$dir/apparmor-run.log"
+  [ "$rc" = 0 ] && grep -q '^label: ranikust (unconfined)$' <<<"$log" ||
+    { echo "error: user: expected a RUN under the profile, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: a RUN keeps the profile: $(grep '^label: ' <<<"$log")"
+  apparmor_undo
+  trap 'sudo rm -f "$MARKER"' EXIT
+}
+
+# #81: where the switch is 0 (Ubuntu 22.04), or absent, the advice for no
+# user namespace (the test hook's) names no profile: sudo, then a container.
+# Where it is 1 it is set to 0 for the run, then back.
+advice_without_the_switch() {
+  local log rc=0 advice before
+  before="$(cat "/proc/sys/${AA_SWITCH//.//}" 2>/dev/null || true)"
+  if [ "$before" = 1 ]; then
+    trap 'sudo rm -f "$MARKER"; sudo sysctl -qw "$AA_SWITCH=1"' EXIT
+    sudo sysctl -qw "$AA_SWITCH=0"
+  fi
+  log="$(RANIKUST_DEBUG_FAULT=no-userns "$RNK" "${rl_args[@]}" --state-dir "$ud/hook" 2>&1)" || rc=$?
+  if [ "$before" = 1 ]; then
+    sudo sysctl -qw "$AA_SWITCH=1"
+    trap 'sudo rm -f "$MARKER"' EXIT
+  fi
+  advice="$(advice_of "$log")"
+  [ "$rc" = 1 ] && grep -q 'refused by RANIKUST_DEBUG_FAULT=no-userns' <<<"$log" &&
+    in_order "$advice" 'run ranikust as root, with sudo; ' 'or run ranikust in a container' &&
+    ! grep -qi 'apparmor' <<<"$advice" && [ ! -e "$ud/hook" ] ||
+    { echo "error: user: expected sudo then a container and no profile at $AA_SWITCH=0, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: at $AA_SWITCH=0 (${before:-absent} here) the advice names no profile"
+}
+
 # #78: smoke-build as this regular user, in the build's user namespace
 # through newuidmap. Where AppArmor restricts unprivileged user namespaces
 # (Ubuntu 24.04) it is refused before anything runs; elsewhere (22.04) a
@@ -461,7 +575,9 @@ fi
 # --reproducible digest root's build of it gets, then tests/smoke/e2e,
 # whose `RUN --network=none` reads /sys/class/net: a new sysfs for the
 # network namespace the build owns, not the rbind of /sys; where AppArmor
-# restricts the user namespace, it refuses, naming the switch.
+# restricts the user namespace, it refuses from this user's path with sudo,
+# the profile after an install under /usr/local/bin, then a container, and
+# builds from there once root loaded the profile (#81).
 ud="$dir/rootless" rc=0
 # The user's umask may leave a new directory group-writable, which a state
 # directory and every directory above it may not be (ADR-0050).
@@ -477,9 +593,12 @@ printf '%s\n' "$log" >"$dir/rootless.log"
 grep -E 'user namespace probe|rootless' <<<"$log" || true
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
   [ "$rc" = 1 ] && grep -q 'rootless overlay mode cannot run here: the user namespace probe stops at' <<<"$log" &&
-    grep -q 'where kernel.apparmor_restrict_unprivileged_userns is 1' <<<"$log" ||
-    { echo "error: user: expected rootless overlay mode refused, got $rc:" >&2; echo "$log" >&2; exit 1; }
-  echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it, as expected"
+    in_order "$(advice_of "$log")" 'where kernel.apparmor_restrict_unprivileged_userns is 1, as here' \
+      'run ranikust as root, with sudo; ' 'or, as root, install ranikust as /usr/local/bin/ranikust first' \
+      "$(realpath "$RNK") is not a path only root can change" '; or run ranikust in a container' ||
+    { echo "error: user: expected rootless overlay mode refused, with sudo, the profile after an install under /usr/local/bin, then a container, got $rc:" >&2; echo "$log" >&2; exit 1; }
+  echo "user: ranikust refuses rootless overlay mode where AppArmor restricts it; advice: sudo, the profile after an install under /usr/local/bin, a container"
+  apparmor_profile
 else
   [ "$rc" = 0 ] &&
     grep -q "ranikust: overlay mode, rootless, in the build's user namespace, RUN enters its root with pivot_root, proc: a new instance" <<<"$log" ||
@@ -553,6 +672,7 @@ else
   [ "$rc" = 0 ] || { echo "error: user: a build after prune --all ($rc):" >&2; echo "$log" >&2; exit 1; }
   echo "user: prune --all empties a deep cache tree a RUN left; the next build runs"
 fi
+advice_without_the_switch
 echo "user: ok"
 
 echo "=== escape control: a plain chroot into the host variant's root"

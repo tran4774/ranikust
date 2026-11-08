@@ -1,0 +1,25 @@
+# ranikust's AppArmor profile, for Ubuntu 23.10 and later, where
+# kernel.apparmor_restrict_unprivileged_userns is 1: it lets the binary at
+# /usr/local/bin/ranikust make the user namespace a build by a user other
+# than root needs, as podman's profile does for podman. It confines nothing
+# (flags=(unconfined)); it gives every user who may run that binary, and the
+# programs a build runs, the user namespaces the switch at 0 gives everyone.
+#
+# Bind it only to a path no user other than root can change: root owns the
+# file and every directory above it, and none is writable by group or
+# others. A profile for a path a user can write gives a user namespace to
+# whatever is put there.
+#
+# As root:
+#   install -m 0755 -o root -g root ranikust /usr/local/bin/ranikust
+#   cp contrib/apparmor/ranikust /etc/apparmor.d/ranikust
+#   apparmor_parser -r /etc/apparmor.d/ranikust
+# To remove it: apparmor_parser -R /etc/apparmor.d/ranikust, then delete the
+# file.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile ranikust /usr/local/bin/ranikust flags=(unconfined) {
+  userns,
+}

@@ -49,6 +49,8 @@ cp "$REPO/tests/smoke/netns-check.py" "$STAGE/guest/netns-check.py"
 cp "$REPO/tests/smoke/cases.bash" "$STAGE/guest/smoke-cases.bash"
 cp "$REPO/tests/smoke/oci-config.py" "$STAGE/guest/oci-config.py"
 cp -r "$REPO/tests/smoke/cases" "$STAGE/guest/cases"
+# The AppArmor profile the smoke suite loads as a regular user's (#81).
+cp "$REPO/contrib/apparmor/ranikust" "$STAGE/guest/apparmor-ranikust"
 # Quoted: `RANIKUST_QUICK_CASES="run copy"` names two cases.
 [[ ${RANIKUST_QUICK_BENCH:-} =~ ^1?$ ]] || die "RANIKUST_QUICK_BENCH must be 1 or unset"
 [[ ${RANIKUST_QUICK_BENCH_ROUNDS:-1} =~ ^[1-9][0-9]?$ ]] || die "RANIKUST_QUICK_BENCH_ROUNDS must be 1-99"
