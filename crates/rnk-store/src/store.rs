@@ -1746,7 +1746,8 @@ impl Store {
     /// [`Store::open`] found none, since another build may have made it
     /// since. Where there is still none, a reuse is refused (a layer under
     /// these maps without the canary made before it) and a publication
-    /// makes it. Nothing for a blob, or outside a user namespace.
+    /// makes it, or checks one found in its place at the rename. Nothing
+    /// for a blob, or outside a user namespace.
     fn canary_before(&self, key: &EntryKey, then: CanaryUse) -> Result<()> {
         match key {
             EntryKey::Layer(_) => {}
@@ -1776,8 +1777,9 @@ impl Store {
                 // Only a `tmp` this call made is ever removed.
                 self.state.create_dir(&tmp, DIR_MODE)?;
                 let made = canary::create(&self.state, &self.state_path, maps, &tmp, DIR_MODE);
-                if !matches!(made, Ok(canary::Made::Placed)) {
-                    self.discard(&tmp);
+                match &made {
+                    Ok(canary::Made::Placed) => {}
+                    Ok(canary::Made::Found) | Err(_) => self.discard(&tmp),
                 }
                 made?;
             }

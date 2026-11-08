@@ -496,7 +496,9 @@ ranikust never fills or empties a directory the operator names (ADR-0050,
 which replaces the `--workdir` checks of ADR-0038 and ADR-0047). The root is
 `/` in a container, chosen by kaniko's heuristic (ADR-0048), or a directory
 per stage made for the build (ADR-0059). Before anything is written,
-`ranikust::statedir::prepare` checks the state directory:
+`ranikust::statedir::stage` checks the state directory, and
+`Staged::finish` then sets its mode (step 3's `chmod`; both are
+`statedir::prepare` on `/`):
 
 1. Before it is created, its nearest existing directory and every real
    parent, walked from a descriptor (`..`), never by path, are owned by root

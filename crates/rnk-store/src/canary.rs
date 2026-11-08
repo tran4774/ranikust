@@ -108,8 +108,8 @@ enum View {
 ///
 /// [`Error::IdMapChanged`] for a canary that is not a directory of the
 /// state directory's mount, cannot be searched, or lacks an entry or has
-/// one of another type or owner; [`Error::Rootfs`] when it cannot be read
-/// otherwise.
+/// one of another type or owner; [`Error::Rootfs`] when it cannot be
+/// opened otherwise, [`Error::Io`] when a `statx` fails otherwise.
 pub(crate) fn check(state: &RootPath, state_path: &Path, maps: &IdMaps) -> Result<Found> {
     check_as(state, state_path, maps, View::Inside)
 }
@@ -155,8 +155,13 @@ fn check_as(state: &RootPath, state_path: &Path, maps: &IdMaps, view: View) -> R
             return Err(changed(format!("{} cannot be read: {e}", rel.display())));
         }
         // A symlink, with `O_NOFOLLOW`, or anything else that is no
-        // directory.
-        Err(e) if is(e.raw_os_error(), &[Errno::NOTDIR, Errno::LOOP]) => return Err(not_dir()),
+        // directory, there or above it.
+        Err(e) if is(e.raw_os_error(), &[Errno::NOTDIR, Errno::LOOP]) => {
+            return Err(changed(format!(
+                "{} or a directory above it is not a directory of the state directory's mount",
+                rel.display()
+            )));
+        }
         Err(e) => return Err(e.into()),
     };
     let io = |p: &Path, e: Errno| Error::Io {
@@ -228,6 +233,8 @@ fn check_as(state: &RootPath, state_path: &Path, maps: &IdMaps, view: View) -> R
 
 /// `statx` of the entry `name` in `dir`, or of `dir` itself for an empty
 /// name, never following a symlink or an automount, with the mount id.
+// Asks for the mount id as `rnk_rootfs`'s own `statx` does, which
+// `RootPath::mnt_id` comes from: the two must stay alike.
 fn statx(dir: &OwnedFd, name: &str) -> rustix::io::Result<Statx> {
     let mut flags = AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT;
     if name.is_empty() {

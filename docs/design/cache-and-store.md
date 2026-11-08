@@ -252,7 +252,8 @@ an earlier one or one starting: in the namespace of a `--userns` build,
 another build's start may have made it and not yet given it to the range.
 `check_state_dir` runs `Store::open`'s refusals, a prune cut short
 included, writing nothing; overlay mode, as root, rootless or under
-`--userns`, runs it before it sets the state directory's mode (and, in a
+`--userns`, and kaniko mode off `/` run it before they set the state
+directory's mode (and, in a
 user namespace, before its probe), so that every refusal of the state
 directory comes before anything there is changed, and keeps the state
 directory's shared lock until the store opens. In overlay mode an upper

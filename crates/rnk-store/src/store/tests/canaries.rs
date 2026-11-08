@@ -222,6 +222,7 @@ fn a_canary_that_cannot_be_made_publishes_nothing() {
 #[test]
 fn a_canary_half_made_is_removed() {
     if rustix::process::geteuid().is_root() {
+        eprintln!("skipped: as root, chown gives any id");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
