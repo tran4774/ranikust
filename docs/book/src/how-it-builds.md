@@ -331,8 +331,8 @@ the step of the probe that failed and says what would work, in order: running
 as root with `sudo`; where Ubuntu's AppArmor switch restricts user namespaces
 and may be what refused,
 [ranikust's AppArmor profile](where-to-run.md#ubuntu-2310-and-later-the-apparmor-profile),
-for a binary in a path only root can change, on a local filesystem root
-mounted (else after installing it in one, naming what failed); or running
+for a binary in a path only root can change, on a local filesystem that
+root mounted (else after installing it in one, naming what failed); or running
 inside a container. A regular user is
 also refused where only an rbind of `/proc`
 would work and `--allow proc.rbind` is absent, and where the state directory is

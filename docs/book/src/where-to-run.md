@@ -25,7 +25,7 @@ it follows from the platform's documented defaults and has not been tried.
 | Kubernetes pod with default settings; the same on GKE Autopilot, EKS on Bottlerocket or a GitLab Kubernetes executor | kaniko | The container runtime's AppArmor profile denies mounts (SELinux's policy on Bottlerocket), and `/proc/sys` is read-only. | measured in k3s; inferred for the managed clusters |
 | Kubernetes pod with `hostUsers: false` and `procMount: Unmasked`, AppArmor confined or not | none | Refused: as root, ranikust builds neither in kaniko mode on `/` nor in rootless overlay mode where `/proc/sys` is writable ([ADR-0107](https://github.com/tran4774/ranikust/blob/main/docs/adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)) [open: #201]. Without `procMount: Unmasked` the pod builds in kaniko mode on `/` (measured with AppArmor unconfined). | measured in k3s |
 | Regular user on Debian 12+, Fedora, RHEL 9+ or Ubuntu 22.04 | overlay, rootless | A user namespace of ranikust's own gives it the mounts it needs. An image with several owners needs `newuidmap` and `/etc/subuid` and `/etc/subgid` entries; without them ranikust maps one id and says so; planned, it then refuses such an image, as it does one with a user outside the ranges ([ADR-0098](https://github.com/tran4774/ranikust/blob/main/docs/adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)). With SELinux enforcing (AlmaLinux 9), builds pass and no denial is logged. | measured on Ubuntu 22.04 and on AlmaLinux 9 with SELinux enforcing, inferred for the rest |
-| Regular user on Ubuntu 24.04 or later | none; overlay, rootless with [ranikust's AppArmor profile](#ubuntu-2310-and-later-the-apparmor-profile) | There, user namespaces get no capabilities by default. Refused before anything is written, with the step of the probe that failed (the mount namespace, in a user namespace without capabilities) and what to do: run it with `sudo`; have root load ranikust's AppArmor profile, for a binary in a path only root can change (else after installing it in one, naming what failed); or run it in a container. With the profile loaded, the binary at `/usr/local/bin/ranikust` builds as on Ubuntu 22.04. | measured |
+| Regular user on Ubuntu 24.04 or later | none; overlay, rootless with [ranikust's AppArmor profile](#ubuntu-2310-and-later-the-apparmor-profile) | There, user namespaces get no capabilities by default. Refused before anything is written, with the step of the probe that failed (the mount namespace, in a user namespace without capabilities) and what to do: run it with `sudo`; have root load ranikust's AppArmor profile, for a binary in a path only root can change, on a local filesystem that root mounted (else after installing it in one, naming what failed); or run it in a container. With the profile loaded, the binary at `/usr/local/bin/ranikust` builds as on Ubuntu 22.04. | measured |
 | Kubernetes pod under the "restricted" Pod Security Standard, OpenShift `restricted-v2` | none | Neither root nor user namespaces: the `RuntimeDefault` seccomp profile blocks `unshare(CLONE_NEWUSER)`, and the refusal names that step and its `EPERM`. | measured in k3s; inferred for OpenShift |
 
 The measurements are in the research reports: the
@@ -66,9 +66,9 @@ apparmor_parser -r /etc/apparmor.d/ranikust
   path, and gives a user namespace to whatever binary is there. Bind it only
   to a path no user other than root can change: root owns the file and every
   directory above it, none is writable by group or others, and each is on a
-  local filesystem root mounted, without `nosuid` (not FUSE, NFS, SMB, nor a
-  user's removable or fstab `user` mount, whose owners a user or a server
-  sets). ranikust's refusal offers the profile only for such a path, and
+  local filesystem that root mounted, without `nosuid` (not FUSE, NFS, SMB,
+  nor a user's removable or fstab `user` mount, whose owners a user or a
+  server sets). ranikust's refusal offers the profile only for such a path, and
   otherwise names the part of the path that fails and says to install the
   binary under `/usr/local/bin` first (or, where that directory fails too,
   in one that passes). For another such path, change the path in the

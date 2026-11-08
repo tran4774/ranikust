@@ -451,12 +451,17 @@ apparmor_undo() {
 }
 
 # Whether root alone may change what is in /usr/local/bin, as ranikust
-# checks it (no FUSE here).
+# checks it: owner, mode, no symlink, no nosuid, a filesystem on its list.
 usr_local_bin_root_only() {
   local d
   for d in / /usr /usr/local /usr/local/bin; do
     [ ! -L "$d" ] && [ "$(stat -c %u "$d")" = 0 ] && [ $((8#$(stat -c %a "$d") & 8#022)) = 0 ] ||
       return 1
+    [[ ",$(findmnt -no OPTIONS -T "$d")," != *,nosuid,* ]] || return 1
+    case "$(stat -f -c %t "$d")" in
+      ef53 | 58465342 | 9123683e | 73717368 | e0f5e1e2 | 1021994 | 794c7630 | 2fc12fc1) ;;
+      *) return 1 ;;
+    esac
   done
 }
 
@@ -534,8 +539,8 @@ apparmor_profile() {
   trap 'sudo rm -f "$MARKER"' EXIT
 }
 
-# #81: the profile is offered only for a path on a local filesystem root
-# mounted: root's copy of the binary on a nosuid tmpfs, then on ramfs (off
+# #81: the profile is offered only for a path on a local filesystem that
+# root mounted: root's copy of the binary on a nosuid tmpfs, then on ramfs (off
 # the list), owned by root and written by no one else, is refused at the
 # mount namespace with the install under /usr/local/bin first, naming the
 # mount, and writes no state directory. Uses rl_args, ud and dir from the
@@ -546,7 +551,7 @@ apparmor_mounts() {
   [ ! -L /mnt ] && [ "$(stat -c %u /mnt)" = 0 ] && [ $((8#$(stat -c %a /mnt) & 8#022)) = 0 ] ||
     { echo "error: user: /mnt is not root's alone here" >&2; exit 1; }
   sudo mkdir -m 755 -p "$m"
-  trap 'sudo rm -f "$MARKER"; sudo umount "$AA_MOUNT" 2>/dev/null; sudo rmdir "$AA_MOUNT"' EXIT
+  trap 'sudo rm -f "$MARKER"; sudo umount "$AA_MOUNT" 2>/dev/null || true; sudo rmdir "$AA_MOUNT" 2>/dev/null || true' EXIT
   for c in "tmpfs|nosuid,mode=755|is on a nosuid mount" \
     "ramfs|mode=755|is not on a local filesystem ranikust knows"; do
     IFS='|' read -r fs opts why <<<"$c"

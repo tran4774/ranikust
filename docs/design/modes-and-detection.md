@@ -425,8 +425,9 @@ refusal's guidance line gives, in order
    namespace), or `unshare` failed with `EACCES`, as under a profile without
    `userns`. Another errno of `unshare` (`EPERM` from a seccomp filter or
    `kernel.unprivileged_userns_clone`, `ENOSPC` from
-   `user.max_user_namespaces`), none, or a refusal once the probe passed
-   gets items 1 and 3 alone. Have root load ranikust's AppArmor profile,
+   `user.max_user_namespaces`), none, a step that did not run, a later
+   step where the capability check found the namespace's capabilities, or
+   a refusal once the probe passed gets items 1 and 3 alone. Have root load ranikust's AppArmor profile,
    [`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust), three lines
    granting `userns,` with `flags=(unconfined)`, bound to
    `/usr/local/bin/ranikust` (as podman's profile is to podman), into
@@ -447,8 +448,8 @@ marker carries it (`rnk_sandbox::Sealing::binary_path`). Root alone may
 change it when `/`, each directory below it and the file are owned by root
 and written by neither group nor others (an ACL that grants writing shows in
 the group bits), none is a symlink, each is on a mount without `nosuid`
-(udisks2, fstab `user` mounts and fusermount always add it) of a local
-filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs, tmpfs,
+(udisks2 and fusermount always add it, an fstab `user` mount by default)
+of a local filesystem, by `f_type` (ext2/3/4, xfs, btrfs, squashfs, erofs, tmpfs,
 overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS, shows
 owners and modes a user or a server sets), and the file is a regular one:
 each component is opened `O_PATH` from the one above without following a

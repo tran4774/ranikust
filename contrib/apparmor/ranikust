@@ -10,9 +10,10 @@
 #
 # Bind it only to a path no user other than root can change: root owns the
 # file and every directory above it, none is writable by group or others,
-# and each is on a local filesystem root mounted, without nosuid (not FUSE,
-# NFS, SMB, nor a user's removable or fstab "user" mount). A profile for a
-# path a user can write gives a user namespace to whatever is put there.
+# and each is on a local filesystem that root mounted, without nosuid (not
+# FUSE, NFS, SMB, nor a user's removable or fstab "user" mount). A profile
+# for a path a user can write gives a user namespace to whatever is put
+# there.
 #
 # As root:
 #   install -m 0755 -o root -g root ranikust /usr/local/bin/ranikust
