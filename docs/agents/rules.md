@@ -42,7 +42,9 @@ From [`ARCHITECTURE.md`](../../ARCHITECTURE.md#cross-cutting-invariants) and the
   copied from its parent stage, never hardlinked (`ADR-0059`, `ADR-0017`).
   The state directory is checked by descriptor: owned by the running user,
   `0700`, its ancestors not writable by group or others (root-owned sticky
-  directories excepted).
+  directories excepted); under root's `--userns`, owned by its range's first
+  ids, its ancestors root's alone and searchable by them, sticky or not
+  ([ADR-0139](../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md)).
 - `RUN` enters via `pivot_root` (`MS_MOVE` + `chroot` if seccomp blocks it),
   never a bare `chroot`: `--parallel-stages` is refused (`ADR-0060`, T5). The
   whole root tree is `nodev` (T18). Bounding and inheritable capabilities drop

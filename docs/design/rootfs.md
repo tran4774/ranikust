@@ -83,7 +83,9 @@ anything, then applies, in this order:
    an earlier layer made keeps that layer's id in kaniko mode, which
    extracts every layer into one root as kaniko does, and gets the
    process's id in overlay mode, which extracts each layer into a directory
-   of its own as BuildKit's overlayfs snapshotter does.
+   of its own as BuildKit's overlayfs snapshotter does: an accepted
+   difference between the modes
+   ([ADR-0141](../adr/0141-an-owner-of-4294967295-over-an-earlier-layers-directory-is-an-accepted-difference-between-the-modes.md)).
 2. **Xattrs**, before the mode, because setting `user.*` needs write
    permission that the final mode may remove. An empty ACL value removes the
    ACL (`system.posix_acl_access` or `_default`, with `removexattr`, no

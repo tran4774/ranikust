@@ -6,7 +6,7 @@ term is defined or measured; short forms as in
 
 | Term | Meaning | Ref |
 |---|---|---|
-| accepted differences | The four ways overlay and kaniko mode may differ: hardlink splits, metadata on hardlinked files, link-count-only changes, unchanged copied-up files | `ADR-0012` |
+| accepted differences | The ways overlay and kaniko mode may differ: the four of `ADR-0012` (hardlink splits, metadata on hardlinked files, link-count-only changes, unchanged copied-up files) and an owner of 4294967295 over an earlier layer's directory (`ADR-0141`) | `ADR-0012`, `ADR-0141` |
 | ADR | Architecture Decision Record in `docs/adr/`; an accepted body is never edited, only superseded | [`../adr/README.md`](../adr/README.md) |
 | bounding set | Capability bounding set; cut to Docker's 14 defaults for every `USER`, or a setuid binary regains dropped capabilities | `design/sandbox.md#per-run-sequence`, `exp-02` |
 | BuildKit | Docker's builder (moby/buildkit): the reference for Dockerfile semantics and the upperdir differ, and a comparison oracle | [refs.md](refs.md#upstream-code) |

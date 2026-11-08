@@ -455,7 +455,11 @@ not always the same bytes ([ADR-0012]):
 - layer digests can differ between modes;
 - when a `RUN` writes to a file that has several hard links, overlay mode
   changes only the name that was written, while kaniko mode changes every name
-  of the file. BuildKit behaves like overlay mode.
+  of the file. BuildKit behaves like overlay mode;
+- when a layer gives a directory the owner id 4294967295 (`chown`'s "leave
+  unchanged") and an earlier layer made that directory, kaniko mode keeps the
+  earlier owner and overlay mode gives the directory the build process's own
+  id, root's. Each mode does what its upstream tool does ([ADR-0141]).
 
 Within one mode, the same build gives the same image whatever the value of
 `--jobs`.
@@ -499,3 +503,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0137]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md
 [ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md
 [ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md
+[ADR-0141]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0141-an-owner-of-4294967295-over-an-earlier-layers-directory-is-an-accepted-difference-between-the-modes.md

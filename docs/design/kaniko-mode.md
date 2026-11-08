@@ -501,7 +501,8 @@ per stage made for the build (ADR-0059). Before anything is written,
 1. Before it is created, its nearest existing directory and every real
    parent, walked from a descriptor (`..`), never by path, are owned by root
    (or the user) and not writable by group or others, except root's sticky
-   directories.
+   directories. Root's `--userns` has a rule of its own, which excepts none
+   ([sandbox](sandbox.md#--userns)).
 2. It is created `0700`: each missing name with `mkdirat` below the
    descriptor of the directory checked or made before it, and opened from it
    (`RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV`), never by path. A symlink planted
