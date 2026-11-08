@@ -166,8 +166,12 @@ the scheduler runs one stage at a time) or a private directory per stage
     guidance. Its own mount namespaces are the one it started in, opened
     before the set-up and held open until the scan ends, and the one it is
     in when it looks (a set-up that failed after its `unshare` left it in
-    a copy of its own). A `--pid=host` container is refused by the same
-    rule when a process of the host or of another container is in reach.
+    a copy of its own). Every pid entry of `/proc` is probed, ranikust's
+    own too, since `getpid()` names ranikust in its own PID namespace,
+    which may not be the one `/proc` shows; that entry passes, as ranikust
+    enters a mount namespace of its own only while single-threaded. A
+    `--pid=host` container is refused by the same rule when a process of
+    the host or of another container is in reach.
     It counts only the processes it can open as it starts, a residual risk
     accepted in ADR-0101; its mitigation is a PID namespace of the build
     container's own.
@@ -795,9 +799,16 @@ layer is.
   so a hit with a header every extraction refuses from the header alone (a
   value over the kernel's limits included), or one over the limit, is a miss
   too;
-  per stage a layer is extracted as it arrives (ADR-0055). The scan ADR-0098
-  plans for base layers in a user namespace (Phase 3) must cover cached layers
-  too.
+  per stage a layer is extracted as it arrives (ADR-0055). In a user
+  namespace the same pass, base layers' and cached ones' alike, refuses an
+  owner the namespace does not map once the layer is verified, just before
+  that layer is extracted
+  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md)).
+  Per stage, in a user namespace, no layer, base or cached, is streamed:
+  the blobs are pulled and every owner of every layer is checked before any
+  is extracted
+  ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
+  [modes](modes-and-detection.md#owners-the-user-namespace-does-not-map)).
 - **The walk catches up lazily.** Applying a layer marks the walk's record
   of the root stale; the next `begin_layer` of a stage whose layers are
   needed takes a new baseline (`forget`, then a full walk), so the next diff

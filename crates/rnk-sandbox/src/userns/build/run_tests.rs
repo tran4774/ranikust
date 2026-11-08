@@ -707,7 +707,8 @@ fn a_run_with_a_new_proc_opens_nothing_of_a_process_outside_the_build() {
 /// T1: below a one-id user namespace (`unshare -r`), `setgroups` denied
 /// and gid 5 unmapped (an rbind of `/proc` on request): root's `RUN` skips
 /// `setgroups` and mounts `/dev/pts` without `gid=5`. `USER _apt`'s ids
-/// are not mapped: refused at `setgid` (ADR-0098), not at `setgroups`.
+/// are not mapped: refused at `setgid`, naming them (ADR-0098), not at
+/// `setgroups`.
 #[test]
 #[ignore = "T1: default: RUNs in the build's user namespace below a one-id namespace in a rootless Podman container"]
 fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
@@ -733,8 +734,10 @@ fn runs_below_one_id_skip_setgroups_and_the_tty_gid() {
     check_kernel_mounts(&out, proc);
     assert!(!value(&out, "0:devpts").contains("gid="), "{out}");
     assert!(value(&out, "0:ids").starts_with("0:0:"), "{out}");
-    assert!(
-        value(&out, "run1").starts_with(&format!("setup {:?} ", Step::Gid)),
+    assert_eq!(
+        value(&out, "run1"),
+        "error RUN sandbox: set the group id for uid 42, gid 65534: an id this user namespace \
+         does not map",
         "{out}"
     );
     check_network(&out);

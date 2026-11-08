@@ -3,6 +3,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use crate::owners::Unmapped;
+
 /// Errors of `rnk-rootfs`.
 ///
 /// Paths in errors are paths inside the root (as the caller passed them, or as
@@ -101,6 +103,14 @@ pub enum Error {
         /// Why it is refused.
         reason: &'static str,
     },
+
+    /// An owner, user or group that the user namespace does not map: a base
+    /// layer's owners, found before it is extracted ([`crate::scan_owners`]),
+    /// or a `chown` the kernel refused with `EINVAL` (ADR-0098). No flag
+    /// lets it pass. Its source is the [`Unmapped`] itself, which a caller
+    /// finds among an error's sources.
+    #[error("{0}")]
+    Unmapped(#[source] Unmapped),
 }
 
 impl Error {
@@ -116,7 +126,8 @@ impl Error {
             | Self::Entry { .. }
             | Self::Changed { .. }
             | Self::User(_)
-            | Self::InvalidMode { .. } => None,
+            | Self::InvalidMode { .. }
+            | Self::Unmapped(_) => None,
         }
     }
 

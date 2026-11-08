@@ -256,6 +256,30 @@ pub(crate) struct Built {
     pub(crate) digest: String,
 }
 
+/// Why a build failed.
+#[derive(Debug)]
+pub(crate) struct Failed {
+    pub(crate) message: String,
+    /// The ids the user namespace does not map, when that is why
+    /// (ADR-0098): the binary adds the ways out.
+    pub(crate) unmapped: Option<rnk_rootfs::Unmapped>,
+}
+
+impl From<String> for Failed {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            unmapped: None,
+        }
+    }
+}
+
+impl From<&str> for Failed {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 /// Runs the build on what the set-up made. Consumes the sandbox and the
 /// store, which it closes.
 pub(crate) fn run(
@@ -263,14 +287,14 @@ pub(crate) fn run(
     store: Arc<Store>,
     sandbox: Sandbox,
     snapshots: Snapshots,
-) -> Result<Built, String> {
+) -> Result<Built, Failed> {
     match snapshots {
         Snapshots::Overlay(caps, stops) => {
             let overlay = match Overlay::new(Arc::clone(&store), caps) {
                 Ok(o) => Arc::new(o),
                 Err(e) => {
                     close_after_error(store);
-                    return Err(e.to_string());
+                    return Err(e.to_string().into());
                 }
             };
             run_with(
@@ -343,7 +367,7 @@ fn run_with<S: Snapshotter + Send + Sync + 'static>(
     (isolation, stop): (Isolation, Stopping),
     roots: Roots,
     before_close: &dyn Fn(),
-) -> Result<Built, String>
+) -> Result<Built, Failed>
 where
     S::Root: Send + Sync,
 {
@@ -364,7 +388,7 @@ where
         Err(e) => {
             before_close();
             close_after_error(store);
-            return Err(e);
+            return Err(e.into());
         }
     };
     let result = runtime.block_on(build(config, &shared, stop));
@@ -387,7 +411,7 @@ where
     before_close();
     match (result, close_store(store)) {
         (result, Ok(())) => result,
-        (Ok(_), Err(closed)) => Err(closed),
+        (Ok(_), Err(closed)) => Err(closed.into()),
         (Err(e), Err(closed)) => {
             tracing::warn!("{closed}");
             Err(e)
@@ -1063,7 +1087,7 @@ async fn build<S: Snapshotter + Send + Sync + 'static>(
     config: &BuildConfig,
     shared: &Arc<Shared<S>>,
     stop: Stopping,
-) -> Result<Built, String>
+) -> Result<Built, Failed>
 where
     S::Root: Send + Sync,
 {
@@ -1085,7 +1109,10 @@ where
     if let Some(signals) = signals {
         signals.abort();
     }
-    let summary = summary.map_err(|e| e.to_string())?;
+    let summary = summary.map_err(|e| Failed {
+        message: e.to_string(),
+        unmapped: crate::owners::find(&e).cloned(),
+    })?;
     let target = summary
         .stages
         .iter()

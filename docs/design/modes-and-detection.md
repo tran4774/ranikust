@@ -11,7 +11,7 @@ Decisions: [ADR-0002](../adr/0002-two-snapshot-modes.md),
 [ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md),
 [ADR-0100](../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md),
 [ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)
-(ADR-0098 and ADR-0100 planned, Phase 3).
+(ADR-0100 planned, Phase 3).
 
 ## Outcomes
 
@@ -41,8 +41,7 @@ another mode ([sandbox](sandbox.md#--userns),
 [#83](https://github.com/tran4774/ranikust/issues/83)). Root's builds that may
 mount keep `enter_build_namespace` (`unshare(CLONE_NEWNS)` only), and kaniko
 mode is set up by `set_up_kaniko`. **Planned, Phase 3** (tracking issue
-[#41](https://github.com/tran4774/ranikust/issues/41)): the refusal of an
-image with an owner the namespace does not map, and the AppArmor advice, both
+[#41](https://github.com/tran4774/ranikust/issues/41)): the AppArmor advice,
 under [Refusal and guidance](#refusal-and-guidance).
 
 ## Where environments land
@@ -56,8 +55,8 @@ table per CI system in §6) and
 | Host as root or via `sudo` (GitHub Actions with `sudo`, GitLab.com SaaS) | overlay, root |
 | Container `--privileged`; podman `--cap-add SYS_ADMIN` | overlay, root (the state directory must be a volume or tmpfs) |
 | Docker `--cap-add SYS_ADMIN` alone | kaniko: AppArmor `docker-default` denies `mount` with `EACCES` |
-| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless, with a volume at the state directory and `--allow proc.rbind`, the container's `/proc` being masked ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); without the flag `--mode=overlay` is refused, naming it, and `--mode=auto` takes kaniko mode on `/` with the ADR-0054 checks (refused on a host); without a volume the state directory is on overlayfs, so kaniko mode on `/` with a hint to mount one ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); planned, an image owner outside the container's id map is refused before the build ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)), where today it fails mid-build with a raw `chown` error |
-| Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (full uid range only with `newuidmap` and `/etc/subuid`) |
+| Rootless podman (default); Docker with `seccomp=unconfined,apparmor=unconfined` | overlay, rootless, with a volume at the state directory and `--allow proc.rbind`, the container's `/proc` being masked ([ADR-0126](../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md)); without the flag `--mode=overlay` is refused, naming it, and `--mode=auto` takes kaniko mode on `/` with the ADR-0054 checks (refused on a host); without a volume the state directory is on overlayfs, so kaniko mode on `/` with a hint to mount one ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md)); an image owner outside the container's id map is refused before its layers are extracted ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md), [below](#owners-the-user-namespace-does-not-map)) |
+| Unprivileged user on Debian 12+, Fedora, RHEL 9+, Ubuntu 22.04 | overlay, rootless (several owners only with `newuidmap` and ranges in `/etc/subuid` and `/etc/subgid`; else such an image is refused, [below](#owners-the-user-namespace-does-not-map)) |
 | Docker default, GitHub Actions `container:` jobs, Kubernetes pods on Ubuntu/COS nodes, GKE Autopilot, Bottlerocket | kaniko, cannot mount |
 | Kubernetes pod with `hostUsers: false` and `procMount: Unmasked`, AppArmor confined or not | refuse: `/proc/sys` writable ([ADR-0107](../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) case (ii), which ranikust (`rootless_kept_off`) also applies to an unconfined pod, where ADR-0100 row 7b expected overlay, rootless: [experiment 18](../research/experiments/18-kubernetes-pods-in-k3s.md)) [open: #201] |
 | Unprivileged user on Ubuntu ≥ 24.04, binary in `~/bin` | refuse |
@@ -86,7 +85,9 @@ with `EPERM`, and overlay mounts with `fsconfig(lowerdir+)`: the kernel, a
 5.14 with backports, has it ([step 4](#probe-order---modeauto)). The audit
 log records no SELinux denial in either leg. A `RUN` runs in the SELinux
 context of the process that started ranikust (`unconfined_t` from a login
-shell), since ranikust sets none. The default state directories are labelled
+shell), since ranikust sets none, by design
+([ADR-0140](../adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md)).
+The default state directories are labelled
 `var_lib_t` (root's) and `data_home_t` (the user's), and no label reaches a
 layer: the two legs' `--reproducible` digests are one.
 
@@ -173,8 +174,8 @@ process. It runs after the store is open, in `builds/<id>/overlay-probe`
      unprivileged host user needs `newuidmap`/`newgidmap` and
      `/etc/subuid`; without them only one uid maps and `chown` to any other
      fails with `EINVAL`, as does a `chown` to an owner outside the ranges;
-     planned, ranikust then refuses such an image
-     ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+     ranikust refuses such an image
+     ([below](#owners-the-user-namespace-does-not-map)).
      Each map is tried in turn (root: its ranges, then one uid; a user:
      `newuidmap`, then one uid); the log names the one that worked
      (multi-range, newuidmap, one uid) or none.
@@ -423,13 +424,56 @@ Planned, Phase 3: where no user namespace is usable, offer in place of
    the binary.
 3. Run ranikust inside a container.
 
-Also planned: the refusal of an image with an owner the user namespace does not
-map (probe step 2) names the owners found and the ways out: with one id, install
-`uidmap` and add ranges to `/etc/subuid` and `/etc/subgid`, run as root, or use
-a container; with ranges, widen them to the range needed. In a user namespace
-ranikust was started in (rootless Podman), the map is read from
-`/proc/self/uid_map` and `gid_map` and the fix is to widen the container's range
+### Owners the user namespace does not map
+
+A build in a user namespace refuses an image with an owner, uid or gid, that
+the namespace does not map, whether it maps one id or ranges; no flag lets a
+failed `chown` pass
 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
+The map is the process's own `/proc/self/uid_map` and `gid_map`: the one
+ranikust wrote (probe step 2), or the container's. In the initial namespace
+every id maps and nothing is checked.
+
+- **Base layers, before extraction.** `Snapshotter::check_owners`
+  decompresses each base layer once more and reads its tar headers as the
+  extraction frames them, noting each owner the extraction would set;
+  `rnk-builder`'s pull calls it for all of an image's layers before any is
+  extracted. Overlay mode skips a layer already extracted for this map
+  ([ADR-0104](../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md)).
+  kaniko mode off `/` (a directory per stage) streams no base layer in a
+  user namespace: it pulls the blobs, which are checked the same way
+  before any is extracted. On `/`, where no blob is kept, a streamed layer
+  is checked in the pass that spools and verifies it, before that layer is
+  extracted, so a base image's earlier layers may be on `/` already
+  ([ADR-0137](../adr/0137-kaniko-mode-on-slash-checks-each-streamed-layers-owners-just-before-extracting-it.md));
+  a `COPY --from=<image>` spools and checks all its layers before any is
+  unpacked.
+- **What the build creates.** A `chown` that fails with `EINVAL` (a layer's
+  entry, `COPY --chown`, a cache mount's owner) refuses at once, naming the
+  file. So does a `RUN`'s switch to its user (`setgroups`, `setgid`,
+  `setuid`, for `USER`), naming the ids, where nothing else explains the
+  `EINVAL`: in a user namespace other than the initial one, with no more
+  supplementary groups than the kernel's `NGROUPS_MAX` (65536); otherwise
+  the step's error stays.
+- **The message** names up to eight uids and eight gids, each with the first
+  path that has it, counts the other entries, and gives the map; a `RUN`'s
+  switch names its uid, gid and up to eight supplementary groups, counting
+  the rest. `ranikust` adds the ways out, by who made the namespace and
+  from the ids its maps lack (a refused call does not tell which of its ids
+  failed; `-1`, which `chown` reads as "unchanged", is none): with one id
+  (a user without `newuidmap` and `newgidmap`, or without ranges), install
+  `uidmap` (Ubuntu does not by default) and give the user a first range in
+  `/etc/subuid` and `/etc/subgid` of at least as many ids as the highest
+  one named, run as root, or run in a container; with a user's ranges,
+  widen the first range to that count (ranikust maps only that one, and id
+  N is its N-th); in a namespace ranikust was started in, or root's copy
+  of its map (a single uid or gid where it maps no more, or where its
+  ranges could not be mapped), widen its ranges (rootless Podman: its
+  user's, then `podman system migrate`), or run as root on a host or in a
+  rootful container. Each range asked for comes with the rule that it must
+  not overlap another user's range or a real account's ids. Past 65536
+  ids, `useradd`'s default count, no wider range is asked for: the ways
+  out name the ids and say to run as root or in a container.
 
 ## Failure handling
 

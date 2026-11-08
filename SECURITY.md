@@ -107,6 +107,11 @@ These are documented properties, not vulnerabilities:
   ([ADR-0050](docs/adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md)).
 - **`RUN` shares the host network** unless `--network=none` is given
   ([ADR-0010](docs/adr/0010-run-network-host-or-none.md)).
+- **A `RUN` gets no SELinux label of its own.** It keeps the context of the
+  process that started ranikust, so on a host with SELinux enforcing the
+  sandbox holds it, not policy as for a container; labelling is revisited in
+  Phase 6
+  ([ADR-0140](docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md)).
 - **`--allow proc.rbind` shows a `RUN` the `/proc` files of ranikust's
   PID namespace that no ptrace check guards.** In rootless overlay mode where a new `/proc` is refused (a
   container's masked `/proc`), the flag gives each `RUN` a read-only rbind of

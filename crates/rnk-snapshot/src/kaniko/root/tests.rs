@@ -292,6 +292,49 @@ impl std::io::Read for FailingReader {
     }
 }
 
+/// Whether this test runs in the initial user namespace, by the inode
+/// `/proc/self/ns/user` names.
+fn test_runs_in_initial_user_namespace() -> bool {
+    fs::read_link("/proc/self/ns/user").unwrap() == Path::new("user:[4026531837]")
+}
+
+/// In a user namespace, a root other than `/` takes no streamed base layer:
+/// `streamed_layer` declines, so the builder pulls the blobs and checks
+/// every owner of every layer before any is extracted (ADR-0098). On `/`
+/// each streamed layer is checked as it is spooled (ADR-0137).
+#[test]
+fn in_a_user_namespace_only_slash_takes_a_streamed_base_layer() {
+    let off = Fixture::new();
+    let (on, _store) = Fixture::tars();
+    let kept = off.layer("l1", &[("a", b"a")]);
+    let open = || {
+        Arc::new(Streamed {
+            blob: kept.blob().unwrap().to_owned(),
+            fail_at_end: false,
+            opens: std::sync::atomic::AtomicUsize::new(0),
+        }) as Arc<dyn LayerOpen>
+    };
+    assert_eq!(
+        off.kaniko.shared.initial_ns,
+        test_runs_in_initial_user_namespace()
+    );
+    let streams = |f: &Fixture| f.kaniko.streamed_layer(kept.diff_id(), open()).is_some();
+    let in_userns = |mut f: Fixture| {
+        Arc::get_mut(&mut f.kaniko.shared).unwrap().initial_ns = false;
+        f
+    };
+    let initial = |mut f: Fixture| {
+        Arc::get_mut(&mut f.kaniko.shared).unwrap().initial_ns = true;
+        f
+    };
+    let off = initial(off);
+    let on = initial(on);
+    assert!(streams(&off) && streams(&on));
+    let (off, on) = (in_userns(off), in_userns(on));
+    assert!(!streams(&off));
+    assert!(streams(&on));
+}
+
 #[test]
 fn a_streamed_base_layer_is_read_anew_for_each_stage_and_never_kept() {
     let f = Fixture::new();
@@ -970,6 +1013,49 @@ fn on_slash_a_streamed_gzip_layer_is_spooled_compressed_and_extracted() {
     // Downloaded once: the second decompression reads the spool.
     assert_eq!(source.opens.load(Ordering::Relaxed), 1);
     root.release().unwrap();
+}
+
+/// In a user namespace that does not map an owner of a streamed layer, the
+/// spool pass refuses the layer once it is verified, naming the owner
+/// (ADR-0098).
+#[test]
+fn on_slash_a_streamed_layer_with_an_owner_the_namespace_lacks_is_refused_by_the_spool_pass() {
+    let (f, store) = Fixture::tars();
+    let kept = f.layer("l1", &[("a", b"owned")]);
+    let source = Arc::new(Streamed {
+        blob: kept.blob().unwrap().to_owned(),
+        fail_at_end: false,
+        opens: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let layer = f
+        .kaniko
+        .streamed_layer(kept.diff_id(), source as Arc<dyn LayerOpen>)
+        .unwrap();
+    let (uid, gid) = (
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
+    // One id, neither the test's uid nor its gid, which own the entry.
+    let other = uid.max(gid).wrapping_add(1);
+    let one = format!("{other} 0 1\n");
+    let ids = MappedIds::parse(&one, &one).unwrap();
+    let e = Spooled::of(&store, &layer, Some(&ids)).unwrap_err();
+    assert!(
+        matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+        "{e:?}"
+    );
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "owners this user namespace does not map: uid {uid} (/a), gid {gid} (/a); it maps \
+             uid {other} and gid {other}"
+        )
+    );
+    // The control: outside a user namespace, or in one that maps the
+    // owners, the same layer passes.
+    Spooled::of(&store, &layer, None).unwrap();
+    let all = MappedIds::parse("0 0 4294967295\n", "0 0 4294967295\n").unwrap();
+    Spooled::of(&store, &layer, Some(&all)).unwrap();
 }
 
 /// A streamed layer of `files` and its counting source, the layer made

@@ -55,6 +55,9 @@ from that.
   throwaway container, with `--state-dir` under a fresh temporary
   directory.
 - A bug fix comes with a test that fails without it.
+- T0 runs in the initial user namespace: in another (a toolbox, a
+  rootless container) kaniko mode off `/` streams no base layer, so
+  `rnk-snapshot`'s streamed-layer tests fail there (ADR-0098).
 - The sealed copy's T0 tests (`rnk-sandbox`'s `seal` module and the binary's
   `a_build_runs_from_a_sealed_copy_made_once`) expect a memfd copy:
   `vm.memfd_noexec` below 2 and a `TMPDIR` that allows `O_TMPFILE`, not on FUSE
@@ -803,7 +806,9 @@ Exceptions, all from emulation (the native CI job runs them all):
   install them in the x86_64 host kernel. The same profiles still run on the
   tests' interpreter there.
 - The tests that spawn an aarch64 binary themselves (ranikust's `cli` and
-  `metrics`, rnk-store's `processes`, rnk-sandbox's
+  `metrics`,
+  `exposure::tests::ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable`,
+  which starts its test binary again, rnk-store's `processes`, rnk-sandbox's
   `seal::tests::a_copy_an_interpreter_must_reopen_is_refused_before_the_exec`
   and
   `userns::tests::a_closures_child_writes_through_no_hook_or_subscriber_of_its_parent`,

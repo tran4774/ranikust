@@ -88,6 +88,30 @@ fn paths(diff: &WalkDiff) -> Vec<String> {
         .collect()
 }
 
+/// In a user namespace no base layer is streamed into a stage directory:
+/// `streamed_layer` declines, so the builder pulls the blobs and checks
+/// every owner of every layer before any is extracted (ADR-0098).
+#[test]
+fn in_a_user_namespace_no_base_layer_is_streamed_into_a_stage_directory() {
+    #[derive(Debug)]
+    struct Empty;
+    impl LayerOpen for Empty {
+        fn open(&self) -> std::io::Result<Box<dyn std::io::Read + Send>> {
+            Ok(Box::new(std::io::empty()))
+        }
+    }
+    let mut f = Fixture::new();
+    let id = Digest::from_sha256_bytes(&[0; 32]);
+    let streams = |f: &Fixture| f.stages.streamed_layer(&id, Arc::new(Empty)).is_some();
+    // The initial namespace by its inode, as `/proc/self/ns/user` names it.
+    let initial = fs::read_link("/proc/self/ns/user").unwrap() == Path::new("user:[4026531837]");
+    assert_eq!(streams(&f), initial);
+    Arc::get_mut(&mut f.stages.shared).unwrap().initial_ns = true;
+    assert!(streams(&f));
+    Arc::get_mut(&mut f.stages.shared).unwrap().initial_ns = false;
+    assert!(!streams(&f));
+}
+
 #[test]
 fn a_stage_on_an_image_gets_a_private_directory_of_its_own() {
     let f = Fixture::new();

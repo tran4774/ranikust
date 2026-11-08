@@ -164,10 +164,11 @@ pub(crate) fn held<'a>(environ: &[u8], names: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-/// Warns about each other process listed in `/proc` whose
-/// `/proc/<pid>/environ` ranikust can read and which sets one of `variables`
-/// ([`secret_variables`]) to a non-empty value ([`credential_warning`]);
-/// nothing is said when `/proc` cannot be listed. The caller runs it after
+/// Warns about each process listed in `/proc` but ranikust ([`own_entry`])
+/// whose `/proc/<pid>/environ` ranikust can read and which sets one of
+/// `variables` ([`secret_variables`]) to a non-empty value
+/// ([`credential_warning`]); nothing is said when `/proc` cannot be listed,
+/// nor about the entries past an error in its listing. The caller runs it after
 /// [`rnk_sandbox::trim_to_run_capabilities`], so that ranikust reads with
 /// the capabilities a root `RUN` keeps (ADR-0078).
 pub(crate) fn warn_credential_holders(variables: &[String]) {
@@ -175,8 +176,9 @@ pub(crate) fn warn_credential_holders(variables: &[String]) {
     let Ok(dir) = fs::read_dir("/proc") else {
         return;
     };
-    let me = std::process::id().to_string();
-    for pid in dir.flatten().filter_map(|e| other_pid(e.file_name(), &me)) {
+    let me = own_entry();
+    let entries = dir.flatten().map(|e| e.file_name());
+    for pid in other_pids(entries, me.as_deref()) {
         let Ok(environ) = fs::read(format!("/proc/{pid}/environ")) else {
             continue;
         };
@@ -205,11 +207,34 @@ fn credential_warning(process: &Process, found: &[&str]) -> String {
 }
 
 /// The pid an entry of `/proc` names, when it names a process (digits
-/// only) other than ranikust (`me`).
-fn other_pid(name: OsString, me: &str) -> Option<String> {
+/// only).
+fn pid_of(name: OsString) -> Option<String> {
     name.into_string()
         .ok()
-        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && n != me)
+        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The pids `/proc`'s entry `names` name, but `me`.
+fn other_pids(
+    names: impl IntoIterator<Item = OsString>,
+    me: Option<&str>,
+) -> impl Iterator<Item = String> {
+    names
+        .into_iter()
+        .filter_map(pid_of)
+        .filter(move |pid| Some(pid.as_str()) != me)
+}
+
+/// ranikust's entry in `/proc`, as `/proc/self` names it: not `getpid()`,
+/// its pid in its own PID namespace, which may not be the one `/proc`
+/// shows. None when `/proc/self` cannot be read (`/proc` shows no entry
+/// for ranikust) or is not UTF-8; a caller then leaves nothing out.
+fn own_entry() -> Option<String> {
+    fs::read_link("/proc/self")
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()
 }
 
 /// The name a process gives itself (`/proc/<pid>/comm`), escaped, empty
@@ -317,7 +342,11 @@ pub(crate) enum PeerScan {
 /// or `/proc/<pid>/root` where its threads may not be listed): a `RUN` on
 /// `/` shares the PID namespace and could reach that process's files, which
 /// the container's own mount table does not show (ADR-0101). It counts only
-/// the processes ranikust can open as it starts.
+/// the processes ranikust can open as it starts. ranikust's own entry,
+/// which `getpid()` may not name ([`own_entry`]), is probed as any other,
+/// and passes: ranikust enters a mount namespace of its own only while
+/// single-threaded, so each of its threads is in the mount namespace it
+/// started in or the one it is in now.
 ///
 /// `started_in` is ranikust's mount namespace as it started
 /// ([`mount_namespace`], opened before the set-up may enter one of its own
@@ -349,11 +378,10 @@ fn scan(
     limit: usize,
     mut probe: impl FnMut(&str, usize) -> (Peer, usize),
 ) -> PeerScan {
-    let me = std::process::id().to_string();
     let mut seen = 0;
     for name in names {
         let pid = match name {
-            Ok(name) => match other_pid(name, &me) {
+            Ok(name) => match pid_of(name) {
                 Some(pid) => pid,
                 None => continue,
             },
@@ -873,10 +901,9 @@ mod tests {
 
     #[test]
     fn a_peer_scan_refuses_the_first_process_reached_in_another_mount_namespace() {
-        let me = std::process::id().to_string();
         let mut probed = Vec::new();
         let found = scan(
-            names(&["self", "1", &me, "2", "3", "x9", "4", "5"]),
+            names(&["self", "1", "2", "3", "x9", "4", "5"]),
             PEER_SCAN_LIMIT,
             |pid, _| {
                 probed.push(pid.to_owned());
@@ -890,9 +917,57 @@ mod tests {
             },
         );
         assert_eq!(found, PeerScan::Reachable(process("4", "sleep")));
-        // Neither ranikust itself nor an entry that is not a pid is probed,
-        // and the scan stops at the first process reached.
+        // An entry that is not a pid is not probed, and the scan stops at
+        // the first process reached.
         assert_eq!(probed, ["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn a_peer_scan_probes_the_entry_named_by_ranikusts_own_pid_too() {
+        // In a `/proc` of an enclosing PID namespace, that entry is another
+        // process.
+        let me = std::process::id().to_string();
+        let mut probed = Vec::new();
+        let found = scan(names(&[&me]), PEER_SCAN_LIMIT, |pid, _| {
+            probed.push(pid.to_owned());
+            (Peer::Reachable("sleep".into()), 1)
+        });
+        assert_eq!(found, PeerScan::Reachable(process(&me, "sleep")));
+        assert_eq!(probed, [me]);
+    }
+
+    /// In a process of its own, started again from this test binary, with
+    /// no thread of another test: not dumpable, as `main` makes ranikust,
+    /// and with a second thread, its own entry passes. The child's result
+    /// is its exit status.
+    #[test]
+    fn ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable() {
+        let name = "ranikusts_own_entry_passes_the_peer_scan_while_not_dumpable";
+        if !crate::setup::tests::userns::alone_in(module_path!(), name) {
+            return;
+        }
+        let now = mount_namespace().unwrap().id;
+        let entry = own_entry().expect("/proc shows this process");
+        let (stop, parked) = std::sync::mpsc::channel::<()>();
+        let second = std::thread::spawn(move || parked.recv());
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+            .unwrap();
+        assert_eq!(
+            rustix::process::dumpable_behavior().unwrap(),
+            rustix::process::DumpableBehavior::NotDumpable
+        );
+        let found = scan(
+            names(&["self", "thread-self", &entry]),
+            PEER_SCAN_LIMIT,
+            |pid, left| probe([now, now], pid, left),
+        );
+        // Opened and walked thread by thread: this process, not one out of
+        // reach, which passes as one thread.
+        let (peer, threads) = probe([now, now], &entry, PEER_SCAN_LIMIT);
+        drop(stop);
+        second.join().unwrap().unwrap_err();
+        assert_eq!(found, PeerScan::None);
+        assert!(peer == Peer::Passed && threads >= 2, "{peer:?} {threads}");
     }
 
     #[test]
@@ -1490,6 +1565,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn other_pids_leave_out_the_entry_given_and_nothing_without_one() {
+        // In a `/proc` of an enclosing PID namespace, ranikust's own entry
+        // has another number, and the one its pid names is another process.
+        let pid = std::process::id().to_string();
+        let me = (std::process::id() + 1).to_string();
+        let list = || ["self", me.as_str(), "x9", pid.as_str()].map(OsString::from);
+        let left: Vec<String> = other_pids(list(), Some(&me)).collect();
+        assert_eq!(left, std::slice::from_ref(&pid));
+        // Where `/proc` shows no entry for ranikust, none is left out.
+        let left: Vec<String> = other_pids(list(), None).collect();
+        assert_eq!(left, [me.clone(), pid.clone()]);
+        // The real listing: ranikust's own entry is in it, a pid, and left
+        // out.
+        let own = own_entry().expect("/proc shows this process");
+        let listed = || {
+            fs::read_dir("/proc")
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+        };
+        assert!(listed().any(|n| n == own.as_str()), "{own}");
+        assert_eq!(pid_of(OsString::from(&own)), Some(own.clone()));
+        assert!(other_pids(listed(), own_entry().as_deref()).all(|p| p != own));
     }
 
     #[test]

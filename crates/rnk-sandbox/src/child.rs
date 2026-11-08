@@ -1140,7 +1140,7 @@ pub(crate) fn switch_user_and_exec(
     // difference.
     check(
         err,
-        Step::Uid,
+        Step::Dumpable,
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable),
     );
     if chdir_again {
