@@ -469,11 +469,21 @@ entry is on `main` ([Security findings](../agents/workflow.md#security-findings)
   ([`contrib/apparmor/ranikust`](../../contrib/apparmor/ranikust),
   [#81](https://github.com/tran4774/ranikust/issues/81)),
   once root loads it, gives user namespaces to every user who may run the
-  binary at its path and to every `RUN` of the builds it runs. Where
+  binary at its path and to every `RUN` of the builds it runs. AppArmor
+  matches that path in every mount namespace, so the profile also reaches
+  a binary at the same path in any container that runs without AppArmor
+  confinement and whose seccomp filter allows `unshare`, and in the
+  sandboxes that setuid tools build. Where
   `kernel.apparmor_restrict_unprivileged_unconfined` is 0, Ubuntu 24.04's
-  default, any unconfined program can also enter it with `aa-exec`, as it
-  can any profile that allows `userns` **[measured]** (T2 smoke). Load it
-  only where users may have what the switch at 0 gives them.
+  default, any unconfined program can already enter it with `aa-exec`,
+  which gives everyone the same, as any profile that allows `userns` does
+  **[measured]** (T2 smoke). Load it only where users may have what the
+  switch at 0 gives them.
+- The refusal checks the binary's path in the user and mount namespace
+  ranikust runs in, and offers the profile only in the host's user
+  namespace and in no container it detects. A chroot, or a namespace root
+  set up to look like the host's, shows a tree root chose; only root can
+  set one up.
 
 ## 7. Not verified yet
 

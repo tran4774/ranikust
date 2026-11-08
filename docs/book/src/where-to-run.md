@@ -68,23 +68,29 @@ apparmor_parser -r /etc/apparmor.d/ranikust
   directory above it, none is writable by group or others, and each is on a
   local filesystem that root mounted, without `nosuid` (not FUSE, NFS, SMB,
   nor a user's removable or fstab `user` mount, whose owners a user or a
-  server sets). ranikust's refusal offers the profile only for such a path, and
-  otherwise names the part of the path that fails and says to install the
-  binary under `/usr/local/bin` first (or, where that directory fails too,
-  in one that passes). For another such path, change the path in the
-  profile.
+  server sets). ranikust's refusal offers the profile only for such a
+  path, and otherwise names the part of the path that fails and says to
+  install the binary under `/usr/local/bin` first (or, where that
+  directory fails too, in one that passes). For another such path, change
+  the path in the profile.
 - The refusal offers it only where AppArmor may be what refused: where the
   user namespace was made and a later step failed, or where making it was
-  refused with `EACCES`. Where something else refuses it, such as a
-  container's seccomp filter or `user.max_user_namespaces` at `0`, the
-  advice is `sudo`, then a container.
+  refused with `EACCES`; and only to a ranikust that AppArmor leaves
+  unconfined, run on the host itself, outside any container or user
+  namespace, where the path it checks is the one the profile attaches to.
+  Elsewhere, and where something else refuses it, such as a container's
+  seccomp filter or `user.max_user_namespaces` at `0`, the advice is
+  `sudo`, then a container.
 - It confines nothing (`flags=(unconfined)`): every user who may run that
   binary, and every program a build runs, gets the user namespaces that the
-  switch at `0` gives every program. Where
+  switch at `0` gives every program. AppArmor matches the path in every
+  mount namespace, so the profile also reaches a binary at that path in
+  any container that runs without AppArmor confinement and whose seccomp
+  filter allows `unshare`, and in the sandboxes setuid tools build. Where
   `kernel.apparmor_restrict_unprivileged_unconfined` is `0`, Ubuntu 24.04's
   default, any user's unconfined program may also ask for the profile with
   `aa-exec -p ranikust` and get them (measured on 24.04), as with every
-  profile that allows `userns`. Programs that do neither keep the
+  profile that allows `userns`. Programs that do none of these keep the
   restriction.
 - To remove it: `apparmor_parser -R /etc/apparmor.d/ranikust`, then delete
   the file.

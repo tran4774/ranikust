@@ -420,10 +420,17 @@ refusal's guidance line gives, in order
 
 1. Run ranikust as root, with `sudo`.
 2. Only where `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads
-   `1` and AppArmor may be what refused (`no_userns::Stop`): the user
+   `1`, where ranikust runs unconfined (AppArmor's label `unconfined`), in
+   the host's user namespace (`/proc/self/uid_map` reads `0 0 4294967295`)
+   and in no container `container::detect` finds (`no_userns::Here`), and
+   where AppArmor may be what refused (`no_userns::Stop`): the user
    namespace was made and a later step failed (the map, `chown`, the mount
-   namespace), or `unshare` failed with `EACCES`, as under a profile without
-   `userns`. Another errno of `unshare` (`EPERM` from a seccomp filter or
+   namespace), or `unshare` failed with `EACCES`, AppArmor's errno. A
+   confined program's own profile decides its user namespaces, and
+   ranikust's would not attach to it; in a container or a user's own user
+   namespace the tree ranikust sees, and the owners it reads, are not the
+   host's, so no path checked there is the one a profile loaded on the host
+   attaches to. Another errno of `unshare` (`EPERM` from a seccomp filter or
    `kernel.unprivileged_userns_clone`, `ENOSPC` from
    `user.max_user_namespaces`), none, a step that did not run, any stop
    where the capability check found the namespace's capabilities, or a
@@ -444,8 +451,12 @@ refusal's guidance line gives, in order
 3. Run ranikust in a container.
 
 The path is the one `/proc/self/exe` named before the sealed copy ran
-(ADR-0101), the one AppArmor attaches a profile to; the sealed copy's
-marker carries it (`rnk_sandbox::Sealing::binary_path`). Root alone may
+(ADR-0101), the one AppArmor attaches a profile to where ranikust runs in
+the host's mount namespace, with no chroot; the sealed copy's marker
+carries it (`rnk_sandbox::Sealing::binary_path`). A chroot, or a mount or
+user namespace that maps every id as the host's does and that no container
+check finds, shows a tree root chose, which the check takes for the host's:
+only root can set one up. Root alone may
 change it when `/`, each directory below it and the file are owned by root
 and written by neither group nor others (an ACL that grants writing shows in
 the group bits), none is a symlink, each is on a mount without `nosuid`
@@ -455,14 +466,18 @@ tmpfs, overlayfs, zfs; any other, such as FUSE, NFS, SMB, 9p, Ceph or AFS,
 shows owners and modes a user or a server sets), and the file is a regular
 one: each component is opened `O_PATH` from the one above without
 following a symlink. A sticky directory such as `/tmp` fails, since any
-user may take the name once it is gone; so does any error, a removed binary (`(deleted)`) included. Any value of the
-switch but `1`, or none (Ubuntu 22.04, other distributions), offers no
-profile. With the profile loaded the binary keeps it through the sealed
+user may take the name once it is gone; so does any error, a removed
+binary (`(deleted)`) included. Any value of the switch but `1`, or none
+(Ubuntu 22.04, other distributions), offers no profile. With the profile loaded the binary keeps it through the sealed
 copy's `execveat`, which no other profile attaches to, and so does a `RUN`
 (T2 smoke). Where `kernel.apparmor_restrict_unprivileged_unconfined` is 0,
 24.04's default, any user's unconfined program may also enter the profile
 with `aa-exec -p ranikust` (measured, T2 smoke), as it may any profile that
-allows `userns`; the book and the profile say so. The test hook
+allows `userns`. AppArmor matches the path in every mount namespace, so a
+loaded profile also reaches a binary at that path in a container without
+AppArmor confinement whose seccomp filter allows `unshare`, and in the
+sandboxes setuid tools build; the book, the profile and the threat model
+(section 6) say so. The test hook
 `RANIKUST_DEBUG_FAULT=no-userns` gives the advice of a stop in the user
 namespace.
 

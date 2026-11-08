@@ -55,15 +55,18 @@ writer) before `unshare`, the probes and the state directory's checks.
   stopped at `unshare`, the map, `chown` or the mount namespace (and the
   test hook's `no-userns`), `setup::no_userns`'s advice
   ([No usable user namespace](../../design/modes-and-detection.md#no-usable-user-namespace)):
-  `sudo`; the AppArmor profile where the switch reads 1 and AppArmor may
-  be what refused (`no_userns::Stop`: a step in the namespace `unshare`
+  `sudo`; the AppArmor profile where the switch reads 1, ranikust runs
+  unconfined in the host's user namespace and in no container
+  (`no_userns::Here`: the label, `/proc/self/uid_map`,
+  `container::detect`), and AppArmor may be what refused
+  (`no_userns::Stop`: a step in the namespace `unshare`
   made, or `unshare`'s `EACCES`; the test hook counts as the first; a
   step that did not run, a namespace `rootless::capabilities` found
   capable, or a refusal once the probe passed, never), for a path only
   root may change on a mount without `nosuid` of a local filesystem
   (`no_userns::LOCAL`); a container. The path it weighs is the one the
-  binary started from (`rnk_sandbox::Sealing::binary_path`, through `main.rs`'s `build` and
-  `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
+  binary started from (`rnk_sandbox::Sealing::binary_path`, through
+  `main.rs`'s `build` and `rootless`); `--allow proc.rbind` where only the new `proc` fails and the
   rbind works. With the rbind, `main.rs` then runs the peer scan, the check
   of the PID namespace from files with no ptrace check (ADR-0134) and the
   build-argument warnings, still outside the namespace, where it can open
@@ -475,7 +478,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   report cannot be built in a test, so `Steps::probed` is not covered),
   none where the capability check showed capabilities (both its steps
   worked); `setup/no_userns/tests.rs`: rnk-sandbox's name for `unshare`'s
-  operation, the advice's wording and order in each case (the switch at 1
+  operation, no profile unless the switch reads 1, the label is
+  `unconfined` and the uid map and container verdict, injected, are the
+  host's, the advice's wording and order in each case (the switch at 1
   or not; the shipped path, another root-only one, the install as
   `/usr/local/bin/ranikust` or, where that directory fails, elsewhere),
   which stops offer the profile (a step in the namespace, `unshare`'s
