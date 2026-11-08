@@ -273,8 +273,13 @@ What a change here must keep, with where it lives:
   a refusal fails the `RUN`, never leaves a mount without them. The masks
   and read-only paths then go on top as for a new one. A `RUN` with a
   network namespace of its own tries a new `sysfs` first; where only the
-  rbind mounts, the network devices of the namespace it was mounted in are
-  hidden from it (`hide_network_devices`): an empty read-only tmpfs over
+  rbind mounts, it shows no more than a new one: each directory mount the
+  rbind copied onto its root mount (its parent in the child's own
+  mountinfo, read with no allocation by `child/submounts.rs`) gets an
+  empty read-only tmpfs, its mount point found again below the rbind by
+  descriptor (`hide_submounts`), and the network devices of the namespace
+  it was mounted in are hidden (`hide_network_devices`): an empty
+  read-only tmpfs over
   `devices/virtual/net`, over the directory of each device that a link of
   `class/net`, `class/ieee80211`, `class/macvtap`, `class/ipvtap` or
   `class/infiniband` names,
@@ -553,7 +558,10 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   before executing, mount sources and remount flags, the directories
   hidden from a `RUN` with a network namespace of its own under the rbind
   of `/sys`, in a tree laid out as sysfs
-  (`the_network_directories_of_a_sysfs_are_each_hidden`), `Direct` refusals
+  (`the_network_directories_of_a_sysfs_are_each_hidden`), the mounts
+  copied onto the rbind, chosen from mountinfo read in pieces of any size,
+  relative to it, escapes undone, and each that cannot be placed failing
+  (`child::submounts::tests`), `Direct` refusals
   whatever the root entry
   (`direct_is_refused_where_runs_get_an_rbind_of_proc`), the turns: under
   an rbind of `/proc` a `RUN` alone, whichever `Sandbox` runs it, the
@@ -690,7 +698,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   (without the read-only flag, both writes succeed); `USER _apt` gets
   42:65534 through `setgroups`; `--network=none` has `lo` up in a network
   namespace of its own, and its `/sys` shows no network device or
-  address, its new `sysfs` refused below Podman's masks;
+  address, and no mount below it lists anything (Podman's cgroup2 at
+  `/sys/fs/cgroup`, which the shared network's `RUN` sees, is an empty
+  tmpfs there), its new `sysfs` refused below Podman's masks;
   `runs_below_one_id_skip_setgroups_and_the_tty_gid`: the same below a
   one-id namespace, `setgroups` skipped, `devpts` without a `gid=`, `USER
   _apt` refused at `setgid`; `an_rbind_of_proc_needs_a_request`: unasked,

@@ -35,6 +35,8 @@ use crate::plan::{
 };
 use crate::seccomp::Program;
 
+mod submounts;
+
 /// How the child enters the root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootEntry {
@@ -1401,7 +1403,8 @@ fn try_mount_kernel_fs(
 /// user namespace may mount for a network namespace it owns, so that
 /// `/sys/class/net` shows the `RUN`'s own devices; the rbind only where the
 /// kernel still refuses a new one (`EPERM`, such as below an outer
-/// runtime's masks of `/sys`), its network devices hidden
+/// runtime's masks of `/sys`), showing no more than a new one would: no
+/// mount the rbind copied ([`hide_submounts`]) and no network device
 /// ([`hide_network_devices`]).
 fn sysfs_of_own_network(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> OwnedFd {
     let step = Step::MountSys;
@@ -1418,10 +1421,92 @@ fn sysfs_of_own_network(err: RawFd, root: BorrowedFd<'_>, target: &CStr) -> Owne
                 MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
                 SYSFS_MAGIC,
             );
+            hide_submounts(err, &sys);
             hide_network_devices(err, &sys);
             sys
         }
         Err(e) => fail(err, step, e),
+    }
+}
+
+/// Covers each directory mount the rbind of `/sys` `sys` copied onto its
+/// root mount with an empty read-only tmpfs, which hides the mounts below
+/// it too: a new sysfs has none of them (a cgroup hierarchy, a configfs,
+/// an outer runtime's masks). They are the mounts whose parent is `sys`'s
+/// in this child's own mountinfo ([`submounts::each_submount`]), each
+/// mount point found again below `sys` by descriptor, through no symlink.
+/// One not found there lies below another of them, covered with it; one
+/// that shows `sys`'s own mount fails the step; a file there (a runtime's
+/// `/dev/null` over one) is left.
+fn hide_submounts(err: RawFd, sys: &OwnedFd) {
+    let step = Step::MaskPath;
+    let bind = mount_identity(err, step, sys.as_fd()).mount;
+    let r = submounts::each_submount(bind, &mut each_mount, &mut |rel| {
+        cover_submount(err, step, sys, bind, rel)
+    });
+    check(err, step, r);
+}
+
+/// [`hide_submounts`] for the mount point `rel` below `sys`, whose mount
+/// is `bind`.
+fn cover_submount(
+    err: RawFd,
+    step: Step,
+    sys: &OwnedFd,
+    bind: u64,
+    rel: &CStr,
+) -> Result<(), Errno> {
+    let how = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS;
+    let Some(t) = lookup(err, step, sys.as_fd(), rel, OFlags::empty(), how) else {
+        return Ok(());
+    };
+    let st = rustix::fs::statx(
+        &t,
+        c"",
+        AtFlags::EMPTY_PATH,
+        StatxFlags::TYPE | StatxFlags::MNT_ID,
+    )?;
+    if st.stx_mask & StatxFlags::MNT_ID.bits() == 0 {
+        return Err(Errno::NOSYS);
+    }
+    // The mount is not where mountinfo puts it: what it shows is unknown.
+    if st.stx_mnt_id == bind {
+        return Err(Errno::XDEV);
+    }
+    if FileType::from_raw_mode(u32::from(st.stx_mode)) != FileType::Directory {
+        return Ok(());
+    }
+    let flags = MountFlags::RDONLY | MountFlags::NOSUID | MountFlags::NODEV | MountFlags::NOEXEC;
+    rustix::mount::mount(
+        c"tmpfs",
+        fd_path(err, &t).path(),
+        c"tmpfs",
+        flags,
+        None::<&CStr>,
+    )
+}
+
+/// Gives `each` every line of this child's own mountinfo, read from the
+/// outer procfs before the pivot, in pieces and with no allocation.
+fn each_mount(each: &mut dyn FnMut(submounts::Line<'_>) -> Result<(), Errno>) -> Result<(), Errno> {
+    let fd = rustix::fs::openat(
+        CWD,
+        c"/proc/self/mountinfo",
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    if rustix::fs::fstatfs(&fd)?.f_type != PROC_SUPER_MAGIC {
+        return Err(Errno::XDEV);
+    }
+    let mut lines = submounts::Lines::new();
+    let mut buf = [0_u8; 1024];
+    loop {
+        match rustix::io::read(&fd, &mut buf) {
+            Ok(0) => return lines.finish(),
+            Ok(n) => lines.feed(buf.get(..n).unwrap_or_default(), each)?,
+            Err(Errno::INTR) => {}
+            Err(e) => return Err(e),
+        }
     }
 }
 

@@ -360,8 +360,18 @@ The steps, in order:
       namespace owns, still tries a new one first, so that
       `/sys/class/net` shows its own devices and `/sys/fs/cgroup` is empty,
       as for root; only `EPERM` (such as below an outer runtime's masks of
-      `/sys`) gives it the rbind, with the network devices of the namespace
-      it was mounted in hidden: an empty read-only tmpfs over
+      `/sys`) gives it the rbind, showing no more than a new one would.
+      Each directory mount the rbind copied onto its root mount (a cgroup
+      hierarchy at `fs/cgroup`, a configfs, the runtime's masks), the
+      mounts whose parent is the rbind's in the child's own
+      `/proc/self/mountinfo`, gets an empty read-only tmpfs (`nosuid`,
+      `nodev`, `noexec`), which hides the mounts below it too: its mount
+      point is found again below the rbind by descriptor, through no
+      symlink, and must not show the rbind's own mount; a file mount there
+      (a runtime's `/dev/null`) is left, and a mount point that can no
+      longer be placed fails the `RUN`. `/sys/fs/cgroup` is then empty, as
+      in a new `sysfs`. The network devices of the namespace it was mounted
+      in are hidden next: an empty read-only tmpfs over
       `devices/virtual/net`, over the directory of each device a link of
       `class/net`, `class/ieee80211`, `class/macvtap`, `class/ipvtap` or
       `class/infiniband` names (a physical device's `net`), and over those

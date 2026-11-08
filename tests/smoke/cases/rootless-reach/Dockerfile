@@ -11,7 +11,8 @@ FROM ${BASE} AS writes
 # environment of one outside its PID namespace (fewer NSpid than its own)
 # read; then the controls: one of its own reached so, a file written. A
 # RUN with --network=none: its sysfs written, the network devices and
-# addresses it sees there.
+# addresses it sees there, what /sys/fs/cgroup lists, and each directory
+# a mount below /sys names that lists anything.
 RUN w() { if (printf 1 >"$1") 2>/dev/null; then echo "write $1=done"; else echo "write $1=refused"; fi; }; \
     { for f in /proc/sys/kernel/core_pattern /proc/sys/kernel/modprobe /proc/sysrq-trigger \
         /proc/sys/vm/drop_caches /sys/kernel/uevent_helper /sys/fs/cgroup/cgroup.procs \
@@ -31,7 +32,10 @@ RUN w() { if (printf 1 >"$1") 2>/dev/null; then echo "write $1=done"; else echo 
       w /tmp/control; } >/report 2>&1; cat /report
 RUN --network=none { if (printf 1 >/sys/class/net/lo/mtu) 2>/dev/null; then echo "write none /sys/class/net/lo/mtu=done"; else echo "write none /sys/class/net/lo/mtu=refused"; fi; \
     echo "none netdevs=$(ls /sys/class/net 2>/dev/null | tr '\n' ' ')"; \
-    echo "none addresses=$(cat /sys/class/net/*/address 2>/dev/null | tr '\n' ' ')"; } >>/report
+    echo "none addresses=$(cat /sys/class/net/*/address 2>/dev/null | tr '\n' ' ')"; \
+    echo "none cgroup=$(ls -A /sys/fs/cgroup 2>&1 | tr '\n' ' ')"; \
+    for p in $(grep -E '^([^ ]+ ){4}/sys/[^ ]+ ' /proc/self/mountinfo | cut -d' ' -f5 | sort -u); do \
+      if [ -d "$p" ] && [ -n "$(ls -A "$p" 2>&1)" ]; then echo "none shown=$p"; fi; done; } >>/report
 
 FROM ${BASE} AS left
 # Processes a RUN leaves (a new session, a double fork, nohup); one appends

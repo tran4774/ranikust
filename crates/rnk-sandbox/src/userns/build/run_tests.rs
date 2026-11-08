@@ -53,7 +53,10 @@ const IDS: &str = r#"echo "ids=$(id -u):$(id -g):$(id -G)""#;
 /// What a `--network=none` `RUN` prints: whether `lo` is up (its
 /// `127.0.0.1` local route exists only then), its network namespace, the
 /// devices its `/sys/class/net` and `/sys/devices/virtual/net` show, and
-/// the addresses it reads there, each comma-separated.
+/// the addresses it reads there, each comma-separated; the filesystem at
+/// `/sys/fs/cgroup`, then `sub: <mount point> <entries>` for each
+/// directory a mount below `/sys` of its mountinfo names, with how many
+/// entries it lists there (an error counts).
 const NETWORK: &str = r#"
 if grep -q 127.0.0.1 /proc/net/fib_trie; then echo lo=up; else echo lo=down; fi
 echo "net=$(readlink /proc/self/ns/net)"
@@ -68,6 +71,9 @@ for f in /sys/class/net/*/address /sys/devices/virtual/net/*/address; do
   if [ -r "$f" ] && read -r m <"$f"; then a="$a${a:+,}$m"; fi
 done
 echo "macs=$a"
+echo "cgroupfs=$(stat -f -c %T /sys/fs/cgroup)"
+grep -E '^([^ ]+ ){4}/sys/[^ ]+ ' /proc/self/mountinfo | cut -d' ' -f5 | sort -u |
+  while read -r p; do if [ -d "$p" ]; then echo "sub: $p $(ls -A "$p" 2>&1 | wc -l)"; fi; done
 "#;
 
 /// One `RUN`: its `USER`, network and script.
@@ -500,6 +506,11 @@ fn check_network(out: &str) {
         let real = !mac.is_empty() && mac != "00:00:00:00:00:00";
         assert!(!real || !macs.contains(&mac), "{name}'s {mac} read:\n{out}");
     }
+    // A new sysfs has no mount below it; the rbind covers each it copied,
+    // and the masks are empty.
+    for sub in out.lines().filter_map(|l| l.strip_prefix("2:sub: ")) {
+        assert!(sub.ends_with(" 0"), "{sub} shows entries:\n{out}");
+    }
 }
 
 /// The devices of this process's network namespace but `lo`, with their
@@ -590,10 +601,18 @@ fn runs_in_the_build_user_namespace_get_the_fallbacks_the_probe_chose() {
     assert_eq!(value(&out, "1:ids"), "42:65534:65534", "{out}");
     check_network(&out);
     // A new `sysfs` is refused below Podman's masks of `/sys`: the rbind,
-    // its network devices hidden.
+    // its network devices hidden, and the cgroup2 mount the rbind copied
+    // (the shared network's `RUN` 0 sees it) covered.
     for key in ["2:netdevs", "2:virtual", "2:macs"] {
         assert_eq!(value(&out, key), "", "{out}");
     }
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("0:mount: /sys/fs/cgroup ") && l.ends_with(" cgroup2")),
+        "{out}"
+    );
+    assert_eq!(value(&out, "2:cgroupfs"), "tmpfs", "{out}");
+    assert!(out.lines().any(|l| l == "2:sub: /sys/fs/cgroup 0"), "{out}");
     assert_eq!(value(&out, "run3"), "exit 0", "{out}");
     assert_ne!(
         value(&out, "3:outer"),
