@@ -1,0 +1,28 @@
+#cloud-config
+# NoCloud seed of each T2 VM run with RANIKUST_VM_RELEASE=alma9, as
+# cloud-init/user-data is for Ubuntu: tests/vm/vm.sh puts the run's own key
+# in place of @SSH_KEY@, and in place of @PACKAGES@ nothing when the run
+# boots the provisioned base image (cloud-init/provision-el9, the default),
+# or the package list when it boots the plain cloud image
+# (RANIKUST_VM_GOLDEN=0). No registry mirror: the guest's scripts name each
+# image with RANIKUST_VM_IMAGE_REGISTRY themselves.
+hostname: ranikust-vm
+ssh_pwauth: false
+
+users:
+  - name: rnk
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - @SSH_KEY@
+
+@PACKAGES@
+
+write_files:
+  # Quiets the note podman-docker's `docker` prints on every call.
+  - path: /etc/containers/nodocker
+    content: ""
+
+runcmd:
+  - [touch, /var/lib/ranikust-vm-ready]

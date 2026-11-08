@@ -8,8 +8,9 @@
 #
 #   RANIKUST_T2_ON_RUNNER=1 tests/vm/runner.sh <suite>...
 #
-# Suites: unit, smoke, quick and secrets (tests/vm/guest/<suite>.sh, as in
-# the VM), and unit-c (the T2c lane of ADR-0063: tests/container/lane.sh,
+# Suites: unit, smoke, quick, secrets and k8s (tests/vm/guest/<suite>.sh,
+# as in the VM; k8s installs k3s on the runner, ADR-0100 rows 7a-7d), and
+# unit-c (the T2c lane of ADR-0063: tests/container/lane.sh,
 # its rootful Docker containers on this runner; this script makes the lane's
 # marker naming the runner, for the job, ADR-0090). Not here: e2e and ultra
 # (benchmarks: a shared
@@ -58,12 +59,13 @@ REGISTRY="${RANIKUST_VM_IMAGE_REGISTRY:-mirror.gcr.io}"
 [[ "$REGISTRY" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$ ]] ||
   die "RANIKUST_VM_IMAGE_REGISTRY must be a host name with an optional port (got '$REGISTRY')"
 
-[ $# -gt 0 ] || die "name the suites: unit, unit-c, smoke, quick, secrets"
+[ $# -gt 0 ] || die "name the suites: unit, unit-c, smoke, quick, secrets, k8s"
 for s in "$@"; do
   case "$s" in
-    unit | unit-c | smoke | quick | secrets) ;;
+    unit | unit-c | smoke | quick | secrets | k8s) ;;
     e2e | ultra | push) die "the $s suite runs only in the local VM (\`just test-vm $s\`, ADR-0090)" ;;
-    *) die "unknown suite '$s' (unit, unit-c, smoke, quick, secrets)" ;;
+    el9) die "the el9 suite runs only in the local VM's AlmaLinux image (\`RANIKUST_VM_RELEASE=alma9 just test-vm\`)" ;;
+    *) die "unknown suite '$s' (unit, unit-c, smoke, quick, secrets, k8s)" ;;
   esac
 done
 
