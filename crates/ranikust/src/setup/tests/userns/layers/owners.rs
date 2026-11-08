@@ -419,3 +419,157 @@ fn an_owner_past_a_user_s_ranges_is_refused_before_extraction() {
     check_kaniko(&out);
     assert_eq!(field(&out, "published"), "3", "{out}");
 }
+
+/// PAX records `key=value`, as a `pax` entry for the next one.
+fn pax(t: &mut Tar, records: &[(&str, &str)]) {
+    let mut data = Vec::new();
+    for (key, value) in records {
+        let body = key.len() + value.len() + 3;
+        let mut len = body + 1;
+        while len != body + len.to_string().len() {
+            len = body + len.to_string().len();
+        }
+        data.extend_from_slice(format!("{len} {key}={value}\n").as_bytes());
+    }
+    t.push("pax", EntryType::XHeader, ROOT, 0o644, &data, |_| {});
+}
+
+/// A hostile image's name, its one layer's tar and diff ID, and whether
+/// the check refuses it.
+type Hostile = (&'static str, (Vec<u8>, Digest), bool);
+
+/// Hostile owner headers, one image of one layer each: what the extraction
+/// gives is asked of the kernel.
+fn hostile_images() -> Vec<Hostile> {
+    let far = FAR.0.to_string();
+    let image = |name, refused, f: &dyn Fn(&mut Tar)| {
+        let mut t = Tar::default();
+        t.dir("./", ROOT, 0o755);
+        f(&mut t);
+        (name, t.finish(), refused)
+    };
+    vec![
+        image("pax uid", true, &|t| {
+            pax(t, &[("uid", &far)]);
+            t.file("f", ROOT, 0o644, b"f");
+        }),
+        image("pax gid", true, &|t| {
+            pax(t, &[("gid", &far)]);
+            t.file("f", ROOT, 0o644, b"f");
+        }),
+        image("pax own over far", false, &|t| {
+            pax(t, &[("uid", "0"), ("gid", "0")]);
+            t.file("f", FAR, 0o644, b"f");
+        }),
+        image("root", true, &|t| {
+            t.dir("./", FAR, 0o755);
+        }),
+        image("symlink", true, &|t| {
+            t.symlink("s", FAR, "f");
+        }),
+        image("fifo", true, &|t| {
+            t.node("p", EntryType::Fifo, FAR, 0o644, (0, 0));
+        }),
+        image("char device", false, &|t| {
+            t.dir("dev/", ROOT, 0o755)
+                .node("dev/null", EntryType::Char, FAR, 0o666, (1, 3));
+        }),
+        image("hardlink header", false, &|t| {
+            t.file("f", ROOT, 0o644, b"f")
+                .push("g", EntryType::Link, FAR, 0o644, b"", |h| {
+                    h.set_link_name("f").unwrap();
+                });
+        }),
+        image("whiteout", false, &|t| {
+            t.file(".wh.x", FAR, 0o644, b"");
+        }),
+        image("opaque", false, &|t| {
+            t.dir("d/", ROOT, 0o755)
+                .file("d/.wh..wh..opq", FAR, 0o644, b"");
+        }),
+        image("gnu long name header", false, &|t| {
+            let name = format!("{}\0", "n".repeat(150));
+            t.push(
+                "././@LongLink",
+                EntryType::GNULongName,
+                FAR,
+                0o644,
+                name.as_bytes(),
+                |_| {},
+            );
+            t.file("f", ROOT, 0o644, b"f");
+        }),
+        image("later duplicate", true, &|t| {
+            t.file("f", ROOT, 0o644, b"f").file("f", FAR, 0o644, b"f");
+        }),
+    ]
+}
+
+/// In the build's user namespace, each of [`hostile_images`] checked, then
+/// extracted: `map\t<map>`, then `<name>\t<ok or refused>\t<ok, unmapped
+/// or the error>`.
+fn hostile_in_namespace(state: &Path, blobs: &Path) -> String {
+    let set_up = match enter_user_namespace(state) {
+        Ok(s) => s,
+        Err(r) => return format!("refused\t{r}"),
+    };
+    let mut out = vec![format!("map\t{}", set_up.userns.map)];
+    let store = Arc::new(set_up.store);
+    let overlay = Overlay::new(Arc::clone(&store), CAPS).unwrap();
+    fs::create_dir(blobs).unwrap();
+    for (n, (name, (tar, id), _)) in hostile_images().into_iter().enumerate() {
+        let path = blobs.join(n.to_string());
+        fs::write(&path, tar).unwrap();
+        let layers = [(id.clone(), path.clone())];
+        let check = match overlay.check_owners(&layers) {
+            Ok(()) => "ok".to_owned(),
+            Err(e) if crate::owners::find(&e).is_some() => "refused".to_owned(),
+            Err(e) => format!("error: {e}"),
+        };
+        let extract = match overlay.base_layer(&id, &path, &[]) {
+            Ok(_) => "ok".to_owned(),
+            Err(e) if e.to_string().ends_with(UNMAPPED) => "unmapped".to_owned(),
+            Err(e) => format!("error: {e}"),
+        };
+        out.push(format!("{name}\t{check}\t{extract}"));
+    }
+    drop(overlay);
+    let closed = Arc::into_inner(store).map(Store::close);
+    if !matches!(closed, Some(Ok(()))) {
+        out.push(format!("error\tclosing the store: {closed:?}"));
+    }
+    out.join("\n")
+}
+
+/// T1 red team (ADR-0098, T16): hostile owner headers (PAX ids, the root,
+/// a symlink, a FIFO, a device, a hardlink, whiteouts, a GNU long name, a
+/// duplicate) are refused by the check exactly where the kernel refuses
+/// their extraction in the build's user namespace.
+#[test]
+#[ignore = "T1: default: root in a rootless Podman container checks and extracts hostile owner headers"]
+fn red_team_hostile_owner_headers_are_refused_where_the_kernel_refuses_them() {
+    if !alone_in(
+        module_path!(),
+        "red_team_hostile_owner_headers_are_refused_where_the_kernel_refuses_them",
+    ) {
+        return;
+    }
+    assert!(
+        rustix::process::geteuid().is_root(),
+        "run as root of a rootless Podman container (just test-rootless)"
+    );
+    let tmp = private_tempdir();
+    let out = in_child(None, || {
+        hostile_in_namespace(&tmp.path().join("state"), &tmp.path().join("blobs"))
+    });
+    assert!(!out.contains("error"), "{out}");
+    assert_eq!(field(&out, "map"), "multi-range", "{out}");
+    for (name, _, refused) in hostile_images() {
+        let want = if refused {
+            "refused\tunmapped"
+        } else {
+            "ok\tok"
+        };
+        assert_eq!(field(&out, name), want, "{name}: {out}");
+    }
+}

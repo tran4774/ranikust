@@ -155,4 +155,142 @@ mod tests {
         let e = check(&wrong, &ranges, Form::Overlay, |_| Ok(false)).unwrap_err();
         assert!(matches!(e, Error::DiffIdMismatch { .. }), "{e}");
     }
+    /// A plain tar of `entries`, as [`layer`] writes it.
+    fn tar_of(entries: &[(&str, u64, u64)]) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, path) = layer(dir.path(), 0, entries);
+        fs::read(path).unwrap()
+    }
+
+    /// `blob` written to `dir/<n>`, with the diff ID of the tar it holds.
+    fn blob(dir: &std::path::Path, n: usize, blob: &[u8], tar: &[u8]) -> (Digest, PathBuf) {
+        let path = dir.join(n.to_string());
+        fs::write(&path, blob).unwrap();
+        let hash: [u8; 32] = Sha256::digest(tar).into();
+        (Digest::from_sha256_bytes(&hash), path)
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(data).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// One zstd frame of raw blocks holding `data`, made by hand.
+    fn zstd(data: &[u8]) -> Vec<u8> {
+        // Single segment, an 8-byte content size, no checksum.
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0xe0];
+        frame.extend_from_slice(&u64::try_from(data.len()).unwrap().to_le_bytes());
+        let blocks: Vec<&[u8]> = data.chunks(128 * 1024).collect();
+        for (i, block) in blocks.iter().enumerate() {
+            let last = u32::from(i + 1 == blocks.len());
+            let header = last | u32::try_from(block.len()).unwrap() << 3;
+            frame.extend_from_slice(&header.to_le_bytes()[..3]);
+            frame.extend_from_slice(block);
+        }
+        frame
+    }
+
+    fn skippable(data: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0x50, 0x2a, 0x4d, 0x18];
+        frame.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        frame.extend_from_slice(data);
+        frame
+    }
+
+    /// Red team (ADR-0098, T16): a far owner in a later gzip member or zstd
+    /// frame, the split mid-header, past a skippable frame, is still named.
+    #[test]
+    fn red_team_an_owner_in_a_later_member_or_frame_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = tar_of(&[("etc/", 0, 0), ("home/app/", 1000, 0), ("tmp/", 0, 0)]);
+        let (head, tail) = tar.split_at(700);
+        let gz = [gzip(head), gzip(tail)].concat();
+        let zst = [zstd(head), skippable(b"\0\0\0\0"), zstd(tail)].concat();
+        let one = MappedIds::parse("0 1000 1\n", "0 1000 1\n").unwrap();
+        for (n, bytes) in [gz, zst].iter().enumerate() {
+            let layers = vec![blob(dir.path(), n, bytes, &tar)];
+            for form in [Form::Overlay, Form::Live] {
+                let e = check(&layers, &one, form, |_| Ok(false)).unwrap_err();
+                assert!(
+                    matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+                    "{e}"
+                );
+                assert!(e.to_string().contains("uid 1000 (/home/app)"), "{e}");
+            }
+        }
+    }
+
+    /// Red team (ADR-0098, T16): a zstd blob that starts with a skippable
+    /// frame reads as a plain tar and is refused as one, by the check and the
+    /// extraction alike.
+    #[test]
+    fn red_team_a_blob_behind_a_skippable_frame_is_refused_by_both_sides() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = tar_of(&[("home/app/", 1000, 0)]);
+        let bytes = [skippable(&[0; 504]), zstd(&tar)].concat();
+        let layers = vec![blob(dir.path(), 0, &bytes, &tar)];
+        let map = MappedIds::parse("0 0 4294967295\n", "0 0 4294967295\n").unwrap();
+        for form in [Form::Overlay, Form::Live] {
+            let e = check(&layers, &map, form, |_| Ok(false)).unwrap_err();
+            assert!(
+                !matches!(e, Error::Rootfs(rnk_rootfs::Error::Unmapped(_))),
+                "{e}"
+            );
+        }
+        let state = fs::canonicalize(dir.path()).unwrap().join("state");
+        let store =
+            rnk_store::Store::open(&rnk_store::BuildPaths::new(dir.path(), &state)).unwrap();
+        let file = fs::File::open(&layers[0].1).unwrap();
+        crate::layer::extract_layer(&store, None, &layers[0].0, file, &[]).unwrap_err();
+    }
+
+    /// Red team (ADR-0098, T13): an extraction that failed on an owner part
+    /// way through leaves nothing the store calls extracted, so the next
+    /// check reads the layer again rather than trusting what it wrote.
+    #[test]
+    fn red_team_a_layer_whose_extraction_failed_is_checked_again() {
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (uid, gid) = (
+            u64::from(rustix::process::getuid().as_raw()),
+            u64::from(rustix::process::getgid().as_raw()),
+        );
+        let far = 3_000_000_000;
+        let layers = vec![layer(
+            dir.path(),
+            0,
+            &[
+                ("a/", uid, gid),
+                ("a/b", uid, gid),
+                ("c/", far, far),
+                ("d", uid, gid),
+            ],
+        )];
+        let state = fs::canonicalize(dir.path()).unwrap().join("state");
+        let store =
+            rnk_store::Store::open(&rnk_store::BuildPaths::new(dir.path(), &state)).unwrap();
+        let file = fs::File::open(&layers[0].1).unwrap();
+        let e = crate::layer::extract_layer(&store, None, &layers[0].0, file, &[]).unwrap_err();
+        assert!(
+            format!("{e:?}").contains(r#"op: "chown", path: "./c""#),
+            "{e:?}"
+        );
+        let key = rnk_store::EntryKey::Layer(layers[0].0.clone());
+        assert_eq!(store.get(&key).unwrap(), None);
+        let own =
+            MappedIds::parse(&format!("{uid} {uid} 1\n"), &format!("{gid} {gid} 1\n")).unwrap();
+        let mut asked = 0;
+        let e = check(&layers, &own, Form::Overlay, |chain| {
+            asked += 1;
+            Ok(store
+                .get(&rnk_store::EntryKey::Layer(chain.clone()))?
+                .is_some())
+        })
+        .unwrap_err();
+        assert_eq!(asked, 1);
+        assert!(e.to_string().contains("uid 3000000000 (/c)"), "{e}");
+    }
 }

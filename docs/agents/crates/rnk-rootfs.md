@@ -171,7 +171,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   the owner scans and `MappedIds` (ADR-0098, `src/owners.rs`,
   `src/extract/tests.rs`: what each extraction form would `chown`, read to
   the end, the header check's errors; a `chown`'s `EINVAL` in `src/meta.rs`
-  as `Error::Unmapped`);
+  as `Error::Unmapped`); their red team (`tests/red_team_owners.rs`:
+  hostile headers, PAX, global PAX, GNU long names, base-256, duplicates,
+  whiteouts, hardlinks, special files, framing and entries past the end,
+  each scanned as both extraction forms `chown`, or refused alike; a
+  refusal of 5,000 owners under hostile names names 16;
+  `tests/red_team_owners_memory.rs`: 200,000 owners and PAX sets near the
+  `tar-header` limit scanned in under 4 MiB);
   deletion of a 3,004-level tree; raw modes 1777 and 4755. Unit tests per
   module, with the same racing swap under `extract`, `delete_contents` and
   `copy`, and one `set_meta_if`'s `decide` makes itself

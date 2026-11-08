@@ -438,9 +438,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 
 - **T0, unit** (`src/*/tests.rs`): `owners` (the ways out by who made the
   namespace and its map, none a flag; the refusal found through the
-  libraries' wrappers, ADR-0098); `cli` (kaniko spellings per accepted flag,
-  pflag booleans, `--target` lists, every refused flag with its reason all
-  at once, nothing after `--`, clap errors; `--parallel-stages` and
+  libraries' wrappers, ADR-0098; owners under hostile names reach the
+  terminal escaped, on two lines, sixteen named:
+  `red_team_unmapped_owners_under_hostile_names_reach_the_terminal_escaped`);
+  `cli` (kaniko spellings per accepted flag, pflag booleans, `--target`
+  lists, every refused flag with its reason all at once, nothing after `--`, clap errors; `--parallel-stages` and
   `--single-snapshot` refused whatever the spelling; `--allow proc.rbind`
   parsed, and `--help` saying what it exposes:
   `the_help_says_what_proc_rbind_exposes`), `config` (kaniko's
@@ -684,7 +686,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   check, naming it and its path, with the container's ways out, which ask
   for no range past 65536 ids, as its extraction is; kaniko mode per stage
   in the same namespace streams no base layer and its check refuses the
-  far owner);
+  far owner) and
+  `red_team_hostile_owner_headers_are_refused_where_the_kernel_refuses_them`
+  (PAX ids, the root, a symlink, a FIFO, a device, a hardlink's header,
+  whiteouts, a GNU long name's header and a later duplicate: the check
+  refuses exactly the images whose extraction the kernel refuses);
   `setup/tests/userns/layers/hostile.rs`
   `red_team_layers_extracted_under_one_map_are_never_used_under_another`
   (one layer extracted with the container's map and in the build's

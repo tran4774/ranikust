@@ -1788,6 +1788,58 @@ mod tests {
         );
     }
 
+    /// Red team (ADR-0098, T16): a base layer of many owners the namespace
+    /// does not map, under names of terminal escapes, line breaks and bidi
+    /// controls, gives a refusal of two lines, escaped, that names sixteen.
+    #[test]
+    fn red_team_unmapped_owners_under_hostile_names_reach_the_terminal_escaped() {
+        let hostile = "\x1b]0;RNK\x07\n\x1b[2J\r\u{202e}\u{9b}";
+        let mut tar = tar::Builder::new(Vec::new());
+        for i in 0..40_u64 {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_mode(0o755);
+            h.set_uid(3_000_000_000 + i);
+            h.set_gid(3_000_000_000 + i);
+            h.set_size(0);
+            let name = format!("{i}{hostile}{}/", "x".repeat(200));
+            tar.append_data(&mut h, name, std::io::empty()).unwrap();
+        }
+        let tar = tar.into_inner().unwrap();
+        let ids = rnk_rootfs::MappedIds::parse("0 0 1\n", "0 0 1\n").unwrap();
+        let mut found = rnk_rootfs::Unmapped::owners(ids);
+        rnk_rootfs::scan_owners(tar.as_slice(), &mut found).unwrap();
+        let e = rnk_rootfs::Error::Unmapped(found.clone());
+        let failed = build::Failed {
+            message: format!("stage base: preparing: {e}"),
+            unmapped: Some(found),
+        };
+        let out = reported(&Failure::built(failed, true));
+        assert_eq!(out.lines().count(), 2, "{out}");
+        assert!(out.ends_with('\n'));
+        assert!(
+            out.lines()
+                .flat_map(str::chars)
+                .all(|c| !c.is_control() && c != '\u{202e}'),
+            "{out:?}"
+        );
+        assert_eq!(
+            out.matches("\\u{1b}]0;RNK\\u{7}\\n\\u{1b}[2J\\r\\u{202e}\\u{9b}x")
+                .count(),
+            16
+        );
+        assert!(
+            out.contains(", and 32 more entries with other ids;"),
+            "{out}"
+        );
+        assert!(out.len() < 16 * 6 * 260 + 1024, "{} bytes", out.len());
+        let guidance = out.lines().nth(1).unwrap();
+        assert!(
+            guidance.starts_with("  ") && !guidance.contains("RNK"),
+            "{guidance}"
+        );
+    }
+
     /// `--metrics-file` in the build context, or through a symlink, is
     /// refused before the report is set up; the report's writer never
     /// follows a symlink either (ADR-0076).

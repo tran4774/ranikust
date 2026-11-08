@@ -244,7 +244,10 @@ that found a bug stay as its regression test.
   `tests/layers.rs`); the id map's canonical form and the mapped key, apart
   from every chain ID (`src/userns.rs`); the owner check of every layer
   not kept, before any extraction, a kept one unread (`src/owners.rs`,
-  ADR-0098); `spawn_as_caller`, which starts the mount thread,
+  ADR-0098; red team: an owner in a later gzip member, or a zstd frame
+  past a skippable one, named; a blob behind a skippable frame refused by
+  the check and the extraction alike; a layer whose extraction failed on
+  an owner read again); `spawn_as_caller`, which starts the mount thread,
   carries its caller's dispatcher over (`src/mount.rs`; the mount itself
   needs root).
 - **T0, walk and exporter** (`src/kaniko/walk/tests.rs`,
