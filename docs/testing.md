@@ -457,12 +457,14 @@ the step and errno it prints. Under a minute in the VM after its boot.
   1.33, containerd 2.0, runc 1.2 and Linux 6.3 or later, and the VM has
   6.8), and the SHA-256 of its `k3s` binary, from the release's
   `sha256sum-amd64.txt`; a new pin changes both. `tests/vm/stage.sh`
-  downloads it from the GitHub release, retrying with curl's backoff for up
-  to ten minutes, and refuses another hash; `vm.sh` keeps it in the VM
-  cache (`_vm-image/k3s/`) for the next run, CI's `T2 k8s` job in an
-  Actions cache keyed on `pin.env` that only `main`'s runs save, so a pull
-  request downloads it only when it changes the pin or `main` has not run
-  since (#214). `k8s.sh` checks the hash again, installs it as
+  downloads it from the GitHub release, retrying a failed or stalled
+  download with curl's backoff (none started after ten minutes), and
+  refuses another hash; `vm.sh` keeps it in the VM cache
+  (`_vm-image/k3s/`) for the next run, CI's `T2 k8s` job in an Actions
+  cache keyed on `pin.env` that only `main`'s runs save, so a pull request
+  downloads it only when `main` holds no entry for its `pin.env` (a pin
+  `main` has not run with yet, or an entry GitHub evicted).
+  `k8s.sh` checks the hash again, installs it as
   `/usr/local/bin/k3s` and runs it as the transient systemd unit `rnk-k3s`,
   without Traefik, ServiceLB, the metrics server, local-path storage, CoreDNS
   or the Helm controller. The one image the cluster pulls is the pause

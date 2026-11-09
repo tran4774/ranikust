@@ -14,11 +14,11 @@
 # RANIKUST_LOG_T0, the caller's seconds since its start, puts the `[stage
 # +Ns]` lines on the caller's clock, so a run's log keeps one timeline.
 # RANIKUST_K3S_CACHE, a directory of the caller's (vm.sh: the VM image
-# cache; t2.yml's k8s job: one main's runs save in the Actions cache), keeps
-# the k3s download for the next run; this script deletes
-# there a download that failed and, after one that did not, every other
-# k3s-* file (older pins). Without it the download goes straight into the
-# stage.
+# cache; t2.yml's k8s job: a directory the Actions cache restores, which
+# `main`'s runs save), keeps the k3s download for the next run; this script
+# deletes there a download that failed and, after one that did not, every
+# other k3s-* file (older pins). Without it the download goes straight into
+# the stage.
 set -euo pipefail
 
 T0="${RANIKUST_LOG_T0:-0}"
@@ -98,9 +98,13 @@ if wants k8s; then
   source "$HERE/guest/k8s/pin.env"
   url="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION//+/%2B}/k3s"
   sha() { sha256sum "$1" | cut -d' ' -f1; }
-  # GitHub's release download has answered 5xx for hours (#214): back off
-  # from 1 s, doubling, for up to ten minutes.
-  fetch() { curl --proto '=https' --tlsv1.2 -fsSL --retry 10 --retry-max-time 600 --retry-connrefused -o "$1" "$url"; }
+  # GitHub's release download has outages (#214): nine retries, 1 s apart and
+  # doubling (8.5 minutes of waits), none started after ten minutes; a stall
+  # counts as a timeout, so it is retried too.
+  fetch() {
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 9 --retry-max-time 600 --retry-connrefused \
+      --connect-timeout 30 --speed-limit 1024 --speed-time 60 -o "$1" "$url"
+  }
   if [ -n "${RANIKUST_K3S_CACHE:-}" ]; then
     cached="$RANIKUST_K3S_CACHE/k3s-$K3S_VERSION"
     if [ ! -f "$cached" ] || [ "$(sha "$cached")" != "$K3S_SHA256" ]; then

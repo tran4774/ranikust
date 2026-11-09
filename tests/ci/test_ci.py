@@ -612,9 +612,9 @@ class Workflows(unittest.TestCase):
         self.assertEqual(cache_name("matrix-podman", js["matrix-podman"]), "t2-smoke")
         self.assertEqual(cache_name("matrix-user", js["matrix-user"]), "t2-smoke")
 
-    def test_only_main_saves_a_cache(self):
-        # A pull request's run reads main's entries and writes none
-        # (ADR-0090), so it cannot fill a cache main reads.
+    def test_actions_cache_and_rust_cache_save_only_from_main(self):
+        # A pull request's run reads main's entries and writes none (ADR-0090,
+        # ADR-0095).
         main_only = "github.ref == 'refs/heads/main'"
         for wf in self.LANED:
             for job, lines in jobs(wf).items():

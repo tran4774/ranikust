@@ -297,7 +297,8 @@ jobs:
         run: tests/vm/runner.sh k8s
       # From main only, as the Rust caches: a pull request reads main's entry
       # and writes none. After a failed suite too: stage.sh keeps a download
-      # only once its SHA-256 matched. The same paths as the restore's, which
+      # only once its SHA-256 matched; a run that downloaded nothing gets a
+      # warning that no path matched. The same paths as the restore's, which
       # the entry's version hashes.
       - name: Save the k3s download
         if: github.ref == 'refs/heads/main' && !cancelled() && steps.k3s.outcome == 'success' && steps.k3s.outputs.cache-hit != 'true'
