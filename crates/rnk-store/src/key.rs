@@ -12,7 +12,7 @@ use rnk_oci::Digest;
 /// another stack; version 2 (`layers/v2/`) may hold an image's `trusted.*`
 /// xattrs, which version 3 never sets (ADR-0075). They stay on disk until
 /// `prune` (Phase 5) or the operator removes them.
-const LAYER_LAYOUT: &str = "v3";
+pub(crate) const LAYER_LAYOUT: &str = "v3";
 
 /// An entry of the store, named by a digest.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

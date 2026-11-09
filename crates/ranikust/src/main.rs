@@ -763,7 +763,11 @@ fn build(
                             match rootless(&config, &seccomp, &span, started_in, via, fault, path) {
                                 Rootless::Built(built) => return built,
                                 Rootless::NotHere(not_here) => {
-                                    tracing::info!("ranikust: {}", not_here.refusal);
+                                    if not_here.refusal.warns_on_fallback() {
+                                        tracing::warn!("ranikust: {}", not_here.refusal);
+                                    } else {
+                                        tracing::info!("ranikust: {}", not_here.refusal);
+                                    }
                                     // One probe line per build.
                                     if not_here.probed {
                                         KanikoBy::AutoProbed

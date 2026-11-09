@@ -80,7 +80,7 @@ fn held(case: &str, state: &Path, owner: Owner) -> Result<(), Refusal> {
             reason: "on overlayfs".into(),
             guidance: "".into(),
         };
-        hold_state_dir(&s, uid, owner, on_overlayfs).map(drop)
+        hold_state_dir(&s, uid, owner, &[], on_overlayfs).map(drop)
     })
 }
 

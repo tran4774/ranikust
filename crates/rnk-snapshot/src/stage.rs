@@ -267,30 +267,31 @@ pub struct Overlay {
     state: Arc<RootPath>,
     api: MountApi,
     next_stage: AtomicU64,
-    /// The user namespace the build runs in, when not the initial one.
+    /// The user namespace the store was opened in, when not the initial
+    /// one.
     userns: Option<UserNamespace>,
 }
 
 impl Overlay {
-    /// The overlay snapshotter of a build, with what the probe found. Made
-    /// in the user namespace the build runs in, if any: base layers are
-    /// extracted for that namespace's ids ([`Snapshotter::base_layer`]).
+    /// The overlay snapshotter of a build, with what the probe found. Base
+    /// layers are extracted for the ids of the user namespace the store was
+    /// opened in, if any ([`Store::id_maps`], [`Snapshotter::base_layer`]),
+    /// and keyed by its maps, which the store's canary guards.
     ///
     /// # Errors
     ///
     /// [`Error::UnsafePath`] when the state directory's path holds overlay
-    /// option syntax; [`Error::Rootfs`] when it cannot be opened;
-    /// [`Error::Store`] or [`Error::Io`] when `/proc/self` cannot tell the
-    /// user namespace or its map.
+    /// option syntax; [`Error::Rootfs`] when it cannot be opened.
     pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self> {
         mount::check_path(store.state_dir())?;
         let state = Arc::new(RootPath::open(store.state_dir())?);
+        let userns = store.id_maps().map(UserNamespace::new);
         Ok(Self {
             store,
             state,
             api: caps.api,
             next_stage: AtomicU64::new(0),
-            userns: UserNamespace::current()?,
+            userns,
         })
     }
 

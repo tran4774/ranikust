@@ -370,8 +370,10 @@ Phase 4 (ADR-0064), `--ignore-var-run` in both modes (ADR-0052 D4).
   (`setup::hold_state_dir`): overlayfs first, told from the nearest
   directory that exists, where a missing one would be made; then the
   owner and chain checks, which make a missing one; then the store's own
-  refusals (`Store::check_state_dir`, writing nothing); only then is its
-  mode set.
+  refusals (`Store::check_state_dir_for`, writing nothing), the canary of
+  each map the build's namespace may get among them
+  ([cache-and-store](cache-and-store.md#the-canary-of-an-id-map)); only
+  then is its mode set.
 
 ## Refusal and guidance
 
@@ -524,8 +526,8 @@ failed `chown` pass
 ([ADR-0098](../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md)).
 The map is the process's own `/proc/self/uid_map` and `gid_map`: the one
 ranikust wrote (probe step 2), or the container's, read by
-`rnk_snapshot::UserNamespace`. In the initial namespace every id maps and
-nothing is checked.
+`rnk_store::IdMaps` for `rnk_snapshot::UserNamespace`. In the initial
+namespace every id maps and nothing is checked.
 
 - **Base layers, before extraction.** `Snapshotter::check_owners`
   decompresses each base layer once more and reads its tar headers as the

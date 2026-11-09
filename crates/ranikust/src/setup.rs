@@ -133,6 +133,12 @@ pub(crate) enum Kind {
     /// so no mode may follow in this process (ADR-0136: in a child, kaniko
     /// mode may in the parent).
     Broken,
+    /// The state directory holds layers extracted under other ids than the
+    /// build's user namespace gives (ADR-0128): routed as [`Kind::Other`],
+    /// but the operator must empty it or pass another, so root's
+    /// `--mode=auto` logs it as a warning where it passes rootless overlay
+    /// mode over for kaniko mode ([`Refusal::warns_on_fallback`]).
+    IdMapChanged,
 }
 
 /// What `--mode=auto` does after overlay mode's set-up refused, once root
@@ -158,9 +164,14 @@ pub(crate) fn route(refusal: &Refusal, in_container: bool) -> Route {
     match (refusal.kind, in_container) {
         (Kind::OverlayUnusable, false) => Route::KanikoStages,
         (Kind::OverlayUnusable, true) => Route::RefuseInContainer,
-        (Kind::Other | Kind::NoMountPrivilege | Kind::SandboxBlocked | Kind::Broken, _) => {
-            Route::Refuse
-        }
+        (
+            Kind::Other
+            | Kind::NoMountPrivilege
+            | Kind::SandboxBlocked
+            | Kind::Broken
+            | Kind::IdMapChanged,
+            _,
+        ) => Route::Refuse,
     }
 }
 
@@ -169,6 +180,13 @@ impl Refusal {
     /// or cannot use overlay, what `--mode=auto` turns into kaniko mode.
     pub(crate) fn needs_kaniko_mode(&self) -> bool {
         self.kind == Kind::NoMountPrivilege
+    }
+
+    /// Whether a fallback to another mode after this refusal is logged as a
+    /// warning rather than as information: the state directory needs the
+    /// operator (ADR-0128).
+    pub(crate) fn warns_on_fallback(&self) -> bool {
+        self.kind == Kind::IdMapChanged
     }
 }
 
@@ -371,14 +389,16 @@ pub(crate) fn set_up(
     refuse_overlay: bool,
 ) -> Result<Setup, Refusal> {
     let euid = rustix::process::geteuid().as_raw();
-    let held = hold_state_dir(state_dir, euid, crate::statedir::Owner::me(), || Refusal {
-        kind: Kind::OverlayUnusable,
-        reason: format!(
-            "the state directory {} is on overlayfs, a container's own root, where overlay \
+    let held = hold_state_dir(state_dir, euid, crate::statedir::Owner::me(), &[], || {
+        Refusal {
+            kind: Kind::OverlayUnusable,
+            reason: format!(
+                "the state directory {} is on overlayfs, a container's own root, where overlay \
              mode cannot keep its upper directories",
-            state_dir.display()
-        ),
-        guidance: ON_OVERLAYFS.into(),
+                state_dir.display()
+            ),
+            guidance: ON_OVERLAYFS.into(),
+        }
     })?;
     // The store first, then the probes, which write in the state directory
     // only once its marker is checked (Q-111, (a)).
@@ -431,32 +451,52 @@ pub(crate) fn set_up(
 /// refusal before anything in it is changed: overlayfs first, told from
 /// the nearest directory that exists, where a missing one would be made
 /// (refused with `on_overlayfs()`); then [`crate::statedir::stage`]'s
-/// checks; then [`Store::check_state_dir`], which writes nothing (Q-111,
-/// (a)); only then the mode [`crate::statedir::Staged::finish`] sets.
-/// `euid` names what to do with a prune cut short. The hold keeps the
-/// state directory's shared lock until the caller's [`Store::open`] has
-/// its own.
+/// checks; then [`Store::check_state_dir_for`] with `children`, the maps
+/// the build's user namespace may get when the store opens there, which
+/// writes nothing (Q-111, (a); the canary, ADR-0128); only then the mode
+/// [`crate::statedir::Staged::finish`] sets. `euid` names what to do with
+/// a prune cut short. The hold keeps the state directory's shared lock
+/// until the caller's [`Store::open`] has its own.
 ///
 /// # Errors
 ///
-/// `on_overlayfs()` where the state directory would be on overlayfs; any
-/// other refusal is of [`Kind::Other`].
+/// `on_overlayfs()` where the state directory would be on overlayfs; a
+/// changed id map is of [`Kind::IdMapChanged`], any other refusal of
+/// [`Kind::Other`].
 pub(crate) fn hold_state_dir(
     state_dir: &Path,
     euid: u32,
     owner: crate::statedir::Owner,
+    children: &[rnk_store::IdMaps],
     on_overlayfs: impl FnOnce() -> Refusal,
+) -> Result<rnk_store::StateDirHold, Refusal> {
+    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
+        return Err(on_overlayfs());
+    }
+    stage_and_hold(state_dir, euid, owner, children)
+}
+
+/// [`hold_state_dir`] past its overlayfs check, for kaniko mode off `/`
+/// too, which builds there: [`crate::statedir::stage`]'s checks, then
+/// [`Store::check_state_dir_for`] with `children`, then the mode.
+///
+/// # Errors
+///
+/// As [`hold_state_dir`], overlayfs aside.
+fn stage_and_hold(
+    state_dir: &Path,
+    euid: u32,
+    owner: crate::statedir::Owner,
+    children: &[rnk_store::IdMaps],
 ) -> Result<rnk_store::StateDirHold, Refusal> {
     let refusal = |refused: crate::statedir::Refused| Refusal {
         kind: Kind::Other,
         reason: refused.0,
         guidance: "".into(),
     };
-    if crate::statedir::on_overlayfs(crate::statedir::nearest_existing(state_dir)) {
-        return Err(on_overlayfs());
-    }
     let staged = crate::statedir::stage(state_dir, owner).map_err(refusal)?;
-    let held = Store::check_state_dir(state_dir).map_err(|e| store_refusal(&e, state_dir, euid))?;
+    let held = Store::check_state_dir_for(state_dir, children)
+        .map_err(|e| store_refusal(&e, state_dir, euid))?;
     staged.finish().map_err(refusal)?;
     Ok(held)
 }
@@ -476,11 +516,15 @@ fn open_store(root: &Path, state_dir: &Path, euid: u32) -> Result<Store, Refusal
 /// `euid` (outside any user namespace of the build), as a [`Refusal`]. An
 /// error that names the state directory itself says so alone; a directory
 /// a `prune --all` did not finish emptying gets what `euid` does with it
-/// ([`crate::prune::cut_short`]).
+/// ([`crate::prune::cut_short`]). A changed id map is of
+/// [`Kind::IdMapChanged`], with root's way out
+/// ([`crate::prune::root_commands`]) for root, which needs the caller
+/// outside the build's user namespace; any other is of [`Kind::Other`].
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
     use rnk_store::Error;
-    let reason = match e {
-        Error::Io { path, .. } if path == state_dir => e.to_string(),
+    let (reason, kind) = match e {
+        Error::Io { path, .. } if path == state_dir => (e.to_string(), Kind::Other),
+        Error::IdMapChanged { .. } => (e.to_string(), Kind::IdMapChanged),
         Error::NotAStateDir { .. }
         | Error::NoFlock { .. }
         | Error::Busy { .. }
@@ -493,21 +537,28 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
         | Error::Unmarked { .. }
         | Error::UsedOnSlash { .. }
         | Error::AnonymousFile { .. }
-        | Error::NameOutlivesUnlink { .. } => e.to_string(),
+        | Error::NameOutlivesUnlink { .. } => (e.to_string(), Kind::Other),
         Error::Io { .. }
         | Error::BadEntry { .. }
         | Error::Cancelled
         | Error::Anonymous { .. }
         | Error::Random(_)
         | Error::Rootfs(_)
-        | Error::Fill { .. } => format!("cannot open the store in {}: {e}", state_dir.display()),
+        | Error::Fill { .. } => (
+            format!("cannot open the store in {}: {e}", state_dir.display()),
+            Kind::Other,
+        ),
     };
     Refusal {
-        kind: Kind::Other,
+        kind,
         reason,
         guidance: match crate::prune::unfinished_prune(e) {
             Some((crate::prune::Unfinished::CutShort, dir)) => {
                 crate::prune::cut_short(dir, euid).into()
+            }
+            // Root's prune --all would only print these.
+            None if euid == 0 && matches!(e, Error::IdMapChanged { .. }) => {
+                crate::prune::root_commands(state_dir).into()
             }
             Some((crate::prune::Unfinished::NotPruned, _)) | None => "".into(),
         },
@@ -593,7 +644,7 @@ pub(crate) fn set_up_kaniko(
     // On `/`, the lock first, on `/` itself: two builds in one container
     // never share it, whatever their state directories.
     let root_lock = if on_slash { Some(lock_slash()?) } else { None };
-    prepare_state_dir(state_dir)?;
+    let held = kaniko_state_dir(state_dir, on_slash, euid)?;
     let slash = Path::new("/");
     // On `/` a `RUN` reads any file with a path: the store keeps none, its
     // blobs are anonymous files (ADR-0051). A `RUN` also writes the state
@@ -604,6 +655,7 @@ pub(crate) fn set_up_kaniko(
     } else {
         open_store(state_dir, state_dir, euid)?
     };
+    drop(held);
     let root = if on_slash {
         let root = RootPath::open(slash).map_err(|e| failed("opening /", &e))?;
         Some((root, slash.to_path_buf()))
@@ -1306,6 +1358,27 @@ fn kernel_refused_mount(e: &SnapshotError) -> bool {
         }
         _ => false,
     }
+}
+
+/// Kaniko mode's state directory, made where missing. Off `/`, the
+/// store's checks come before the mode it gets, as in overlay mode
+/// ([`stage_and_hold`]): the hold is the caller's until [`Store::open`]
+/// returns. On `/`, [`crate::statedir::prepare`] alone; the anonymous
+/// store then refuses one that holds data (ADR-0077).
+///
+/// # Errors
+///
+/// A [`Refusal`] from [`stage_and_hold`] or [`prepare_state_dir`].
+fn kaniko_state_dir(
+    state_dir: &Path,
+    on_slash: bool,
+    euid: u32,
+) -> Result<Option<rnk_store::StateDirHold>, Refusal> {
+    if on_slash {
+        prepare_state_dir(state_dir)?;
+        return Ok(None);
+    }
+    stage_and_hold(state_dir, euid, crate::statedir::Owner::me(), &[]).map(Some)
 }
 
 /// [`crate::statedir::prepare`] as a [`Refusal`].

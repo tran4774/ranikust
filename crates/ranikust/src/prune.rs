@@ -309,7 +309,7 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
 /// in, else none; for one `prune --all --userns` takes ([`userns_takes`]),
 /// [`userns_way`] instead, whose emptying deletes what that range owns,
 /// which those commands would refuse to.
-fn root_commands(dir: &Path) -> String {
+pub(crate) fn root_commands(dir: &Path) -> String {
     root_commands_for(dir, |uid| {
         // Without a usable range, prune --all --userns cannot run either.
         crate::subids::root_range_quiet().is_ok_and(|range| userns_takes(dir, uid, range))
@@ -417,7 +417,7 @@ fn ask_root(dir: &Path) -> String {
 
 /// Root's way to empty `--userns`'s state directory `dir`:
 /// [`prune_userns`].
-fn userns_way(dir: &Path) -> String {
+pub(crate) fn userns_way(dir: &Path) -> String {
     format!(
         "{d} is the state directory of --userns, owned by the first uid of root's ranikust \
          range: ranikust prune --all --userns --state-dir {d} empties it in that range's user \
@@ -605,6 +605,7 @@ pub(crate) fn unfinished_prune(e: &rnk_store::Error) -> Option<(Unfinished, &Pat
         Error::NotPruned { path, .. } => Some((Unfinished::NotPruned, path)),
         Error::PruneCutShort { path } => Some((Unfinished::CutShort, path)),
         Error::NotAStateDir { .. }
+        | Error::IdMapChanged { .. }
         | Error::NoFlock { .. }
         | Error::Busy { .. }
         | Error::InUse { .. }

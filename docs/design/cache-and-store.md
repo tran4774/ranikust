@@ -51,8 +51,10 @@ Decisions: [ADR-0005](../adr/0005-own-versioned-cache-key.md),
 ├── .ranikust-pruning           the marker renamed while prune --all empties it
 ├── blobs/sha256/<hex>          compressed blobs (base images, cache layers)
 ├── layers/v3/sha256/<hex>/     extracted layers by chain ID (and id map), immutable [open: #1]
+├── layers/v3/canary/<hex>/     a canary per id map: uid-<id> and gid-<id> files (ADR-0128)
 ├── caches/<sha256(id)>/        RUN --mount=type=cache, kept between builds
 ├── locks/{blobs,layers/v3}/sha256/<hex>   per-digest lock files [open: #1]
+├── locks/layers/v3/canary/<hex>           a canary's lock
 ├── tmp/<build-id>/<n>          entries being written by one build, renamed into place
 ├── sandbox/runs/<id>.journal   stub journal of a running RUN, and <id>/ its /etc copies
 ├── .ranikust-anon-userns-probe-*/  rootless overlay mode's probe, held (flock) while in use
@@ -94,14 +96,12 @@ in a space of their own (`KEY_DOMAIN` in
 [`userns.rs`](../../crates/rnk-snapshot/src/userns.rs)). The maps are relative to
 the parent namespace, so nested namespaces with the same maps under parents
 with different ones share a key, and a build in one sees the owners of a
-layer the other extracted through its own maps: the overflow id for ids it
+layer the other extracted through its own maps: the overflow id (the
+sysctls `kernel.overflowuid` and `overflowgid`, usually 65534) for ids it
 does not map, other owners where the ranges overlap. This happens, for
 example, to a namespace ranikust makes in a rootless Podman container whose
 state directory is on a volume, after the user's ranges in `/etc/subuid`
-change: the moved range of the enclosing container is not seen. A canary per
-state directory and map will refuse such layers
-([#183](https://github.com/tran4774/ranikust/issues/183),
-[ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md)).
+change: a canary refuses such layers ([below](#the-canary-of-an-id-map)).
 `rnk-snapshot` makes the key and the store takes it as it takes a chain ID,
 an opaque digest; how
 [#1](https://github.com/tran4774/ranikust/issues/1) names a layer must keep
@@ -125,6 +125,51 @@ base kept in the store
 ([ADR-0017](../adr/0017-stage-rootfs-by-copy-not-hardlinks.md)) [inferred:
 the form of a flattened base in the store is not designed yet].
 
+### The canary of an id map
+
+A canary per state directory and map refuses layers extracted under other ids
+than the build's user namespace gives now
+([ADR-0128](../adr/0128-a-canary-guards-nested-namespaces-a-budget-bounds-device-names-and-a-device-left-out-keeps-the-lower-entry.md),
+[#183](https://github.com/tran4774/ranikust/issues/183)). The store reads the
+maps once, when it opens, and `rnk-snapshot` keys its layers by them.
+
+- **What it is:** `layers/v3/canary/<hex>/`, named by the `sha256` of a tag of
+  its own and both maps, holds an empty `0444` file for the first and the last
+  id of each extent: `uid-<id>` owned by that uid and the lowest gid of the
+  gid map, `gid-<id>` by the lowest uid of the uid map and that gid. It sits
+  beside the layers it guards and shares their layout version.
+- **When it is made:** with the first layer published under the map, after
+  the layer's extraction and before its rename, under the canary's lock: made
+  in `tmp/<build-id>/` and renamed into place, as a layer is. One found there
+  at the rename, made by something that took no lock, is checked instead.
+- **When it is checked:** first before anything is written in the state
+  directory: rootless overlay mode and `--userns` check, from outside, the
+  canary of each map the build's namespace may get (the maps `rnk-sandbox`
+  would write, `BuildIds::maps`), each entry owned there by the id the map
+  gives its own (`Store::check_state_dir_for`). Then the store, opened in the
+  namespace, checks its own maps' canary as the namespace sees it, and again
+  before a layer of the map is reused. Each entry must be a regular file of
+  the state directory's mount, looked at in one descriptor of the canary's
+  directory, opened without following a symlink. An id a map above no
+  longer gives shows as the overflow id, and one an overlapping range gives
+  as another id: a change above that moves the first or the last id of an
+  extent, at any depth, or a `chown` of the canary on disk, shows. Only
+  those ids are probed (ADR-0128).
+- **A mismatch** (a wrong owner, a missing entry, an entry of another type, a
+  canary that cannot be read, or a layer of the map found without its canary)
+  refuses the build with the way out: `ranikust prune --all` (for root,
+  root's commands, or `prune --all --userns` for `--userns`'s state
+  directory, which root's own `prune --all` would only print or name), or
+  another `--state-dir`. No canary yet is not a mismatch: no layer of the map was
+  published. Under root's `--mode=auto`, rootless overlay mode refused so is
+  passed over for kaniko mode, as for its other refusals before the build's
+  user namespace, and the refusal, with its way out, is logged as a warning
+  (the others as information): kaniko mode on `/` then refuses a state
+  directory that holds data (ADR-0077), so the warning names the cause.
+- **Older layers:** version 2 of the key's tag came with the canary, so a
+  layer extracted before it is extracted again, never reused unguarded; the
+  old one stays until `prune --all`.
+
 ## Locks
 
 All are `flock` on files in the store, released by the kernel when the
@@ -133,6 +178,10 @@ process dies (a T0 test kills with `SIGKILL`).
 - **Per digest:** taken before downloading a blob or extracting a layer. A
   build that waited finds the entry published and uses it. These lock files
   are never removed, so no build locks a file another has just unlinked.
+- **Per canary:** `locks/layers/v3/canary/<hex>`, taken inside a layer's lock
+  by the first use of a layer of the map in a store that has not seen the
+  canary yet, so one build makes it and the others find it
+  ([below](#the-canary-of-an-id-map)).
 - **Per build:** each build owns `builds/<build-id>/` and `tmp/<build-id>/`
   and holds `builds/<build-id>.lock` while it runs, taken before either
   directory exists. A build whose lock is free is dead; the next start
@@ -205,7 +254,8 @@ an earlier one or one starting: in the namespace of a `--userns` build,
 another build's start may have made it and not yet given it to the range.
 `check_state_dir` runs `Store::open`'s refusals, a prune cut short
 included, writing nothing; overlay mode, as root, rootless or under
-`--userns`, runs it before it sets the state directory's mode (and, in a
+`--userns`, and kaniko mode off `/` run it before they set the state
+directory's mode (and, in a
 user namespace, before its probe), so that every refusal of the state
 directory comes before anything there is changed, and keeps the state
 directory's shared lock until the store opens. In overlay mode an upper
@@ -382,8 +432,8 @@ keep, unlike ADR-0133's
 and check that only the marker is left; then it runs again.
 `--metrics-file` is refused with it before anything runs: the process
 writes the report at exit, by then as the range's uid. Root's own
-`prune --all`, and a `--userns` build refused by a prune cut short, name
-`prune --all --userns` instead of root's commands
+`prune --all`, and a `--userns` build refused by a prune cut short or by
+the canary, name `prune --all --userns` instead of root's commands
 only for a marked directory it takes (owned by the range's first uid and
 passing the checks above), which those commands would refuse to empty, its
 other uids' entries being outside their filter; so neither sends root to

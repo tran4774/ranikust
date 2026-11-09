@@ -496,7 +496,9 @@ ranikust never fills or empties a directory the operator names (ADR-0050,
 which replaces the `--workdir` checks of ADR-0038 and ADR-0047). The root is
 `/` in a container, chosen by kaniko's heuristic (ADR-0048), or a directory
 per stage made for the build (ADR-0059). Before anything is written,
-`ranikust::statedir::prepare` checks the state directory:
+`ranikust::statedir::stage` checks the state directory, and
+`Staged::finish` then sets its mode (step 3's `chmod`; both are
+`statedir::prepare` on `/`):
 
 1. Before it is created, its nearest existing directory and every real
    parent, walked from a descriptor (`..`), never by path, are owned by root
@@ -517,8 +519,11 @@ per stage made for the build (ADR-0059). Before anything is written,
    `statedir::SYSTEM_DIRS` (`/mnt`, `/srv`, `/opt`..., by device and inode);
    one marked only with the old `.ranikust-root` is refused, named. After
    `chmod 0700` the mode must read back so; `builds/` likewise.
-4. On `/`, the store then refuses a marked directory too, and anything but its
-   own marker and leftovers (ADR-0077; [locks](cache-and-store.md#locks)).
+4. Off `/`, the store's own checks (`Store::check_state_dir`, the
+   [canary](cache-and-store.md#the-canary-of-an-id-map) included) come before
+   that `chmod`, as in overlay mode, so their refusal changes nothing. On `/`,
+   the store then refuses a marked directory too, and anything but its own
+   marker and leftovers (ADR-0077; [locks](cache-and-store.md#locks)).
 
 `ranikust prune --all` checks an existing state directory by these rules
 through `statedir::check`, which makes nothing and sets no mode: its chain

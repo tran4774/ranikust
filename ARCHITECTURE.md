@@ -149,11 +149,17 @@ publication by atomic rename, start-up clean-up, the emptying of `prune --all`
 while no build holds the state directory (ADR-0105), and `BuildPaths`, the
 paths handed down to every crate. It tells whether the process runs in a user
 namespace (by the inode of `/proc/self/ns/user`), for its own directories'
-group and `rnk-snapshot`'s layer keys and device nodes. `prune` by size and
-age comes in Phase 5. **Must not** decide what
-an entry contains (the caller fills a temporary entry, `rnk-store` publishes
-it), transfer blobs, decode layers, mount, or delete except through
-`rnk-rootfs`.
+group and `rnk-snapshot`'s layer keys and device nodes, reads that
+namespace's id maps (`IdMaps`, which `rnk-snapshot` keys layers by), and
+guards the layers extracted under each map with a canary that refuses them
+once the ids above it changed (ADR-0128). `IdMaps` is the only reader and
+parser of `/proc/self/{uid,gid}_map` (with `rnk_rootfs::MappedIds::parse`):
+the others take the maps from it (ADR-0098), except `rnk-sandbox`, which
+does not depend on `rnk-store` and reads and parses its own
+([card](docs/agents/crates/rnk-sandbox.md)). `prune` by size and age comes
+in Phase 5. **Must not** decide what an entry contains (the caller fills a
+temporary entry, `rnk-store` publishes it), transfer blobs, decode layers,
+mount, or delete except through `rnk-rootfs`.
 
 ### `rnk-sandbox`
 
@@ -196,8 +202,9 @@ below it, or there unless it is delegated (ADR-0110).
 Per-stage roots and per-instruction diffs: the `StageRootfs` and `Snapshotter`
 traits ([ADR-0046](docs/adr/0046-snapshotter-signature.md)) with two
 implementations, the probe of the overlay capabilities, and
-`UserNamespace`, the user namespace the build runs in and its id maps (the
-layer keys, the owner checks and the binary's guidance, ADR-0098).
+`UserNamespace`, the user namespace the build runs in and its id maps as
+`rnk-store` reads them (the layer keys, the owner checks and the binary's
+guidance, ADR-0098).
 
 - **Overlay**: mounts with the
   [ADR-0016](docs/adr/0016-overlay-mount-options.md) options, one upper

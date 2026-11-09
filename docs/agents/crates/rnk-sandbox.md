@@ -71,6 +71,12 @@ them for both.
   mode, with the subordinate ids it reads (`subids.rs`), which the build's
   user namespace below takes too, and as root with `--userns`, with root's
   `ranikust` range.
+- Its own reads and parses of `/proc/self/{uid,gid}_map`: its own
+  namespace's (`cgroup.rs`, the spawner's `OwnNamespace`), the ones it
+  mirrors (`ranges`) and the ones it enters (`measure`); it does not depend
+  on `rnk-store`, so it is the one exception to `rnk_store::IdMaps` being
+  their only reader and parser (ADR-0098;
+  [ARCHITECTURE](../../../ARCHITECTURE.md#rnk-store)).
 - The build's user namespace (`userns/build.rs`, #75): moves the process
   into a user namespace of its own and a mount namespace that namespace
   owns, `/` a recursive slave. Each map of the probe's order is first tried
@@ -170,7 +176,7 @@ pub struct UsernsCapabilities { pub unshare: StepResult, pub mount_ns: StepResul
 pub fn probe_user_namespace(dir: &RootPath, ids: BuildIds) -> Result<UsernsReport>; // #74, reported only; single-threaded caller; dir: an empty directory it made on the state directory's filesystem, held from there, left empty, except under a shifted range: then given to the range with what the probe made, nothing in it deleted, for the caller to remove with the range's rights
 pub struct UsernsReport { pub unshare: StepResult, pub maps: Vec<(IdMap, StepResult)>, pub chown: StepResult, pub mount_ns: StepResult, pub proc: MountResult, pub sysfs: MountResult, pub mknod: StepResult, pub cut_short: Option<String>, .. } // map(); stop(allowed: Fallbacks): the first step a RUN needs that failed, an rbind of /proc passing `proc` only where allowed has allow_proc_rbind (ADR-0126), one of /sys always; in_namespace(f: fn(&Path) -> Result<String, String>, path: &Path) -> Option<Result<Result<String, String>>>: f(path) as root of a new user and mount namespace with that map, in a child (None: no map; Err: f did not run or finish: Error::NotSingleThreaded, a host-side error, Error::ProbeChildLeft, else Error::ProbeClosure; else what f returned); Display: the log line; a probe's child not reaped after SIGKILL: Error::ProbeChildLeft, whose directory the caller leaves in place
 pub enum IdMap { Ranges, Newuidmap, OneId, Shifted } // #[non_exhaustive]; "multi-range", "newuidmap", "one uid", "shifted range"
-pub enum BuildIds { Own(Option<SubordinateIds>), Shifted(SubordinateIds) } // exhaustive, so that a caller decides for each; Own: the caller's ids, with its subordinate ranges if any; Shifted: root's --userns range (ADR-0104), only as root and not from 0, else Error::NoUserNamespace { tried } before any change, the map NotRun; shifted_root(): the range's first uid and gid
+pub enum BuildIds { Own(Option<SubordinateIds>), Shifted(SubordinateIds) } // exhaustive, so that a caller decides for each; Own: the caller's ids, with its subordinate ranges if any; Shifted: root's --userns range (ADR-0104), only as root and not from 0, else Error::NoUserNamespace { tried } before any change, the map NotRun; shifted_root(): the range's first uid and gid; maps(): the (uid_map, gid_map) each map it may write would give, in its order, for rnk-store's canary check before the namespace (ADR-0128)
 pub struct SubordinateIds { pub uids: IdRange, pub gids: IdRange } // the user's first /etc/subuid and /etc/subgid ranges, read by the caller
 pub struct IdRange { pub start: u32, pub count: u32 }
 pub enum StepResult { Ok, Failed(StepFailure), NotRun(&'static str) }   // #[non_exhaustive]
@@ -667,7 +673,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
 - **T0**, the user-namespace probe (`src/userns/tests.rs`): the maps
   planned for root and for another user, a shifted range tried alone and
   never one id (`a_shifted_build_tries_its_range_only_and_never_one_id`),
-  the mirror of a map, the steps
+  the maps each plan writes (`each_plan_gives_the_maps_it_writes`), the
+  mirror of a map, the steps
   assembled from a child's records (a refused `unshare`, each map refused,
   a fresh kernel filesystem or its rbind, Ubuntu 24.04's ranged stop at
   `chown`), records across split reads and the deadline, the report's line

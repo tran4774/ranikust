@@ -70,15 +70,15 @@ pub trait Snapshotter {
 pub trait LayerOpen: Debug + Send + Sync { fn open(&self) -> io::Result<Box<dyn Read + Send>>; } // a base layer's compressed bytes, opened per extraction
 
 // Overlay (src/stage.rs): Snapshotter<Root = OverlayStage, Layer = LayerDir>
-impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; // reads /proc/self: in a user namespace, base layers are keyed by its id map, devices skipped
+impl Overlay { pub fn new(store: Arc<Store>, caps: OverlayCaps) -> Result<Self>; // in a user namespace (store.id_maps()), base layers are keyed by its id maps, devices skipped
     pub fn store(&self) -> &Arc<Store>;
     pub fn base_layer_from(&self, diff_id, blob: impl Read, below: &[LayerDir]) -> Result<LayerDir>; }
 pub struct LayerDir;                               // layers/<algo>/<hex>/: diff_id(), path()
 pub struct LayerDiff;                              // upper + lowers; new(upper, lowers), is_empty(), entries(), export(o, out)
 pub fn probe(dir: &Path) -> Result<OverlayCaps>;   // ADR-0016 mount; lowerdir+ else mount(2); write-through check; also as root of a user namespace (ranikust's #74 probe, in a child)
 pub struct OverlayCaps { pub api: MountApi }       // MountApi::{LowerdirPlus, Mount2}
-pub struct UserNamespace;                          // src/userns.rs: reads /proc/self/{uid,gid}_map for the layer keys, the owner checks and the binary's guidance (ADR-0098)
-impl UserNamespace { pub fn current() -> Result<Option<Self>>; // None in the initial one (rnk_store::user_namespace_proc); Error::Io naming uid_map or gid_map when one cannot be read or parsed
+pub struct UserNamespace;                          // src/userns.rs: /proc/self/{uid,gid}_map as rnk_store::IdMaps reads them, for the layer keys, the owner checks and the binary's guidance (ADR-0098)
+impl UserNamespace { pub fn current() -> Result<Option<Self>>; // IdMaps::current: None in the initial one (rnk_store::user_namespace_proc); Error::Store naming uid_map or gid_map when one cannot be read or parsed
     pub fn ids(&self) -> &MappedIds; pub fn uid_map(&self) -> &str; pub fn gid_map(&self) -> &str; // the maps in canonical form, the layer key's input (ADR-0104)
     pub fn root_uid_outside(&self) -> Option<u32>; } // the uid outside that uid 0 inside has: who made it, for the binary's ways out
 pub const OVERLAY_OPTIONS: &str = "userxattr,redirect_dir=nofollow,metacopy=off,index=off,xino=off,uuid=off,volatile"; // [decided] ADR-0016
@@ -152,7 +152,9 @@ pub struct WalkStats { pub entries, files_hashed, bytes_hashed, stat_cache_hits,
   `CAP_MKNOD`), the key is the `sha256` of a tag, the chain ID and
   the namespace's maps (ADR-0104), in a space of its own by the tag
   (`KEY_DOMAIN`), and devices are left out with `DeviceNodes::Skip`
-  (ADR-0106).
+  (ADR-0106). Overlay takes the maps from its store (`Store::id_maps`),
+  which guards them with its canary (ADR-0128, #183); version 2 of the tag
+  came with the canary, so no layer extracted before it is reused.
 - `check_owners` (`src/owners.rs`, ADR-0098): in a user namespace other than
   the initial one, each blob is decompressed once more and its headers read as
   its extraction reads them (`rnk_rootfs::scan_owners` for overlay,
@@ -256,9 +258,10 @@ that found a bug stay as its regression test.
 
 - **T0, overlay:** exporter rules on a modelled upper and lower stack
   (`src/export/tests.rs`), lookups, extraction, spans (`tests/spans.rs`,
-  `tests/layers.rs`); the id map's canonical form, root's outside uid, a map
-  that does not parse named `uid_map` or `gid_map`, and the mapped key,
-  unchanged and apart from every chain ID (`src/userns.rs`); the owner check
+  `tests/layers.rs`); the id map's canonical form, root's outside uid, and
+  the mapped key, pinned and apart from every chain ID and from version 1's
+  (`src/userns.rs`; a map that does not parse named `uid_map` or `gid_map`
+  is `rnk-store`'s test, which reads the maps); the owner check
   of every layer not kept, before any extraction, a kept one unread
   (`src/owners.rs`, ADR-0098; red team: an owner in a later gzip member, or a
   zstd frame past a skippable one, named; a blob behind a skippable frame

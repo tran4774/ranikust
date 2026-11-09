@@ -75,6 +75,16 @@ no user namespace (where AppArmor restricts them, as Ubuntu 23.10 and later
 do), its error says how to get out, naming the directory; root's way is to
 run `ranikust prune --all --state-dir DIR`, which prints root's commands.
 
+A build in a user namespace (rootless, `--userns`, or in a rootless
+container) also refuses a state directory whose layers were extracted under
+other ids than the namespace gives now: after the subordinate ranges of an
+enclosing container changed, or a `chown` of the directory on disk. It
+changes nothing there and names the ways out: `prune --all` (for root, the
+commands that empty the directory, or `prune --all --userns` for
+`--userns`'s), or another `--state-dir`. As root that may not mount,
+`--mode=auto` without `--userns` logs this refusal as a warning and tries
+kaniko mode.
+
 Root empties the state directory of its `--userns` builds with
 `ranikust prune --all --userns --state-dir DIR` ([ADR-0146]). It first checks
 the directory as a `--userns` build does, changing nothing: owned by the first

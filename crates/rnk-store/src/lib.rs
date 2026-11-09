@@ -8,7 +8,9 @@
 //! and defines `BuildPaths`, the paths handed down to every crate. Tells
 //! whether the process runs in a user namespace other than the initial one
 //! (by the inode of `/proc/self/ns/user`), for the group of its own
-//! directories and for `rnk-snapshot`'s layer keys and device nodes.
+//! directories and for `rnk-snapshot`'s layer keys and device nodes, and
+//! reads that namespace's id maps ([`IdMaps`]), whose canary refuses layers
+//! extracted under other ids (ADR-0128).
 //!
 //! ```text
 //! <state-dir>/
@@ -16,8 +18,10 @@
 //! ├── .ranikust-pruning              the marker while prune --all empties it: no build opens it
 //! ├── blobs/<algorithm>/<hex>        compressed blobs, by digest
 //! ├── layers/v3/<algorithm>/<hex>/   extracted layers, by chain ID [open: #1]
+//! ├── layers/v3/canary/<hex>/        a canary per id map: its owners must not change
 //! ├── caches/<sha256(id)>/           RUN --mount=type=cache
 //! ├── locks/{blobs,layers/v3}/<algorithm>/<hex>   per-digest lock files [open: #1]
+//! ├── locks/layers/v3/canary/<hex>   a canary's lock
 //! ├── tmp/<build-id>/<n>             entries being filled by one build
 //! ├── builds/<build-id>/, <build-id>.lock      one per running build
 //! ├── .ranikust-anon-userns-probe-*/ rootless overlay mode's probe, locked while in use: removed here
@@ -42,6 +46,7 @@
 //!   `rnk-rootfs`: entries hold untrusted image content.
 
 mod anon;
+mod canary;
 mod error;
 mod fence;
 mod key;
@@ -58,4 +63,4 @@ pub use store::{
     PRUNING_MARKER, PruneCheck, SANDBOX_DIR, STATE_MARKER, StateDirHold, Store, TmpEntry,
     USERNS_PROBE_PREFIX,
 };
-pub use userns::user_namespace_proc;
+pub use userns::{IdMaps, user_namespace_proc};
