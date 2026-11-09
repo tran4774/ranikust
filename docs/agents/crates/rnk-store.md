@@ -33,7 +33,8 @@ extract the same digest at once.
   on the steps of `setup::enter_user_namespace`, #75, and `prune`, #76),
   where the clean-up and the prune remove files of the user's subordinate
   ids as root of the namespace, and where extracted layers are filled and
-  published (#77).
+  published (#77); root's `--userns` builds and `prune --all --userns` do
+  the same in the namespace of root's `ranikust` range (ADR-0139, #207).
 - Telling whether the process runs in a user namespace other than the
   initial one (`user_namespace_proc`), for its own directories' group and
   `rnk-snapshot`'s layer keys and device nodes.

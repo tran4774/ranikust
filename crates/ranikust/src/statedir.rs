@@ -235,7 +235,8 @@ pub(crate) enum Found {
 }
 
 /// [`prepare`]'s checks on a state directory that is not created and
-/// whose mode is not changed, for `prune --all`, which makes nothing: when
+/// whose mode is not changed, for `prune --all`, which makes nothing, as
+/// the effective user ([`check_for`] for another owner): when
 /// something is at `state_dir`, it must be a directory, opened without
 /// following a symlink anywhere on its path, not `/`, whose chain passes
 /// [`check_chain`]'s rule as the state directory; then its contents are
@@ -248,7 +249,18 @@ pub(crate) enum Found {
 ///
 /// [`Refused`] naming the directory and the rule it breaks.
 pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
-    let owner = Owner::me();
+    check_for(state_dir, Owner::me())
+}
+
+/// [`check`] for `owner`: for [`Owner::Mapped`], a path at, below or above
+/// root's default is refused first, missing or not, and the chain is
+/// [`check_chain`]'s for it, as for `--userns`'s build ([`stage`]).
+///
+/// # Errors
+///
+/// [`Refused`] naming the directory and the rule it breaks.
+pub(crate) fn check_for(state_dir: &Path, owner: Owner) -> Result<Found, Refused> {
+    refuse_roots_default(state_dir, owner)?;
     match std::fs::symlink_metadata(state_dir) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Found::Missing),
@@ -267,6 +279,23 @@ pub(crate) fn check(state_dir: &Path) -> Result<Found, Refused> {
         Ok(_) => Ok(Found::Empty),
         Err(e) => Err(Refused(e.to_string())),
     }
+}
+
+/// [`check_for`] for a prune, which makes nothing: its refusals end at the
+/// rule broken, without `owner`'s advice ([`Owner::advice`]), a
+/// `--state-dir` of its own, which would not empty this one.
+///
+/// # Errors
+///
+/// As [`check_for`].
+pub(crate) fn check_for_prune(state_dir: &Path, owner: Owner) -> Result<Found, Refused> {
+    check_for(state_dir, owner).map_err(|Refused(reason)| {
+        let advice = owner.advice();
+        match reason.strip_suffix(advice.as_ref()) {
+            Some(rule) => Refused(rule.trim_end_matches([':', ';', ' ']).to_owned()),
+            None => Refused(reason),
+        }
+    })
 }
 
 /// The build's rule for the state directory at `state_dir`, which `check`

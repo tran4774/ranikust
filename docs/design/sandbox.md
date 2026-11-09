@@ -985,8 +985,12 @@ with another map:
   before anything is written, with guidance: overlayfs is looked for from the
   nearest existing directory, and a state directory the store would refuse
   keeps its mode. Extracted layers are keyed by the namespace's id map, as in
-  every user namespace ([cache-and-store](cache-and-store.md)); pruning such a
-  state directory is [#207](https://github.com/tran4774/ranikust/issues/207).
+  every user namespace ([cache-and-store](cache-and-store.md)). Root empties
+  such a state directory with `ranikust prune --all --userns`, which checks it
+  as the build does, then deletes in the range's user namespace, as its first
+  uid, never as root
+  ([ADR-0146](../adr/0146-root-empties-the-userns-state-directory-with-prune-all-userns-as-the-ranges-first-uid.md),
+  [cache-and-store](cache-and-store.md#prune)).
 - **The probe's directory**, in the state directory, is given to the range
   before the probe runs; root then deletes nothing in it. The build's store
   removes it from inside the namespace, with the range's rights, as it does
