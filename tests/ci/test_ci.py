@@ -668,8 +668,8 @@ class Workflows(unittest.TestCase):
     def test_a_k3s_download_outlasts_an_outage(self):
         # On a cache miss (#214): every k3s download goes through fetch(),
         # which retries timeouts, stalls, refused connections and HTTP 408,
-        # 429, 500, 502, 503 and 504 for minutes. Nothing else: a wrong
-        # pin's 404 fails at once. The whole command, since a later curl
+        # 429, 500, 502, 503 and 504 for minutes, but not a wrong pin's
+        # 404, which fails at once. The whole command, since a later curl
         # flag overrides an earlier one.
         lines = (ROOT / "tests" / "vm" / "stage.sh").read_text().splitlines()
         code = [x for x in lines if not x.lstrip().startswith("#")]

@@ -459,12 +459,13 @@ the step and errno it prints. Under a minute in the VM after its boot.
   `sha256sum-amd64.txt`; a new pin changes both. `tests/vm/stage.sh`
   downloads it from the GitHub release and refuses another hash. It
   retries a timeout, a stall, a refused connection and HTTP 408, 429, 500,
-  502, 503 and 504 with curl's backoff; any other error fails at once, and
-  a failure after ten minutes is final. `vm.sh` keeps the binary in the VM
-  cache (`_vm-image/k3s/`) for the next run. CI's `T2 k8s` job keeps it in
-  an Actions cache keyed on `pin.env`, which only `main`'s runs save. A
-  pull request downloads it only when that entry is missing (a pin `main`
-  has not run with yet, or an entry GitHub evicted) or does not restore.
+  502, 503 and 504 with curl's backoff; a wrong pin's 404 fails at once,
+  and a failure after ten minutes is final. `vm.sh` keeps the binary in the
+  VM cache (`_vm-image/k3s/`) for the next run. CI's `T2 k8s` job keeps it
+  in an Actions cache whose key is the hash of `pin.env`; only `main`'s
+  runs save the cache. A pull request downloads the binary only when the
+  cache has no entry for its pin (a pin `main` has not run with yet, or an
+  entry GitHub evicted) or the entry does not restore.
   `k8s.sh` checks the hash again, installs it as
   `/usr/local/bin/k3s` and runs it as the transient systemd unit `rnk-k3s`,
   without Traefik, ServiceLB, the metrics server, local-path storage, CoreDNS
