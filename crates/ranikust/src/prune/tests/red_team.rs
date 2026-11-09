@@ -823,7 +823,12 @@ fn red_team_userns_prune_refuses_roots_default_however_spelt() {
         tmp.path().join("up/state"),
     ] {
         let refusal = userns_with(&dir, || Ok(range_from(euid, egid))).unwrap_err();
-        assert!(refusal.reason.contains("symbolic link"), "{refusal}");
+        // ELOOP reads "Symbolic link loop" in musl and "Too many levels of
+        // symbolic links" in glibc.
+        assert!(
+            refusal.reason.to_lowercase().contains("symbolic link"),
+            "{refusal}"
+        );
         assert_eq!(refusal.guidance, USERNS_ONLY, "{refusal}");
     }
     assert_eq!(listing(tmp.path()), before);
