@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests of scripts/ci.py and of the lanes' wiring in the workflows
-(ADR-0095). Run: `just test-ci`, or `python3 -I tests/ci/test_ci.py` from the
-repository root; CI's `changes` job runs them first.
+(ADR-0095), and of the T2 k8s job's k3s download. Run: `just test-ci`, or
+`python3 -I tests/ci/test_ci.py` from the repository root; CI's `changes` job
+runs them first.
 
 They need python3 3.11 or later and git, no network and no `gh`.
 """
@@ -505,6 +506,41 @@ def block(lines: list[str], header: str, indent: str) -> list[str]:
     return out
 
 
+def steps(lines: list[str]) -> list[list[str]]:
+    """A job's steps, each its lines from its `- ` on."""
+    found: list[list[str]] = []
+    for line in lines:
+        if line.startswith("      - "):
+            found.append([line])
+        elif found:
+            found[-1].append(line)
+    return found
+
+
+def step_value(step: list[str], key: str) -> str | None:
+    """A step's `key:` at the step's level or under `with:`/`env:`, a `|`
+    block as its lines joined by newlines, or None."""
+    for i, line in enumerate(step):
+        m = re.fullmatch(rf"\s+(?:- )?{re.escape(key)}: (.*)", line)
+        if not m:
+            continue
+        if m.group(1) != "|":
+            return m.group(1)
+        indent = len(line) - len(line.lstrip()) + 2
+        body = []
+        for nxt in step[i + 1:]:
+            if len(nxt) - len(nxt.lstrip()) < indent:
+                break
+            body.append(nxt.strip())
+        return "\n".join(body)
+    return None
+
+
+def uses(step: list[str]) -> str | None:
+    v = step_value(step, "uses")
+    return v.split("@")[0] if v else None
+
+
 class Workflows(unittest.TestCase):
     LANED = ["ci.yml", "t2.yml"]
 
@@ -576,6 +612,76 @@ class Workflows(unittest.TestCase):
         self.assertEqual(cache_name("k8s", js["k8s"]), "t2-smoke")
         self.assertEqual(cache_name("matrix-podman", js["matrix-podman"]), "t2-smoke")
         self.assertEqual(cache_name("matrix-user", js["matrix-user"]), "t2-smoke")
+
+    def test_actions_cache_and_rust_cache_save_only_from_main(self):
+        # A pull request's run reads main's entries and writes none (ADR-0090,
+        # ADR-0095).
+        main_only = "github.ref == 'refs/heads/main'"
+        for wf in self.LANED:
+            for job, lines in jobs(wf).items():
+                for step in steps(lines):
+                    action = uses(step)
+                    where = f"{wf}: {job}: {action}"
+                    # actions/cache itself saves on every ref.
+                    self.assertNotEqual(action, "actions/cache", where)
+                    if action == "Swatinem/rust-cache":
+                        self.assertEqual(step_value(step, "save-if"), "${{ " + main_only + " }}", where)
+                    if action == "actions/cache/save":
+                        cond = step_value(step, "if") or ""
+                        self.assertTrue(cond.startswith(main_only + " && "), where)
+                        # `a && b || c` holds on any ref when c does.
+                        self.assertNotIn("||", cond, where)
+
+    def test_the_k8s_job_reads_k3s_from_a_cache_keyed_on_its_pin(self):
+        # The k3s download (#214): main's runs fill the cache stage.sh reads
+        # through RANIKUST_K3S_CACHE, keyed on the pin, so a pull request
+        # downloads k3s only when main's entry is missing or does not
+        # restore.
+        ss = steps(jobs("t2.yml")["k8s"])
+        names = [uses(s) for s in ss]
+        restore = ss[names.index("actions/cache/restore")]
+        save = ss[names.index("actions/cache/save")]
+        suite = next(i for i, s in enumerate(ss) if step_value(s, "run") == "tests/vm/runner.sh k8s")
+        self.assertLess(names.index("actions/cache/restore"), suite)
+        self.assertGreater(names.index("actions/cache/save"), suite)
+        self.assertEqual(names.count("actions/cache/restore"), 1)
+        self.assertEqual(names.count("actions/cache/save"), 1)
+
+        cache = step_value(ss[suite], "RANIKUST_K3S_CACHE")
+        self.assertEqual(cache, "${{ runner.temp }}/k3s")
+        # stage.sh's names: k3s-<version>, and k3s-<version>.part while it
+        # downloads, which must never be saved.
+        paths = f"{cache}/k3s-*\n!{cache}/*.part"
+        self.assertEqual(step_value(restore, "path"), paths)
+        # The cache's version hashes the paths: the save's must be the same.
+        self.assertEqual(step_value(save, "path"), paths)
+        self.assertEqual(step_value(restore, "key"),
+                         "k3s-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/vm/guest/k8s/pin.env') }}")
+        self.assertEqual(step_value(restore, "id"), "k3s")
+        self.assertEqual(step_value(save, "key"), "${{ steps.k3s.outputs.cache-primary-key }}")
+        # After a failed suite too (stage.sh keeps a download only once its
+        # SHA-256 matched), and only after a miss of a restore that ran.
+        self.assertEqual(step_value(save, "if"),
+                         "github.ref == 'refs/heads/main' && !cancelled()"
+                         " && steps.k3s.outcome == 'success' && steps.k3s.outputs.cache-hit != 'true'")
+
+    def test_a_k3s_download_outlasts_an_outage(self):
+        # On a cache miss (#214): every k3s download goes through fetch(),
+        # which retries timeouts, stalls, refused connections and HTTP 408,
+        # 429, 500, 502, 503 and 504 for minutes, but not a wrong pin's
+        # 404, which fails at once. The whole command, since a later curl
+        # flag overrides an earlier one.
+        lines = (ROOT / "tests" / "vm" / "stage.sh").read_text().splitlines()
+        code = [x for x in lines if not x.lstrip().startswith("#")]
+        start = code.index("  fetch() {")
+        end = code.index("  }", start)
+        body = " ".join(" ".join(code[start + 1:end]).replace("\\", " ").split())
+        self.assertEqual(sum("curl " in x for x in code), 1)
+        self.assertEqual(body, "curl --proto '=https' --tlsv1.2 -fL --no-progress-meter --retry 9"
+                               " --retry-max-time 600 --retry-connrefused --connect-timeout 30"
+                               ' --speed-limit 1024 --speed-time 60 -o "$1" "$url"')
+        self.assertEqual([x.strip().split(" ||")[0] for x in code if x.strip().startswith("fetch ")],
+                         ['fetch "$cached.part"', 'fetch "$STAGE/bin/k3s"'])
 
     def test_both_workflows_have_the_same_triggers_and_label_rule(self):
         def picked(wf):

@@ -54,7 +54,7 @@ jobs:
           persist-credentials: false
           # The pull request's base and head commits, for `git diff`.
           fetch-depth: 0
-      - name: Test the lane detection
+      - name: Test the lane detection and the k3s download
         run: python3 -I tests/ci/test_ci.py
       - name: Pick the lanes
         id: lanes

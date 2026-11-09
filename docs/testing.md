@@ -457,9 +457,16 @@ the step and errno it prints. Under a minute in the VM after its boot.
   1.33, containerd 2.0, runc 1.2 and Linux 6.3 or later, and the VM has
   6.8), and the SHA-256 of its `k3s` binary, from the release's
   `sha256sum-amd64.txt`; a new pin changes both. `tests/vm/stage.sh`
-  downloads it from the GitHub release and refuses another hash; `vm.sh`
-  keeps it in the VM cache (`_vm-image/k3s/`) for the next run, a runner
-  downloads it each time. `k8s.sh` checks the hash again, installs it as
+  downloads it from the GitHub release and refuses another hash. It
+  retries a timeout, a stall, a refused connection and HTTP 408, 429, 500,
+  502, 503 and 504 with curl's backoff; a wrong pin's 404 fails at once,
+  and a failure after ten minutes is final. `vm.sh` keeps the binary in the
+  VM cache (`_vm-image/k3s/`) for the next run. CI's `T2 k8s` job keeps it
+  in an Actions cache whose key is the hash of `pin.env`; only `main`'s
+  runs save the cache. A pull request downloads the binary only when the
+  cache has no entry for its pin (a pin `main` has not run with yet, or an
+  entry GitHub evicted) or the entry does not restore.
+  `k8s.sh` checks the hash again, installs it as
   `/usr/local/bin/k3s` and runs it as the transient systemd unit `rnk-k3s`,
   without Traefik, ServiceLB, the metrics server, local-path storage, CoreDNS
   or the Helm controller. The one image the cluster pulls is the pause
@@ -677,7 +684,9 @@ What runs, by event:
   (`scripts/ci.py stale-caches`), keeping one entry per restore key (the
   job's cache name, OS, architecture and toolchain hash; entries of an older
   toolchain stay until GitHub evicts them); only that job holds
-  `actions: write`.
+  `actions: write`. The `T2 k8s` job also caches its k3s download, saved
+  only from `main` as well ([k3s](#privilege-matrix-in-kubernetes)); an
+  older pin's entry is not pruned and stays until GitHub evicts it.
 - **Timeouts.** Every job has one: 5 minutes for the gates, 10 for the small
   jobs, 20 for `clippy` and the docs, 30 for the tests, the static build and
   T2.
