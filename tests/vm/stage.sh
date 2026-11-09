@@ -14,7 +14,8 @@
 # RANIKUST_LOG_T0, the caller's seconds since its start, puts the `[stage
 # +Ns]` lines on the caller's clock, so a run's log keeps one timeline.
 # RANIKUST_K3S_CACHE, a directory of the caller's (vm.sh: the VM image
-# cache), keeps the k3s download for the next run; this script deletes
+# cache; t2.yml's k8s job: one main's runs save in the Actions cache), keeps
+# the k3s download for the next run; this script deletes
 # there a download that failed and, after one that did not, every other
 # k3s-* file (older pins). Without it the download goes straight into the
 # stage.
@@ -97,12 +98,15 @@ if wants k8s; then
   source "$HERE/guest/k8s/pin.env"
   url="https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION//+/%2B}/k3s"
   sha() { sha256sum "$1" | cut -d' ' -f1; }
+  # GitHub's release download has answered 5xx for hours (#214): back off
+  # from 1 s, doubling, for up to ten minutes.
+  fetch() { curl --proto '=https' --tlsv1.2 -fsSL --retry 10 --retry-max-time 600 --retry-connrefused -o "$1" "$url"; }
   if [ -n "${RANIKUST_K3S_CACHE:-}" ]; then
     cached="$RANIKUST_K3S_CACHE/k3s-$K3S_VERSION"
     if [ ! -f "$cached" ] || [ "$(sha "$cached")" != "$K3S_SHA256" ]; then
       log "downloading k3s $K3S_VERSION into $RANIKUST_K3S_CACHE"
       mkdir -p "$RANIKUST_K3S_CACHE"
-      curl -fsSL --retry 3 -o "$cached.part" "$url" || { rm -f "$cached.part"; die "downloading k3s $K3S_VERSION failed"; }
+      fetch "$cached.part" || { rm -f "$cached.part"; die "downloading k3s $K3S_VERSION failed"; }
       [ "$(sha "$cached.part")" = "$K3S_SHA256" ] || { rm -f "$cached.part"; die "SHA-256 mismatch for k3s $K3S_VERSION"; }
       mv "$cached.part" "$cached"
       # One release kept: the pins before this one are not used again.
@@ -111,7 +115,7 @@ if wants k8s; then
     cp "$cached" "$STAGE/bin/k3s"
   else
     log "downloading k3s $K3S_VERSION"
-    curl -fsSL --retry 3 -o "$STAGE/bin/k3s" "$url"
+    fetch "$STAGE/bin/k3s" || die "downloading k3s $K3S_VERSION failed"
   fi
   [ "$(sha "$STAGE/bin/k3s")" = "$K3S_SHA256" ] || die "SHA-256 mismatch for k3s $K3S_VERSION"
   log "k3s $K3S_VERSION sha256 $K3S_SHA256 (verified)"

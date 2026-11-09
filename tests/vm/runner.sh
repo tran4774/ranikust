@@ -25,6 +25,9 @@
 # developer host's loopback (ADR-0086). Here root already is root on the
 # machine, which serves nothing of anyone's.
 #
+# RANIKUST_K3S_CACHE, which the k8s job sets, reaches tests/vm/stage.sh as
+# is: the directory the Actions cache keeps the k3s download in.
+#
 # Writes ~/rnk/out: env.txt, <suite>.log, summary.txt (one line per suite)
 # and suite-times.txt (suite, seconds, peak MiB used on /, MiB used on /
 # before it).
