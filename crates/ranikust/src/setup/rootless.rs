@@ -489,6 +489,14 @@ pub(crate) fn set_up(
         .map_err(|e| super::store_refusal(&e, state_dir, euid)),
         None => super::open_store(state_dir, state_dir, euid),
     };
+    let opened = opened.map_err(|mut refused| {
+        // In --userns's namespace the directory reads as root's; plan checked
+        // it outside, so root's way out is the range's command.
+        if euid == 0 && shifted && !refused.guidance.is_empty() {
+            refused.guidance = crate::prune::userns_way(state_dir).into();
+        }
+        refused
+    });
     let store = opened.map_err(super::inside_userns)?;
     // The store holds the directory now.
     drop(held);

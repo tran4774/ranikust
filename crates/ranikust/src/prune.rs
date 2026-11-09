@@ -417,7 +417,7 @@ fn ask_root(dir: &Path) -> String {
 
 /// Root's way to empty `--userns`'s state directory `dir`:
 /// [`prune_userns`].
-fn userns_way(dir: &Path) -> String {
+pub(crate) fn userns_way(dir: &Path) -> String {
     format!(
         "{d} is the state directory of --userns, owned by the first uid of root's ranikust \
          range: ranikust prune --all --userns --state-dir {d} empties it in that range's user \

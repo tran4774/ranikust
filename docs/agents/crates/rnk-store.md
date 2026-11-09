@@ -169,8 +169,7 @@ Design: [locks](../../design/cache-and-store.md#locks),
   without it is refused. `open` and `check_state_dir` check it before
   anything is written; a mismatch, a missing entry, an entry that is not a
   regular file of the state directory's mount or a canary that cannot be
-  read is `Error::IdMapChanged`, naming `prune --all` (ADR-0128); ranikust adds
-  root's commands where root is refused.
+  read is `Error::IdMapChanged`, naming `prune --all` (ADR-0128).
 - Only the store's own kind of entry counts as published: a regular file for
   a blob, a directory for a layer, on the state directory's mount. A symlink,
   another type or a mount under an entry's name is `Error::BadEntry`, never

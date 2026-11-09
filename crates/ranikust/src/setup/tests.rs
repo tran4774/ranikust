@@ -1054,8 +1054,8 @@ fn a_store_refusal_names_its_state_directory_once() {
 
 /// A state directory whose canary refuses the build's id map (ADR-0128) is
 /// the one store refusal whose fallback to kaniko mode under root's
-/// `--mode=auto` warns, and the warning carries the way out: for root, its
-/// own commands.
+/// `--mode=auto` warns, and the warning carries the way out: for root,
+/// root's ([`crate::prune::root_commands`]).
 #[test]
 fn a_changed_id_map_warns_on_fallback_with_its_way_out() {
     use rnk_store::Error;
@@ -1084,18 +1084,33 @@ fn a_changed_id_map_warns_on_fallback_with_its_way_out() {
     );
     assert!(!busy.warns_on_fallback());
     assert_eq!(changed.guidance, "");
-    // Root is given its own commands, which root's prune --all only prints.
+    // Root is given its commands, which root's prune --all only prints, for
+    // a directory a build accepts.
+    let tmp = private_tempdir();
+    let marked = tmp.path().join("my state");
+    std::fs::create_dir_all(marked.join("blobs")).unwrap();
+    std::fs::set_permissions(&marked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(marked.join(rnk_store::STATE_MARKER), b"").unwrap();
     let by_root = store_refusal(
         &Error::IdMapChanged {
-            path: dir.to_owned(),
+            path: marked.clone(),
             why: "x".to_owned(),
         },
-        dir,
+        &marked,
         0,
     );
     assert_eq!(by_root.kind, Kind::IdMapChanged);
-    assert_eq!(by_root.guidance, crate::prune::root_commands(dir));
-    assert!(!by_root.guidance.is_empty());
+    let (dev, ino, uid) = {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = std::fs::metadata(&marked).unwrap();
+        (m.dev(), m.ino(), m.uid())
+    };
+    let commands = format!(
+        "CDPATH= cd -P -- '{}' && stat -c %d:%i:%u:%a . | grep -qxF {dev}:{ino}:{uid}:700",
+        marked.display()
+    );
+    assert!(by_root.guidance.contains(&commands), "{by_root}");
+    assert!(by_root.to_string().contains("other ids than"), "{by_root}");
     // Inside the build's user namespace it ends the process instead.
     assert_eq!(inside_userns(changed).kind, Kind::Broken);
 }

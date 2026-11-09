@@ -157,8 +157,10 @@ maps once, when it opens, and `rnk-snapshot` keys its layers by them.
   those ids are probed (ADR-0128).
 - **A mismatch** (a wrong owner, a missing entry, an entry of another type, a
   canary that cannot be read, or a layer of the map found without its canary)
-  refuses the build with the way out: `ranikust prune --all`, or another
-  `--state-dir`. No canary yet is not a mismatch: no layer of the map was
+  refuses the build with the way out: `ranikust prune --all` (for root,
+  root's commands, or `prune --all --userns` for `--userns`'s state
+  directory, which root's own `prune --all` would only print or name), or
+  another `--state-dir`. No canary yet is not a mismatch: no layer of the map was
   published. Under root's `--mode=auto`, rootless overlay mode refused so is
   passed over for kaniko mode, as for its other refusals before the build's
   user namespace, and the refusal, with its way out, is logged as a warning
@@ -430,8 +432,8 @@ keep, unlike ADR-0133's
 and check that only the marker is left; then it runs again.
 `--metrics-file` is refused with it before anything runs: the process
 writes the report at exit, by then as the range's uid. Root's own
-`prune --all`, and a `--userns` build refused by a prune cut short, name
-`prune --all --userns` instead of root's commands
+`prune --all`, and a `--userns` build refused by a prune cut short or by
+the canary, name `prune --all --userns` instead of root's commands
 only for a marked directory it takes (owned by the range's first uid and
 passing the checks above), which those commands would refuse to empty, its
 other uids' entries being outside their filter; so neither sends root to
