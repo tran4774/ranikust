@@ -599,7 +599,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   only then, a store refusal naming its state directory once, and a
   build's refusal of a prune cut short giving a user and root the next
   step; a changed id map the one store refusal that warns on fallback, with
-  its way out (`a_changed_id_map_warns_on_fallback_with_its_way_out`); the
+  its way out, root's commands for root
+  (`a_changed_id_map_warns_on_fallback_with_its_way_out`); the
   probe's directory taking the process's gid and losing a
   setgid parent's bit, `the_probe_directory_drops_a_setgid_parents_bit`,
   through its descriptor,

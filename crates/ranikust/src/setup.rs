@@ -517,7 +517,8 @@ fn open_store(root: &Path, state_dir: &Path, euid: u32) -> Result<Store, Refusal
 /// error that names the state directory itself says so alone; a directory
 /// a `prune --all` did not finish emptying gets what `euid` does with it
 /// ([`crate::prune::cut_short`]). A changed id map is of
-/// [`Kind::IdMapChanged`], any other of [`Kind::Other`].
+/// [`Kind::IdMapChanged`], with root's commands for root, any other of
+/// [`Kind::Other`].
 fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
     use rnk_store::Error;
     let (reason, kind) = match e {
@@ -553,6 +554,10 @@ fn store_refusal(e: &rnk_store::Error, state_dir: &Path, euid: u32) -> Refusal {
         guidance: match crate::prune::unfinished_prune(e) {
             Some((crate::prune::Unfinished::CutShort, dir)) => {
                 crate::prune::cut_short(dir, euid).into()
+            }
+            // Root's prune --all would only print these.
+            None if euid == 0 && matches!(e, Error::IdMapChanged { .. }) => {
+                crate::prune::root_commands(state_dir).into()
             }
             Some((crate::prune::Unfinished::NotPruned, _)) | None => "".into(),
         },

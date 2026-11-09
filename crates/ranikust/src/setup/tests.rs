@@ -1054,7 +1054,8 @@ fn a_store_refusal_names_its_state_directory_once() {
 
 /// A state directory whose canary refuses the build's id map (ADR-0128) is
 /// the one store refusal whose fallback to kaniko mode under root's
-/// `--mode=auto` warns, and the warning carries the way out.
+/// `--mode=auto` warns, and the warning carries the way out: for root, its
+/// own commands.
 #[test]
 fn a_changed_id_map_warns_on_fallback_with_its_way_out() {
     use rnk_store::Error;
@@ -1082,6 +1083,19 @@ fn a_changed_id_map_warns_on_fallback_with_its_way_out() {
         1000,
     );
     assert!(!busy.warns_on_fallback());
+    assert_eq!(changed.guidance, "");
+    // Root is given its own commands, which root's prune --all only prints.
+    let by_root = store_refusal(
+        &Error::IdMapChanged {
+            path: dir.to_owned(),
+            why: "x".to_owned(),
+        },
+        dir,
+        0,
+    );
+    assert_eq!(by_root.kind, Kind::IdMapChanged);
+    assert_eq!(by_root.guidance, crate::prune::root_commands(dir));
+    assert!(!by_root.guidance.is_empty());
     // Inside the build's user namespace it ends the process instead.
     assert_eq!(inside_userns(changed).kind, Kind::Broken);
 }

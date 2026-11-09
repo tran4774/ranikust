@@ -241,7 +241,7 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
 /// and a build's: the commands of [`root_empties`] for a directory [`pin`]
 /// checks at the path as given, a build would accept, and finds a marker
 /// in, else none.
-fn root_commands(dir: &Path) -> String {
+pub(crate) fn root_commands(dir: &Path) -> String {
     match pin(dir) {
         Ok((pin, true)) => root_empties(dir, pin),
         Ok((_, false)) => format!(
