@@ -346,18 +346,18 @@ probe_left_by_a_killed_build() {
   echo "  $CASE: measured: prune --all --userns, only probe directories: exit $rc: $log" >&2
   expect "$rc" 1 "prune --all --userns, only probe directories"
   grep -qF "so ranikust prune --all --userns removes nothing" <<<"$log" &&
-    grep -qF "it holds only probe directories a --userns build left" <<<"$log" &&
+    grep -qF "the directory holds only probe directories a --userns build left" <<<"$log" &&
     grep -qF "a --userns build with --state-dir $d removes them" <<<"$log" ||
     fail "prune --all --userns, only probe directories: $log"
-  expect "$(tree_of "$d")" "$listed" "after prune --all --userns, only a probe directory"
+  expect "$(tree_of "$d")" "$listed" "after prune --all --userns, only probe directories"
   rc=0
   log="$(sudo timeout 120 "$RNK" prune --all --state-dir "$d" 2>&1)" || rc=$?
-  echo "  $CASE: measured: root's prune --all, only a probe directory of root's: exit $rc: $log" >&2
-  expect "$rc" 1 "root's prune --all, only a probe directory of root's"
-  expect "$(tree_of "$d")" "$listed" "after root's prune --all, only a probe directory"
+  echo "  $CASE: measured: root's prune --all, only probe directories: exit $rc: $log" >&2
+  expect "$rc" 1 "root's prune --all, only probe directories"
+  expect "$(tree_of "$d")" "$listed" "after root's prune --all, only probe directories"
   rc=0
   log="$(urun probe --target content --state-dir "$d" 2>&1)" || rc=$?
-  expect "$rc" 0 "a --userns build, only a probe directory of root's: $log"
+  expect "$rc" 0 "a --userns build, only probe directories: $log"
   ! sudo test -e "$d/.ranikust-anon-userns-probe-2-root" ||
     fail "a --userns build left root's probe directory"
   ! sudo test -e "$d/.ranikust-anon-userns-probe-3-range" ||

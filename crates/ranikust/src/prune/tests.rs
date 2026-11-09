@@ -2158,8 +2158,8 @@ fn a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe() {
     assert!(
         one.reason.ends_with(
             "has no regular file .ranikust-state, so ranikust prune --all --userns removes \
-             nothing: it empties only a state directory ranikust made; it holds only a probe \
-             directory a --userns build left"
+             nothing: it empties only a state directory ranikust made; the directory holds only a \
+             probe directory a --userns build left"
         ),
         "{one}"
     );
@@ -2173,7 +2173,7 @@ fn a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe() {
     let two = refused(euid);
     assert!(
         two.reason
-            .ends_with("; it holds only probe directories a --userns build left"),
+            .ends_with("; the directory holds only probe directories a --userns build left"),
         "{two}"
     );
     assert_eq!(

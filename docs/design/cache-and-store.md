@@ -364,10 +364,10 @@ build's advice of a new `--state-dir`, and says to fix it for a directory
 the range's first uid owns, else to drop `--userns`; the store's words
 name `prune --all --userns`. A directory without a marker that holds only
 empty probe directories, root's `0700` or the range's first uid's, is
-refused saying instead that a `--userns` build there removes them, as root
-and in the namespace before it makes its store. Where it cannot finish
-(a mount below; of a uid or gid the range does not map, such as root's, a
-directory that still holds entries, or an entry in a sticky directory
+refused saying instead that a `--userns` build there removes them: root's
+as root, the range's in the namespace once its store is open. Where it
+cannot finish (a mount below; of a uid or gid the range does not map, such
+as root's, a directory that still holds entries, or an entry in a sticky directory
 another id owns, over which the namespace's root has no `CAP_FOWNER`), its
 refusal names the top-level entries left and says to stop every `--userns`
 build (their `RUN`s may change that tree) and unmount anything below, then

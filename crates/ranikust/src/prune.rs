@@ -464,8 +464,8 @@ fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>, range: SubordinateIds)
 }
 
 /// The store's phrases that name `ranikust prune --all`, which knows no
-/// `--userns`; [`userns_words`] names `--userns` in them, and only there,
-/// never in an entry's name or the path.
+/// `--userns`; [`userns_words`] names `--userns` where one of these whole
+/// phrases appears, and nowhere else.
 const STORE_PRUNE_PHRASES: [&str; 6] = [
     "so ranikust prune --all removes nothing",
     "ranikust prune --all empties it only while no build runs there",
@@ -510,7 +510,9 @@ fn userns_refused_before(state_dir: &Path, reason: &str, first_uid: u32) -> Refu
             } else {
                 ("them", "probe directories")
             };
-            reason.push_str(&format!("; it holds only {dirs} a --userns build left"));
+            reason.push_str(&format!(
+                "; the directory holds only {dirs} a --userns build left"
+            ));
             format!(
                 "a --userns build with --state-dir {} removes {them}",
                 shell_word(state_dir.as_os_str())
@@ -527,8 +529,8 @@ fn userns_refused_before(state_dir: &Path, reason: &str, first_uid: u32) -> Refu
 
 /// How many entries `dir` holds where each is a directory of the user
 /// namespace probe that a `--userns` build there removes, else 0: named
-/// with [`rnk_store::USERNS_PROBE_PREFIX`], on `dir`'s mount, no mount
-/// point and empty (as the store's `is_probe_dir`), and either root's,
+/// with [`rnk_store::USERNS_PROBE_PREFIX`], on `dir`'s mount and no mount
+/// point (as the store's `is_probe_dir`), empty, and either root's,
 /// mode `0700` but for the setgid bit, which root's build removes
 /// (`setup::remove_own_probe_leftovers`), or of `first_uid`, which the
 /// store removes in the namespace. Read-only, through
