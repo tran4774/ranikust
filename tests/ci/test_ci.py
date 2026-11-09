@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests of scripts/ci.py and of the lanes' wiring in the workflows
-(ADR-0095). Run: `just test-ci`, or `python3 -I tests/ci/test_ci.py` from the
-repository root; CI's `changes` job runs them first.
+(ADR-0095), and of the T2 k8s job's k3s download. Run: `just test-ci`, or
+`python3 -I tests/ci/test_ci.py` from the repository root; CI's `changes` job
+runs them first.
 
 They need python3 3.11 or later and git, no network and no `gh`.
 """
@@ -626,7 +627,10 @@ class Workflows(unittest.TestCase):
                     if action == "Swatinem/rust-cache":
                         self.assertEqual(step_value(step, "save-if"), "${{ " + main_only + " }}", where)
                     if action == "actions/cache/save":
-                        self.assertTrue((step_value(step, "if") or "").startswith(main_only + " && "), where)
+                        cond = step_value(step, "if") or ""
+                        self.assertTrue(cond.startswith(main_only + " && "), where)
+                        # `a && b || c` holds on any ref when c does.
+                        self.assertNotIn("||", cond, where)
 
     def test_the_k8s_job_reads_k3s_from_a_cache_keyed_on_its_pin(self):
         # The k3s download (#214): main's runs fill the cache stage.sh reads
@@ -659,6 +663,23 @@ class Workflows(unittest.TestCase):
         self.assertEqual(step_value(save, "if"),
                          "github.ref == 'refs/heads/main' && !cancelled()"
                          " && steps.k3s.outcome == 'success' && steps.k3s.outputs.cache-hit != 'true'")
+
+    def test_a_k3s_download_outlasts_an_outage(self):
+        # On a cache miss (#214): every k3s download goes through fetch(),
+        # which retries 5xx, refused connections and stalls for minutes.
+        lines = (ROOT / "tests" / "vm" / "stage.sh").read_text().splitlines()
+        code = [x for x in lines if not x.lstrip().startswith("#")]
+        start = code.index("  fetch() {")
+        end = code.index("  }", start)
+        body = " ".join(x.strip().rstrip("\\") for x in code[start + 1:end])
+        self.assertEqual(sum("curl " in x for x in code), 1)
+        self.assertTrue(body.startswith("curl "), body)
+        for flag in ["--proto '=https'", "--tlsv1.2", "-fL", "--no-progress-meter", "--retry 9",
+                     "--retry-max-time 600", "--retry-connrefused", "--connect-timeout 30",
+                     "--speed-limit 1024", "--speed-time 60"]:
+            self.assertIn(f" {flag} ", f" {body} ", flag)
+        self.assertEqual([x.strip().split(" ||")[0] for x in code if x.strip().startswith("fetch ")],
+                         ['fetch "$cached.part"', 'fetch "$STAGE/bin/k3s"'])
 
     def test_both_workflows_have_the_same_triggers_and_label_rule(self):
         def picked(wf):
