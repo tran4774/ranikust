@@ -315,6 +315,9 @@ noted.
   through `skopeo inspect` when installed; push with mounts against
   `rnk-registry`'s fake registry; the `LayerDemand` table), `tests/spans.rs`,
   `tests/stall.rs`.
+- `tests/pull.rs` (a recording snapshotter behind the fake registry):
+  `pull_image` hands every layer, pulled, to `check_owners` before the first
+  `base_layer`, and a refusal ends the pull with none extracted (ADR-0098).
 - `src/stage.rs` tests and `tests/keep.rs`: kaniko-mode keeping (`COPY
   --from` sources kept with the symlinks on their way and nothing else; a
   source that cannot be kept by its paths keeps the whole stage;

@@ -310,17 +310,33 @@ fn check_headers_within(tar: impl Read, dir_max: usize) -> Result<()> {
 }
 
 /// [`check_headers`], which also notes in `found` each owner that
-/// [`extract_live`] would give and the map `found` was made for does not
-/// hold: a directory's, a file's or a symlink's (a live root makes no
-/// node, and a hardlink takes its target's). For the spool pass on `/` in
-/// a user namespace (ADR-0098): the caller refuses the layer when `found`
-/// is not empty.
+/// [`extract_live`] with the ignore list `keep` would give and the map
+/// `found` was made for does not hold: a directory's, a file's or a
+/// symlink's (a live root makes no node, and a hardlink takes its
+/// target's), unless `keep` covers its path, which the extraction skips.
+/// An entry that lands in an ignored path only through a symlink of the
+/// root is still noted: a header does not show it. For kaniko mode in a
+/// user namespace (ADR-0098): the caller refuses the layer when `found` is
+/// not empty.
 ///
 /// # Errors
 ///
 /// As [`check_headers`].
-pub fn check_headers_and_owners(tar: impl Read, found: &mut Unmapped) -> Result<()> {
-    scan(tar, Whiteouts::Apply, SLASH_DIR_MAX, Some((found, false)))
+pub fn check_headers_and_owners(
+    tar: impl Read,
+    keep: &IgnoreList,
+    found: &mut Unmapped,
+) -> Result<()> {
+    scan(
+        tar,
+        Whiteouts::Apply,
+        SLASH_DIR_MAX,
+        Some(Owners {
+            found,
+            fifos: false,
+            keep: Some(keep),
+        }),
+    )
 }
 
 /// Notes in `found` each owner that [`extract_overlay`] in a user
@@ -337,23 +353,41 @@ pub fn check_headers_and_owners(tar: impl Read, found: &mut Unmapped) -> Result<
 ///
 /// As [`check_headers`].
 pub fn scan_owners(tar: impl Read, found: &mut Unmapped) -> Result<()> {
-    scan(tar, Whiteouts::Overlay, PATH_MAX, Some((found, true)))
+    scan(
+        tar,
+        Whiteouts::Overlay,
+        PATH_MAX,
+        Some(Owners {
+            found,
+            fifos: true,
+            keep: None,
+        }),
+    )
+}
+
+/// Where a scan notes the owners an extraction would give.
+struct Owners<'a> {
+    found: &'a mut Unmapped,
+    /// The extraction makes FIFOs.
+    fifos: bool,
+    /// The ignore list of a live extraction, whose paths it skips.
+    keep: Option<&'a IgnoreList>,
 }
 
 /// Reads every header of `tar` as an extraction in the form `wh` does,
 /// directory paths held to `dir_max` bytes, and notes the owners it would
-/// give in `owners`, FIFOs' too when it says so.
+/// give in `owners`.
 fn scan(
     tar: impl Read,
     wh: Whiteouts,
     dir_max: usize,
-    mut owners: Option<(&mut Unmapped, bool)>,
+    mut owners: Option<Owners<'_>>,
 ) -> Result<()> {
     let (mut skipped, mut first_skipped) = (0, None);
     for_each_entry(tar, |entry| {
         let header = read_header(entry, wh, dir_max, &mut skipped, &mut first_skipped)?;
         if let (
-            Some((found, fifos)),
+            Some(owners),
             Header::Entry {
                 path, kind, meta, ..
             },
@@ -361,11 +395,12 @@ fn scan(
         {
             let owned = match kind {
                 Kind::Dir | Kind::File | Kind::Symlink(_) => true,
-                Kind::Node(RawFileType::Fifo, ..) => *fifos,
+                Kind::Node(RawFileType::Fifo, ..) => owners.fifos,
                 Kind::Hardlink(_) | Kind::Node(..) => false,
             };
-            if owned {
-                found.note(meta.uid, meta.gid, path);
+            // The live extraction's own test, on the same cleaned path.
+            if owned && !owners.keep.is_some_and(|keep| keep.covers(path)) {
+                owners.found.note(meta.uid, meta.gid, path);
             }
         }
         Ok(())

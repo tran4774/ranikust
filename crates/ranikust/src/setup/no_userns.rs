@@ -130,15 +130,12 @@ impl Here {
             }
             label => label,
         };
-        // An unread map counts as not the host's: no profile.
-        let uid_map = std::fs::read_to_string("/proc/self/uid_map").ok();
+        // A namespace that cannot be told counts as not the host's: no profile.
+        let initial = rnk_snapshot::UserNamespace::current().is_ok_and(|ns| ns.is_none());
         Self {
             restricted: restricted(),
             unconfined: label.is_ok_and(|l| unconfined(&l)),
-            on_host: on_host(
-                uid_map.as_deref(),
-                crate::container::detect(&crate::container::Real),
-            ),
+            on_host: on_host(initial, crate::container::detect(&crate::container::Real)),
         }
     }
 
@@ -154,18 +151,12 @@ fn unconfined(label: &[u8]) -> bool {
     label.trim_ascii() == b"unconfined"
 }
 
-/// Whether `uid_map` (`None`: unread) is the host's user namespace's, and
-/// `container` none: elsewhere the tree ranikust sees, and its owners, may
-/// be a container's or a user's own, not the one a profile on the host
+/// Whether ranikust runs in the host's user namespace (`initial`, told by
+/// the namespace's inode, `rnk_snapshot::UserNamespace::current`) and
+/// `container` is none: elsewhere the tree ranikust sees, and its owners,
+/// may be a container's or a user's own, not the one a profile on the host
 /// attaches to.
-fn on_host(uid_map: Option<&str>, container: Option<crate::container::Runtime>) -> bool {
-    let initial = uid_map.is_some_and(|map| {
-        let mut lines = map.lines();
-        lines
-            .next()
-            .is_some_and(|l| l.split_ascii_whitespace().eq(["0", "0", "4294967295"]))
-            && lines.next().is_none()
-    });
+fn on_host(initial: bool, container: Option<crate::container::Runtime>) -> bool {
     initial && container.is_none()
 }
 

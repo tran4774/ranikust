@@ -5,7 +5,10 @@
 # overlaps, with a state directory below a
 # directory the range's first uid cannot search, with an existing state
 # directory of root's, at or below root's default, and with a flag of kaniko mode
-# alone; missing parents are made root's 0711, the build names --userns
+# alone; an image with an owner past the range is refused before any of
+# its layers is extracted, naming the owner, the count the ranikust line
+# needs and the ways out of --userns (#208, ADR-0098); missing parents
+# are made root's 0711, the build names --userns
 # and leaves no probe directory; a RUN's uid 0 is the
 # range's first uid on the host, by its uid_map, gid_map and status read
 # from the host and by the owner there of a file it makes; the
@@ -93,6 +96,8 @@ case_run() {
     grep -qF -- 'drop it: --userns builds in overlay mode only' <<<"$log" ||
     fail "--userns with a flag of kaniko mode alone: $log"
   ! sudo test -e "$UW/flagged" || fail "--userns made a state directory before its usage error"
+
+  narrow_range
 
   local before
   before="$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)"
@@ -482,6 +487,30 @@ hostile_trees_pruned_as_the_range() {
       "the state directory after prune --all --userns was refused ($how)"
   done
   sudo rm -rf --one-file-system "$d" "$v"
+}
+
+# narrow_range: with a gid range of 42 ids, the base image's /etc/shadow
+# (alpine's, root:shadow, gid 42) is past it: the build is refused by the
+# owner check, before any layer is extracted (ADR-0098, #208), naming the
+# owner, the count /etc/subgid's ranikust line needs and the ways out of
+# --userns, none of a user's ranges. The range is restored after.
+narrow_range() {
+  local log rc=0
+  sudo sed -i "s/^ranikust:$G:65536\$/ranikust:$G:42/" /etc/subgid
+  grep -qx "ranikust:$G:42" /etc/subgid || fail "narrowing the ranikust gid range"
+  log="$(urun narrow --target content --state-dir "$UW/narrow" 2>&1)" || rc=$?
+  sudo sed -i "s/^ranikust:$G:42\$/ranikust:$G:65536/" /etc/subgid
+  grep -qx "ranikust:$G:65536" /etc/subgid || fail "restoring the ranikust gid range"
+  expect "$rc" 1 "--userns with an owner past the ranikust range: $log"
+  grep -qF 'owners this user namespace does not map: gid 42 (/etc/shadow); it maps uids 0-65535 and gids 0-41' \
+    <<<"$log" || fail "--userns with an owner past the range, the refusal: $log"
+  grep -qF "maps root's ranikust range of /etc/subuid and /etc/subgid from id 0 on (--userns), not gid 42: widen that range to at least 43 gids in /etc/subgid (" \
+    <<<"$log" && grep -qF 'or build without --userns' <<<"$log" ||
+    fail "--userns with an owner past the range, its ways out: $log"
+  # The scan's refusal above, not an extraction's chown (which ends with
+  # "an id this user namespace does not map"), shows no layer was extracted.
+  ! grep -qE "an id this user namespace|this user's first range|subordinate|run ranikust as root|in a container" \
+    <<<"$log" || fail "--userns with an owner past the range: a chown's error or a user's ways out: $log"
 }
 
 # seen_from_the_host: the `seen` stage's RUNs, from the host while each

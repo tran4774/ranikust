@@ -409,7 +409,13 @@ fn anonymous_refusals_say_why() {
     let s = Store::open_anonymous(dir.path()).unwrap();
     let never = || false;
     let e = s
-        .cache_lease("k", crate::CacheSharing::Shared, None, &never)
+        .cache_lease(
+            "k",
+            crate::CacheSharing::Shared,
+            None,
+            Path::new("/cache"),
+            &never,
+        )
         .unwrap_err();
     assert_eq!(
         e.to_string(),
@@ -424,6 +430,44 @@ fn anonymous_refusals_say_why() {
          processes behind, or the state directory changed under it (ADR-0056)"
     );
     s.close().unwrap();
+}
+
+/// A new cache's `chown` refused with `EINVAL` names the mount's target
+/// and the owner asked for, not the store's `caches/<name>`; another errno
+/// is the store's own error, naming its directory.
+#[test]
+fn a_cache_owner_refused_with_einval_names_the_mount_s_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = store(dir.path());
+    let owner = CacheOwner {
+        uid: 3_000_000_000,
+        gid: 0,
+        mode: 0o755,
+    };
+    let tmp = Path::new("caches").join(".k.new-1");
+    let target = Path::new("/root/.cache/go-build");
+    let e = s.cache_chown_err(Errno::INVAL, &tmp, owner, target);
+    assert_eq!(
+        e.to_string(),
+        "state directory: chown /root/.cache/go-build to 3000000000:0: an id this user \
+         namespace does not map"
+    );
+    // Found among the sources, as the binary finds it for its ways out.
+    let found = std::iter::successors(Some(&e as &dyn std::error::Error), |e| e.source())
+        .find_map(|e| e.downcast_ref::<rnk_rootfs::Unmapped>());
+    assert_eq!(
+        found,
+        Some(&rnk_rootfs::Unmapped::chown(
+            target,
+            Some(3_000_000_000),
+            Some(0)
+        ))
+    );
+    let e = s.cache_chown_err(Errno::PERM, &tmp, owner, target);
+    assert!(
+        matches!(&e, Error::Io { op: "chown", path, .. } if path.ends_with(&tmp)),
+        "{e:?}"
+    );
 }
 
 /// `scratch_file` and `anonymous_file` make their files in the build

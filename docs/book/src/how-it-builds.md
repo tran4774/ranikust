@@ -161,7 +161,10 @@ overlay mount options.
   a directory per stage the layers are downloaded whole and all checked
   first; on `/`, in a rootless container, where they are streamed, each is
   checked just before it is extracted, so the layers before the refused one
-  may already be there ([ADR-0137]).
+  may already be there ([ADR-0137]). There an owner only on a path kaniko
+  mode never writes (`/proc`, `/sys`, `/dev`, `--ignore-path`) is not
+  refused; a `COPY --from=<image>`, unpacked whole, and a build with a
+  directory per stage still check every path ([ADR-0144]).
 
 ### `--userns`
 
@@ -221,6 +224,15 @@ other.
   root. `ranikust prune --all --userns --state-dir DIR` empties the state
   directory as the range's first uid
   ([Emptying the state directory](usage.md#emptying-the-state-directory)).
+- **Owners.** The build can give a file only an owner of the range, ids 0
+  to its count − 1. An image with an owner past them is refused before any
+  of its layers is extracted, naming the owners, and so is a `COPY
+  --chown` or a `USER` past them when it comes. The ways out: widen the
+  `ranikust` line of `/etc/subuid`, `/etc/subgid` or both to the count
+  named (id N needs N + 1), still sharing no id with an account, another
+  range or another tool's, or build without `--userns`. For an owner past
+  65535, which would need a count past 65536, ranikust asks for no wider
+  range: build without `--userns` ([ADR-0098]).
 - **What the build reaches** it reaches as that uid: the context, the
   Dockerfile, the working directory (where a relative `--dockerfile` is
   looked for first), `--secret` files, the registry credentials and the
@@ -507,3 +519,4 @@ Within one mode, the same build gives the same image whatever the value of
 [ADR-0139]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md
 [ADR-0140]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0140-a-run-keeps-its-callers-selinux-context-and-gets-no-label-of-its-own.md
 [ADR-0141]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0141-an-owner-of-4294967295-over-an-earlier-layers-directory-is-an-accepted-difference-between-the-modes.md
+[ADR-0144]: https://github.com/tran4774/ranikust/blob/main/docs/adr/0144-kaniko-modes-owner-check-skips-the-ignored-paths-on-slash-only.md

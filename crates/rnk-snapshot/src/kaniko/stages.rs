@@ -35,8 +35,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use rnk_layer::LayerDigests;
 use rnk_oci::Digest;
@@ -47,13 +47,14 @@ use rnk_rootfs::{
 use rnk_store::Store;
 
 use super::root::{
-    BROKEN, KanikoLayer, check_live_owners, extract_blob, extract_checked,
+    BROKEN, KanikoLayer, check_cached_owners, check_live_owners, extract_blob, extract_checked,
     in_initial_user_namespace,
 };
 use super::walk::{WalkDiff, WalkOptions, Walker, baseline_in, diff_in};
 use crate::error::{Error, Result};
 use crate::export::DiffCounts;
 use crate::stage::{Base, ExportLayer, LayerOpen, Snapshotter, StageRootfs};
+use crate::userns::UserNamespace;
 
 /// Mode of a stage directory: its root holds an image's setuid files.
 const PRIVATE: u32 = 0o700;
@@ -81,6 +82,9 @@ struct StagesShared {
     /// ([`in_initial_user_namespace`]): base layers are streamed into the
     /// stage directories only then.
     initial_ns: bool,
+    /// The user namespace this process runs in, read at its first use
+    /// ([`UserNamespace::once`]).
+    userns: OnceLock<Option<UserNamespace>>,
 }
 
 impl KanikoStages {
@@ -113,6 +117,7 @@ impl KanikoStages {
                 walk,
                 next: AtomicU64::new(0),
                 initial_ns: in_initial_user_namespace(),
+                userns: OnceLock::new(),
             }),
         })
     }
@@ -227,7 +232,13 @@ impl Snapshotter for KanikoStages {
     }
 
     fn check_owners(&self, layers: &[(Digest, PathBuf)]) -> Result<()> {
-        check_live_owners(layers)
+        // Off `/` every owner is checked, the ignored paths too
+        // (design/modes-and-detection.md#owners-the-user-namespace-does-not-map).
+        check_live_owners(
+            layers,
+            UserNamespace::once(&self.shared.userns)?,
+            &IgnoreList::new(),
+        )
     }
 
     fn streamed_layer(&self, diff_id: &Digest, open: Arc<dyn LayerOpen>) -> Option<KanikoLayer> {
@@ -454,11 +465,15 @@ impl KanikoStage {
     /// # Errors
     ///
     /// [`Error::State`], with nothing changed, while a layer is open, when
-    /// the root was handed over, or when an earlier layer broke it. A
-    /// failure to open the layer leaves the root as it was. Any later
-    /// failure (a digest or diff ID found wrong at the end, an entry
-    /// refused) breaks the root: no layer, view or child stage goes on from
-    /// it; [`StageRootfs::release`] still deletes it.
+    /// the root was handed over, or when an earlier layer broke it. In a
+    /// user namespace, [`Error::Rootfs`] wrapping `Unmapped` for an owner
+    /// it does not map (ADR-0098); there a cached blob that does not open
+    /// or decompress, or whose tar headers or diff ID are wrong, also fails
+    /// before the root changes, as does a user namespace or id map that
+    /// cannot be read. A failure to open the layer leaves the root as it
+    /// was. Any later failure (a digest or diff ID found wrong at the end,
+    /// an entry refused) breaks the root: no layer, view or child stage
+    /// goes on from it; [`StageRootfs::release`] still deletes it.
     pub fn apply_layer(&mut self, layer: &KanikoLayer) -> Result<()> {
         if self.open {
             return Err(Error::State("a layer is open"));
@@ -466,6 +481,12 @@ impl KanikoStage {
         self.usable()?;
         let span = tracing::debug_span!("rnk_snapshot.apply");
         let _entered = span.enter();
+        // Off `/` every owner is checked, the ignored paths too (ADR-0144).
+        check_cached_owners(
+            layer,
+            UserNamespace::once(&self.shared.userns)?,
+            &IgnoreList::new(),
+        )?;
         let tar = layer.open()?;
         self.walked = false;
         self.broken = true;

@@ -16,6 +16,10 @@
 //! [`probe`], the overlay mount with the ADR-0016 options, with
 //! `fsconfig(lowerdir+)` or else `mount(2)`.
 //!
+//! And tells the user namespace this process runs in, [`UserNamespace`]:
+//! its id maps are read here for the layer keys and the owner checks of
+//! extraction, and for the binary's refusal guidance (ADR-0098).
+//!
 //! # Boundaries
 //!
 //! - Does not run instructions (`rnk-sandbox`) or encode diffs as layers: its
@@ -50,3 +54,4 @@ pub use probe::{OverlayCaps, probe};
 pub use stage::{
     Base, ExportLayer, Keep, LayerOpen, Overlay, OverlayStage, Snapshotter, StageRootfs,
 };
+pub use userns::UserNamespace;
