@@ -78,8 +78,8 @@ A build in a user namespace (rootless, `--userns`, or in a rootless
 container) also refuses a state directory whose layers were extracted under
 other ids than the namespace gives now: after the subordinate ranges of an
 enclosing container changed, or a `chown` of the directory on disk. It
-changes nothing there and names the ways out: `prune --all`, or another
-`--state-dir`. As root that may not mount, `--mode=auto` without `--userns`
+changes nothing there and names the ways out: `prune --all` (for root, the
+commands that empty the directory), or another `--state-dir`. As root that may not mount, `--mode=auto` without `--userns`
 logs this refusal as a warning and tries kaniko mode.
 
 Root is refused, a container's root included: it empties its state directory
