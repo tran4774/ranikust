@@ -635,7 +635,8 @@ class Workflows(unittest.TestCase):
     def test_the_k8s_job_reads_k3s_from_a_cache_keyed_on_its_pin(self):
         # The k3s download (#214): main's runs fill the cache stage.sh reads
         # through RANIKUST_K3S_CACHE, keyed on the pin, so a pull request
-        # downloads nothing until the pin changes.
+        # downloads k3s only when main's entry is missing or does not
+        # restore.
         ss = steps(jobs("t2.yml")["k8s"])
         names = [uses(s) for s in ss]
         restore = ss[names.index("actions/cache/restore")]
@@ -666,18 +667,19 @@ class Workflows(unittest.TestCase):
 
     def test_a_k3s_download_outlasts_an_outage(self):
         # On a cache miss (#214): every k3s download goes through fetch(),
-        # which retries 5xx, refused connections and stalls for minutes.
+        # which retries timeouts, stalls, refused connections and HTTP 408,
+        # 429, 500, 502, 503 and 504 for minutes. Nothing else: a wrong
+        # pin's 404 fails at once. The whole command, since a later curl
+        # flag overrides an earlier one.
         lines = (ROOT / "tests" / "vm" / "stage.sh").read_text().splitlines()
         code = [x for x in lines if not x.lstrip().startswith("#")]
         start = code.index("  fetch() {")
         end = code.index("  }", start)
-        body = " ".join(x.strip().rstrip("\\") for x in code[start + 1:end])
+        body = " ".join(" ".join(code[start + 1:end]).replace("\\", " ").split())
         self.assertEqual(sum("curl " in x for x in code), 1)
-        self.assertTrue(body.startswith("curl "), body)
-        for flag in ["--proto '=https'", "--tlsv1.2", "-fL", "--no-progress-meter", "--retry 9",
-                     "--retry-max-time 600", "--retry-connrefused", "--connect-timeout 30",
-                     "--speed-limit 1024", "--speed-time 60"]:
-            self.assertIn(f" {flag} ", f" {body} ", flag)
+        self.assertEqual(body, "curl --proto '=https' --tlsv1.2 -fL --no-progress-meter --retry 9"
+                               " --retry-max-time 600 --retry-connrefused --connect-timeout 30"
+                               ' --speed-limit 1024 --speed-time 60 -o "$1" "$url"')
         self.assertEqual([x.strip().split(" ||")[0] for x in code if x.strip().startswith("fetch ")],
                          ['fetch "$cached.part"', 'fetch "$STAGE/bin/k3s"'])
 

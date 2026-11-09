@@ -226,7 +226,7 @@ docs-lint:
 test-docs-lint:
     python3 -I tests/docs/test_links.py
 
-# Tests of CI's lane detection and cache pruning, scripts/ci.py, and of how the workflows wire them (ADR-0095; CI: the `changes` job). Fails on a tracked file no lane rule names. No network, no privileges. Requires python3 3.11 or later and git.
+# Tests of CI's lane detection and cache pruning, scripts/ci.py, of how the workflows wire them (ADR-0095; CI: the `changes` job), and of the T2 k8s job's k3s download (its cache and curl command). Fails on a tracked file no lane rule names. No network, no privileges. Requires python3 3.11 or later and git.
 test-ci:
     python3 -I tests/ci/test_ci.py
 

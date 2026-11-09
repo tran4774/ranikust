@@ -17,7 +17,7 @@
 # cache; t2.yml's k8s job: a directory the Actions cache restores, which
 # `main`'s runs save), keeps the k3s download for the next run. In it, this
 # script deletes a failed download's `.part` file and, after a good
-# download, every other `k3s-*` file (older pins). Without it the download
+# download, every other `k3s-*` file (other pins). Without it the download
 # goes straight into the stage.
 set -euo pipefail
 
@@ -113,7 +113,7 @@ if wants k8s; then
       fetch "$cached.part" || { rm -f "$cached.part"; die "downloading k3s $K3S_VERSION failed"; }
       [ "$(sha "$cached.part")" = "$K3S_SHA256" ] || { rm -f "$cached.part"; die "SHA-256 mismatch for k3s $K3S_VERSION"; }
       mv "$cached.part" "$cached"
-      # One release kept: the pins before this one are not used again.
+      # One release kept, this pin's: another branch's pin downloads its own.
       find "$RANIKUST_K3S_CACHE" -maxdepth 1 -type f -name 'k3s-*' ! -name "k3s-$K3S_VERSION" -delete
     fi
     cp "$cached" "$STAGE/bin/k3s"
