@@ -236,7 +236,8 @@ pruned_as_the_range() {
     rc=0
     log="$(sudo bash -c "$way" 2>&1)" || rc=$?
     expect "$rc" 1 "the printed commands with an entry of $foreign"
-    grep -qF "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids $S-" <<<"$log" ||
+    grep -qF "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids $S-" <<<"$log" &&
+      grep -qF "; --userns builds can use another --state-dir" <<<"$log" ||
       fail "the printed commands with an entry of $foreign: $log"
     expect "$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)" "$listed" \
       "the state directory after the printed commands met an entry of $foreign"
@@ -333,6 +334,9 @@ probe_left_by_a_killed_build() {
   log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
   echo "  $CASE: measured: prune --all --userns, only a probe directory of root's: exit $rc: $log" >&2
   expect "$rc" 1 "prune --all --userns, only a probe directory of root's"
+  grep -qF "so ranikust prune --all --userns removes nothing" <<<"$log" &&
+    grep -qF "which a --userns build with --state-dir $d removes" <<<"$log" ||
+    fail "prune --all --userns, only a probe directory of root's: $log"
   expect "$(tree_of "$d")" "$listed" "after prune --all --userns, only a probe directory"
   rc=0
   log="$(sudo timeout 120 "$RNK" prune --all --state-dir "$d" 2>&1)" || rc=$?
@@ -457,6 +461,9 @@ hostile_trees_pruned_as_the_range() {
     esac
     echo "  $CASE: measured: prune --all --userns refused ($how): exit $rc: $log" >&2
     expect "$rc" 1 "prune --all --userns, $how"
+    [ "$how" != held ] ||
+      grep -qF "ranikust prune --all --userns empties it only while no build runs there" <<<"$log" ||
+      fail "prune --all --userns, $how: $log"
     expect "$(sudo stat -c '%u:%g %a' "$d") $(tree_of "$d")" "$listed" \
       "the state directory after prune --all --userns was refused ($how)"
   done

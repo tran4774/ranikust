@@ -2077,7 +2077,8 @@ fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
         &format!(r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)""#),
         &format!("find . -xdev -mindepth 1 ! -path ./.ranikust-pruning {ours} -delete"),
         "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids \
-         100000-165535, gids 300000-300999) are here",
+         100000-165535, gids 300000-300999) are here, which this removal would leave in place, \
+         or find failed; --userns builds can use another --state-dir\"",
     ] {
         assert!(script.contains(want), "{want}: {script}");
     }
@@ -2108,8 +2109,8 @@ fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
     assert!(!none.contains("cd -P"), "{none}");
 }
 
-/// What a `prune --all --userns` that left entries says first names
-/// `prune --all --userns`; any other store error reads as the store says.
+/// What a `prune --all --userns` that left entries, or found a build
+/// there, says names `prune --all --userns`, never `prune --all` alone.
 #[test]
 fn a_userns_prune_that_could_not_finish_names_itself() {
     let e = rnk_store::Error::NotPruned {
@@ -2117,14 +2118,72 @@ fn a_userns_prune_that_could_not_finish_names_itself() {
         left: "\"tmp\"".to_owned(),
     };
     assert_eq!(
-        userns_reason(&e),
+        userns_words(&e.to_string()),
         "ranikust prune --all --userns could not empty the state directory /srv/state: it still \
          holds \"tmp\"; no build uses it until ranikust prune --all --userns empties it"
     );
-    let e = rnk_store::Error::PruneCutShort {
+    let e = rnk_store::Error::InUse {
         path: PathBuf::from("/srv/state"),
     };
-    assert_eq!(userns_reason(&e), e.to_string());
+    assert_eq!(
+        userns_words(&e.to_string()),
+        "a build is using the state directory /srv/state: ranikust prune --all --userns empties \
+         it only while no build runs there; run it again once they end"
+    );
+}
+
+/// A `prune --all --userns` refused before its namespace for want of a
+/// marker names itself; where the directory holds only probe directories,
+/// which a `--userns` build there removes, it says so instead of the
+/// guidance to fix the directory; anything else there, it does not.
+#[test]
+fn a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe() {
+    let tmp = private_tempdir();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    fs::create_dir(state.join(format!("{}1-root", rnk_store::USERNS_PROBE_PREFIX))).unwrap();
+    let d = shell_word(state.as_os_str());
+    let before = listing(tmp.path());
+    let store = rnk_store::Store::check_prune(&state)
+        .unwrap_err()
+        .to_string();
+    let probe = userns_refused_before(&state, &store);
+    assert!(
+        probe.reason.contains(
+            "has no regular file .ranikust-state, so ranikust prune --all --userns removes \
+             nothing"
+        ),
+        "{probe}"
+    );
+    assert!(
+        probe.reason.ends_with(&format!(
+            "; it holds only a probe directory a --userns build left, which a --userns build \
+             with --state-dir {d} removes"
+        )),
+        "{probe}"
+    );
+    assert_eq!(probe.guidance, "", "{probe}");
+    assert!(!probe.reason.contains("--userns --userns"), "{probe}");
+    assert_eq!(listing(tmp.path()), before);
+    // Another entry beside it, or a file with the probe's name: no word
+    // of the probe, and the guidance to fix the directory.
+    for other in [
+        "other",
+        &format!("{}2-file", rnk_store::USERNS_PROBE_PREFIX),
+    ] {
+        fs::write(state.join(other), b"").unwrap();
+        let store = rnk_store::Store::check_prune(&state)
+            .unwrap_err()
+            .to_string();
+        let refusal = userns_refused_before(&state, &store);
+        assert!(!refusal.reason.contains("probe"), "{other}: {refusal}");
+        assert_eq!(refusal.guidance, USERNS_ONLY, "{other}: {refusal}");
+        fs::remove_file(state.join(other)).unwrap();
+    }
+    // A refusal of another rule: no word of the probe.
+    let refusal = userns_refused_before(&state, "the state directory /x is root's default");
+    assert_eq!(refusal.reason, "the state directory /x is root's default");
+    assert_eq!(refusal.guidance, USERNS_ONLY);
 }
 
 /// Root's removal of what a `prune --all --userns` left, as printed, run

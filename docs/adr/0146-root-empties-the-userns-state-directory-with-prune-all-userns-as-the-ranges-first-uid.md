@@ -78,8 +78,10 @@ Phase 5's `prune` is not covered.
   "unmount anything below".
 - Bad, because an entry whose uid or gid is neither root's nor the range's
   (a range shrunk or moved since the build, a file of another account)
-  stops root's commands with nothing changed; ranikust names no way past
-  it, and the marker, which builds refuse, stays while that entry is there.
+  stops root's commands with nothing changed, and the marker, which builds
+  refuse, stays while that entry is there; the commands then name another
+  `--state-dir` for `--userns` builds as the way out (the maintainer,
+  2026-11-09).
 
 ## Evidence
 

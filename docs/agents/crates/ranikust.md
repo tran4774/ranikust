@@ -183,14 +183,17 @@ writer) before `unshare`, the probes and the state directory's checks.
 - `prune --all --userns` (`prune::prune_userns`, ADR-0139, ADR-0146): a usage error
   (exit 2) from a user other than root; else root's range
   (`subids::root_range`), `statedir::check_for_prune` with `Owner::Mapped`
-  (the build's advice left out; refusals carry `prune::USERNS_ONLY`),
+  (the build's advice left out; refusals carry `prune::USERNS_ONLY`, but
+  one of a directory without a marker that holds only probe directories,
+  which says a `--userns` build there removes them:
+  `prune::userns_refused_before`),
   `setup::rootless::enter_range`,
   then `Store::prune_all` as the range's first uid; an unfinished one gets
   `prune::userns_unfinished` (every `--userns` build stopped, then root's
   commands, `prune::userns_left_script` through `in_dir`, pinned outside
   the namespace, which keep the marker and stop where an entry's uid or
-  gid is neither root's nor the range's) and a reason naming
-  `prune --all --userns` (`prune::userns_reason`);
+  gid is neither root's nor the range's, naming another `--state-dir`);
+  the store's words name `prune --all --userns` (`prune::userns_words`);
   `--metrics-file` refused with it in `main.rs` (`metrics_preflight`). The
   steps and their order:
   [cache-and-store.md#prune](../../design/cache-and-store.md#prune).
@@ -733,9 +736,12 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `prune_userns_and_roots_prune_never_send_root_to_each_other`; an
   unfinished one saying to stop every `--userns` build, then giving root's
   commands, the range's bounds written in, none without a pin:
-  `a_userns_prune_that_could_not_finish_names_the_ways_out`; its reason
-  naming `prune --all --userns`:
-  `a_userns_prune_that_could_not_finish_names_itself`; those
+  `a_userns_prune_that_could_not_finish_names_the_ways_out`; its reason,
+  and that of a held directory, naming `prune --all --userns`:
+  `a_userns_prune_that_could_not_finish_names_itself`; a directory
+  without a marker refused naming it, and saying a `--userns` build
+  removes the probe directory where that is all it holds:
+  `a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe`; those
   commands, run by each shell present, removing every entry but the marker
   whatever its name, a symlink out not followed, and changing nothing
   without a regular `.ranikust-pruning` (none, a symlink, a directory),

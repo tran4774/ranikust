@@ -91,10 +91,13 @@ below the directory; then run those commands as root and run it again.
 Like those of root's plain `prune --all`, they refuse a `PATH` with a
 relative or empty entry and act only on the directory ranikust checked,
 while no build holds it; they need GNU findutils, change nothing where an
-entry's uid or gid is neither root's nor in the `ranikust` range, else
-remove every entry but `.ranikust-pruning`, which keeps builds out, and
-leave what is on another filesystem. Until then builds refuse the
-directory and name the command. A user other than root gets a usage
+entry's uid or gid is neither root's nor in the `ranikust` range (then
+`--userns` builds can use another `--state-dir`), else remove every entry
+but `.ranikust-pruning`, which keeps builds out, and leave what is on
+another filesystem. Until then builds refuse the directory and name the
+command. A directory with no `.ranikust-state` that holds only a probe
+directory a killed `--userns` build left is refused; a `--userns` build
+with that `--state-dir` removes it. A user other than root gets a usage
 error, and `--metrics-file` is refused with `--userns` (exit code 2): the
 report would be written as the range's uid. Root's own `prune --all` on a
 directory this command takes names it instead of the commands below, which

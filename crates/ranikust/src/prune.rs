@@ -267,7 +267,7 @@ fn userns_left_script(range: SubordinateIds) -> String {
         r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
     );
     script.push_str(&format!(
-        r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)" || {{ echo "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range ({ids}) are here, which this removal would leave in place, or find failed" >&2; exit 1; }}; "#
+        r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)" || {{ echo "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range ({ids}) are here, which this removal would leave in place, or find failed; --userns builds can use another --state-dir" >&2; exit 1; }}; "#
     ));
     script.push_str(&format!(
         r#"{{ find . -xdev -mindepth 1 ! -path ./.ranikust-pruning {ours} -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || {{ echo "not emptied: what find names above is left, and the marker" >&2; exit 1; }}; }}"#
@@ -463,28 +463,62 @@ fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>, range: SubordinateIds)
     )
 }
 
-/// The reason of the store error `e` from [`Store::prune_all`] under
-/// `--userns`: what is left names `prune --all --userns`, the one that
-/// empties that directory, not `prune --all`.
-fn userns_reason(e: &rnk_store::Error) -> String {
-    let text = e.to_string();
-    match unfinished_prune(e) {
-        Some((Unfinished::NotPruned, _)) => text
-            .strip_prefix("ranikust prune --all ")
-            .and_then(|t| {
-                t.strip_suffix("; no build uses it until ranikust prune --all empties it")
-            })
-            .map_or_else(
-                || text.clone(),
-                |middle| {
-                    format!(
-                        "ranikust prune --all --userns {middle}; no build uses it until ranikust \
-                         prune --all --userns empties it"
-                    )
-                },
-            ),
-        Some((Unfinished::CutShort, _)) | None => text,
+/// `reason`, the words of the store or of the build's checks, under
+/// `--userns`: the store, which knows no `--userns`, names `ranikust prune
+/// --all`, and the prune that ran, and empties that directory, is
+/// `ranikust prune --all --userns`.
+fn userns_words(reason: &str) -> String {
+    reason.replace("ranikust prune --all", "ranikust prune --all --userns")
+}
+
+/// The refusal of `prune --all --userns` that [`statedir::check_for_prune`]
+/// gave for `state_dir`, before the namespace, as `reason`: in
+/// [`userns_words`], with [`USERNS_ONLY`]; but where the directory has no
+/// marker and holds only probe directories ([`holds_only_probe_dirs`]),
+/// saying that a `--userns` build there removes them instead.
+fn userns_refused_before(state_dir: &Path, reason: &str) -> Refusal {
+    let mut reason = userns_words(reason);
+    let no_marker = format!("has no regular file {}", rnk_store::STATE_MARKER);
+    let guidance = if reason.contains(&no_marker) && holds_only_probe_dirs(state_dir) {
+        reason.push_str(&format!(
+            "; it holds only a probe directory a --userns build left, which a --userns build \
+             with --state-dir {} removes",
+            shell_word(state_dir.as_os_str())
+        ));
+        ""
+    } else {
+        USERNS_ONLY
+    };
+    Refusal {
+        kind: Kind::Other,
+        reason,
+        guidance: guidance.into(),
     }
+}
+
+/// Whether `dir` holds entries and only directories of the user namespace
+/// probe, as the store tells them (named with
+/// [`rnk_store::USERNS_PROBE_PREFIX`], on `dir`'s mount, no mount point),
+/// which a build's store removes as it opens: read-only, through
+/// [`rnk_rootfs::RootPath`], for a refusal's words only, so anything that
+/// fails reads as no.
+fn holds_only_probe_dirs(dir: &Path) -> bool {
+    let Ok(root) = rnk_rootfs::RootPath::open(dir) else {
+        return false;
+    };
+    let Ok(names) = root.read_names("") else {
+        return false;
+    };
+    !names.is_empty()
+        && names.iter().all(|name| {
+            name.as_bytes()
+                .starts_with(rnk_store::USERNS_PROBE_PREFIX.as_bytes())
+                && root.statx(name).is_ok_and(|st| {
+                    st.file_type() == rnk_rootfs::FileType::Directory
+                        && !st.mount_root
+                        && st.mnt_id == root.mnt_id()
+                })
+        })
 }
 
 /// The ways out of the state directory `dir`, pinned as `pin`, that
@@ -831,12 +865,13 @@ fn userns_with(
         uid: range.uids.start,
         gid: range.gids.start,
     };
-    let check =
-        match statedir::check_for_prune(state_dir, owner).map_err(|r| refused(r.0, USERNS_ONLY))? {
-            Found::Missing => return Ok(Pruned::Missing),
-            Found::Empty => return Ok(Pruned::Empty),
-            Found::Entries(check) => check,
-        };
+    let check = match statedir::check_for_prune(state_dir, owner)
+        .map_err(|r| userns_refused_before(state_dir, &r.0))?
+    {
+        Found::Missing => return Ok(Pruned::Missing),
+        Found::Empty => return Ok(Pruned::Empty),
+        Found::Entries(check) => check,
+    };
     // Outside: in the namespace, the owner reads as its root.
     let pin = Pin::of(state_dir, &check);
     setup::rootless::enter_range(range)?;
@@ -845,7 +880,7 @@ fn userns_with(
         Ok(false) => Ok(Pruned::Empty),
         Err(e) => Err(setup::inside_userns(Refusal {
             kind: Kind::Other,
-            reason: userns_reason(&e),
+            reason: userns_words(&e.to_string()),
             guidance: match unfinished_prune(&e) {
                 Some((Unfinished::NotPruned, _)) => userns_unfinished(state_dir, pin, range).into(),
                 Some((Unfinished::CutShort, _)) | None => "".into(),
