@@ -184,9 +184,9 @@ writer) before `unshare`, the probes and the state directory's checks.
   (exit 2) from a user other than root; else root's range
   (`subids::root_range`), `statedir::check_for_prune` with `Owner::Mapped`
   (the build's advice left out; refusals carry `prune::USERNS_ONLY`, but
-  one of a directory without a marker that holds only probe directories,
-  which says a `--userns` build there removes them:
-  `prune::userns_refused_before`),
+  one of a directory without a marker that holds only empty probe
+  directories, root's `0700` or the range's first uid's, which says a
+  `--userns` build there removes them: `prune::userns_refused_before`),
   `setup::rootless::enter_range`,
   then `Store::prune_all` as the range's first uid; an unfinished one gets
   `prune::userns_unfinished` (every `--userns` build stopped, then root's
@@ -740,7 +740,9 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   and that of a held directory, naming `prune --all --userns`:
   `a_userns_prune_that_could_not_finish_names_itself`; a directory
   without a marker refused naming it, and saying a `--userns` build
-  removes the probe directory where that is all it holds:
+  removes the probe directories where only empty ones of the range's
+  first uid are there (none for one that holds a file, another uid's, a
+  file or symlink with the probe's name, or another entry):
   `a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe`; those
   commands, run by each shell present, removing every entry but the marker
   whatever its name, a symlink out not followed, and changing nothing

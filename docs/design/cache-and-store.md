@@ -361,7 +361,11 @@ and gid on the host, with no supplementary group); in it, `Store::prune_all`,
 as above. Before the namespace root only reads in the directory: no `chmod`,
 no marker, no deletion. A refusal names the rule broken, without the
 build's advice of a new `--state-dir`, and says to fix it for a directory
-the range's first uid owns, else to drop `--userns`. Where it cannot finish
+the range's first uid owns, else to drop `--userns`; the store's words
+name `prune --all --userns`. A directory without a marker that holds only
+empty probe directories, root's `0700` or the range's first uid's, is
+refused saying instead that a `--userns` build there removes them, as root
+and in the namespace before it makes its store. Where it cannot finish
 (a mount below; of a uid or gid the range does not map, such as root's, a
 directory that still holds entries, or an entry in a sticky directory
 another id owns, over which the namespace's root has no `CAP_FOWNER`), its
@@ -371,7 +375,8 @@ gives root's commands with ADR-0133's safeguards (the environment checked,
 the directory entered once, pinned outside the namespace, `flock -xn`, GNU
 `find -xdev`, the owner filter adapted to the range): where an entry's uid
 or gid is neither root's nor inside the range, whose bounds they carry, they
-change nothing; else they delete everything but the marker, which they
+change nothing and name another `--state-dir` for `--userns` builds as the
+way out; else they delete everything but the marker, which they
 keep, unlike ADR-0133's
 ([ADR-0146](../adr/0146-root-empties-the-userns-state-directory-with-prune-all-userns-as-the-ranges-first-uid.md)),
 and check that only the marker is left; then it runs again.

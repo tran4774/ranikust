@@ -237,7 +237,7 @@ pruned_as_the_range() {
     log="$(sudo bash -c "$way" 2>&1)" || rc=$?
     expect "$rc" 1 "the printed commands with an entry of $foreign"
     grep -qF "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids $S-" <<<"$log" &&
-      grep -qF "; --userns builds can use another --state-dir" <<<"$log" ||
+      grep -qF "(--userns builds can use another --state-dir), or find failed" <<<"$log" ||
       fail "the printed commands with an entry of $foreign: $log"
     expect "$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)" "$listed" \
       "the state directory after the printed commands met an entry of $foreign"
@@ -295,8 +295,10 @@ printed_way() {
 # root's empty 0700 overlay directory: prune --all --userns ends emptied,
 # through root's printed commands where its uid cannot remove it, a
 # second run finding it empty: no loop. With no store yet, both prunes
-# refuse the directory, changing nothing, and the next --userns build
-# takes it, removing that probe's directory first.
+# refuse the directory, changing nothing, prune --all --userns saying a
+# --userns build removes empty probe directories of root's and the
+# range's (not one that holds a file), and the next --userns build takes
+# it, removing them first.
 probe_left_by_a_killed_build() {
   local d="$UW/probe" p probe log rc way listed
   for p in root given; do
@@ -329,14 +331,24 @@ probe_left_by_a_killed_build() {
   # No store yet: the build was killed before it made one.
   sudo install -d -m 700 -o "$S" -g "$G" "$d"
   sudo install -d -m 700 -o 0 -g 0 "$d/.ranikust-anon-userns-probe-2-root"
+  sudo install -d -m 700 -o "$S" -g "$G" "$d/.ranikust-anon-userns-probe-3-range"
+  # One that holds a file, which no build removes: no word of the probe.
+  sudo touch "$d/.ranikust-anon-userns-probe-2-root/f"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns, a probe directory that holds a file"
+  ! grep -qF "probe director" <<<"$log" ||
+    fail "prune --all --userns, a probe directory that holds a file: $log"
+  sudo rm "$d/.ranikust-anon-userns-probe-2-root/f"
   listed="$(tree_of "$d")"
   rc=0
   log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
-  echo "  $CASE: measured: prune --all --userns, only a probe directory of root's: exit $rc: $log" >&2
-  expect "$rc" 1 "prune --all --userns, only a probe directory of root's"
+  echo "  $CASE: measured: prune --all --userns, only probe directories: exit $rc: $log" >&2
+  expect "$rc" 1 "prune --all --userns, only probe directories"
   grep -qF "so ranikust prune --all --userns removes nothing" <<<"$log" &&
-    grep -qF "which a --userns build with --state-dir $d removes" <<<"$log" ||
-    fail "prune --all --userns, only a probe directory of root's: $log"
+    grep -qF "it holds only probe directories a --userns build left" <<<"$log" &&
+    grep -qF "a --userns build with --state-dir $d removes them" <<<"$log" ||
+    fail "prune --all --userns, only probe directories: $log"
   expect "$(tree_of "$d")" "$listed" "after prune --all --userns, only a probe directory"
   rc=0
   log="$(sudo timeout 120 "$RNK" prune --all --state-dir "$d" 2>&1)" || rc=$?
@@ -348,6 +360,8 @@ probe_left_by_a_killed_build() {
   expect "$rc" 0 "a --userns build, only a probe directory of root's: $log"
   ! sudo test -e "$d/.ranikust-anon-userns-probe-2-root" ||
     fail "a --userns build left root's probe directory"
+  ! sudo test -e "$d/.ranikust-anon-userns-probe-3-range" ||
+    fail "a --userns build left the range's probe directory"
   rc=0
   log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
   expect "$rc" 0 "prune --all --userns after that build: $log"

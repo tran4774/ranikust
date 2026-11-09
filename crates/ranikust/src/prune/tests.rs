@@ -2077,8 +2077,8 @@ fn a_userns_prune_that_could_not_finish_names_the_ways_out() {
         &format!(r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)""#),
         &format!("find . -xdev -mindepth 1 ! -path ./.ranikust-pruning {ours} -delete"),
         "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids \
-         100000-165535, gids 300000-300999) are here, which this removal would leave in place, \
-         or find failed; --userns builds can use another --state-dir\"",
+         100000-165535, gids 300000-300999) are here, which this removal would leave in place \
+         (--userns builds can use another --state-dir), or find failed\"",
     ] {
         assert!(script.contains(want), "{want}: {script}");
     }
@@ -2133,57 +2133,98 @@ fn a_userns_prune_that_could_not_finish_names_itself() {
 }
 
 /// A `prune --all --userns` refused before its namespace for want of a
-/// marker names itself; where the directory holds only probe directories,
-/// which a `--userns` build there removes, it says so instead of the
-/// guidance to fix the directory; anything else there, it does not.
+/// marker names itself; where the directory holds only empty probe
+/// directories of the range's first uid (or root's `0700`), which a
+/// `--userns` build there removes, it says so instead of the guidance to
+/// fix the directory; anything else there, it does not. The effective uid
+/// stands in for the range's first.
 #[test]
 fn a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe() {
+    let euid = rustix::process::geteuid().as_raw();
     let tmp = private_tempdir();
     let state = tmp.path().join("state");
     fs::create_dir(&state).unwrap();
-    fs::create_dir(state.join(format!("{}1-root", rnk_store::USERNS_PROBE_PREFIX))).unwrap();
+    let probe = |n: &str| state.join(format!("{}{n}", rnk_store::USERNS_PROBE_PREFIX));
+    fs::create_dir(probe("1")).unwrap();
     let d = shell_word(state.as_os_str());
     let before = listing(tmp.path());
-    let store = rnk_store::Store::check_prune(&state)
-        .unwrap_err()
-        .to_string();
-    let probe = userns_refused_before(&state, &store);
-    assert!(
-        probe.reason.contains(
-            "has no regular file .ranikust-state, so ranikust prune --all --userns removes \
-             nothing"
-        ),
-        "{probe}"
-    );
-    assert!(
-        probe.reason.ends_with(&format!(
-            "; it holds only a probe directory a --userns build left, which a --userns build \
-             with --state-dir {d} removes"
-        )),
-        "{probe}"
-    );
-    assert_eq!(probe.guidance, "", "{probe}");
-    assert!(!probe.reason.contains("--userns --userns"), "{probe}");
-    assert_eq!(listing(tmp.path()), before);
-    // Another entry beside it, or a file with the probe's name: no word
-    // of the probe, and the guidance to fix the directory.
-    for other in [
-        "other",
-        &format!("{}2-file", rnk_store::USERNS_PROBE_PREFIX),
-    ] {
-        fs::write(state.join(other), b"").unwrap();
+    let refused = |first_uid| {
         let store = rnk_store::Store::check_prune(&state)
             .unwrap_err()
             .to_string();
-        let refusal = userns_refused_before(&state, &store);
-        assert!(!refusal.reason.contains("probe"), "{other}: {refusal}");
-        assert_eq!(refusal.guidance, USERNS_ONLY, "{other}: {refusal}");
-        fs::remove_file(state.join(other)).unwrap();
+        userns_refused_before(&state, &store, first_uid)
+    };
+    let one = refused(euid);
+    assert!(
+        one.reason.ends_with(
+            "has no regular file .ranikust-state, so ranikust prune --all --userns removes \
+             nothing: it empties only a state directory ranikust made; it holds only a probe \
+             directory a --userns build left"
+        ),
+        "{one}"
+    );
+    assert_eq!(
+        one.guidance,
+        format!("a --userns build with --state-dir {d} removes it"),
+        "{one}"
+    );
+    assert_eq!(listing(tmp.path()), before);
+    fs::create_dir(probe("2")).unwrap();
+    let two = refused(euid);
+    assert!(
+        two.reason
+            .ends_with("; it holds only probe directories a --userns build left"),
+        "{two}"
+    );
+    assert_eq!(
+        two.guidance,
+        format!("a --userns build with --state-dir {d} removes them"),
+        "{two}"
+    );
+    fs::remove_dir(probe("2")).unwrap();
+    // Not removed by a build: another uid's (not root's), one that holds
+    // anything, or another entry beside it (any name, a file or a symlink
+    // to a directory with the probe's name): no word of the probe.
+    if euid != 0 {
+        let other = refused(euid + 1);
+        assert!(!other.reason.contains("probe"), "{other}");
+        assert_eq!(other.guidance, USERNS_ONLY, "{other}");
+    }
+    fs::write(probe("1").join("f"), b"").unwrap();
+    let full = refused(euid);
+    assert!(!full.reason.contains("probe"), "{full}");
+    assert_eq!(full.guidance, USERNS_ONLY, "{full}");
+    fs::remove_file(probe("1").join("f")).unwrap();
+    for (name, symlink) in [("other", false), ("3", false), ("4", true)] {
+        let at = if name == "other" {
+            state.join(name)
+        } else {
+            probe(name)
+        };
+        if symlink {
+            std::os::unix::fs::symlink(probe("1"), &at).unwrap();
+        } else {
+            fs::write(&at, b"").unwrap();
+        }
+        let refusal = refused(euid);
+        assert!(!refusal.reason.contains("probe"), "{name}: {refusal}");
+        assert_eq!(refusal.guidance, USERNS_ONLY, "{name}: {refusal}");
+        fs::remove_file(&at).unwrap();
     }
     // A refusal of another rule: no word of the probe.
-    let refusal = userns_refused_before(&state, "the state directory /x is root's default");
+    let refusal = userns_refused_before(&state, "the state directory /x is root's default", euid);
     assert_eq!(refusal.reason, "the state directory /x is root's default");
     assert_eq!(refusal.guidance, USERNS_ONLY);
+    // The store's phrases only: an entry's name that holds the words is
+    // shown as it is.
+    let e = rnk_store::Error::NotPruned {
+        path: PathBuf::from("/srv/state"),
+        left: "\"ranikust prune --all\"".to_owned(),
+    };
+    assert!(
+        userns_words(&e.to_string()).contains("it still holds \"ranikust prune --all\";"),
+        "{e}"
+    );
 }
 
 /// Root's removal of what a `prune --all --userns` left, as printed, run
