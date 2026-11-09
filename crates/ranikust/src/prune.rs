@@ -16,6 +16,13 @@
 //! builds out of one it did not finish emptying. The commands a refusal
 //! suggests name the state directory, quoted for a shell, and act only on
 //! the directory ranikust checked ([`Pin`]).
+//!
+//! `prune --all --userns` is root's way to empty the state directory of
+//! `build --userns` (ADR-0139, ADR-0146), which the `ranikust` range's first
+//! uid owns ([`prune_userns`]): the same steps, with root's range read
+//! before the checks, the checks those of `--userns`'s build
+//! ([`statedir::Owner::Mapped`]), and that range's user namespace, so that
+//! nothing is deleted as root.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
@@ -53,6 +60,21 @@ pub(crate) enum Failed {
 const NEEDS_ALL: &str = "ranikust prune removes by size and age only from Phase 5 on \
      (ADR-0032); for now it takes --all, which empties the state directory of a user other than \
      root (ADR-0105)";
+
+/// `prune --userns` from a user other than root, as for a build
+/// ([`config::BuildConfig::from_args`]).
+const USERNS_NEEDS_ROOT: &str = "--userns needs root: ranikust prune --all --userns empties the \
+     state directory of root's --userns builds in the user namespace of the ranikust range, \
+     which only root may map; a user other than root empties its own with ranikust prune --all; \
+     drop --userns";
+
+/// What `prune --all --userns` says of a state directory `--userns`'s
+/// build would refuse; root's `prune --all` sends root back here only for
+/// one it accepts ([`userns_takes`]).
+const USERNS_ONLY: &str = "ranikust prune --all --userns empties only a state directory a \
+     --userns build accepts, named with the --state-dir those builds use: for one the first uid \
+     of the ranikust range owns, fix what is named above and run it again; for another, drop \
+     --userns: root's ranikust prune --all then says what root may do with it";
 
 /// Why neither root's commands nor a user's `prune --all` take a path
 /// that ends in `..` ([`ends_in_dotdot`]).
@@ -149,7 +171,7 @@ impl Owner {
         }
     }
 
-    /// The range's first and last uids, as `first-last`.
+    /// The range's first and last ids, as `first-last`.
     fn range_text(range: IdRange) -> String {
         format!("{}-{}", range.start, range.start + (range.count - 1))
     }
@@ -220,6 +242,50 @@ const USER_SCRIPT: &str = gnu_find_first!(
     r#"{ test -f .ranikust-pruning && ! test -h .ranikust-pruning || { ! test -e .ranikust-pruning && ! test -h .ranikust-pruning && test -f .ranikust-state && ! test -h .ranikust-state && mv -T .ranikust-state .ranikust-pruning; }; } && find . -xdev -mindepth 1 ! -path ./.ranikust-pruning -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning && rm .ranikust-pruning"#
 );
 
+/// Root's removal of what `prune --all --userns` left in `--userns`'s
+/// state directory, whose builds map `range`, for [`in_dir`]: with GNU
+/// `find` only ([`gnu_find_first`]), and only where the regular
+/// `.ranikust-pruning` that prune left is, which it keeps, so that no
+/// build takes the directory meanwhile (ADR-0146); then [`root_script`]'s
+/// owner check, of root's ids and the range's, uid and gid (`-xdev` does
+/// not see a bind mount of the same filesystem); then everything else of
+/// those ids (`-xdev`: nothing on another filesystem), and a check that
+/// only the marker is left.
+fn userns_left_script(range: SubordinateIds) -> String {
+    // `find`'s strict bounds, in u64; an id 0 is root's, matched apart.
+    let bounds = |r: IdRange| {
+        let first = u64::from(r.start);
+        (first.saturating_sub(1), first + u64::from(r.count))
+    };
+    let ((uid_below, uid_past), (gid_below, gid_past)) = (bounds(range.uids), bounds(range.gids));
+    let ours = format!(
+        r"\( \( -uid 0 -o \( -uid +{uid_below} -uid -{uid_past} \) \) \( -gid 0 -o \( -gid +{gid_below} -gid -{gid_past} \) \) \)"
+    );
+    let ids = userns_ids(range);
+    let mut script = String::from(gnu_find_first!(""));
+    script.push_str(
+        r#"test -f .ranikust-pruning && ! test -h .ranikust-pruning || { echo "no regular .ranikust-pruning here: not a state directory ranikust prune --all --userns left unfinished; nothing changed" >&2; exit 1; }; "#,
+    );
+    script.push_str(&format!(
+        r#"test -z "$(find . -xdev -mindepth 1 ! {ours} -print -quit || echo failed)" || {{ echo "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range ({ids}) are here, which this removal would leave in place (--userns builds can use another --state-dir), or find failed" >&2; exit 1; }}; "#
+    ));
+    script.push_str(&format!(
+        r#"{{ find . -xdev -mindepth 1 ! -path ./.ranikust-pruning {ours} -delete && test "$(find . -mindepth 1 -maxdepth 1 || echo failed)" = ./.ranikust-pruning || {{ echo "not emptied: what find names above is left, and the marker" >&2; exit 1; }}; }}"#
+    ));
+    script
+}
+
+/// The `ranikust` range's uids and gids, as `uids first-last, gids
+/// first-last` ([`Owner::range_text`]; `subids` reads only ranges of at
+/// least one id whose end, `start + count`, fits in 32 bits).
+fn userns_ids(range: SubordinateIds) -> String {
+    format!(
+        "uids {}, gids {}",
+        Owner::range_text(range.uids),
+        Owner::range_text(range.gids)
+    )
+}
+
 /// How root empties the state directory `dir`, pinned as `pin`, which
 /// holds a marker, with ordinary tools, then removes it.
 fn root_empties(dir: &Path, pin: Pin) -> String {
@@ -240,10 +306,41 @@ fn root_empties(dir: &Path, pin: Pin) -> String {
 /// What root may do with the state directory `dir`, for root's refusal
 /// and a build's: the commands of [`root_empties`] for a directory [`pin`]
 /// checks at the path as given, a build would accept, and finds a marker
-/// in, else none.
+/// in, else none; for one `prune --all --userns` takes ([`userns_takes`]),
+/// [`userns_way`] instead, whose emptying deletes what that range owns,
+/// which those commands would refuse to.
 pub(crate) fn root_commands(dir: &Path) -> String {
+    root_commands_for(dir, |uid| {
+        // Without a usable range, prune --all --userns cannot run either.
+        crate::subids::root_range_quiet().is_ok_and(|range| userns_takes(dir, uid, range))
+    })
+}
+
+/// Whether `prune --all --userns`, with root's range `range`, takes the
+/// state directory `dir` its owner `uid` holds: that uid is the range's
+/// first, and `dir` passes `--userns`'s build's checks
+/// ([`statedir::check_for`]), so that root is not sent there for a
+/// directory it refuses.
+fn userns_takes(dir: &Path, uid: u32, range: SubordinateIds) -> bool {
+    let owner = statedir::Owner::Mapped {
+        uid: range.uids.start,
+        gid: range.gids.start,
+    };
+    uid == range.uids.start && matches!(statedir::check_for(dir, owner), Ok(Found::Entries(_)))
+}
+
+/// [`root_commands`] with `userns`, whether `prune --all --userns` takes
+/// the directory owned by the uid it is given, asked only for a directory
+/// a user other than root owns.
+fn root_commands_for(dir: &Path, userns: impl FnOnce(u32) -> bool) -> String {
     match pin(dir) {
-        Ok((pin, true)) => root_empties(dir, pin),
+        Ok((pin, true)) => {
+            if pin.uid != 0 && userns(pin.uid) {
+                userns_way(dir)
+            } else {
+                root_empties(dir, pin)
+            }
+        }
         Ok((_, false)) => format!(
             "ranikust gives no commands for {}, which is empty: it gives commands only for a \
              directory that holds its marker",
@@ -316,6 +413,152 @@ fn ask_root(dir: &Path) -> String {
          empty it in place",
         shell_word(dir.as_os_str())
     )
+}
+
+/// Root's way to empty `--userns`'s state directory `dir`:
+/// [`prune_userns`].
+fn userns_way(dir: &Path) -> String {
+    format!(
+        "{d} is the state directory of --userns, owned by the first uid of root's ranikust \
+         range: ranikust prune --all --userns --state-dir {d} empties it in that range's user \
+         namespace, as that uid",
+        d = shell_word(dir.as_os_str())
+    )
+}
+
+/// The ways out of `--userns`'s state directory `dir`, pinned as `pin`
+/// outside the range's namespace, that [`prune_userns`] could not finish
+/// emptying ([`rnk_store::Error::NotPruned`], whose reason names the
+/// entries left): what the range's uid cannot remove goes as root (a
+/// directory of an id the range does not map that holds entries, or such
+/// an entry in a sticky directory another id owns, where the namespace's
+/// root has no `CAP_FOWNER` over it), since no build opens the directory
+/// meanwhile, but only where every entry's uid and gid are root's or the
+/// range's: else root's commands change nothing (ADR-0146). The range's
+/// `RUN`s can change that tree: root's commands ([`userns_left_script`] in
+/// [`in_dir`]) come after every `--userns` build is stopped, and run only
+/// while none holds the directory.
+fn userns_unfinished(dir: &Path, pin: Result<Pin, NoPin>, range: SubordinateIds) -> String {
+    let d = shell_word(dir.as_os_str());
+    let by_root = match pin {
+        Ok(pin) => format!(
+            "then, as root, remove every entry but the .ranikust-pruning marker, which keeps \
+             builds out, changing nothing where an entry's uid or gid is neither root's nor in \
+             the ranikust range ({}), with commands that refuse a PATH with a relative or empty \
+             entry, unset LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT and GCONV_PATH and act only on \
+             the directory ranikust checked, while no build holds it; the removal \
+             {NEEDS_GNU_FIND}: {}",
+            userns_ids(range),
+            in_dir(dir, pin, &userns_left_script(range))
+        ),
+        Err(why) => no_commands(dir, &why, false),
+    };
+    format!(
+        "ranikust prune --all --userns leaves what is on another mount, and, of a uid or gid the \
+         ranikust range does not map (root's, or past a range shrunk since the build), \
+         directories that still hold entries and entries in a sticky directory another id owns, \
+         which its uid cannot remove: the entries named above. Stop every --userns build first, \
+         and unmount anything below {d}; {by_root}; then run ranikust prune --all --userns \
+         --state-dir {d} again"
+    )
+}
+
+/// The store's phrases that name `ranikust prune --all`, which knows no
+/// `--userns`; [`userns_words`] names `--userns` where one of these whole
+/// phrases appears, and nowhere else.
+const STORE_PRUNE_PHRASES: [&str; 6] = [
+    "so ranikust prune --all removes nothing",
+    "ranikust prune --all empties it only while no build runs there",
+    "ranikust prune --all could not empty the state directory",
+    "until ranikust prune --all empties it",
+    "which ranikust prune --all neither takes nor removes",
+    "and ranikust prune --all empties it alone",
+];
+
+/// The store's or the checks' words `reason` with `ranikust prune --all`
+/// named as `ranikust prune --all --userns`, the command that ran.
+fn userns_words(reason: &str) -> String {
+    STORE_PRUNE_PHRASES
+        .iter()
+        .fold(reason.to_owned(), |text, phrase| {
+            text.replace(
+                phrase,
+                &phrase.replace("ranikust prune --all", "ranikust prune --all --userns"),
+            )
+        })
+}
+
+/// The refusal of `prune --all --userns` that [`statedir::check_for_prune`]
+/// gave for `state_dir`, whose builds' first uid is `first_uid`, before
+/// the namespace, as `reason`: in [`userns_words`], with [`USERNS_ONLY`];
+/// but where the directory has no marker and holds only probe directories
+/// a `--userns` build removes ([`probe_dirs_a_build_removes`]), saying
+/// that one does instead.
+fn userns_refused_before(state_dir: &Path, reason: &str, first_uid: u32) -> Refusal {
+    let mut reason = userns_words(reason);
+    let no_marker = format!("has no regular file {}", rnk_store::STATE_MARKER);
+    let probes = if reason.contains(&no_marker) {
+        probe_dirs_a_build_removes(state_dir, first_uid)
+    } else {
+        0
+    };
+    let guidance = match probes {
+        0 => USERNS_ONLY.into(),
+        n => {
+            let (them, dirs) = if n == 1 {
+                ("it", "a probe directory")
+            } else {
+                ("them", "probe directories")
+            };
+            reason.push_str(&format!(
+                "; the directory holds only {dirs} a --userns build left"
+            ));
+            format!(
+                "a --userns build with --state-dir {} removes {them}",
+                shell_word(state_dir.as_os_str())
+            )
+            .into()
+        }
+    };
+    Refusal {
+        kind: Kind::Other,
+        reason,
+        guidance,
+    }
+}
+
+/// How many entries `dir` holds where each is a directory of the user
+/// namespace probe that a `--userns` build there removes, else 0: named
+/// with [`rnk_store::USERNS_PROBE_PREFIX`], on `dir`'s mount and no mount
+/// point (as the store's `is_probe_dir`), empty, and either root's,
+/// mode `0700` but for the setgid bit, which root's build removes
+/// (`setup::remove_own_probe_leftovers`), or of `first_uid`, which the
+/// store removes in the namespace. Read-only, through
+/// [`rnk_rootfs::RootPath`], for a refusal's words only: anything that
+/// fails reads as 0.
+fn probe_dirs_a_build_removes(dir: &Path, first_uid: u32) -> usize {
+    let Ok(root) = rnk_rootfs::RootPath::open(dir) else {
+        return 0;
+    };
+    let Ok(names) = root.read_names("") else {
+        return 0;
+    };
+    let removed = |name: &std::ffi::OsString| {
+        name.as_bytes()
+            .starts_with(rnk_store::USERNS_PROBE_PREFIX.as_bytes())
+            && root.statx(name).is_ok_and(|st| {
+                st.file_type() == rnk_rootfs::FileType::Directory
+                    && !st.mount_root
+                    && st.mnt_id == root.mnt_id()
+                    && ((st.uid == 0 && st.mode & 0o5777 == 0o700) || st.uid == first_uid)
+            })
+            && root.read_names(name).is_ok_and(|inside| inside.is_empty())
+    };
+    if names.iter().all(removed) {
+        names.len()
+    } else {
+        0
+    }
 }
 
 /// The ways out of the state directory `dir`, pinned as `pin`, that
@@ -581,20 +824,110 @@ fn shell_word(word: &OsStr) -> String {
 ///
 /// # Errors
 ///
-/// [`Failed::Usage`] without `--all`, or without a `--state-dir` where the
-/// default is unknown; [`Failed::Refused`] as [`prune_all`].
+/// [`Failed::Usage`] without `--all`, with `--userns` for a user other
+/// than root, or without a `--state-dir` where the default is unknown;
+/// [`Failed::Refused`] as [`prune_all`], or with `--userns` as
+/// [`prune_userns`].
 pub(crate) fn run(args: &PruneArgs) -> Result<(PathBuf, Pruned), Failed> {
     if !args.all {
         return Err(Failed::Usage(NEEDS_ALL.to_owned()));
     }
     let euid = rustix::process::geteuid().as_raw();
+    // As for a build: only root maps the range (ADR-0139).
+    if args.userns && euid != 0 {
+        return Err(Failed::Usage(USERNS_NEEDS_ROOT.to_owned()));
+    }
     let state_dir = match &args.state_dir {
         Some(dir) => config::absolute(dir),
         None => config::default_state_dir(euid, std::env::var_os("HOME").as_deref())
             .map_err(|invalid| Failed::Usage(invalid.0))?,
     };
-    let pruned = prune_all(euid, &state_dir).map_err(Failed::Refused)?;
-    Ok((state_dir, pruned))
+    let pruned = if args.userns {
+        prune_userns(&state_dir)
+    } else {
+        prune_all(euid, &state_dir)
+    };
+    Ok((state_dir, pruned.map_err(Failed::Refused)?))
+}
+
+/// `prune --all --userns` on `state_dir`, by root: [`userns_with`] root's
+/// `ranikust` range ([`crate::subids::root_range`]). Call while
+/// single-threaded.
+///
+/// # Errors
+///
+/// As [`userns_with`].
+fn prune_userns(state_dir: &Path) -> Result<Pruned, Refusal> {
+    userns_with(state_dir, crate::subids::root_range)
+}
+
+/// Empties `--userns`'s state directory `state_dir` as the first uid and
+/// gid of the range `range` reads, in its user namespace, which this
+/// process enters for good, as `--userns`'s build does: a path ending in
+/// `..` refused before anything is read; then the range, refused where
+/// [`crate::subids::root_range`] refuses it; then the checks of
+/// `--userns`'s build, outside, which change nothing
+/// ([`statedir::check_for_prune`] with [`statedir::Owner::Mapped`]: owned by
+/// that uid, below directories only root owns and writes and that it may
+/// search, not at, below or above root's default); nothing more when it
+/// does not exist or is empty; else its [`Pin`], for the commands of an
+/// unfinished prune ([`userns_unfinished`]), the namespace
+/// ([`setup::rootless::enter_range`]), then [`Store::prune_all`] in it.
+/// Root acts in the directory only through those read-only checks.
+///
+/// # Errors
+///
+/// A [`Refusal`]: naming a path ending in `..`, the range's error or the
+/// state directory's check that failed; as
+/// [`setup::rootless::enter_range`]; or naming what [`Store::prune_all`]
+/// refused or left, then of [`Kind::Broken`].
+fn userns_with(
+    state_dir: &Path,
+    range: impl FnOnce() -> Result<SubordinateIds, String>,
+) -> Result<Pruned, Refusal> {
+    let refused = |reason: String, guidance: &'static str| Refusal {
+        kind: Kind::Other,
+        reason,
+        guidance: guidance.into(),
+    };
+    if ends_in_dotdot(state_dir) {
+        return Err(refused(
+            format!("the state directory {} {DOTDOT}", state_dir.display()),
+            "",
+        ));
+    }
+    let range = range().map_err(|reason| {
+        refused(
+            format!("ranikust prune --all --userns cannot run here: {reason}"),
+            crate::subids::ROOT_RANGE_GUIDANCE,
+        )
+    })?;
+    let owner = statedir::Owner::Mapped {
+        uid: range.uids.start,
+        gid: range.gids.start,
+    };
+    let check = match statedir::check_for_prune(state_dir, owner)
+        .map_err(|r| userns_refused_before(state_dir, &r.0, range.uids.start))?
+    {
+        Found::Missing => return Ok(Pruned::Missing),
+        Found::Empty => return Ok(Pruned::Empty),
+        Found::Entries(check) => check,
+    };
+    // Outside: in the namespace, the owner reads as its root.
+    let pin = Pin::of(state_dir, &check);
+    setup::rootless::enter_range(range)?;
+    match Store::prune_all(state_dir) {
+        Ok(true) => Ok(Pruned::Emptied),
+        Ok(false) => Ok(Pruned::Empty),
+        Err(e) => Err(setup::inside_userns(Refusal {
+            kind: Kind::Other,
+            reason: userns_words(&e.to_string()),
+            guidance: match unfinished_prune(&e) {
+                Some((Unfinished::NotPruned, _)) => userns_unfinished(state_dir, pin, range).into(),
+                Some((Unfinished::CutShort, _)) | None => "".into(),
+            },
+        })),
+    }
 }
 
 /// `prune --all` on `state_dir`, by the effective user `euid`: refused for
@@ -607,30 +940,54 @@ pub(crate) fn run(args: &PruneArgs) -> Result<(PathBuf, Pruned), Failed> {
 pub(crate) fn prune_all(euid: u32, state_dir: &Path) -> Result<Pruned, Refusal> {
     if euid == 0 {
         return Err(Refusal {
-            kind: Kind::Other,
-            reason: "ranikust prune --all empties the state directory of a user other than root \
-                     (ADR-0105), and refuses root, a container's root included"
-                .to_owned(),
             guidance: root_guidance(state_dir).into(),
+            ..root_refused()
         });
     }
     empty(state_dir)
 }
 
+/// Why `prune --all` refuses root (ADR-0105), without root's commands.
+fn root_refused() -> Refusal {
+    Refusal {
+        kind: Kind::Other,
+        reason: "ranikust prune --all empties the state directory of a user other than root \
+                 (ADR-0105), and refuses root, a container's root included"
+            .to_owned(),
+        guidance: "".into(),
+    }
+}
+
 /// Empties `state_dir` as root of the build's user namespace, which this
-/// process enters for good: a path ending in `..` refused before anything
-/// is opened, as root's commands refuse it; the state directory's checks
-/// outside, which change nothing ([`statedir::check`]); nothing more when
-/// it does not exist or is empty; else the namespace, then
+/// process enters for good: refused for an effective uid 0 here too,
+/// whatever its caller checked; a path ending in `..` refused before
+/// anything is opened, as root's commands refuse it; the state directory's
+/// checks outside, which change nothing ([`statedir::check`]); nothing more
+/// when it does not exist or is empty; else the namespace, then
 /// [`Store::prune_all`] in it. Call while single-threaded.
 ///
 /// # Errors
 ///
-/// A [`Refusal`]: naming a path ending in `..` or the state directory's
-/// check that failed; as
-/// [`setup::enter_build_userns`]; or naming what [`Store::prune_all`]
-/// refused or left, then of [`Kind::Broken`].
+/// A [`Refusal`]: naming root, a path ending in `..` or the state
+/// directory's check that failed; as [`setup::enter_build_userns`]; or
+/// naming what [`Store::prune_all`] refused or left, then of
+/// [`Kind::Broken`].
 pub(crate) fn empty(state_dir: &Path) -> Result<Pruned, Refusal> {
+    if rustix::process::geteuid().is_root() {
+        return Err(root_refused());
+    }
+    emptying(state_dir)
+}
+
+/// [`empty`] below its root check, for the T1 tests that run it as root of
+/// a rootless container.
+#[cfg(test)]
+pub(crate) fn empty_below_the_root_check(state_dir: &Path) -> Result<Pruned, Refusal> {
+    emptying(state_dir)
+}
+
+/// [`empty`]'s steps after its root check.
+fn emptying(state_dir: &Path) -> Result<Pruned, Refusal> {
     if ends_in_dotdot(state_dir) {
         return Err(Refusal {
             kind: Kind::Other,

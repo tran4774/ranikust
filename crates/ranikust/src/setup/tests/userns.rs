@@ -890,7 +890,7 @@ fn prune_all_empties_a_state_directory_of_other_ids() {
     let mounted = mounts();
     // Below the root check, which refuses this container's root (the next
     // test): the namespace, then the store's emptying.
-    let out = prune_in_child(&state, None, crate::prune::empty);
+    let out = prune_in_child(&state, None, crate::prune::empty_below_the_root_check);
     assert_eq!(out, "Emptied\tnone");
     assert_eq!(mounts(), mounted);
     assert_eq!(tree(&outside), outside_after);
@@ -904,6 +904,9 @@ fn prune_all_empties_a_state_directory_of_other_ids() {
 #[test]
 #[ignore = "T1: default: root of a rootless Podman container is refused"]
 fn prune_all_refuses_root_of_a_rootless_container() {
+    if !alone("prune_all_refuses_root_of_a_rootless_container") {
+        return;
+    }
     assert!(
         rustix::process::geteuid().is_root(),
         "run as root of a rootless Podman container (just test-rootless)"
@@ -922,6 +925,13 @@ fn prune_all_refuses_root_of_a_rootless_container() {
     let refusal = crate::prune::prune_all(euid, &state).unwrap_err();
     assert!(refusal.reason.contains("refuses root"), "{refusal}");
     assert!(refusal.guidance.contains("Phase 5"), "{refusal}");
+    assert_eq!(tree(&state), before);
+    // The emptying refuses root itself, whatever its caller checked; in a
+    // child, where nothing stops it entering a namespace should it not.
+    let out = prune_in_child(&state, None, crate::prune::empty);
+    assert!(out.starts_with("refused\t"), "{out}");
+    assert!(out.contains("refuses root"), "{out}");
+    assert!(out.ends_with("\tnone"), "{out}");
     assert_eq!(tree(&state), before);
 }
 
@@ -948,7 +958,7 @@ fn prune_all_leaves_what_a_running_build_uses() {
     let running = Store::open(&BuildPaths::new(&state, &state)).unwrap();
     fs::write(running.build_dir().join("in-use"), b"x").unwrap();
     let before = tree(&state);
-    let out = prune_in_child(&state, None, crate::prune::empty);
+    let out = prune_in_child(&state, None, crate::prune::empty_below_the_root_check);
     assert!(
         out.starts_with("refused\ta build is using the state directory "),
         "{out}"
@@ -957,7 +967,7 @@ fn prune_all_leaves_what_a_running_build_uses() {
     assert_eq!(tree(&state), before);
     running.close().unwrap();
     assert_eq!(
-        prune_in_child(&state, None, crate::prune::empty),
+        prune_in_child(&state, None, crate::prune::empty_below_the_root_check),
         "Emptied\tnone"
     );
     assert!(tree(&state).is_empty());

@@ -5,9 +5,10 @@
 //! `--mode=auto|overlay|kaniko` to choose the snapshot mode (ADR-0011,
 //! ADR-0023, ADR-0049). `prune` takes `--all`, required, and `--state-dir`:
 //! it empties the state directory of a user other than root inside the
-//! build's user namespace (`prune`, ADR-0105); by size and age it comes in
-//! Phase 5, `push` later
-//! (Q-048); there is no `login` (ADR-0049).
+//! build's user namespace (`prune`, ADR-0105); with `--userns`, root
+//! empties `--userns`'s state directory in its range's namespace
+//! (ADR-0139). By size and age it comes in Phase 5, `push` later (Q-048);
+//! there is no `login` (ADR-0049).
 //!
 //! Set-up order, each step before the next: parse the flags (no I/O;
 //! refused kaniko flags are reported first) → the Linux 5.8 check of
@@ -129,10 +130,10 @@ impl Failure {
         Self::error(refusal.reason).with_guidance(refusal.guidance)
     }
 
-    /// The build failed: with the ways out when an id its user namespace
-    /// does not map is why (ADR-0098); `made` when ranikust made that
-    /// namespace.
-    fn built(failed: build::Failed, made: bool) -> Self {
+    /// The build failed; where an id its user namespace does not map is the
+    /// cause, the guidance gives the ways out for whoever made that
+    /// namespace, `made` (ADR-0098).
+    fn built(failed: build::Failed, made: owners::MadeBy) -> Self {
         let guidance = failed
             .unmapped
             .as_ref()
@@ -380,14 +381,27 @@ fn metrics_writer(
 /// could have changed in between.
 pub(crate) static BUILD_FENCE: std::sync::OnceLock<rnk_rootfs::Fence> = std::sync::OnceLock::new();
 
-/// The checks of `--metrics-file` before the report is set up: for a build
-/// asking for a report, the build context must open, so the report's path
-/// can be kept out of it, and the path must pass as an output. The fence
-/// found, for the writer until the build opens its own context.
+/// The checks of `--metrics-file` before the report is set up: refused with
+/// `prune --userns`, whose process writes it at exit as the first uid of the
+/// `ranikust` range; for a build asking for a report, the build context must
+/// open, so the report's path can be kept out of it, and the path must pass
+/// as an output. The fence found, for the writer until the build opens its
+/// own context.
 fn metrics_preflight(
     command: &Command,
     metrics_file: Option<&Path>,
 ) -> Result<Option<rnk_rootfs::Fence>, String> {
+    if let Command::Prune(args) = command
+        && args.userns
+        && metrics_file.is_some()
+    {
+        return Err(
+            "--metrics-file is refused with prune --userns: the report is written at \
+                    exit, by then as the first uid of the ranikust range, which would own it \
+                    or could not write it; drop --metrics-file"
+                .to_owned(),
+        );
+    }
     if !matches!(command, Command::Build(_)) || metrics_file.is_none() {
         // The build reports its own usage errors and context.
         return Ok(context_fence(command).ok().flatten());
@@ -1081,9 +1095,12 @@ fn overlay_built(
 ) -> Result<(), Failure> {
     tracing::debug!(state_dir = %setup.state_dir.display(), "set-up done");
     tracing::info!("set up for {}", setup.outcome);
-    let made = matches!(setup.outcome, setup::Outcome::OverlayRootless { .. });
-    let (setup::Outcome::OverlayRoot { overlay, .. }
-    | setup::Outcome::OverlayRootless { overlay, .. }) = setup.outcome;
+    let (overlay, made) = match setup.outcome {
+        setup::Outcome::OverlayRoot { overlay, .. } => (overlay, owners::MadeBy::Other),
+        setup::Outcome::OverlayRootless {
+            overlay, userns, ..
+        } => (overlay, owners::MadeBy::rootless(userns)),
+    };
     let built = build::run(
         config,
         setup.store,
@@ -1238,8 +1255,8 @@ fn kaniko(
             build::Snapshots::KanikoStages(stages_snapshotter(config, &store, metrics_file)?)
         }
     };
-    let built =
-        build::run(config, store, sandbox, snapshots).map_err(|f| Failure::built(f, false))?;
+    let built = build::run(config, store, sandbox, snapshots)
+        .map_err(|f| Failure::built(f, owners::MadeBy::Other))?;
     // The lock of `/` is held to the end of the build.
     drop(root_lock);
     report_built(&built)
@@ -1883,7 +1900,7 @@ mod tests {
             message: format!("stage base: preparing: {e}"),
             unmapped: Some(found),
         };
-        let out = reported(&Failure::built(failed, true));
+        let out = reported(&Failure::built(failed, owners::MadeBy::Rootless));
         assert_eq!(out.lines().count(), 2, "{out}");
         assert!(out.ends_with('\n'));
         assert!(
@@ -1907,6 +1924,70 @@ mod tests {
             guidance.starts_with("  ") && !guidance.contains("RNK"),
             "{guidance}"
         );
+    }
+
+    /// `--metrics-file` with `prune --userns` is refused before the report
+    /// is set up: the process writes it at exit, by then as the first uid
+    /// of the `ranikust` range. Without `--userns` it is not.
+    #[test]
+    fn the_metrics_file_is_refused_with_prune_userns() {
+        let file = Path::new("m.json");
+        for argv in [
+            &["ranikust", "prune", "--all", "--userns"][..],
+            &["ranikust", "prune", "--userns", "--state-dir=s"],
+        ] {
+            let command = cli::parse(argv).unwrap().cli.into_command();
+            let e = metrics_preflight(&command, Some(file)).unwrap_err();
+            assert!(
+                e.starts_with("--metrics-file is refused with prune --userns"),
+                "{e}"
+            );
+            assert!(metrics_preflight(&command, None).is_ok());
+        }
+        let command = cli::parse(["ranikust", "prune", "--all"])
+            .unwrap()
+            .cli
+            .into_command();
+        assert!(metrics_preflight(&command, Some(file)).is_ok());
+    }
+
+    /// Under root's `--userns` (#208), a base layer's owner past the
+    /// `ranikust` range is reported with the owner, the map and that
+    /// range's ways out; a rootless build's report of the same refusal
+    /// names neither that range nor `--userns`.
+    #[test]
+    fn an_owner_past_the_ranikust_range_is_reported_with_its_ways_out() {
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_mode(0o640);
+        h.set_uid(0);
+        h.set_gid(42);
+        h.set_size(0);
+        tar.append_data(&mut h, "etc/shadow", std::io::empty())
+            .unwrap();
+        let tar = tar.into_inner().unwrap();
+        let ids = rnk_rootfs::MappedIds::parse("0 100000 65536\n", "0 200000 42\n").unwrap();
+        let mut found = rnk_rootfs::Unmapped::owners(ids);
+        rnk_rootfs::scan_owners(tar.as_slice(), &mut found).unwrap();
+        let e = rnk_rootfs::Error::Unmapped(found.clone());
+        let failed = || build::Failed {
+            message: format!("stage content: preparing: {e}"),
+            unmapped: Some(found.clone()),
+        };
+        assert_eq!(
+            reported(&Failure::built(failed(), owners::MadeBy::Userns)),
+            "ranikust: error: stage content: preparing: owners this user namespace does not \
+             map: gid 42 (/etc/shadow); it maps uids 0-65535 and gids 0-41\n  the build's user \
+             namespace maps root's ranikust range of /etc/subuid and /etc/subgid from id 0 on \
+             (--userns), not gid 42: widen that range to at least 43 gids in /etc/subgid (a \
+             range must not overlap another user's range or the ids of a real account, nor ids \
+             another allocator such as an NSS subid module, the kubelet or systemd hands out), \
+             or build without --userns\n"
+        );
+        let rootless = reported(&Failure::built(failed(), owners::MadeBy::Rootless));
+        assert!(!rootless.contains("ranikust range"), "{rootless}");
+        assert!(!rootless.contains("--userns"), "{rootless}");
     }
 
     /// `--metrics-file` in the build context, or through a symlink, is

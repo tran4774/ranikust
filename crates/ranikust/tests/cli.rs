@@ -1093,9 +1093,70 @@ fn prune_without_all_is_a_usage_error_naming_phase_5() {
     assert!(!state.exists());
     let out = ranikust(tmp.path(), &["prune", "--help"], &[]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    for flag in ["--all", "--state-dir"] {
+    for flag in ["--all", "--state-dir", "--userns"] {
         assert!(stdout(&out).contains(flag), "{flag}: {}", stdout(&out));
     }
+}
+
+/// `prune --all --userns` is root's (ADR-0139): from a user other
+/// than root it is a usage error before any state directory, the default
+/// included, is looked at; without `--all` it is `prune`'s usage error
+/// naming Phase 5.
+#[test]
+fn prune_userns_as_a_user_other_than_root_is_a_usage_error() {
+    if skip_as_root() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).expect("home");
+    let env = [("HOME", home.to_str().expect("utf-8 temp dir"))];
+    for args in [
+        &["prune", "--all", "--userns", "--state-dir=state"][..],
+        &["prune", "--all", "--userns"],
+        &["prune", "--userns", "--state-dir=state"],
+    ] {
+        let out = ranikust(tmp.path(), args, &env);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+        let want = if args.contains(&"--all") {
+            "--userns needs root"
+        } else {
+            "Phase 5"
+        };
+        assert!(stderr(&out).contains(want), "{args:?}: {}", stderr(&out));
+        assert!(stdout(&out).is_empty(), "{args:?}: {}", stdout(&out));
+        assert!(!tmp.path().join("state").exists(), "{args:?}");
+        assert_eq!(names(&home), Vec::<std::path::PathBuf>::new(), "{args:?}");
+    }
+}
+
+/// `--metrics-file` with `prune --userns` is a usage error, as root too,
+/// before any state directory is looked at: the prune ends as the first
+/// uid of the `ranikust` range, which would write the report. Nothing is
+/// written.
+#[test]
+fn prune_userns_refuses_a_metrics_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path().join("home");
+    fs::create_dir(&home).expect("home");
+    let env = [("HOME", home.to_str().expect("utf-8 temp dir"))];
+    let args = [
+        "prune",
+        "--all",
+        "--userns",
+        "--state-dir=state",
+        "--metrics-file=out/m.json",
+    ];
+    let out = ranikust(tmp.path(), &args, &env);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--metrics-file is refused with prune --userns"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert_eq!(names(tmp.path()), vec![std::path::PathBuf::from("home")]);
+    assert_eq!(names(&home), Vec::<std::path::PathBuf>::new());
 }
 
 /// As root, a container's root included, `prune --all` is refused with

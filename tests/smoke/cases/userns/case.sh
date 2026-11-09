@@ -5,7 +5,10 @@
 # overlaps, with a state directory below a
 # directory the range's first uid cannot search, with an existing state
 # directory of root's, at or below root's default, and with a flag of kaniko mode
-# alone; missing parents are made root's 0711, the build names --userns
+# alone; an image with an owner past the range is refused before any of
+# its layers is extracted, naming the owner, the count the ranikust line
+# needs and the ways out of --userns (#208, ADR-0098); missing parents
+# are made root's 0711, the build names --userns
 # and leaves no probe directory; a RUN's uid 0 is the
 # range's first uid on the host, by its uid_map, gid_map and status read
 # from the host and by the owner there of a file it makes; the
@@ -13,8 +16,11 @@
 # ADR-0074's reach of a distinct host account is measured again: neither
 # an account with the RUN's own ids nor one with the ids they map to on
 # the host reaches it, the latter reaching a process of its own (the
-# control). In the kaniko leg, --userns with --mode=kaniko is a usage
-# error.
+# control). Then `prune --all --userns` empties the state directory
+# as the range's first uid (pruned_as_the_range), the red team's trees
+# and refusals in directories of its own (probe_left_by_a_killed_build,
+# hostile_trees_pruned_as_the_range). In the kaniko leg, --userns with
+# --mode=kaniko is a usage error.
 
 # Below /var/lib, which only root writes and every uid may search.
 UW=/var/lib/rnk-quick-userns
@@ -91,6 +97,8 @@ case_run() {
     fail "--userns with a flag of kaniko mode alone: $log"
   ! sudo test -e "$UW/flagged" || fail "--userns made a state directory before its usage error"
 
+  narrow_range
+
   local before
   before="$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)"
   rc=0
@@ -130,6 +138,379 @@ case_run() {
     sh -c 'stat -c "%u:%g %a" /home/u/f /d /bin/suid && readlink /home/u/l')" \
     "$(printf '1234:1234 644\n0:0 2750\n0:0 4755\nf')" "the --userns image's owners and modes"
   seen_from_the_host
+  pruned_as_the_range
+  probe_left_by_a_killed_build
+  hostile_trees_pruned_as_the_range
+}
+
+# pruned_as_the_range: `prune --all --userns` (ADR-0146) empties the
+# state directory the builds left as the range's first uid, in its user
+# namespace: root's own `prune --all` names it; it refuses root's default,
+# a state directory of root's and one below a directory the range's uid
+# cannot search, each left as it was, and root's `prune --all` does not
+# send root back to it for the last; with --metrics-file it is a usage
+# error; a directory of root's put in the store and a tmpfs mounted at
+# one of its entries stay, the prune names them and prints root's
+# commands, a build is refused, naming it, until it finishes; those
+# commands, run as root, change nothing while an entry's uid or gid is
+# neither root's nor the range's, leave the tmpfs and the marker, then,
+# once it is unmounted, all but the marker, which the prune then empties.
+pruned_as_the_range() {
+  local log rc=0
+  log="$(sudo "$RNK" prune --all --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 1 "root's prune --all on the --userns state directory"
+  grep -qF -- "ranikust prune --all --userns --state-dir $UW/state" <<<"$log" ||
+    fail "root's prune --all on the --userns state directory: $log"
+
+  local before
+  before="$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns at root's default"
+  grep -qF "the state directory /var/lib/ranikust is root's default" <<<"$log" ||
+    fail "prune --all --userns at root's default: $log"
+  expect "$(sudo stat -c '%u:%g %a' /var/lib/ranikust 2>/dev/null || echo missing)" "$before" \
+    "root's default state directory after prune --all --userns was refused"
+
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/roots" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns on a state directory of root's"
+  grep -qF "$UW/roots is owned by uid 0, not $S" <<<"$log" ||
+    fail "prune --all --userns on a state directory of root's: $log"
+  expect "$(sudo stat -c '%u:%g %a' "$UW/roots") $(sudo ls -A "$UW/roots" | wc -l)" "0:0 700 0" \
+    "root's state directory after prune --all --userns was refused"
+
+  sudo install -d -m 700 -o "$S" -g "$G" "$UW/closed/st"
+  sudo install -m 600 -o "$S" -g "$G" /dev/null "$UW/closed/st/.ranikust-state"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/closed/st" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns below a directory its uid cannot search"
+  grep -qF "$UW/closed is not searchable by uid $S and gid $G" <<<"$log" ||
+    fail "prune --all --userns below a directory its uid cannot search: $log"
+  expect "$(sudo ls -A "$UW/closed/st")" ".ranikust-state" \
+    "the state directory prune --all --userns could not search to"
+  rc=0
+  log="$(sudo "$RNK" prune --all --state-dir "$UW/closed/st" 2>&1)" || rc=$?
+  expect "$rc" 1 "root's prune --all below a directory the range's uid cannot search"
+  ! grep -qF -- "--userns" <<<"$log" ||
+    fail "root's prune --all sent root back to prune --all --userns: $log"
+
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" --metrics-file "$UW/m.json" 2>&1)" ||
+    rc=$?
+  expect "$rc" 2 "prune --all --userns with --metrics-file"
+  grep -qF -- "--metrics-file is refused with prune --userns" <<<"$log" ||
+    fail "prune --all --userns with --metrics-file: $log"
+  sudo test ! -e "$UW/m.json" || fail "prune --all --userns wrote a metrics report"
+
+  sudo test -d "$UW/state/builds" || fail "no builds/ in the --userns state directory"
+  sudo mkdir -m 755 "$UW/state/builds/rnk-roots"
+  sudo mkdir -p "$UW/state/tmp"
+  sudo touch "$UW/state/builds/rnk-roots/f"
+  sudo mount -t tmpfs rnk-userns-left "$UW/state/tmp"
+  sudo touch "$UW/state/tmp/keep"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns with a directory of root's in the store"
+  local way
+  way="$(grep -F "Stop every --userns build first, and unmount anything below $UW/state;" <<<"$log")" &&
+    grep -qF "( eval '" <<<"$way" ||
+    fail "prune --all --userns with a directory of root's in the store: $log"
+  grep -qF "ranikust: the build's user namespace: shifted range" <<<"$log" &&
+    grep -F 'it still holds ' <<<"$log" | grep -F '"builds"' | grep -qF '"tmp"' ||
+    fail "prune --all --userns with a directory of root's in the store: $log"
+  sudo test -f "$UW/state/builds/rnk-roots/f" || fail "prune --all --userns removed a file of root's"
+  rc=0
+  log="$(urun cut --target content --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 1 "a --userns build in a state directory a prune did not finish"
+  grep -qF -- "ranikust prune --all --userns --state-dir $UW/state" <<<"$log" ||
+    fail "a --userns build in a state directory a prune did not finish: $log"
+
+  # The commands it prints, run as root: the marker and the tmpfs mounted
+  # at an entry stay, with what it holds, the rest goes; once unmounted,
+  # all but the marker.
+  way="( eval '${way#*"( eval '"}"
+  way="${way%"; then run ranikust prune --all --userns --state-dir $UW/state again"}"
+  # An entry of an id neither root's nor the range's, by uid, then by gid
+  # alone, just below the range and just past it: nothing changes.
+  local foreign listed
+  for foreign in "$((S - 1)):$G" "$((S + 65536)):$G" "$S:$((G - 1))" "$S:$((G + 65536))"; do
+    sudo install -m 644 -o "${foreign%:*}" -g "${foreign#*:}" /dev/null \
+      "$UW/state/builds/rnk-roots/foreign"
+    listed="$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)"
+    rc=0
+    log="$(sudo bash -c "$way" 2>&1)" || rc=$?
+    expect "$rc" 1 "the printed commands with an entry of $foreign"
+    grep -qF "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range (uids $S-" <<<"$log" &&
+      grep -qF "(--userns builds can use another --state-dir), or find failed" <<<"$log" ||
+      fail "the printed commands with an entry of $foreign: $log"
+    expect "$(sudo find "$UW/state" -printf '%P %U:%G %m\n' | sort)" "$listed" \
+      "the state directory after the printed commands met an entry of $foreign"
+    sudo rm "$UW/state/builds/rnk-roots/foreign"
+  done
+  rc=0
+  sudo bash -c "$way" || rc=$?
+  expect "$rc" 1 "the printed commands with a tmpfs mounted at an entry"
+  expect "$(sudo ls -A "$UW/state" | tr '\n' ' ')" ".ranikust-pruning tmp " \
+    "the state directory after the printed commands, a tmpfs mounted at an entry"
+  sudo test -f "$UW/state/tmp/keep" || fail "the printed commands removed a file on another mount"
+  sudo umount "$UW/state/tmp"
+  sudo bash -c "$way" || fail "the printed commands: $way"
+  expect "$(sudo ls -A "$UW/state")" ".ranikust-pruning" "the state directory after the printed commands"
+  rc=0
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)" || rc=$?
+  expect "$rc" 0 "prune --all --userns: $log"
+  grep -qxF "emptied $UW/state" <<<"$log" || fail "prune --all --userns: $log"
+  expect "$(sudo stat -c '%u:%g %a' "$UW/state") $(sudo ls -A "$UW/state" | wc -l)" "$S:$G 700 0" \
+    "the state directory prune --all --userns emptied"
+  log="$(sudo "$RNK" prune --all --userns --state-dir "$UW/state" 2>&1)"
+  grep -qxF "nothing to prune: $UW/state is empty" <<<"$log" || fail "prune --all --userns again: $log"
+  sudo rmdir "$UW/state"
+}
+
+# ustate DIR: a --userns state directory at DIR as its builds leave it,
+# made by hand: the range's first ids own it, its store's directories, its
+# marker and a blob.
+ustate() {
+  sudo rm -rf --one-file-system "$1"
+  sudo install -d -m 700 -o "$S" -g "$G" "$1" "$1/blobs" "$1/blobs/sha256" "$1/caches" \
+    "$1/builds" "$1/tmp"
+  sudo install -m 600 -o "$S" -g "$G" /dev/null "$1/.ranikust-state"
+  sudo install -m 644 -o "$S" -g "$G" /dev/null "$1/blobs/sha256/$(printf '07%.0s' {1..32})"
+}
+
+# tree_of DIR: every entry below DIR with its type, owner, mode, size and
+# symlink target, sorted; no link count, which a removed hardlink lowers.
+tree_of() {
+  sudo find "$1" -printf '%P %y %U:%G %m %s %l\n' | sort
+}
+
+# printed_way DIR LOG: root's commands, as root runs them, that LOG, from
+# an unfinished prune --all --userns of DIR, prints.
+printed_way() {
+  local way
+  way="$(grep -F "Stop every --userns build first, and unmount anything below $1;" <<<"$2")" &&
+    grep -qF "( eval '" <<<"$way" || return 1
+  way="( eval '${way#*"( eval '"}"
+  printf '%s\n' "${way%"; then run ranikust prune --all --userns --state-dir $1 again"}"
+}
+
+# probe_left_by_a_killed_build (T4, #207): a --userns build killed once it
+# made its probe's directory, root's 0700, empty, or the range's holding
+# root's empty 0700 overlay directory: prune --all --userns ends emptied,
+# through root's printed commands where its uid cannot remove it, a
+# second run finding it empty: no loop. With no store yet, both prunes
+# refuse the directory, changing nothing, prune --all --userns saying a
+# --userns build removes empty probe directories of root's and the
+# range's (not one that holds a file), and the next --userns build takes
+# it, removing them first.
+probe_left_by_a_killed_build() {
+  local d="$UW/probe" p probe log rc way listed
+  for p in root given; do
+    ustate "$d"
+    probe="$d/.ranikust-anon-userns-probe-1-$p"
+    if [ "$p" = root ]; then
+      sudo install -d -m 700 -o 0 -g 0 "$probe"
+    else
+      sudo install -d -m 700 -o "$S" -g "$G" "$probe"
+      sudo install -d -m 700 -o 0 -g 0 "$probe/overlay"
+    fi
+    rc=0
+    log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+    echo "  $CASE: measured: prune --all --userns, a probe directory left ($p): exit $rc: $log" >&2
+    if [ "$rc" = 1 ]; then
+      grep -qF ".ranikust-anon-userns-probe-1-$p" <<<"$log" ||
+        fail "prune --all --userns, a probe directory left ($p), names it not: $log"
+      way="$(printed_way "$d" "$log")" || fail "no root's commands ($p): $log"
+      sudo timeout 120 bash -c "$way" || fail "root's commands, a probe directory left ($p)"
+      expect "$(sudo ls -A "$d")" ".ranikust-pruning" "after root's commands ($p)"
+      rc=0
+      log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+    fi
+    expect "$rc" 0 "prune --all --userns, a probe directory left ($p): $log"
+    grep -qxF "emptied $d" <<<"$log" || fail "prune --all --userns ($p): $log"
+    log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)"
+    grep -qxF "nothing to prune: $d is empty" <<<"$log" || fail "prune again ($p): $log"
+    sudo rmdir "$d"
+  done
+  # No store yet: the build was killed before it made one.
+  sudo install -d -m 700 -o "$S" -g "$G" "$d"
+  sudo install -d -m 700 -o 0 -g 0 "$d/.ranikust-anon-userns-probe-2-root"
+  sudo install -d -m 700 -o "$S" -g "$G" "$d/.ranikust-anon-userns-probe-3-range"
+  # One that holds a file, which no build removes: no word of the probe.
+  sudo touch "$d/.ranikust-anon-userns-probe-2-root/f"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+  expect "$rc" 1 "prune --all --userns, a probe directory that holds a file"
+  ! grep -qF "probe director" <<<"$log" ||
+    fail "prune --all --userns, a probe directory that holds a file: $log"
+  sudo rm "$d/.ranikust-anon-userns-probe-2-root/f"
+  listed="$(tree_of "$d")"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+  echo "  $CASE: measured: prune --all --userns, only probe directories: exit $rc: $log" >&2
+  expect "$rc" 1 "prune --all --userns, only probe directories"
+  grep -qF "so ranikust prune --all --userns removes nothing" <<<"$log" &&
+    grep -qF "the directory holds only probe directories a --userns build left" <<<"$log" &&
+    grep -qF "a --userns build with --state-dir $d removes them" <<<"$log" ||
+    fail "prune --all --userns, only probe directories: $log"
+  expect "$(tree_of "$d")" "$listed" "after prune --all --userns, only probe directories"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --state-dir "$d" 2>&1)" || rc=$?
+  echo "  $CASE: measured: root's prune --all, only probe directories: exit $rc: $log" >&2
+  expect "$rc" 1 "root's prune --all, only probe directories"
+  expect "$(tree_of "$d")" "$listed" "after root's prune --all, only probe directories"
+  rc=0
+  log="$(urun probe --target content --state-dir "$d" 2>&1)" || rc=$?
+  expect "$rc" 0 "a --userns build, only probe directories: $log"
+  ! sudo test -e "$d/.ranikust-anon-userns-probe-2-root" ||
+    fail "a --userns build left root's probe directory"
+  ! sudo test -e "$d/.ranikust-anon-userns-probe-3-range" ||
+    fail "a --userns build left the range's probe directory"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+  expect "$rc" 0 "prune --all --userns after that build: $log"
+  sudo rmdir "$d"
+}
+
+# hostile_trees_pruned_as_the_range (T4, ADR-0146): in a --userns state
+# directory, what root and ids outside the range could leave: root's
+# directories holding a file, open and closed, a file and a setuid file of
+# root's, directories of the ids just below and just past the range
+# holding one, symlinks out (one at a store's name), a hardlink to root's
+# 0600 file, a FIFO, a bind mount of the same filesystem holding the
+# range's file and an account's. prune --all --userns removes no file
+# outside, nothing below the bind mount and nothing those directories
+# hold, and never blocks; root's commands then change nothing while
+# those ids' directories are there, nor while the bind mount is, its
+# account's entry being another id's, and finish once it is unmounted.
+# Refused, nothing changed: a state directory group may write, one a
+# build holds (its flock), one holding a FIFO .ranikust-building, and
+# where no user namespace can be made.
+hostile_trees_pruned_as_the_range() {
+  local d="$UW/hostile" v="$UW/victim" c="$UW/hostile/caches" log rc way id listed victims
+  local below=$((S - 1)) past=$((S + 65536))
+  sudo rm -rf --one-file-system "$v"
+  sudo install -d -m 755 "$v" "$v/dir"
+  printf secret | sudo tee "$v/secret" >/dev/null && sudo chmod 600 "$v/secret"
+  printf keep | sudo tee "$v/dir/keep" >/dev/null
+  sudo install -d -m 755 -o "$S" -g "$G" "$v/bm"
+  sudo install -m 644 -o "$S" -g "$G" /dev/null "$v/bm/ranges"
+  sudo install -m 644 -o "$(id -u)" -g "$(id -g)" /dev/null "$v/bm/accounts"
+  ustate "$d"
+  sudo install -d -m 755 -o 0 -g 0 "$c/root-open"
+  sudo install -m 644 -o 0 -g 0 /dev/null "$c/root-open/f"
+  sudo install -d -m 700 -o 0 -g 0 "$c/root-closed"
+  sudo install -m 644 -o 0 -g 0 /dev/null "$c/root-closed/f"
+  sudo install -m 600 -o 0 -g 0 /dev/null "$c/root-file"
+  sudo install -m 4755 -o 0 -g 0 /bin/true "$c/root-suid"
+  for id in "$below" "$past"; do
+    sudo install -d -m 755 -o "$id" -g "$G" "$c/d-$id"
+    sudo install -m 644 -o "$id" -g "$G" /dev/null "$c/d-$id/f"
+  done
+  sudo ln -s "$v/dir" "$c/link-out"
+  sudo ln -s "$v/dir" "$d/layers"
+  sudo ln "$v/secret" "$c/hard-secret"
+  sudo mkfifo -m 600 "$c/fifo" && sudo chown -h "$S:$G" "$c/fifo"
+  sudo install -d -m 700 -o "$S" -g "$G" "$c/bm"
+  sudo mount --bind "$v/bm" "$c/bm"
+  expect "$(sudo stat -c %d "$c/bm")" "$(sudo stat -c %d "$c")" "the bind mount's filesystem"
+  victims="$(tree_of "$v")"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+  echo "  $CASE: measured: prune --all --userns in a hostile tree: exit $rc; left: $(sudo find "$d" -mindepth 1 -printf '%P %U:%G %m, ')" >&2
+  expect "$rc" 1 "prune --all --userns in a hostile tree: $log"
+  expect "$(tree_of "$v")" "$victims" "outside, after prune --all --userns"
+  expect "$(sudo cat "$v/secret" "$v/dir/keep")" "secretkeep" "the files outside"
+  for id in root-open/f root-closed/f "d-$below/f" "d-$past/f" bm/ranges bm/accounts; do
+    sudo test -f "$c/$id" || fail "prune --all --userns removed $id"
+  done
+  way="$(printed_way "$d" "$log")" || fail "no root's commands: $log"
+  listed="$(tree_of "$d")"
+  rc=0
+  log="$(sudo timeout 120 bash -c "$way" 2>&1)" || rc=$?
+  expect "$rc" 1 "root's commands, directories of ids outside the range there"
+  grep -qF "nothing changed: entries whose uid or gid is neither 0 nor of the ranikust range" \
+    <<<"$log" || fail "root's commands, directories of ids outside the range there: $log"
+  expect "$(tree_of "$d")" "$listed" "after root's commands met ids outside the range"
+  sudo rm -r "$c/d-$below" "$c/d-$past"
+  listed="$(tree_of "$d")"
+  rc=0
+  log="$(sudo timeout 120 bash -c "$way" 2>&1)" || rc=$?
+  expect "$rc" 1 "root's commands, a bind mount below holding an account's entry"
+  grep -qF "nothing changed" <<<"$log" ||
+    fail "root's commands, a bind mount below holding an account's entry: $log"
+  expect "$(tree_of "$d")" "$listed" "after root's commands met the bind mount"
+  expect "$(tree_of "$v")" "$victims" "outside, after root's commands met the bind mount"
+  sudo umount "$c/bm"
+  sudo timeout 120 bash -c "$way" || fail "root's commands, the bind mount gone"
+  expect "$(sudo ls -A "$d")" ".ranikust-pruning" "after root's commands"
+  expect "$(tree_of "$v")" "$victims" "outside, after root's commands"
+  rc=0
+  log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+  expect "$rc" 0 "prune --all --userns after root's commands: $log"
+  sudo rmdir "$d"
+
+  # Refusals: nothing changed, the marker kept.
+  local how
+  for how in group-writable held building no-userns; do
+    ustate "$d"
+    case "$how" in
+      group-writable) sudo chmod 770 "$d" ;;
+      held)
+        sudo flock -s "$d" sleep 21.25 &
+        rc=0
+        until pgrep -x -f 'sleep 21.25' >/dev/null; do
+          rc=$((rc + 1)) && [ "$rc" -lt 100 ] || fail "no process holds $d's flock"
+          sleep 0.1
+        done
+        ;;
+      building) sudo mkfifo -m 600 "$d/.ranikust-building" ;;
+      no-userns)
+        USERNS_MAX="$(sysctl -n user.max_user_namespaces)"
+        sudo sysctl -qw user.max_user_namespaces=0
+        ;;
+    esac
+    listed="$(sudo stat -c '%u:%g %a' "$d") $(tree_of "$d")"
+    rc=0
+    log="$(sudo timeout 120 "$RNK" prune --all --userns --state-dir "$d" 2>&1)" || rc=$?
+    case "$how" in
+      held) sudo pkill -x -f 'sleep 21.25' && wait ;;
+      no-userns) sudo sysctl -qw "user.max_user_namespaces=$USERNS_MAX" && USERNS_MAX= ;;
+    esac
+    echo "  $CASE: measured: prune --all --userns refused ($how): exit $rc: $log" >&2
+    expect "$rc" 1 "prune --all --userns, $how"
+    [ "$how" != held ] ||
+      grep -qF "ranikust prune --all --userns empties it only while no build runs there" <<<"$log" ||
+      fail "prune --all --userns, $how: $log"
+    expect "$(sudo stat -c '%u:%g %a' "$d") $(tree_of "$d")" "$listed" \
+      "the state directory after prune --all --userns was refused ($how)"
+  done
+  sudo rm -rf --one-file-system "$d" "$v"
+}
+
+# narrow_range: with a gid range of 42 ids, the base image's /etc/shadow
+# (alpine's, root:shadow, gid 42) is past it: the build is refused by the
+# owner check, before any layer is extracted (ADR-0098, #208), naming the
+# owner, the count /etc/subgid's ranikust line needs and the ways out of
+# --userns, none of a user's ranges. The range is restored after.
+narrow_range() {
+  local log rc=0
+  sudo sed -i "s/^ranikust:$G:65536\$/ranikust:$G:42/" /etc/subgid
+  grep -qx "ranikust:$G:42" /etc/subgid || fail "narrowing the ranikust gid range"
+  log="$(urun narrow --target content --state-dir "$UW/narrow" 2>&1)" || rc=$?
+  sudo sed -i "s/^ranikust:$G:42\$/ranikust:$G:65536/" /etc/subgid
+  grep -qx "ranikust:$G:65536" /etc/subgid || fail "restoring the ranikust gid range"
+  expect "$rc" 1 "--userns with an owner past the ranikust range: $log"
+  grep -qF 'owners this user namespace does not map: gid 42 (/etc/shadow); it maps uids 0-65535 and gids 0-41' \
+    <<<"$log" || fail "--userns with an owner past the range, the refusal: $log"
+  grep -qF "maps root's ranikust range of /etc/subuid and /etc/subgid from id 0 on (--userns), not gid 42: widen that range to at least 43 gids in /etc/subgid (" \
+    <<<"$log" && grep -qF 'or build without --userns' <<<"$log" ||
+    fail "--userns with an owner past the range, its ways out: $log"
+  # The scan's refusal above, not an extraction's chown (which ends with
+  # "an id this user namespace does not map"), shows no layer was extracted.
+  ! grep -qE "an id this user namespace|this user's first range|subordinate|run ranikust as root|in a container" \
+    <<<"$log" || fail "--userns with an owner past the range: a chown's error or a user's ways out: $log"
 }
 
 # seen_from_the_host: the `seen` stage's RUNs, from the host while each
@@ -247,6 +628,11 @@ udigest() {
 # clean_up: no RUN left waiting, and the id files as they were.
 clean_up() {
   local p
+  ! grep -qF " $UW/state/tmp " /proc/self/mountinfo || sudo umount "$UW/state/tmp" || true
+  ! grep -qF " $UW/hostile/caches/bm " /proc/self/mountinfo ||
+    sudo umount "$UW/hostile/caches/bm" || true
+  [ -z "${USERNS_MAX:-}" ] || sudo sysctl -qw "user.max_user_namespaces=$USERNS_MAX" || true
+  sudo pkill -x -f 'sleep 21.25' || true
   for p in $(pgrep -f -- 'rnk-userns-wait-' || true); do
     sudo rm -f "/proc/$p/root/tmp/wait-root" "/proc/$p/root/tmp/wait-user" || true
   done

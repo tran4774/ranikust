@@ -402,6 +402,27 @@ fn unique() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
+/// Enters the user namespace of root's `ranikust` range `range` as
+/// `--userns`'s build does ([`rnk_sandbox::enter_build_user_namespace`]
+/// with [`BuildIds::Shifted`]), checking and opening nothing of the state
+/// directory, for `prune --all --userns`: this process is then the range's
+/// first uid and gid on the host, with no supplementary group. Logs the
+/// map. Call while single-threaded.
+///
+/// # Errors
+///
+/// A [`Refusal`] as [`set_up`]'s entry gives: of [`Kind::Other`] only where
+/// the process is unchanged.
+pub(crate) fn enter_range(
+    range: rnk_sandbox::SubordinateIds,
+) -> Result<rnk_sandbox::BuildUserNamespace, Refusal> {
+    let euid = rustix::process::geteuid().as_raw();
+    let userns = rnk_sandbox::enter_build_user_namespace(BuildIds::Shifted(range))
+        .map_err(|e| entry_refusal(e, euid, true, None))?;
+    tracing::info!("ranikust: the build's user namespace: {userns}");
+    Ok(userns)
+}
+
 /// What [`set_up`] does besides its steps.
 pub(crate) struct Then<'a> {
     /// A `RUN` with `--network=none` may get a network namespace of its own

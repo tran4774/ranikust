@@ -14,9 +14,9 @@ writer) before `unshare`, the probes and the state directory's checks.
 ## Owns
 
 - Parsing the subcommands and flags: `build` (the default), `prune` (only
-  `--all` and `--state-dir`; by size and age in Phase 5, ADR-0032) and
-  `version` are built; `push` (an OCI layout only, ADR-0052) is later;
-  there is no `login` (ADR-0049).
+  `--all`, `--state-dir` and `--userns`; by size and age in Phase 5,
+  ADR-0032) and `version` are built; `push` (an OCI layout only, ADR-0052)
+  is later; there is no `login` (ADR-0049).
   Kaniko's common flags plus `--mode` (ADR-0011, ADR-0023).
 - Process set-up while single-threaded: a private mount namespace when
   permitted, the state directory's checks (`statedir`, ADR-0050), the probes
@@ -134,7 +134,10 @@ writer) before `unshare`, the probes and the state directory's checks.
   (`make_probe_dir_again`). `set_up` enters the namespace with the same ids;
   the mode line (`Outcome::OverlayRootless { userns: true, .. }`) names
   `--userns`. Its messages name `--userns`, its guidance
-  `USERNS_UNUSABLE`. `config.rs` refuses it with `--mode=kaniko` (exit 2).
+  `USERNS_UNUSABLE`; an owner or user the range lacks gets the `ranikust`
+  range's ways out (`overlay_built` maps the outcome's `userns` through
+  `owners::MadeBy::rootless`, #208). `config.rs` refuses it with
+  `--mode=kaniko` (exit 2).
 - `prune --all` (`prune.rs`, ADR-0105, #76): root refused first (euid 0
   in any user namespace), naming Phase 5's `prune`; then a path ending in
   `..`, before anything is opened; then `statedir::check`
@@ -178,8 +181,30 @@ writer) before `unshare`, the probes and the state directory's checks.
   own `prune --all`, which prints root's commands); a build refused
   by one cut short (`PruneCutShort`) is told the next step
   (`prune::cut_short`: `prune --all` for a user, root's commands for
-  root). Prints one line on stdout; a refusal exits 1, `prune` without
-  `--all` 2.
+  root). Root's commands give way, for a marked directory `prune --all
+  --userns` takes (`prune::userns_takes`: owned by the first uid of root's
+  `ranikust` range, `subids::root_range_quiet`, read only for a directory
+  another uid owns, and passing `statedir::check_for` with
+  `Owner::Mapped`), to that command (`prune::userns_way`), so root's
+  refusal and a `--userns` build's on a prune cut short name it. Prints
+  one line on stdout; a refusal exits 1, `prune` without `--all` 2.
+- `prune --all --userns` (`prune::prune_userns`, ADR-0139, ADR-0146): a usage error
+  (exit 2) from a user other than root; else root's range
+  (`subids::root_range`), `statedir::check_for_prune` with `Owner::Mapped`
+  (the build's advice left out; refusals carry `prune::USERNS_ONLY`, but
+  one of a directory without a marker that holds only empty probe
+  directories, root's `0700` or the range's first uid's, which says a
+  `--userns` build there removes them: `prune::userns_refused_before`),
+  `setup::rootless::enter_range`,
+  then `Store::prune_all` as the range's first uid; an unfinished one gets
+  `prune::userns_unfinished` (every `--userns` build stopped, then root's
+  commands, `prune::userns_left_script` through `in_dir`, pinned outside
+  the namespace, which keep the marker and stop where an entry's uid or
+  gid is neither root's nor the range's, naming another `--state-dir`);
+  the store's words name `prune --all --userns` (`prune::userns_words`);
+  `--metrics-file` refused with it in `main.rs` (`metrics_preflight`). The
+  steps and their order:
+  [cache-and-store.md#prune](../../design/cache-and-store.md#prune).
 - `BuildConfig`, the validated settings of a build (`src/config.rs`, until a
   design assigns it to a library).
 
@@ -205,10 +230,10 @@ Modules of `crates/ranikust/src/` (all crate-private):
 |---|---|
 | `main.rs` | `main` (no `#[tokio::main]`: the runtime is built by hand after set-up), `#[global_allocator]` mimalloc (ADR-0020), the metrics wiring, `check_metrics_file`/`write_metrics_file`, `kaniko_snapshotter`, signal handling, `rootless` and `rootless_kept_off` (the route to rootless overlay mode) |
 | `cli.rs` | `Command { Build(Box<BuildArgs>), Prune(PruneArgs), Version }` (no subcommand = `Build`), `parse`, `REFUSED` |
-| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (`statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, commands that enter the directory once, shell-quoted paths) |
+| `prune.rs` | `run` (`prune`'s flags, the default state directory), `prune_all` (root refused), `empty` (root refused here too, whatever the caller checked; `statedir::check`, the namespace, then `Store::prune_all`), `Pruned`, `summary`; `prune_userns` (`--userns`: root's range, `statedir::check_for_prune` as the range, `setup::rootless::enter_range`, then `Store::prune_all`; `userns_unfinished`); the guidance (`no_user_namespace` and `unfinished`, both naming root's `prune --all` through `ask_root`, `cut_short` for a build's refusal, `unfinished_prune` for both, `userns_way` for root's refusal of a directory `userns_takes`, commands that enter the directory once, shell-quoted paths) |
 | `config.rs` | `BuildConfig::from_args` (kaniko's checks, no I/O; `--userns` refused with `--mode=kaniko` and for a user other than root), `meta_options`, `overlay_mode_flags`, `Mode { Auto, Overlay, Kaniko }`, `read_seccomp` (the `--seccomp` file, read and compiled into a `Seccomp`) |
-| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `hold_state_dir` (overlay mode's state-directory checks, as root, rootless or `--userns`), `stage_and_hold` (the same past overlayfs, for kaniko mode off `/` too), `set_up_kaniko`, `kaniko_state_dir`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `probe_in_dir` (its `BuildIds`), `give_dir`, `remove_own_probe_leftovers`, `volume_hint`; `setup/rootless.rs`: `plan` (`userns` for `--userns`; for a user other than root, with `capabilities`, `shown_capable`, `Steps` and `stop_for`), `state_dir_for_probe`, `NotHere`, `set_up`, `refused_by_hook`, `USERNS_UNUSABLE`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed; never `--userns`'s), `Stop` (the step that stopped the probe, which says whether AppArmor may be what refused), `LOCAL` |
-| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `prepare_for`, `stage` (the checks and the missing directories, no mode changed yet) and its `Staged::finish` (the modes), `nearest_existing`, and `Owner` (`Me`, or `Mapped`: `--userns`'s range's first ids own the state directory, parents only root's, not writable even sticky, searchable by those ids through mode bits alone; a missing one made under a temporary name, given to them, then renamed into place, missing parents `0711`; an existing one of root's, and one at, below or above root's default, refused), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
+| `setup.rs` | `enter_namespace`, `enter_user_namespace` (`UsernsSetup`, no caller yet) and `enter_build_userns` (no state-directory step, no store, for `prune`), `set_up` (overlay), `hold_state_dir` (overlay mode's state-directory checks, as root, rootless or `--userns`), `stage_and_hold` (the same past overlayfs, for kaniko mode off `/` too), `set_up_kaniko`, `kaniko_state_dir`, `Outcome`, `Refusal`, `Kind`, `Route`/`route`, `host_without_mounts`, `store_refusal`, `probe_overlay`, `report_user_namespace`, `allowed` (`--allow proc.rbind` as `Fallbacks`), `Probed`, `probe_in_dir` (its `BuildIds`), `give_dir`, `remove_own_probe_leftovers`, `volume_hint`; `setup/rootless.rs`: `plan` (`userns` for `--userns`; for a user other than root, with `capabilities`, `shown_capable`, `Steps` and `stop_for`), `state_dir_for_probe`, `NotHere`, `set_up`, `enter_range` (the `ranikust` range's namespace alone, for `prune --all --userns`), `refused_by_hook`, `USERNS_UNUSABLE`; `setup/no_userns.rs`: `guidance` (the advice where no user namespace is usable: the switch read, the binary's path weighed; never `--userns`'s), `Stop` (the step that stopped the probe, which says whether AppArmor may be what refused), `LOCAL` |
+| `statedir.rs` | `prepare` (ADR-0050 checks; its advice names the effective user's default), `prepare_for`, `stage` (the checks and the missing directories, no mode changed yet) and its `Staged::finish` (the modes), `nearest_existing`, and `Owner` (`Me`, or `Mapped`: `--userns`'s range's first ids own the state directory, parents only root's, not writable even sticky, searchable by those ids through mode bits alone; a missing one made under a temporary name, given to them, then renamed into place, missing parents `0711`; an existing one of root's, and one at, below or above root's default, refused), `check` (the same, making and changing nothing, then `Store::check_prune`, for `prune`) and `check_for` (`check` for an `Owner`, `Mapped` for `prune --all --userns`), `check_for_prune` (`check_for` without the build's advice), `check_for_commands` (the build's rule with a checked directory's owner as the user, no system directory, its mode returned, for root's printed commands), `SYSTEM_DIRS`, `on_overlayfs`, `raise_nofile_limit` |
 | `subids.rs` | `lookup`: the user's first subordinate uid and gid ranges, for the build's user namespace; `root_range`, `ROOT_ENTRY`, `ROOT_RANGE_GUIDANCE`: root's `ranikust` range for `--userns`, sharing no id with another range or a local account, with no account of that name; `subid_module`: the NSS `subid:` module it warns of; also compiled into `examples/smoke-build.rs` (`--userns`), so it uses no other module of the crate |
 | `container.rs` | `detect`: kaniko's `GetContainerRuntime`, ported (ADR-0040, ADR-0048) |
 | `exposure.rs` | warnings for secret-looking `--build-arg` values and `DOCKER_AUTH_CONFIG`, `proc_sys_read_only`, `scan_peers` (a process of another mount namespace in reach, ADR-0101), `check_pid_namespace` (with the rbind: PID 2 a kernel thread, or PID 1 sharing no mount ID with the `MountNamespace` read `with_mounts` at start, ADR-0134), `UNCHECKED_PROC_FILES`, `Reach` (`Slash`, `ProcRbind`: the build that the peer-scan refusal and the build-argument warnings name) |
@@ -455,22 +480,28 @@ Each step before the next; design in
 - An owner the build's user namespace does not map (ADR-0098): the
   libraries refuse with `rnk_rootfs::Unmapped` (a base layer's owners before
   any is extracted, a `chown`, a secret file's owner or a `RUN`'s user that
-  failed with `EINVAL`); `build::Failed` carries it out of the build, found
-  among the error's sources (`owners::find`), and `owners::guidance` gives
-  the ways out by who made the namespace and its maps
-  (`rnk_snapshot::UserNamespace`, which gives them as `rnk_store::IdMaps`
-  reads them; the binary reads no map itself), naming only the ids they
-  lack: a user's one id (`Namespace::UserOneId`), install
+  failed with `EINVAL`);
+  `build::Failed` carries it out of the build, found among the error's
+  sources (`owners::find`), and `owners::guidance` gives the ways out by who
+  made the namespace (`owners::MadeBy`, from the set-up's `Outcome`) and its
+  maps (`rnk_snapshot::UserNamespace`, which
+  gives them as `rnk_store::IdMaps` reads them; the binary reads no map itself), naming
+  only the ids they lack: a user's one id (`Namespace::UserOneId`), install
   `uidmap` and add a first range of at least the highest id named, run as
   root or in a container; a user's ranges (`UserRanges`), widen the first
   one to that count; root's with a single uid or gid (`RootOneId`: the
   namespace ranikust was started in maps no more, or its ranges could not
   be mapped), root's copy of a container's ranges, or a namespace ranikust
-  was started in (`made` false: kaniko mode, root's overlay mode;
-  `Container`), widen its ranges. A range asked for comes with
+  was started in (`MadeBy::Other`: kaniko mode, root's overlay mode;
+  `Container`), widen its ranges; root's `--userns` (`MadeBy::Userns`,
+  `Userns`, whatever the maps read: its map is the `ranikust` range's
+  alone), widen the `ranikust` line of `/etc/subuid` or `/etc/subgid` to
+  the highest id named + 1 (`counts_text`), or build without `--userns`
+  (`userns_ways_out`). A range asked for comes with
   `NO_OVERLAP` (it must not overlap another user's range or a real
   account); past `RANGE_MAX` (65536, `useradd`'s default count) no range
-  is asked for: the ids are named, and root or a container is the way out.
+  is asked for: the ids are named, and root or a container is the way out
+  (under `--userns`, a build without it, the count needed named too).
   No flag lets it pass.
 - The roots of `COPY --from=<image>` are made by the stage's thread, not the
   preparation, which only pulls. A Dockerfile not found as given is read
@@ -510,7 +541,7 @@ kaniko flag or an invalid combination.
 ## Refs
 
 - **Design:** [design/modes-and-detection.md](../../design/modes-and-detection.md) ([probe order](../../design/modes-and-detection.md#probe-order---modeauto), [build root and state directory](../../design/modes-and-detection.md#build-root-and-state-directory), [refusal and guidance](../../design/modes-and-detection.md#refusal-and-guidance)); [design/sandbox.md#process-set-up-once-per-build](../../design/sandbox.md#process-set-up-once-per-build); [design/kaniko-mode.md#host-safety-checks](../../design/kaniko-mode.md#host-safety-checks)
-- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map; `owners.rs` adds the ways out, from the maps `rnk_store::IdMaps` reads, through `rnk_snapshot::UserNamespace`), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (`--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0139](../../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md) (`--userns`'s state directory of its own, never root's; root to read the credentials first, [#206](https://github.com/tran4774/ranikust/issues/206)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune --all`, refused when root runs it), [ADR-0133](../../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md) (root's `prune --all` commands: only the owner's ids in a user's directory, only for a directory a build would accept), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (rootless overlay mode's routing and the volume hint, [#79](https://github.com/tran4774/ranikust/issues/79)), [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) (`--allow proc.rbind`), [ADR-0129](../../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md) and [ADR-0130](../../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) (the peer scan before the namespace, the persistent store), [ADR-0134](../../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md) (with the rbind, the PID namespace told from files with no ptrace check)
+- **Decisions:** [ADR-0050](../../adr/0050-ranikust-picks-the-build-root-no-workdir-flag.md) (the build root, the state directory), [ADR-0011](../../adr/0011-accept-common-kaniko-flags.md) (flags, subcommands), [ADR-0023](../../adr/0023-mode-flag.md) (`--mode`, `--snapshot-mode`), [ADR-0022](../../adr/0022-common-state-dir.md) (`--state-dir` defaults), [ADR-0028](../../adr/0028-minimum-kernel-linux-5-8.md) (start-up check), [ADR-0021](../../adr/0021-rnk-store-crate.md) (`prune`), [ADR-0020](../../adr/0020-static-musl-via-cargo-zigbuild.md) (static musl, mimalloc, rustls), [ADR-0004](../../adr/0004-support-every-privilege-level.md) (refuse with guidance), [ADR-0013](../../adr/0013-jobs-default-available-parallelism.md), [ADR-0014](../../adr/0014-kaniko-mode-sequential-by-default.md), [ADR-0010](../../adr/0010-run-network-host-or-none.md), [ADR-0098](../../adr/0098-rootless-without-subuid-ranges-refuses-images-with-several-owners.md) (a build in a user namespace, one ranikust creates or one it is started in, refuses an image with an owner the namespace does not map; `owners.rs` adds the ways out, from the maps `rnk_store::IdMaps` reads, through `rnk_snapshot::UserNamespace`), [ADR-0100](../../adr/0100-probe-test-environments-are-todays-harnesses-plus-runner-vm-and-k3s-legs-and-alma-9.md) (planned, Phase 3: where the probe is tested), [ADR-0103](../../adr/0103-a-default-seccomp-profile-applies-wherever-the-full-sandbox-runs.md) and [ADR-0109](../../adr/0109-seccomp-profiles-are-compiled-to-bpf-in-rnk-sandbox-and-the-default-is-mobys.md) (the default seccomp profile, `--seccomp`; [#82](https://github.com/tran4774/ranikust/issues/82)), [ADR-0104](../../adr/0104-userns-runs-the-whole-build-in-a-user-namespace-with-a-subordinate-range-for-root.md) (`--userns`, root's range read from a `ranikust` entry of `/etc/subuid` and `/etc/subgid`; [#83](https://github.com/tran4774/ranikust/issues/83)), [ADR-0139](../../adr/0139-userns-builds-in-a-state-directory-of-its-own-and-root-reads-the-credentials-before-the-namespace.md) (`--userns`'s state directory of its own, never root's; root to read the credentials first, [#206](https://github.com/tran4774/ranikust/issues/206)), [ADR-0105](../../adr/0105-a-minimal-prune-all-empties-a-rootless-state-directory-in-phase-3.md) (`prune --all`, refused when root runs it), [ADR-0133](../../adr/0133-roots-prune-commands-delete-only-the-owners-ids-and-only-in-a-directory-a-build-would-accept.md) (root's `prune --all` commands: only the owner's ids in a user's directory, only for a directory a build would accept), [ADR-0146](../../adr/0146-root-empties-the-userns-state-directory-with-prune-all-userns-as-the-ranges-first-uid.md) (`prune --all --userns`, root only, as the range's first uid; root's commands for what it leaves, of root's ids and the range's, keeping the marker; [#207](https://github.com/tran4774/ranikust/issues/207)), [ADR-0107](../../adr/0107-rootless-podman-without-a-volume-builds-on-slash-and-unmasked-proc-pods-stay-refused.md) (rootless overlay mode's routing and the volume hint, [#79](https://github.com/tran4774/ranikust/issues/79)), [ADR-0126](../../adr/0126-a-rootless-run-gets-an-rbind-of-the-containers-proc-only-with-allow-proc-rbind.md) (`--allow proc.rbind`), [ADR-0129](../../adr/0129-with-allow-proc-rbind-a-shared-pid-namespace-is-refused-and-the-store-is-anonymous.md) and [ADR-0130](../../adr/0130-with-allow-proc-rbind-the-residual-is-the-measured-one-the-peer-scan-stays-and-the-build-uses-the-persistent-store.md) (the peer scan before the namespace, the persistent store), [ADR-0134](../../adr/0134-with-allow-proc-rbind-the-pid-namespace-check-reads-files-no-ptrace-check-guards.md) (with the rbind, the PID namespace told from files with no ptrace check)
 - **Open:** [#3](https://github.com/tran4774/ranikust/issues/3) (the type that carries the probe outcome), [#4](https://github.com/tran4774/ranikust/issues/4) (where the probe mounts its test overlay); tasks [#38](https://github.com/tran4774/ranikust/issues/38) (`unit_chain`); Phase 3 [#41](https://github.com/tran4774/ranikust/issues/41)
 - **Evidence:** [exp-05 Q1](../../research/experiments/05-rust-ecosystem.md#q1-static-binary) (5.1 MB static-pie runs in an empty rootfs), [Q2](../../research/experiments/05-rust-ecosystem.md#q2-allocator) (musl 2.8 Mops/s vs 663-753 with mimalloc, 16 threads)
 - **kaniko:** `kaniko@44aa7ddc0 cmd/executor/cmd/root.go:336-389` (build flags), `:391-410` (registry flags), `:71-119` (env, mirrors), `:177-188` and `:200-202` (output checks), `:240-245` (container check), `:595-633` (context); `cmd/executor/cmd/push.go:40-80`; `login.go:46-60`
@@ -707,9 +738,47 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   changing nothing, and GNU `find` beside them emptying; directories the
   walk listed swapped for symlinks to look-alikes outside, and the tree
   being walked moved out, while GNU `find` deletes under each script,
-  nothing outside removed; `/`, system directories and `$HOME` refused,
+  root's after an unfinished `prune --all --userns` among them, nothing
+  outside removed; that command, for the same paths, acting only on the
+  directory checked in each shell, and in a tree past `PATH_MAX`, a wide
+  directory, a FIFO, a socket, a setuid file, symlink loops, a hardlink
+  out and names `find` could read as options, all but the marker going
+  without blocking, nothing outside, a FIFO marker changing nothing;
+  `prune --all --userns` refusing root's default, below and above it
+  however spelt, and a symlink at or on the path, a trailing `/` or `/.`
+  included, nothing changed; `/`, system directories and `$HOME` refused,
   where they hold anything, by the read-only checks a user's `prune --all`
-  runs before its namespace, and given no commands by root's refusal),
+  runs before its namespace, and given no commands by root's refusal;
+  `--userns` parsed and refused for a user other than root, before the
+  state directory; under `--userns`, a path ending in `..` refused before
+  the range is read, the range's error before the state directory is
+  looked at, root's default and paths below or above it, a directory the
+  range's uid does not own and one below a parent root does not own
+  refused before the namespace, nothing changed, a missing one left so:
+  `a_userns_prune_refuses_what_a_userns_build_refuses_before_the_namespace`;
+  root's refusal naming `prune --all --userns` for a directory it takes,
+  root's commands otherwise:
+  `root_is_given_prune_userns_for_a_userns_state_directory`; neither
+  sending root to the other for a directory of the range's uid that
+  `--userns` refuses:
+  `prune_userns_and_roots_prune_never_send_root_to_each_other`; an
+  unfinished one saying to stop every `--userns` build, then giving root's
+  commands, the range's bounds written in, none without a pin:
+  `a_userns_prune_that_could_not_finish_names_the_ways_out`; its reason,
+  and that of a held directory, naming `prune --all --userns`:
+  `a_userns_prune_that_could_not_finish_names_itself`; a directory
+  without a marker refused naming it, and saying a `--userns` build
+  removes the probe directories where only empty ones of the range's
+  first uid are there (none for one that holds a file, another uid's, a
+  file or symlink with the probe's name, or another entry):
+  `a_userns_prune_of_a_directory_without_a_marker_names_itself_and_the_probe`; those
+  commands, run by each shell present, removing every entry but the marker
+  whatever its name, a symlink out not followed, and changing nothing
+  without a regular `.ranikust-pruning` (none, a symlink, a directory),
+  where an entry's uid or gid is neither root's nor the range's, or at a
+  relative `PATH` entry: `a_userns_prunes_leftovers_go_but_the_marker`;
+  without GNU findutils, as the other scripts:
+  `the_scripts_change_nothing_without_gnu_findutils`),
   `statedir`
   (each ADR-0050 refusal: `/`, system directories, symlinks, writable
   parents, named rightly through `..`, nothing created through a planted
@@ -806,9 +875,11 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   `red_team_no_profile_for_a_root_program_that_is_not_ranikust` (a forged
   marker naming a root program gets no profile for its path); and
   `red_team_nothing_is_written_before_the_refusal_whatever_the_state_dir`.
-  `prune`: without `--all` exit 2
-  naming Phase 5; `--all` as root exit 1 naming Phase 5, as a user a
-  missing state directory, the default one included, left missing (exit
+  `prune`: without `--all` exit 2 naming Phase 5, `--userns` too;
+  `--all --userns` as a user exit 2, nothing made
+  (`prune_userns_as_a_user_other_than_root_is_a_usage_error`); `--all` as
+  root exit 1 naming Phase 5, as a user a missing state directory, the
+  default one included, left missing (exit
   0); as a user, a directory without the marker and a path ending in
   `..` refused unchanged, and a state directory emptied or, without a
   user namespace, refused with `prune`'s guidance, naming it under
@@ -867,7 +938,8 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   empty for `rmdir`, nothing outside changed, no process or mount left);
   `prune_all_leaves_what_a_running_build_uses` (refused, nothing removed,
   while another store is open; emptied once it closed);
-  `prune_all_refuses_root_of_a_rootless_container`;
+  `prune_all_refuses_root_of_a_rootless_container` (`prune_all`, and
+  `empty` in a child);
   `setup/tests/userns/layers.rs`
   `base_layers_extract_in_the_user_namespace_as_overlay_as_root_extracts_them`
   (owners, modes, xattrs, symlinks, hardlinks, mtimes, whiteouts and opaque
@@ -934,7 +1006,13 @@ Tiers and commands: [`docs/testing.md`](../../testing.md#tiers).
   before the state directory exists); `auto_routes_to_stages` and
   `auto_overlay_refused_after_probe` (`--mode=auto` routes, one probe line
   each: [testing](../../testing.md#quick-smoke-cases)); the quick case
-  `userns` (root's `--userns`, run with `RANIKUST_QUICK_CASES=userns`);
+  `userns` (root's `--userns`, run with `RANIKUST_QUICK_CASES=userns`;
+  then `prune --all --userns` on the state directory its builds left:
+  root's own `prune --all` naming it, root's default, a directory of
+  root's and one below a parent the range cannot search refused
+  unchanged, a directory of root's put in the store left by the prune,
+  a build refused until it finishes, then the directory emptied, its
+  owner and mode kept);
   `setup/tests/userns/layers.rs`
   `a_shifted_range_s_layers_are_keyed_by_its_map` and
   `root_deletes_nothing_in_a_probe_directory_it_gave_away` (unit suite: a

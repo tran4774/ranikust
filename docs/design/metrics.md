@@ -31,7 +31,7 @@ Code: `crates/rnk-metrics`, wired in `crates/ranikust/src/main.rs`.
 
 | Variable | Effect |
 |---|---|
-| `--metrics-file=<path>` (a flag, `ADR-0037`) | Collect, and write the report there at exit. A relative path is resolved at start-up; a path in the build context, or through a symlink, is refused before the report is set up (ADR-0076); the parent directory is created by descriptor, never through a symlink; the file is written to a temporary name and renamed (the binary's `Config::write_file`). |
+| `--metrics-file=<path>` (a flag, `ADR-0037`) | Collect, and write the report there at exit. A relative path is resolved at start-up; a path in the build context, or through a symlink, is refused before the report is set up (ADR-0076), as is the flag with `prune --userns`, whose process writes at exit as the `ranikust` range's uid; the parent directory is created by descriptor, never through a symlink; the file is written to a temporary name and renamed (the binary's `Config::write_file`). |
 | `RANIKUST_METRICS_SUMMARY=1` | Collect, and print a short summary to stderr at exit (anything but empty or `0`). |
 
 The report path comes only from `--metrics-file`, a flag of every subcommand;
