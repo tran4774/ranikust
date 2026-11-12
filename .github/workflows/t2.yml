@@ -95,7 +95,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
       # What the VM's base image adds to Ubuntu (tests/vm/vm.sh PACKAGES);
@@ -151,7 +151,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
       - name: T2c unit-c
@@ -206,7 +206,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
       - name: Install the VM's packages
@@ -272,7 +272,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
       # The pods' image holds the static busybox.
@@ -354,7 +354,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
       # Rootless Podman maps the user's ranges with newuidmap and newgidmap.
@@ -415,7 +415,7 @@ jobs:
         with:
           version: 0.16.0
           use-cache: false
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
       # Rows 6 and 6b: newuidmap and newgidmap.

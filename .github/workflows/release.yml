@@ -70,7 +70,7 @@ jobs:
       # From the action's own manifest, checked against its pinned SHA-256;
       # `fallback: none` fails a version missing from the manifest instead
       # of falling back to cargo-binstall.
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-about@0.9.2
           fallback: none
@@ -173,7 +173,7 @@ jobs:
           echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
       # Downloads a release binary and checks it against the action's own
       # pinned SHA-256; uses no cache; no cargo-binstall fallback.
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-zigbuild@0.24.0
           fallback: none
